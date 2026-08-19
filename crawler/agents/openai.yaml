@@ -1,0 +1,4 @@
+interface:
+  display_name: "爬虫"
+  short_description: "通过 Edge Profile 1 和 Codex 扩展安全爬取归档"
+  default_prompt: "使用 $crawler 通过 Codex Chrome Extension 接管 Edge Profile 1，安全爬取、验证归档并清理远端资源。"

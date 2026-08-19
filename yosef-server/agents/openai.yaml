@@ -1,0 +1,7 @@
+interface:
+  display_name: "Yosef Server"
+  short_description: "Reuse the current direct Ethernet, SSH, Ubuntu, and /data working-directory facts for yosef-server."
+  default_prompt: "Use $yosef-server to recall the small computer's current direct Ethernet, SSH, Ubuntu, and /data service, download, and data placement conventions."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI 量化策略迭代"
+  short_description: "按冻结门禁迭代策略，项目记录本地保存，仅晋级跨项目知识"
+  default_prompt: "Use $iterate-quant-strategy to iteratively optimize this strategy under the frozen AI quant research protocol."

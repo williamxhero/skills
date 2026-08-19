@@ -1,0 +1,7 @@
+interface:
+  display_name: "Apex 策略报告"
+  short_description: "完整策略复现、组合回测、绩效指标、归因、稳健性、容量与中文报告"
+  default_prompt: "Use $apex-strategy-report to turn the supplied strategy source into a complete, reproducible Chinese research report."
+
+policy:
+  allow_implicit_invocation: true

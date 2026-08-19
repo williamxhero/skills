@@ -1,0 +1,4 @@
+interface:
+  display_name: "项目记忆同步"
+  short_description: "用 MemPalace 维护跨项目共享的稳定项目记忆"
+  default_prompt: "Use $project-memory-sync to store or retrieve stable project memory in the shared MemPalace."

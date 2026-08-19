@@ -1,0 +1,4 @@
+interface:
+  display_name: "补齐小电脑 QuoteMux 数据"
+  short_description: "审计、补齐并验证 yosef-server 的 QuoteMux 真实数据缺口"
+  default_prompt: "使用 $quote-mux-server-backfill 审计并补齐 yosef-server 上已确认的 QuoteMux 数据缺口。"

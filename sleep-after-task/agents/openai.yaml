@@ -1,0 +1,4 @@
+interface:
+  display_name: "任务后睡眠"
+  short_description: "完成任务后自动等待 180 秒再进入 Windows 睡眠。"
+  default_prompt: "Use $sleep-after-task when the user wants the computer to sleep after the final response."

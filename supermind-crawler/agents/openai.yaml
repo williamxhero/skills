@@ -1,0 +1,4 @@
+interface:
+  display_name: "SuperMind 爬虫"
+  short_description: "安全控制 SuperMind 浏览器、Notebook 与数据归档"
+  default_prompt: "使用 $supermind-crawler 安全执行 SuperMind 浏览器与 Notebook 数据采集，并完成验证和资源清理。"

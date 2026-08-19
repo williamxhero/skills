@@ -1,0 +1,4 @@
+interface:
+  display_name: "ASR"
+  short_description: "本地优先的音频角色识别、校对转写、语义纠错与意图理解"
+  default_prompt: "Use $asr to transcribe these recordings with speaker roles, contextual corrections, and intent analysis."
