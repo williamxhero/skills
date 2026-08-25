@@ -89,6 +89,16 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 
 不要因为数据不足缩短范围、移除品种、换数据源、改参数、用缓存，或反复启动相同回测。详细判定和证据字段见 [MarketHub 修复任务](references/markethub-repair-task.md)。
 
+## 跨 turn 等待与持续监督
+
+等待可见 task、长回测、数据修复、部署、抓取或外部运行时，主 thread 不得只汇报“等待”后结束。先用 `wait_threads` 和 cursor 做本轮有界等待；若预计会跨 turn、超过该窗口，或被监督 task 可能在完成条件前变为 idle/final，创建或复用**当前 chat 内**的 heartbeat/scheduled task 来唤醒同一主 thread。不要以普通提醒替代它。
+
+heartbeat 的持久化 prompt 至少固定：主研究目标和暂停点、被监督 task/thread ID、完成条件、正式数据与安全/授权边界、满足条件后恢复的研究步骤、`DONT_NOTIFY`/`NOTIFY` 的判定，以及完成、用户取消或监督失去意义时删除 automation。按预期耗时选择 cadence，避免高频 busy-poll；只在新证据、状态变化、需要用户决定或完成时通知。
+
+修复 task 未达到其 live 验收而 idle/final 时，heartbeat 必须把当前 residual 与最新 observation 发回同一 incident task，要求恢复 remediation；不得新建重复 task 或重复同一回测。`awaiting_authorization` 仍不是完成：保留 incident，检查是否出现新证据或授权，但不扩权、不购买/申请凭证、不绕过授权，也不重复已无效的 probe；确需用户决定时才 `NOTIFY`。
+
+若 automation 工具不可用，明确告知用户无法保证跨 turn 唤醒和持续监督，并说明当前暂停条件；不得声称会持续运行。
+
 ## 强制 MarketHub 修复状态机
 
 任一 health、HTTP、payload、coverage、field、calendar、catalog、version、order、duplicate、truncation、PIT 或 time-semantics 故障时：
@@ -96,7 +106,7 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 1. **暂停主研究，不暂停修复。** 主研究不注册/重跑正式 run；不 fallback、不缩短范围、不用 fixture/local snapshot/旧指标。修复 task 则保持 `active_remediation`：单个 provider、运行环境、接口或凭证分支失败，只标记该分支失败并继续无人监督修复，不得据此 final 或 idle。
 2. **记录 incident 与观测。** 按 [MarketHub 修复任务](references/markethub-repair-task.md) 保存稳定 `incident_key`，以及含版本/HTTP 状态/错误的 observation fingerprint alias 和诊断证据；没有 Workspace run 时不要为保存它创建伪 run/record。
 3. **创建或复用可见修复 task。** 先 `list_threads` 按 `incident_key` 查找 active 或 `awaiting_authorization` task；命中时以 `send_message_to_thread` 追加 observation alias。未命中才 `list_projects`，优先 QuantResearch saved project，再以 `create_thread` 创建修复 task（git repo 默认 worktree）。本次用户对置于范围内的 MarketHub/QuantResearch 研究，授权非破坏、可回滚、owner-scoped 的修复；边界详见参考。
-4. **等待、授权或终止。** active task 用 `wait_threads` 与 cursor 监控，不循环 `read_thread` 或重跑 preflight/run。`awaiting_authorization` 时向用户呈现最小授权并保留 incident/task ID，不 busy-poll；授权后复用同一 task。用户撤销或拒绝授权是非成功终态。隐藏 subagent 不能冒充用户可见 task。
+4. **等待、授权或终止。** 依“跨 turn 等待与持续监督”创建/复用当前 chat heartbeat；本轮仍用 `wait_threads` 与 cursor，不能循环 `read_thread` 或重跑 preflight/run。`awaiting_authorization` 时向用户呈现最小授权并保留 incident/task ID，不 busy-poll；授权后复用同一 task。用户撤销或拒绝授权是非成功终态。隐藏 subagent 不能冒充用户可见 task。
 5. **修复到 live 验证。** 修复 task 按根及目标仓 `AGENTS.md`、跨项目 owner 规则，先独立修复可修的代码，再审计完整目标 universe。冻结有限 source plan，逐候选 probe 不需新增授权且许可明确的 source-native 路线；网站/Notebook/长抓取必须用 `$crawler`，SuperMind 必须 `$crawler → $supermind-crawler` 且在 owner task 中执行。清单穷尽后才可 `awaiting_authorization`，它不是完成。仅原始 live query 与目标 universe 通过，且按变更类型具备相应证据时，才可 repaired/completed。
 6. **独立复验和恢复。** 主 task 对同一 preflight 独立重跑：从未创建 run/attempt 时，live 复验通过后提交第一个 canonical request/run，不能称为 retry；仅服务实现修复且 API/query/data/config/package/Runtime executable identity 均不变时，才可显式 Workspace retry；任何数据或执行身份/语义改变均须建新 snapshot 与 canonical request/run。复验失败发回同一 incident task，不能新建重复任务；成功后可归档修复 task。
 

@@ -36,8 +36,9 @@ dataset/catalog/calendar、HTTP status 或 error 变化只产生新的 observati
 1. 若 thread 工具可用，先 `list_threads`，按 `incident_key` 查找 active 或 `awaiting_authorization` 的 MarketHub 修复 task。
 2. 命中同 incident 时复用该 task，以 `send_message_to_thread` 追加主研究身份与新的 observation fingerprint alias；不要创建重复 task。
 3. 未命中才 `list_projects`，优先 QuantResearch saved project；随后用 `create_thread` 创建清晰命名的修复 task。涉及 Git repo 时使用默认 worktree。
-4. 主研究使用 `wait_threads` 和 cursor 追踪，不通过反复 `read_thread` 或重跑获得“进度”。
-5. 若 thread 工具不可用，明确告知用户主研究已暂停、所需 endpoint/query/范围与证据。隐藏 subagent 只能协助诊断，不能声称等同于用户可见 task。
+4. 主研究先用 `wait_threads` 和 cursor 做本轮有界追踪，不通过反复 `read_thread` 或重跑获得“进度”。预计跨 turn、超过该窗口，或修复 task 可能在 live 验收前 idle/final 时，创建/复用当前 chat 的 heartbeat/scheduled task。其 prompt 固定 incident/task ID、原 query/完成条件、数据与授权边界、恢复主研究条件和何时通知/删除 automation；按耗时选择 cadence，不 busy-poll。
+5. heartbeat 发现修复 task 未通过原 query + 完整 universe live 验收即 idle/final 时，将 current residual 和最新 observation 发回同一 incident task，要求恢复 `active_remediation`，不新建 task 或重跑同一 run。`awaiting_authorization` 时保留 automation 以检查新证据/授权，但不得扩大授权或重复无效 probe；仅有最小授权需要用户决定时通知。完成、用户取消或监督无意义时删除 automation。
+6. 若 thread 或 automation 工具不可用，明确告知用户主研究已暂停、所需 endpoint/query/范围与证据，以及无法保证跨 turn 唤醒。隐藏 subagent 只能协助诊断，不能声称等同于用户可见 task。
 
 ## 修复 task 的完成条件
 
