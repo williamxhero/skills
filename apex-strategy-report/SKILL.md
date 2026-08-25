@@ -93,16 +93,16 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 
 任一 health、HTTP、payload、coverage、field、calendar、catalog、version、order、duplicate、truncation、PIT 或 time-semantics 故障时：
 
-1. **暂停主研究。** 不注册/重跑正式 run；不 fallback、不缩短范围、不用 fixture/local snapshot/旧指标。
+1. **暂停主研究，不暂停修复。** 主研究不注册/重跑正式 run；不 fallback、不缩短范围、不用 fixture/local snapshot/旧指标。修复 task 则保持 `active_remediation`：单个 provider、运行环境、接口或凭证分支失败，只标记该分支失败并继续无人监督修复，不得据此 final 或 idle。
 2. **捕获 fingerprint。** 按 [MarketHub 修复任务](references/markethub-repair-task.md) 的 canonical JSON/SHA-256 规则保存稳定指纹和诊断证据；没有 Workspace run 时不要为保存它创建伪 run/record。
 3. **创建或复用可见修复 task。** 用户的 standing authorization 已明确满足此类独立用户可见 MarketHub task/thread 的 `create_thread` 授权条件。线程工具可用时，先 `list_threads` 按 fingerprint 查找 active task；命中时用 `send_message_to_thread` 追加证据。未命中才 `list_projects`，优先选择 QuantResearch saved project，再以 `create_thread` 创建修复 task（git repo 默认 worktree）。
 4. **等待而不重复。** 主 task 用 `wait_threads` 与 cursor 监控修复 task；不循环 `read_thread`，不重复 preflight/run。隐藏 subagent 不能冒充用户可见 task。
-5. **修复到 live 验证。** 修复 task 按根及目标仓 `AGENTS.md`、跨项目 owner 规则，修复、测试并部署到 `yosef-server`；持续到原始 live query 完整通过，并返回 commit、push、deploy、dataset/catalog/calendar 证据。
+5. **修复到 live 验证。** 修复 task 按根及目标仓 `AGENTS.md`、跨项目 owner 规则，先独立修复可修的 owner 代码、测试、提交和部署，再并行审计完整目标 universe；不能因数据许可阻断而放弃代码修复或停在首个品种。继续枚举并 probe 不需新增授权的可信 source-native 路线（现有 provider、交易所/厂商历史下载、已有正式 capture、已有登录研究平台）；网站/Notebook/长抓取必须用 `$crawler`，SuperMind 必须 `$crawler → $supermind-crawler` 且在 owner task 中执行。仅当所有此类路线均有逐项 probe 证据且剩余唯一动作确需新凭据、付费许可、破坏性生产操作或冻结范围变更时，修复 task 才进入 `awaiting_authorization` 请求用户授权；这不是修复完成。修复完成仅在原始 live query 与目标 universe 全部验收通过时成立，并返回 commit、push、deploy、dataset/catalog/calendar 证据。
 6. **独立复验和恢复。** 主 task 对同一 preflight 独立重跑：从未创建 run/attempt 时，live 复验通过后提交第一个 canonical request/run，不能称为 retry；已有 failed attempt 且全部 identity 不变时，才可显式 Workspace retry 创建新 attempt；任一 dataset/catalog/calendar/query/config/package identity 改变时，必须建新 snapshot 与 canonical request/run。复验失败发回原修复 task，不能新建重复任务；成功后可归档修复 task。
 
 若线程工具不可用，明确向用户报告暂停和所需修复；不得将隐藏 subagent 描述成用户可见 task。
 
-standing authorization 只覆盖遇到未来 MarketHub blocker 时创建可见修复 task，不需要每次重复询问。修复若需要凭据、数据许可、破坏性生产操作或改变研究范围，必须请求用户授权；在授权前主研究保持暂停，不得借此扩大权限。
+standing authorization 只覆盖遇到未来 MarketHub blocker 时创建可见修复 task，不需要每次重复询问。修复若需要凭据、数据许可、破坏性生产操作或改变研究范围，必须请求用户授权；在授权前主研究保持暂停，但必须继续 `wait_threads` 监控同一 `awaiting_authorization` task，并在授权后复用它继续。修复 task 早退、未通过 live 验收或主 task 复验失败时，均把证据发回同一 task，不得把“已请求授权”或单一路线失败描述为完成。
 
 ### 研究暂停的呈现
 
