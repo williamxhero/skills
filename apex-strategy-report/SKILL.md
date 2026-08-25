@@ -97,7 +97,7 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 2. **记录 incident 与观测。** 按 [MarketHub 修复任务](references/markethub-repair-task.md) 保存稳定 `incident_key`，以及含版本/HTTP 状态/错误的 observation fingerprint alias 和诊断证据；没有 Workspace run 时不要为保存它创建伪 run/record。
 3. **创建或复用可见修复 task。** 先 `list_threads` 按 `incident_key` 查找 active 或 `awaiting_authorization` task；命中时以 `send_message_to_thread` 追加 observation alias。未命中才 `list_projects`，优先 QuantResearch saved project，再以 `create_thread` 创建修复 task（git repo 默认 worktree）。本次用户对置于范围内的 MarketHub/QuantResearch 研究，授权非破坏、可回滚、owner-scoped 的修复；边界详见参考。
 4. **等待、授权或终止。** active task 用 `wait_threads` 与 cursor 监控，不循环 `read_thread` 或重跑 preflight/run。`awaiting_authorization` 时向用户呈现最小授权并保留 incident/task ID，不 busy-poll；授权后复用同一 task。用户撤销或拒绝授权是非成功终态。隐藏 subagent 不能冒充用户可见 task。
-5. **修复到 live 验证。** 修复 task 按根及目标仓 `AGENTS.md`、跨项目 owner 规则，先独立修复可修的代码、测试、提交和部署，再审计完整目标 universe。冻结有限 source plan，逐候选 probe 不需新增授权且许可明确的 source-native 路线；网站/Notebook/长抓取必须用 `$crawler`，SuperMind 必须 `$crawler → $supermind-crawler` 且在 owner task 中执行。清单穷尽后才可 `awaiting_authorization`，它不是完成。修复完成仅在原始 live query 与目标 universe 全部验收通过时成立，并返回 commit、push、deploy、dataset/catalog/calendar 证据。
+5. **修复到 live 验证。** 修复 task 按根及目标仓 `AGENTS.md`、跨项目 owner 规则，先独立修复可修的代码，再审计完整目标 universe。冻结有限 source plan，逐候选 probe 不需新增授权且许可明确的 source-native 路线；网站/Notebook/长抓取必须用 `$crawler`，SuperMind 必须 `$crawler → $supermind-crawler` 且在 owner task 中执行。清单穷尽后才可 `awaiting_authorization`，它不是完成。仅原始 live query 与目标 universe 通过，且按变更类型具备相应证据时，才可 repaired/completed。
 6. **独立复验和恢复。** 主 task 对同一 preflight 独立重跑：从未创建 run/attempt 时，live 复验通过后提交第一个 canonical request/run，不能称为 retry；仅服务实现修复且 API/query/data/config/package/Runtime executable identity 均不变时，才可显式 Workspace retry；任何数据或执行身份/语义改变均须建新 snapshot 与 canonical request/run。复验失败发回同一 incident task，不能新建重复任务；成功后可归档修复 task。
 
 若线程工具不可用，明确向用户报告暂停和所需修复；不得将隐藏 subagent 描述成用户可见 task。
@@ -106,7 +106,7 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 
 ### 研究暂停的呈现
 
-主 task 可以继续完成不依赖数据的工作，例如来源冻结、规则审计、Package 结构和 fixture 测试；但所有带“正式”“收益”“通过”的结论都必须等待 live preflight 与 Nautilus 结果。向用户说明 blocker 时给出原 query、范围、故障分类、fingerprint 和当前暂停点，而不是笼统说“数据不可用”。
+主 task 可以继续完成不依赖数据的工作，例如来源冻结、规则审计、Package 结构和 fixture 测试；但所有带“正式”“收益”“通过”的结论都必须等待 live preflight 与 Nautilus 结果。向用户说明 blocker 时给出原 query、范围、故障分类、`incident_key`、latest observation fingerprint alias 和当前暂停点，而不是笼统说“数据不可用”。
 
 ## Quant Runtime 形式化运行
 

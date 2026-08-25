@@ -11,9 +11,9 @@
 
 ## 主研究暂停；修复 task 持续运行
 
-主研究在确认真故障后立即暂停，不创建或重跑正式回测；这不暂停修复 task。修复 task 从创建起处于 `active_remediation`，直到原 query 和目标 universe 的 live 验收通过。一个 provider、运行环境、接口或凭证分支失败只会关闭该分支，绝不使修复 task final、idle 或宣称数据不可修复。
+主研究在确认真故障后立即暂停，不创建或重跑正式回测；这不暂停修复 task。只要仍有可执行 remediation，task 为 `active_remediation`；冻结 source plan 穷尽且唯一剩余动作需授权时为 `awaiting_authorization`；用户撤销或拒绝授权分别为非成功终态 `cancelled_by_user`、`blocked_by_denied_authorization`；只有原 query 与完整目标 universe live 验收通过才可 `repaired/completed`。一个 provider、运行环境、接口或凭证分支失败只会关闭该分支，绝不使 task final、idle 或宣称数据不可修复。
 
-保留两层身份。`incident_key` 用于跨观测去重：以 package/research intent、`base_url`/method/path、去掉 `data_version`、pagination、request-id 的规范化业务 query，以及 universe、fields、frequency、adjustment、start/end 的 canonical JSON/SHA-256 定义。只有研究意图、universe、范围、字段、频率、adjustment 或策略/package config 改变才创建新 incident。
+保留两层身份。`incident_key` 用于跨观测去重：以 package ID、revision、package hash、config digest、`base_url`/method/path、去掉 `data_version`、pagination、request-id 的规范化业务 query，以及 universe、fields、frequency、adjustment、start/end 的 canonical JSON/SHA-256 定义。只有这些研究/执行身份、universe、范围、字段、频率或 adjustment 改变才创建新 incident。
 
 observation fingerprint 是 incident 的证据别名，以 canonical JSON/SHA-256 定义，固定包含：
 
@@ -41,14 +41,12 @@ dataset/catalog/calendar、HTTP status 或 error 变化只产生新的 observati
 
 ## 修复 task 的完成条件
 
-修复 task 按 QuantResearch 根与 MarketHub/QuoteMux 等目标仓的 `AGENTS.md` 和跨项目所有权规则工作。它必须：
+修复 task 按 QuantResearch 根与 MarketHub/QuoteMux 等目标仓的 `AGENTS.md` 和跨项目所有权规则工作。所有完成路径均需原始 endpoint/query 对完整目标 universe 的 live MarketHub 验收（字段、覆盖、日历/catalog/version、排序、重复和截断语义），并返回其 evidence。
 
-1. 在正确 owner 修复根因，增加相关测试；
-2. 部署到小电脑 `yosef-server`；
-3. 用原始 endpoint/query 在 live MarketHub 复验完整的字段、覆盖、日历/catalog/version、排序、重复与截断语义；
-4. 返回 commit、push、deploy 及 dataset/catalog/calendar/coverage 证据。
+- 若修改了代码、合同或部署：必须有相关 tests、精确 commit/push、deployment、health gate/rollback 和 before/after live evidence。
+- 若为纯数据 repair：代码/test/commit/push/deployment 明确标记 `not_applicable`，不得制造 dummy commit；必须有 source lineage 与 entitlement、raw/staged artifact hashes、before/after audit、repair/capture/import IDs、新 dataset publication/version、health，以及原 query + universe live 验收。
 
-“服务恢复”但原 query 仍缺数据不是完成。不要用本地测试替代远端验收。修复 task 只能在原 query 和整个目标 universe 完整通过 live 验收时完成；用户授权等待为 `awaiting_authorization`，不是完成。
+“服务恢复”但原 query 仍缺数据不是完成。不要用本地测试替代远端验收；`awaiting_authorization`、`cancelled_by_user` 和 `blocked_by_denied_authorization` 均不是 repaired/completed。
 
 ## 无人监督修复 loop
 
