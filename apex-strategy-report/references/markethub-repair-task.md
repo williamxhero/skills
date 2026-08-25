@@ -18,16 +18,17 @@
 - dataset/catalog/calendar/version、PIT/time semantics、排序/重复/截断统计；
 - Strategy Package ID/revision/hash、canonical request、run/attempt（如已有）与 coverage/fingerprint。
 
-禁止 fallback、缩短区间、删目标品种、使用本机数据/fixture/旧快照/旧指标，或重复启动相同 run。
+生产查询只允许 `http://yosef-server:8803`；禁止 `localhost`、环回/本机地址、其他 host fallback。禁止缩短区间、删目标品种、使用本机数据/fixture/旧快照/旧指标，或重复启动相同 run。
 
 ## 创建或复用可见 task
 
 用户已明确授权这种数据 blocker 创建独立、用户可见的 MarketHub 修复 task/thread。
 
-1. 若 thread 工具可用，先 `list_projects`，优先 QuantResearch saved project；`create_thread` 创建清晰命名的修复 task。涉及 Git repo 时使用默认 worktree。
-2. 先按 fingerprint 查现有 task；相同故障复用它，并以 `send_message_to_thread` 追加主研究身份与新证据。
-3. 主研究使用 `wait_threads` 和 cursor 追踪，不通过反复 `read_thread` 或重跑获得“进度”。
-4. 若 thread 工具不可用，明确告知用户主研究已暂停、所需 endpoint/query/范围与证据。隐藏 subagent 只能协助诊断，不能声称等同于用户可见 task。
+1. 若 thread 工具可用，先 `list_threads`，按 fingerprint 查找 active MarketHub 修复 task。
+2. 命中同 fingerprint 时复用该 task，以 `send_message_to_thread` 追加主研究身份与新证据；不要创建重复 task。
+3. 未命中才 `list_projects`，优先 QuantResearch saved project；随后用 `create_thread` 创建清晰命名的修复 task。涉及 Git repo 时使用默认 worktree。
+4. 主研究使用 `wait_threads` 和 cursor 追踪，不通过反复 `read_thread` 或重跑获得“进度”。
+5. 若 thread 工具不可用，明确告知用户主研究已暂停、所需 endpoint/query/范围与证据。隐藏 subagent 只能协助诊断，不能声称等同于用户可见 task。
 
 ## 修复 task 的完成条件
 
@@ -39,6 +40,8 @@
 4. 返回 commit、push、deploy 及 dataset/catalog/calendar/coverage 证据。
 
 “服务恢复”但原 query 仍缺数据不是完成。修复应持续到原 query 完整通过或用户撤销研究；不要用本地测试替代远端验收。
+
+若修复需要凭据、数据许可、破坏性生产操作或改变冻结的研究范围，修复 task 必须请求用户授权。授权前不得扩大权限，主研究继续保持暂停。
 
 ## 回到主研究
 

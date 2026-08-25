@@ -80,7 +80,7 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 
 ## MarketHub preflight 是正式门
 
-正式行情唯一来源是小电脑 `yosef-server` 上的 MarketHub。fixture 只能做结构测试；本地 snapshot、旧数据和 legacy 指标绝不可替代正式结论。
+正式行情唯一来源是小电脑 MarketHub 的 `http://yosef-server:8803`。禁止使用 `localhost`、环回/本机地址、其他 host 或本地 snapshot 作为正式路径或 fallback。fixture 只能做结构测试；旧数据和 legacy 指标绝不可替代正式结论。
 
 在创建 run 前，用将要执行的请求做 live preflight，记录 endpoint、query、HTTP/payload、产品/字段/频率/adjustment、区间、coverage、versions、catalog/calendar、PIT 和 time semantics。先区分：
 
@@ -95,12 +95,14 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 
 1. **暂停主研究。** 不注册/重跑正式 run；不 fallback、不缩短范围、不用 fixture/local snapshot/旧指标。
 2. **捕获 fingerprint。** 保存 endpoint、query、异常、品种、字段、频率、adjustment、范围、versions、package、run/attempt、coverage 与响应指纹。
-3. **创建或复用可见修复 task。** 用户已授权此类场景创建独立用户可见 MarketHub task/thread。线程工具可用时，先 `list_projects`，优先选择 QuantResearch saved project；使用 `create_thread` 创建修复 task（git repo 默认 worktree）。同 fingerprint 先复用已有 task，并以 `send_message_to_thread` 追加证据。
+3. **创建或复用可见修复 task。** 用户已授权此类场景创建独立用户可见 MarketHub task/thread。线程工具可用时，先 `list_threads` 按 fingerprint 查找 active task；命中时用 `send_message_to_thread` 追加证据。未命中才 `list_projects`，优先选择 QuantResearch saved project，再以 `create_thread` 创建修复 task（git repo 默认 worktree）。
 4. **等待而不重复。** 主 task 用 `wait_threads` 与 cursor 监控修复 task；不循环 `read_thread`，不重复 preflight/run。隐藏 subagent 不能冒充用户可见 task。
 5. **修复到 live 验证。** 修复 task 按根及目标仓 `AGENTS.md`、跨项目 owner 规则，修复、测试并部署到 `yosef-server`；持续到原始 live query 完整通过，并返回 commit、push、deploy、dataset/catalog/calendar 证据。
 6. **独立复验和恢复。** 主 task 对同一 preflight 独立重跑。revision/contract 不变时才可显式 Workspace retry 产生新 attempt；任一 dataset/catalog/calendar/query/config identity 改变，必须建新 snapshot 与 canonical request/run。复验失败发回原修复 task，不能新建重复任务；成功后可归档修复 task。
 
 若线程工具不可用，明确向用户报告暂停和所需修复；不得将隐藏 subagent 描述成用户可见 task。
+
+修复若需要凭据、数据许可、破坏性生产操作或改变研究范围，必须请求用户授权；在授权前主研究保持暂停，不得借此扩大权限。
 
 ### 研究暂停的呈现
 

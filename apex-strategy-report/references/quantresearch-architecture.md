@@ -15,7 +15,7 @@
 
 默认 `formal_only`：已冻结 package 直接进行 Nautilus 形式化回测。仅当问题确实要求候选生成/筛选时使用 `discovery_formal`；Qlib 的发现结果须作为候选证据，与 Nautilus 正式 run 清晰分离。
 
-MarketHub 是唯一生产行情源，位于小电脑 `yosef-server`。正式 run 不能回退本机快照或 fixture。fixture 可验证 package、schema、事件桥接等结构，但不得生成形式化收益结论。
+MarketHub 是唯一生产行情源，固定为小电脑 `http://yosef-server:8803`。正式 run 禁止使用 `localhost`、环回/本机地址、其他 host 或本机快照作为主源或 fallback，也不能回退 fixture。fixture 可验证 package、schema、事件桥接等结构，但不得生成形式化收益结论。
 
 NautilusTrader 负责正式订单、成交、账户、持仓、统计及 reporting input。不得把旧 ApexTrade、手写撮合、手写账户或 Qlib 结果换名为正式执行。
 
