@@ -1,7 +1,7 @@
 interface:
-  display_name: "Apex 策略报告"
-  short_description: "完整策略复现、组合回测、绩效指标、归因、稳健性、容量与中文报告"
-  default_prompt: "Use $apex-strategy-report to turn the supplied strategy source into a complete, reproducible Chinese research report."
+  display_name: "QuantResearch 策略研究"
+  short_description: "从来源证据到可复现的 Nautilus 研究与中文报告"
+  default_prompt: "Use $apex-strategy-report to migrate the supplied strategy evidence into a reproducible QuantResearch study and Chinese report."
 
 policy:
   allow_implicit_invocation: true
