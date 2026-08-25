@@ -11,18 +11,21 @@
 
 ## 指纹与暂停
 
-主研究在确认真故障后立即暂停，不创建或重跑正式回测。采集一个稳定 fingerprint：
+主研究在确认真故障后立即暂停，不创建或重跑正式回测。fingerprint 以 canonical JSON 后的 SHA-256 定义，JSON 固定包含：
 
-- endpoint、完整 query、HTTP status、响应摘要/异常；
-- 产品/合约或标的、字段、频率、adjustment、时间范围和时区；
-- dataset/catalog/calendar/version、PIT/time semantics、排序/重复/截断统计；
-- Strategy Package ID/revision/hash、canonical request、run/attempt（如已有）与 coverage/fingerprint。
+- `base_url`、HTTP `method`、`path`、按 key/value 排序后的 `query`；
+- 排序后的目标 `universe` 与 `fields`、`frequency`、`adjustment`、`start`、`end`；
+- `dataset_version`、`catalog_version`、`calendar_version`、`error_class` 与 HTTP `status`。
+
+对象 key 使用稳定排序，集合元素按稳定键排序，再以 UTF-8 canonical JSON 序列化并计算 SHA-256。排除时间戳、堆栈、易变 error message、请求 ID 与其他非确定性字段。另保存诊断证据：响应摘要/异常、PIT/time semantics、排序/重复/截断统计、Strategy Package ID/revision/hash、canonical request、run/attempt（如已有）和 coverage。
+
+将 fingerprint 写入主 task 状态/研究 working evidence，并写入 repair task 标题或首条 prompt，作为跨 task 去重键。没有 Workspace run 时不得为了保存 fingerprint 创建伪 run、attempt 或 research record。
 
 生产查询只允许 `http://yosef-server:8803`；禁止 `localhost`、环回/本机地址、其他 host fallback。禁止缩短区间、删目标品种、使用本机数据/fixture/旧快照/旧指标，或重复启动相同 run。
 
 ## 创建或复用可见 task
 
-用户已明确授权这种数据 blocker 创建独立、用户可见的 MarketHub 修复 task/thread。
+用户已明确给出未来 MarketHub data blocker 的 standing authorization；它满足创建独立、用户可见 MarketHub 修复 task/thread 的显式 `create_thread` 授权条件，不需要逐次重复询问。该授权不覆盖凭据、数据许可、破坏性生产操作或研究范围变更。
 
 1. 若 thread 工具可用，先 `list_threads`，按 fingerprint 查找 active MarketHub 修复 task。
 2. 命中同 fingerprint 时复用该 task，以 `send_message_to_thread` 追加主研究身份与新证据；不要创建重复 task。
@@ -45,10 +48,11 @@
 
 ## 回到主研究
 
-主研究收到结果后独立重跑完全相同的 preflight。若仍失败，向原修复 task 发送新证据，不新建重复 task。通过后：
+主研究收到结果后独立重跑完全相同的 preflight。若仍失败，向原修复 task 发送新证据，不新建重复 task。通过后严格区分：
 
-- package revision、contract 和请求身份不变时，可显式 Workspace retry 创建新 attempt；
-- dataset/catalog/calendar/query/config identity 任一变化时，创建新 snapshot 和新的 canonical request/run；
+- preflight 失败且从未创建 run/attempt：提交第一个 canonical request/run，不能称为 retry；
+- 已有 failed attempt 且 dataset/catalog/calendar/query/config/package identity 全部不变：可显式 Workspace retry 创建新 attempt；
+- dataset/catalog/calendar/query/config/package identity 任一变化：创建新 snapshot 和新的 canonical request/run；
 - 修复 task 的成果纳入研究 evidence；必要时归档该 task。
 
 报告只呈现最终数据口径、完整性、限制和对结论的影响；endpoint 错误、修复日志和部署过程属于内部 evidence。
