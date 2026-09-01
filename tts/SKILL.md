@@ -1,6 +1,6 @@
 ---
 name: tts
-description: Prepare Chinese prose for natural text-to-speech, synthesize long-form neural audio, and verify pronunciation, pauses, numbers, symbols, resumability, and output integrity. Use for TTS, article narration, audiobook-style conversion, or improving mechanical Chinese speech; do not use for transcribing existing recordings.
+description: Prepare Chinese prose for natural text-to-speech, synthesize long-form neural audio, and verify pronunciation, pauses, numbers, symbols, resumability, and output integrity. Use for TTS, article narration, audiobook-style conversion, improving mechanical Chinese speech, or requests to narrate with the user's own voice such as “我的声音”“我的音色”; do not use for transcribing existing recordings.
 ---
 
 # Natural Chinese TTS
@@ -12,6 +12,10 @@ Produce listenable Chinese narration, not a literal character stream. Preserve t
 - For a short passage, prepare the spoken text, synthesize it, and listen-check the difficult sentences.
 - For a long article or corpus, run preparation and audit first, generate a representative sample, then synthesize in resumable batches.
 - For transcription of existing recordings, use the ASR skill instead.
+
+## Route the user's own voice
+
+When the user says “我的声音”, “我的音色”, or otherwise explicitly requests their cloned voice, read [Personal voice route](references/personal-voice-route.md) completely and use `scripts/synthesize-my-voice.ps1`. Treat the user-approved `C_late` checkpoint and `energetic` style as the default voice identity. Keep the sample gate for pronunciation and prosody on long or difficult material; the approved checkpoint does not require another identity comparison unless the user asks for one.
 
 ## Keep two text layers
 

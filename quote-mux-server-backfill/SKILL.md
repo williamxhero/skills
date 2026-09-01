@@ -10,6 +10,7 @@ Repair confirmed data gaps in the live QuoteMux facts on `yosef-server`. Treat a
 ## Non-negotiable rules
 
 - Use the `yosef-server` skill first. Verify the live service and deployment layout before acting; do not assume an old path, schema, release, or data version.
+- 补数期间默认保持 `markethub-api.service` 可用。不得为方便起见停止、重启或部署服务；优先采用不中断服务的只读探针、分批写入和在线校验。确有必要停服时，缩短中断窗口，在命令的 `trap`/`finally` 恢复路径中立即启动服务；恢复后必须同时确认 `systemctl is-active`、`/api/health`、active release 和 data version，才能继续写入或报告完成。
 - Use real source-native data only. Never invent OHLC, `amount`, `volume`, minute bars, money flow, price bands, or memberships; do not distribute a daily value across minutes.
 - Preserve existing correct data. Prefer narrowly scoped, idempotent upserts for missing keys/fields. Do not delete or replace a whole date without a verified complete replacement and explicit authority.
 - Keep source lineage: provider/source name, request range, target data version, artifact hash, field mapping, row count, and before/after coverage.
@@ -48,6 +49,22 @@ For any provider candidate, first run a read-only probe for one target day and r
 Build targets from the effective `ref.concept_stock_membership` interval for each audited day, intersected with stock listed/delisted eligibility, not from an "active stocks" or positive-turnover universe. A broad daily money-flow backfill can succeed while still missing suspended or low-liquidity concept members. Keep delisted-before-date or not-yet-listed members out of dependency blockers unless the governing contract explicitly includes them.
 
 ## 3. Select and run the remediation route
+
+### Source discovery is not provider-limited
+
+Do not stop at Tushare, SuperMind, or providers already installed locally. For each exact residual, enumerate credible alternatives appropriate to the required fact: licensed research data, authenticated research platforms, exchange or vendor historical downloads, provider-native web archives, and preserved historical captures. Probe one representative exact key per source before a bounded batch, and record availability, identifiers, raw fields, units, trading-time grid, access condition, and source timestamp.
+
+An alternative closes a gap only when it satisfies the existing fact contract. A source that lacks `amount`, a dated identity, or a historical capture/publication time does not close the corresponding fact. For strict PIT membership, prioritize archival datasets that carry capture/publication time or immutable historical snapshots; a current query with a historical effective date is not a substitute. Keep source selection narrow and evidence-led. Do not bulk scrape, create an account, or purchase a subscription without user authorization.
+
+### Local free-stockdb candidate
+
+Treat a user-provided local `free-stockdb` release as an additional candidate for stock daily or minute recovery, not as an automatically trusted provider. Use it only in an isolated local staging directory: verify any published release checksum, retain the release URL/version and synced-data timestamp or manifest when available, and never point its updater or writable database at MarketHub facts. Start its query service with an isolated configuration if the bundled default port conflicts locally; do not alter production networking or reserved-port policy to accommodate it.
+
+Before accepting any free-stockdb output, probe an exact target key and retain the raw response. Confirm historical date coverage, market/code identity (especially edge markets), raw OHLCV plus `amount`, units, and the exact 240 timestamp contract. Its raw grid may contain non-contract timestamps; select only source-native rows that exactly match the declared 240-slot MarketHub grid, never synthesize or forward-fill a missing slot. A successful current-date A-share query does not prove historical or B-share coverage. Cross-check a representative overlapping A-share day against an independent credible source before a bounded import, and preserve the release/artifact hashes and query evidence in lineage.
+
+### Instrument scope
+
+When the governing remediation scope says to provide A-share data only, exclude B shares from target generation, completeness counts, and backfill attempts: SHSE `900xxx` and SZSE `200xxx`. Preserve any already stored B-share facts unless separate explicit deletion authority is given. Beijing Stock Exchange securities are not Shanghai/Shenzhen B shares and remain in scope unless the user narrows the universe further.
 
 ### Existing QuoteMux/provider route
 
@@ -122,4 +139,4 @@ If a target cannot be filled, leave the gate fail-closed and hand off: failed pr
 
 ## Required completion report
 
-State the live release and data version, remediation ID, sources used, target dates/keys, artifacts and hashes, imported row counts, before/after audit counts, readiness result, health result, and exact remaining blockers. Distinguish sampled from exhaustive checks and a source/provider block from a data-quality block. If `readiness=false`, say that the run partially repaired the audited gaps and list the real residual blockers; never claim the dataset or requested window is fully backfilled.
+State the live release and data version, remediation ID, sources used, target dates/keys, artifacts and hashes, imported row counts, before/after audit counts, readiness result, health result, and exact remaining blockers. Also state whether MarketHub remained continuously available; if it did not, give the reason, outage window, and recovery-validation evidence. Distinguish sampled from exhaustive checks and a source/provider block from a data-quality block. If `readiness=false`, say that the run partially repaired the audited gaps and list the real residual blockers; never claim the dataset or requested window is fully backfilled.

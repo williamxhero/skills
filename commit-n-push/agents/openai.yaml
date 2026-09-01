@@ -1,0 +1,4 @@
+interface:
+  display_name: "commit_n_push"
+  short_description: "Commit and push a project and its nested Git repositories"
+  default_prompt: "Use $commit-n-push to commit all current changes in this project and its nested Git repositories, then push repositories that have remotes."

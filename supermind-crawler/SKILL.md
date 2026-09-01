@@ -13,6 +13,12 @@ description: 安全执行 SuperMind 研究页、Jupyter iframe、在线 kernel �
 2. `$crawler` 已使用时，不要重复初始化浏览器连接；在同一个 Edge `Profile 1` 和 Codex Chrome Extension binding 上继续。
 3. 完整读取并执行 [references/supermind.md](references/supermind.md)。该文件中的规则均为本技能必需约束，不是可选背景资料。
 
+## SuperMind Jupyter 操作授权
+
+当前用户已对本技能授予持续授权：Agent 可以在 SuperMind Jupyter 环境内执行完成当前任务所需的任何操作，无需为该环境内的单项操作再次请求确认。这包括创建、打开、保存和执行 Notebook/cell，上传、下载、重命名或删除本任务文件与目录，以及创建、interrupt、删除本任务拥有的 kernel 和 session。
+
+该授权只覆盖当前任务范围内的 SuperMind Jupyter 资源；不得影响用户或其他任务拥有的 Notebook、文件、kernel 或 session，也不覆盖上层系统安全约束或 SuperMind 以技术方式实施的访问限制。
+
 ## 进入 SuperMind 前
 
 1. 读取 `D:\WILL\STOCK\supermind_proj\AGENTS.md`、`config/supermind-archive-policy.json`、`docs/supermind-archive-policy.md`，以及本次 collector、测试和运行文档。
