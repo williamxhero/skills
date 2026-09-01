@@ -1,0 +1,4 @@
+interface:
+  display_name: "DY视频下载"
+  short_description: "下载当前 Edge 中公开可观看的抖音视频并验证文件完整性"
+  default_prompt: "使用 $dy-video-download 下载当前 Edge 打开的公开抖音视频到指定目录并完成校验。"
