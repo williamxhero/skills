@@ -15,7 +15,7 @@ Produce listenable Chinese narration, not a literal character stream. Preserve t
 
 ## Route the user's own voice
 
-When the user says “我的声音”, “我的音色”, or otherwise explicitly requests their cloned voice, read [Personal voice route](references/personal-voice-route.md) completely and use `scripts/synthesize-my-voice.ps1`. Treat the user-approved `C_late` checkpoint and `energetic` style as the default voice identity. Keep the sample gate for pronunciation and prosody on long or difficult material; the approved checkpoint does not require another identity comparison unless the user asks for one.
+When the user says “我的声音”, “我的音色”, or otherwise explicitly requests their cloned voice, read [Personal voice route](references/personal-voice-route.md) completely and use `scripts/synthesize-my-voice.ps1`. Treat the user-approved `r2_A_early` checkpoint and `identity` style as the default voice identity. Keep the sample gate for pronunciation and prosody on long or difficult material; the approved checkpoint does not require another identity comparison unless the user asks for one.
 
 ## Keep two text layers
 

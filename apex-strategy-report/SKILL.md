@@ -1,6 +1,6 @@
 ---
 name: apex-strategy-report
-description: "Turn a strategy article, document, chat record, or legacy evidence into a reproducible Chinese QuantResearch study: canonical Strategy Package, MarketHub-backed Qlib/Nautilus research, Apex Research evidence, and deterministic StrategyReporting HTML. Use for strategy research, migration, backtests, attribution, robustness, or research reports; pause and open a visible MarketHub repair task when live data fails."
+description: "Turn a strategy article, document, chat record, or legacy evidence into a reproducible Chinese QuantResearch study: canonical Strategy Package, MarketHub-backed Qlib/Nautilus research, Apex Research evidence, deterministic StrategyReporting HTML, and an independent evidence-backed research-process lessons Markdown. Use for strategy research, migration, backtests, attribution, robustness, or research reports; pause and open a visible MarketHub repair task when live data fails."
 ---
 
 # QuantResearch 策略研究报告
@@ -8,6 +8,8 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 将来源资料变成可验证的 QuantResearch 研究交付，而不是复述文章或手工制作网页。正式链路是：
 
 `source/legacy evidence → strategy-workspace → quant-runtime → apex-research → strategy-reporting`
+
+同步维护独立的 `research-process lessons` 文本，使本次研究中经验证的避坑、提效和质量改进可以被后续研究直接复用。
 
 `D:\WILL\STOCK\QuantResearch` 是默认工程根。读取目标仓库的 `AGENTS.md`、CLI/README、现有 immutable package/run/study/report 后再行动；优先复用相同身份的已发布对象，避免重复运行。
 
@@ -24,6 +26,7 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 - 冻结来源、建立规格、解释正式结果或 legacy 差异：阅读 [证据与研究边界](references/quantresearch-evidence.md)。
 - 渲染或评审面向人的网页：阅读 [StrategyReporting 合同](references/strategy-reporting-contract.md)。
 - 判断哪些研究能力可展示：阅读 [研究能力与展示](references/full-research-capabilities.md)。
+- 每次研究都阅读并执行 [研究过程经验合同](references/research-process-lessons.md)，同步产出独立经验总结。
 
 ## Canonical ownership
 
@@ -60,6 +63,14 @@ description: "Turn a strategy article, document, chat record, or legacy evidence
 4. 缺失的决定性语义列为不可复现项。若无法构成可执行规格，交付 `research_design`，不得启动形式化回测或填补绩效。
 
 对 legacy 迁移，逐项核对报告、配置、代码和产物；先找目标/最高收益候选的精确证据，再命名 Package。来源指标只写作对照证据，不硬编码为新结果。
+
+## 同步维护研究过程经验
+
+按上述研究过程经验合同，在研究身份冻结后确定唯一经验文件；恢复中断研究时先查找并复用该文件。文件必须独立于 Strategy Package、正式报告和生成式 portal，并遵守目标工程的 `AGENTS.md` 与文档分类规则。
+
+在每个阶段结束及每次实质故障、修复、重试或性能优化完成时，当场筛选并写入经验证的 lesson；覆盖身份/规格、数据门、Runtime、Research schema、Reporting、长任务监督和发布纪律。以 artifact、日志、测试、计时、diff 或公共对象作为证据，不依赖任务结束时回忆聊天流水。
+
+只保留能改变后续研究行动的可迁移经验。每条 lesson 必须说明观察与证据、根因或机制、可复用规则、下次操作、适用边界和可衡量影响；合并重复项，把未经证实的猜测留在候选区或明确排除。即使没有新增合格经验，也要在文件中记录已审查阶段及“无新增已验证 lesson”。
 
 ## Strategy Package
 
@@ -155,7 +166,9 @@ heartbeat 的持久化 prompt 至少固定：主研究目标和暂停点、被�
 
 提交按仓小而聚焦：检查 diff、精确暂存、检查 cached list、commit、正常 push（禁止 force push）。若没有 remote 或不具备 push 条件，明确说明而非声称已推送。
 
-最终交付包含：冻结来源/候选证据、Package ID 与 revision、拓扑和关键参数、MarketHub 和数据身份、run/attempt/artifact、研究 decision、报告入口、测试、legacy 差异、限制、commit 与 push 状态。链接只指向真实公开记录或最终报告，不暴露私有数据库路径。
+最终交付包含：冻结来源/候选证据、Package ID 与 revision、拓扑和关键参数、MarketHub 和数据身份、run/attempt/artifact、研究 decision、报告入口、独立研究过程经验文件、测试、legacy 差异、限制、commit 与 push 状态。链接只指向真实公开记录、最终报告或该经验文件，不暴露私有数据库路径。
+
+结束前验证经验文件存在且可读，逐条检查证据、复用规则与适用边界，并确认其没有退化为进度流水账。最终回复给出该文件的真实路径；缺少这一产物时，研究交付尚未完成。
 
 若任一正式环节没有完成，交付仍须明确标出停在哪一层、已经验证的非正式工作，以及恢复的唯一条件；不要把部分结构实现描述成已完成研究。
 
