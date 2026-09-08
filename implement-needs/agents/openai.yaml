@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement Needs"
+  short_description: "Autonomously route specs and blockers through tasks"
+  default_prompt: "Use $implement-needs to default-grill this requirement, deliver each scoped spec in its own task, repair every blocker in a difficulty-routed task, then build and deploy."
