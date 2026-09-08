@@ -1,0 +1,6 @@
+interface:
+  display_name: "过程创建SKILL"
+  short_description: "把已完成任务的成功、失败和最优流程沉淀为可复用技能"
+  default_prompt: "使用 $process-to-skill 将本次已完成任务的成功经验、失败修复和最优流程沉淀为指定名称的新技能。"
+policy:
+  allow_implicit_invocation: true
