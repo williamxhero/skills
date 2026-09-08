@@ -1,0 +1,7 @@
+interface:
+  display_name: "下载Chat"
+  short_description: "将当前 Edge 的 ChatGPT 对话完整导出为 Markdown 文件"
+  default_prompt: "使用 $download-chat 将当前 Edge 中打开的 ChatGPT 对话保存到指定 Markdown 路径。"
+
+policy:
+  allow_implicit_invocation: true
