@@ -262,6 +262,22 @@ def _supported_pair(
     return MODEL_CLASS_RANK[pair["model"]], EFFORT_RANK[pair["thinking"]]
 
 
+def _distinct_same_or_stronger_allowed(pair: dict[str, str] | None) -> bool:
+    if pair is None or MODEL_POLICY is None:
+        return False
+    pair_rank = MODEL_CLASS_RANK[pair["model"]], EFFORT_RANK[pair["thinking"]]
+    return any(
+        candidate != pair
+        and MODEL_CLASS_RANK[candidate["model"]] >= pair_rank[0]
+        and EFFORT_RANK[candidate["thinking"]] >= pair_rank[1]
+        for candidate in (
+            {"model": model, "thinking": thinking}
+            for model in MODEL_POLICY["models"]
+            for thinking in MODEL_POLICY["efforts"]
+        )
+    )
+
+
 def _route(
     value: Any,
     path: str,
@@ -296,12 +312,14 @@ def _route(
             if fallback is None:
                 continue
             fallbacks.append(fallback)
-            if fallback == recommended:
+            if fallback == recommended and _distinct_same_or_stronger_allowed(
+                recommended
+            ):
                 issues.append(
                     _issue(
                         "fallback_duplicates_recommendation",
                         fallback_path,
-                        "Fallback must be an alternative pair.",
+                        "Fallback must be distinct while another same-or-stronger allowed pair exists.",
                     )
                 )
             if (
@@ -427,7 +445,7 @@ def _planning_task(
     elif scope == "broad_or_ambiguous":
         _floor(
             route,
-            "gpt-5.6-luna",
+            "gpt-5.6-sol",
             "xhigh",
             "$.planning_task.route",
             capabilities,
@@ -1450,6 +1468,10 @@ def evaluate_route(
         return payload, 1
     assert isinstance(record, dict) and isinstance(readback, dict)
     assert record_raw is not None and readback_raw is not None
+    if target == "planning":
+        route = record["planning_task"]["route"]
+    else:
+        route = next(spec["route"] for spec in record["specs"] if spec["id"] == target)
     payload = {
         "schema_version": 1,
         "decision": "allow",
@@ -1459,6 +1481,10 @@ def evaluate_route(
         "task_id": readback["task_id"],
         "selection": readback["selection"],
         "applied": readback["applied"],
+        "locked_route": {
+            "recommended": route["recommended"],
+            "fallbacks": route["fallbacks"],
+        },
         "planning_record_sha256": _sha256(record_raw),
         "route_readback_sha256": _sha256(readback_raw),
     }

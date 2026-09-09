@@ -42,8 +42,6 @@ def load_policy() -> tuple[dict[str, Any] | None, str | None]:
         or len(set(efforts)) != len(efforts)
         or set(model_rank) != set(models)
         or set(effort_rank) != set(efforts)
-        or sorted(model_rank.values()) != list(range(len(models)))
-        or sorted(effort_rank.values()) != list(range(len(efforts)))
         or any(
             isinstance(rank, bool) or not isinstance(rank, int)
             for rank in model_rank.values()
@@ -52,6 +50,8 @@ def load_policy() -> tuple[dict[str, Any] | None, str | None]:
             isinstance(rank, bool) or not isinstance(rank, int)
             for rank in effort_rank.values()
         )
+        or sorted(model_rank.values()) != list(range(len(models)))
+        or sorted(effort_rank.values()) != list(range(len(efforts)))
     ):
         return None, "invalid_values"
     return value, None

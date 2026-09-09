@@ -52,6 +52,7 @@ DATA_FIELDS = {
         "checkpoints",
         "default_branch",
         "default_revision",
+        "planning_record_sha256",
     },
     "spec_dispatched": {
         "task_id",
@@ -60,7 +61,7 @@ DATA_FIELDS = {
         "route_selection",
         "model",
         "thinking",
-        "route_evidence",
+        "route_receipt",
     },
     "commentary": {"category", "text", "next_action"},
     "waited": {"task_id"},
@@ -114,7 +115,7 @@ DATA_FIELDS = {
     },
     "blocked_action_resumed": {"repair_task_id", "parent_task_id", "action"},
     "controller_resumed": {"persisted_next_action", "observed_task_ids"},
-    "child_reconnected": {"task_id"},
+    "child_reconnected": {"task_id", "route_receipt"},
     "stored_action_resumed": {"action"},
     "release_candidate_frozen": {"revision"},
     "artifact_built": {"revision", "artifact_id"},
@@ -172,6 +173,7 @@ ROLE_LIMITED_ROLES = {
     "read_only_review",
 }
 CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 REPAIR_LOG_ACTION = {
     "kind": "repair_state",
@@ -227,6 +229,229 @@ def _decision_hash(payload: dict[str, Any]) -> str:
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return _sha256(canonical)
+
+
+def _policy_pair(value: Any) -> dict[str, str] | None:
+    if (
+        MODEL_POLICY is None
+        or not isinstance(value, dict)
+        or set(value) != {"model", "thinking"}
+        or value.get("model") not in MODEL_POLICY["models"]
+        or value.get("thinking") not in MODEL_POLICY["efforts"]
+    ):
+        return None
+    return {"model": value["model"], "thinking": value["thinking"]}
+
+
+def _same_or_stronger(candidate: dict[str, str], baseline: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return (
+        MODEL_POLICY["model_rank"][candidate["model"]]
+        >= MODEL_POLICY["model_rank"][baseline["model"]]
+        and MODEL_POLICY["effort_rank"][candidate["thinking"]]
+        >= MODEL_POLICY["effort_rank"][baseline["thinking"]]
+    )
+
+
+def _distinct_same_or_stronger_allowed(pair: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return any(
+        candidate != pair and _same_or_stronger(candidate, pair)
+        for candidate in (
+            {"model": model, "thinking": thinking}
+            for model in MODEL_POLICY["models"]
+            for thinking in MODEL_POLICY["efforts"]
+        )
+    )
+
+
+def _route_receipt_issues(
+    value: Any,
+    path: str,
+    *,
+    run_id: str,
+    target: str,
+    task_id: str,
+    selection: Any,
+    model: Any,
+    thinking: Any,
+    planning_record_sha256: str | None,
+) -> list[dict[str, str]]:
+    expected_fields = {
+        "schema_version",
+        "decision",
+        "gate",
+        "run_id",
+        "target",
+        "task_id",
+        "selection",
+        "applied",
+        "locked_route",
+        "planning_record_sha256",
+        "route_readback_sha256",
+        "receipt_sha256",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        return [
+            _issue(
+                "invalid_route_receipt",
+                path,
+                "Route receipt must be the exact task_route allow receipt.",
+            )
+        ]
+
+    issues: list[dict[str, str]] = []
+    for field, expected in (
+        ("schema_version", 1),
+        ("decision", "allow"),
+        ("gate", "task_route"),
+        ("run_id", run_id),
+        ("target", target),
+        ("task_id", task_id),
+        ("selection", selection),
+    ):
+        if value.get(field) != expected:
+            issues.append(
+                _issue(
+                    f"route_receipt_{field}_mismatch",
+                    f"{path}.{field}",
+                    f"Route receipt {field} must match the dispatch identity.",
+                )
+            )
+
+    applied = _policy_pair(value.get("applied"))
+    event_pair = _policy_pair({"model": model, "thinking": thinking})
+    if applied is None:
+        issues.append(
+            _issue(
+                "invalid_route_receipt_pair",
+                f"{path}.applied",
+                "Route receipt pair must be allowed by the model policy.",
+            )
+        )
+    elif event_pair is None or applied != event_pair:
+        issues.append(
+            _issue(
+                "route_receipt_pair_mismatch",
+                f"{path}.applied",
+                "Route receipt pair must equal the persisted dispatch pair.",
+            )
+        )
+
+    locked = value.get("locked_route")
+    recommended: dict[str, str] | None = None
+    fallbacks: list[dict[str, str]] = []
+    if (
+        not isinstance(locked, dict)
+        or set(locked) != {"recommended", "fallbacks"}
+        or not isinstance(locked.get("fallbacks"), list)
+        or not locked["fallbacks"]
+    ):
+        issues.append(
+            _issue(
+                "invalid_locked_route",
+                f"{path}.locked_route",
+                "Receipt must retain one recommendation and at least one fallback.",
+            )
+        )
+    else:
+        recommended = _policy_pair(locked.get("recommended"))
+        parsed_fallbacks = [_policy_pair(item) for item in locked["fallbacks"]]
+        if recommended is None or any(item is None for item in parsed_fallbacks):
+            issues.append(
+                _issue(
+                    "invalid_locked_route",
+                    f"{path}.locked_route",
+                    "Every locked route pair must be allowed by the model policy.",
+                )
+            )
+        else:
+            fallbacks = [item for item in parsed_fallbacks if item is not None]
+            encoded = [json.dumps(item, sort_keys=True) for item in fallbacks]
+            if len(encoded) != len(set(encoded)):
+                issues.append(
+                    _issue(
+                        "duplicate_locked_fallback",
+                        f"{path}.locked_route.fallbacks",
+                        "Locked fallback pairs must be unique.",
+                    )
+                )
+            for index, fallback in enumerate(fallbacks):
+                fallback_path = f"{path}.locked_route.fallbacks[{index}]"
+                if not _same_or_stronger(fallback, recommended):
+                    issues.append(
+                        _issue(
+                            "locked_fallback_weaker",
+                            fallback_path,
+                            "Locked fallback must be same-or-stronger than the recommendation.",
+                        )
+                    )
+                if fallback == recommended and _distinct_same_or_stronger_allowed(
+                    recommended
+                ):
+                    issues.append(
+                        _issue(
+                            "locked_fallback_not_distinct",
+                            fallback_path,
+                            "Same-pair fallback is valid only at the maximum allowed route.",
+                        )
+                    )
+
+    if applied is not None and recommended is not None:
+        if selection == "recommended" and applied != recommended:
+            issues.append(
+                _issue(
+                    "route_not_locked_recommendation",
+                    f"{path}.applied",
+                    "Recommended dispatch must use the exact locked recommendation.",
+                )
+            )
+        elif selection == "fallback" and applied not in fallbacks:
+            issues.append(
+                _issue(
+                    "route_not_preapproved_fallback",
+                    f"{path}.applied",
+                    "Fallback dispatch must use an exact preapproved fallback.",
+                )
+            )
+
+    for field in (
+        "planning_record_sha256",
+        "route_readback_sha256",
+        "receipt_sha256",
+    ):
+        if (
+            not isinstance(value.get(field), str)
+            or SHA256_RE.fullmatch(value[field]) is None
+        ):
+            issues.append(
+                _issue(
+                    "invalid_route_receipt_hash",
+                    f"{path}.{field}",
+                    "Route receipt hashes must be lowercase SHA-256 values.",
+                )
+            )
+    if value.get("planning_record_sha256") != planning_record_sha256:
+        issues.append(
+            _issue(
+                "route_receipt_planning_mismatch",
+                f"{path}.planning_record_sha256",
+                "Route receipt must bind the archived planning record.",
+            )
+        )
+    receipt_body = dict(value)
+    receipt_sha256 = receipt_body.pop("receipt_sha256")
+    if _decision_hash(receipt_body) != receipt_sha256:
+        issues.append(
+            _issue(
+                "route_receipt_hash_mismatch",
+                f"{path}.receipt_sha256",
+                "Route receipt identity does not match its canonical content.",
+            )
+        )
+    return _sorted(issues)
 
 
 def _text(value: Any) -> bool:
@@ -487,6 +712,7 @@ class _Replay:
         self.pending_specs: list[str] = []
         self.default_branch: str | None = None
         self.default_revision: str | None = None
+        self.planning_record_sha256: str | None = None
         self.checkpoint_size = CHECKPOINT_SIZE
         self.checkpoints: list[dict[str, Any]] = []
         self.checkpoint_state: dict[str, dict[str, Any]] = {}
@@ -774,6 +1000,16 @@ class _Replay:
                 "Planning task, branch, and revision are required.",
             )
             return
+        planning_record_sha256 = data.get("planning_record_sha256")
+        if (
+            not isinstance(planning_record_sha256, str)
+            or SHA256_RE.fullmatch(planning_record_sha256) is None
+        ):
+            self.add(
+                "invalid_planning_record_identity",
+                f"{path}.data.planning_record_sha256",
+                "Planning lifecycle must retain the validated planning-record SHA-256.",
+            )
         specs = data.get("specs")
         if not isinstance(specs, list) or not specs:
             self.add(
@@ -893,7 +1129,7 @@ class _Replay:
                 "route_selection": None,
                 "model": None,
                 "thinking": None,
-                "route_evidence": [],
+                "route_receipt": None,
                 "owners": list(spec["owners"]),
                 "repositories": list(spec["repositories"]),
                 "ticket_order": [ticket["id"] for ticket in spec["tickets"]],
@@ -922,6 +1158,7 @@ class _Replay:
         )
         self.default_branch = data["default_branch"]
         self.default_revision = data["default_revision"]
+        self.planning_record_sha256 = planning_record_sha256
 
     def on_spec_dispatched(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -935,13 +1172,11 @@ class _Replay:
                 "Dispatch requires task, SPEC, and base revision.",
             )
             return
-        if data.get("route_selection") not in ROUTE_SELECTIONS or not _string_list(
-            data.get("route_evidence"), nonempty=True
-        ):
+        if data.get("route_selection") not in ROUTE_SELECTIONS:
             self.add(
                 "invalid_spec_route",
                 path,
-                "Dispatch must record the validated SPEC route selection and evidence.",
+                "Dispatch must record the validated SPEC route selection.",
             )
         if not _allowed_pair(data.get("model"), data.get("thinking")):
             self.add(
@@ -949,6 +1184,19 @@ class _Replay:
                 path,
                 "Dispatch model and effort must be allowed by the Implement Needs policy.",
             )
+        self.issues.extend(
+            _route_receipt_issues(
+                data.get("route_receipt"),
+                f"{path}.data.route_receipt",
+                run_id=self.run_id,
+                target=data["spec_id"],
+                task_id=data["task_id"],
+                selection=data.get("route_selection"),
+                model=data.get("model"),
+                thinking=data.get("thinking"),
+                planning_record_sha256=self.planning_record_sha256,
+            )
+        )
         if not self.pending_specs or data["spec_id"] != self.pending_specs[0]:
             self.add(
                 "spec_order",
@@ -1010,7 +1258,7 @@ class _Replay:
         status["route_selection"] = data.get("route_selection")
         status["model"] = data.get("model")
         status["thinking"] = data.get("thinking")
-        status["route_evidence"] = list(data.get("route_evidence") or [])
+        status["route_receipt"] = data.get("route_receipt")
         for ticket in status["tickets"].values():
             ticket["owner_task_id"] = task_id
 
@@ -1496,6 +1744,35 @@ class _Replay:
                 "Reconnect must name one recorded unarchived child exactly once.",
             )
             return
+        task = self.tasks[task_id]
+        route_receipt = data.get("route_receipt")
+        if task["kind"] == "spec":
+            status = self.spec_state[task["spec_id"]]
+            if route_receipt != status["route_receipt"]:
+                self.add(
+                    "recovery_route_mismatch",
+                    f"{path}.data.route_receipt",
+                    "Recovery must retain the exact persisted SPEC route receipt.",
+                )
+            self.issues.extend(
+                _route_receipt_issues(
+                    route_receipt,
+                    f"{path}.data.route_receipt",
+                    run_id=self.run_id,
+                    target=task["spec_id"],
+                    task_id=task_id,
+                    selection=status["route_selection"],
+                    model=status["model"],
+                    thinking=status["thinking"],
+                    planning_record_sha256=self.planning_record_sha256,
+                )
+            )
+        elif route_receipt is not None:
+            self.add(
+                "unexpected_recovery_route",
+                f"{path}.data.route_receipt",
+                "Only SPEC children may carry a persisted route receipt.",
+            )
         self.recovery["remaining"].remove(task_id)
 
     def on_stored_action_resumed(
@@ -2062,7 +2339,7 @@ class _Replay:
                         "selection": status["route_selection"] or "recommended",
                         "model": status["model"],
                         "thinking": status["thinking"],
-                        "evidence": list(status["route_evidence"]),
+                        "receipt": status["route_receipt"],
                     },
                     "tickets": tickets,
                 }

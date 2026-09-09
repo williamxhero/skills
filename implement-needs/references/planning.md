@@ -6,7 +6,7 @@ Read this reference when the controller enters planning. The Controller Kernel r
 
 The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
 
-Before creation, capture the target host's advertised combinations from the sole allow-list in `model-policy.json`. Create `.scratch/<initiative>/planning-record.json` with that capability evidence and a planning route. Bounded planning requires at least `gpt-5.6-terra` + `xhigh`; broad, cross-repository, migration-heavy, or unusually ambiguous planning requires `gpt-5.6-sol` + `xhigh`. Every route contains one supported recommendation, rationale, and at least one supported fallback that is same-or-stronger on the deterministic policy ranks.
+Before creation, capture the target host's advertised combinations from the sole allow-list in `model-policy.json`. Create `.scratch/<initiative>/planning-record.json` with that capability evidence and a planning route. Bounded planning requires at least `gpt-5.6-terra` + `xhigh`; broad, cross-repository, migration-heavy, or unusually ambiguous planning requires exactly the maximum `gpt-5.6-sol` + `xhigh` pair. Every route contains one supported recommendation, rationale, and at least one supported fallback that is same-or-stronger on the deterministic policy ranks. A fallback must be distinct whenever another same-or-stronger allowed pair exists; because `gpt-5.6-sol` + `xhigh` has no such alternative, that maximum route may repeat itself as its fallback.
 
 Create exactly one fresh saved-project task titled `Implement Needs Plan: <initiative>` with the selected `model` and `thinking`. Its bootstrap prompt permits no exploration, publication, or repository mutation until the controller sends `ROUTE_VERIFIED`. Capture the applied settings from the creation result and a fresh task readback in `.scratch/<initiative>/planning-route-readback.json`, then run:
 
@@ -14,7 +14,7 @@ Create exactly one fresh saved-project task titled `Implement Needs Plan: <initi
 python <implement-needs>/scripts/validate_planning.py route --record .scratch/<initiative>/planning-record.json --readback .scratch/<initiative>/planning-route-readback.json --expected-run-id <run-id> --target planning --expected-task-id <created-task-id> --receipt .scratch/<initiative>/planning-route-receipt.json
 ```
 
-Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. A rejection returns a canonical `repair` next action and keeps the same task at bootstrap. Select only a fallback already locked in the record, state why it replaced the recommendation, and capture a fresh readback; an applied pair different from the explicit request is silent drift and cannot begin planning. Unavailable readback is a blocker, not evidence of the requested route.
+Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. Retain the complete route receipt: it binds the exact locked recommendation and fallbacks, selected pair, task owner, planning-record hash, readback hash, and canonical receipt identity. A rejection returns a canonical `repair` next action and keeps the same task at bootstrap. Select only a fallback already locked in the record, state why it replaced the recommendation, and capture a fresh readback; an applied pair different from the explicit request is silent drift and cannot begin planning. Unavailable readback is a blocker, not evidence of the requested route.
 
 ## Run the delegated Grill
 
@@ -74,6 +74,8 @@ route_readback = {schema_version,run_id,task_id,target,requested,applied,
 ```
 
 Use `selection: recommended` with `substitution_reason: null`, or `selection: fallback` with a non-empty reason.
+
+An allowed route decision adds `locked_route:{recommended,fallbacks}` and `receipt_sha256` to its receipt. Persist that complete receipt in the lifecycle dispatch and controller-state ownership ledger; an allow-listed pair or free-form evidence pointer without the matching receipt is not dispatch authority.
 
 For SPEC route readback, `task_id` is the one SPEC implementation owner recorded in `implementation_ownership`. A fallback readback is accepted only for that same task ID; a second task is duplicate ownership, not escalation.
 

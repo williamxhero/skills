@@ -609,6 +609,45 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual("recommended", payload["selection"])
         self.assertEqual(self.pair("gpt-5.6-terra", "xhigh"), payload["applied"])
+        self.assertEqual(
+            {
+                "recommended": self.pair("gpt-5.6-terra", "xhigh"),
+                "fallbacks": [self.pair("gpt-5.6-sol", "xhigh")],
+            },
+            payload["locked_route"],
+        )
+
+    def test_broad_scope_requires_exact_maximum_planning_floor(self) -> None:
+        record = self.record()
+        record["scope"] = "broad_or_ambiguous"
+        record["planning_task"]["route"] = self.route(
+            self.pair("gpt-5.6-terra", "xhigh"),
+            self.pair("gpt-5.6-sol", "xhigh"),
+        )
+        payload, code = self.handoff(record)
+        self.assertEqual(1, code)
+        self.assertIn("route_below_floor", self.codes(payload))
+
+        record["planning_task"]["route"] = self.route(
+            self.pair("gpt-5.6-sol", "xhigh"),
+            self.pair("gpt-5.6-sol", "xhigh"),
+        )
+        payload, code = self.handoff(
+            record,
+            readback=self.readback(requested=self.pair("gpt-5.6-sol", "xhigh")),
+        )
+        self.assertEqual(0, code)
+        self.assertEqual("allow", payload["decision"])
+
+    def test_same_pair_fallback_is_reserved_for_policy_ceiling(self) -> None:
+        record = self.record()
+        record["planning_task"]["route"] = self.route(
+            self.pair("gpt-5.6-terra", "xhigh"),
+            self.pair("gpt-5.6-terra", "xhigh"),
+        )
+        payload, code = self.handoff(record)
+        self.assertEqual(1, code)
+        self.assertIn("fallback_duplicates_recommendation", self.codes(payload))
 
     def test_recorded_fallback_requires_reason_and_is_allowed_without_drift(
         self,

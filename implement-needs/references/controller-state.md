@@ -13,6 +13,8 @@ Keep these files together under `.scratch/<initiative>/`:
 
 Generate `run_id` once and retain it across resumptions. Increment `state_revision` after each observed or performed controller action. After updating the delivery map and task-tree snapshot, hash their exact bytes with SHA-256 and store both lowercase digests in `freshness`. Write controller state last so a changed source makes the previous state deterministically stale.
 
+The lifecycle log begins with `planning_archived.data.planning_record_sha256`. Every `spec_dispatched` event carries the complete `route_receipt` emitted by the SPEC route gate, and every recovery `child_reconnected` event repeats that exact receipt for a SPEC child (`null` for non-SPEC children). Lifecycle replay validates the receipt's self-hash, planning-record identity, target, owner task, selection, applied pair, locked recommendation, and fallback rank before dispatch or recovery can continue.
+
 Normalize the task snapshot to exactly `run_id`, `tasks`, and `implementation_ownership`. Each `tasks` entry uses the same `id`, `kind`, `spec_id`, and `lifecycle` fields as `child_tasks`:
 
 ```json
@@ -32,7 +34,7 @@ Retain archived tasks. The validator requires the task-tree IDs and fields to ma
 | `active_phase` | `bootstrap`, `planning`, `implementation`, `testing`, `release`, `blocked`, `stopped`, or `complete`. |
 | `active_task_stack` | Ordered IDs on the current control path. Every queued, active, or paused child appears here. |
 | `child_tasks` | Every planning, SPEC, and repair child with kind, optional SPEC ID, and lifecycle. Never delete a completed child; retain it as `archived`. |
-| `implementation_ownership` | The single SPEC implementation ownership ledger. Each SPEC names exactly one implementation task, that task's route readback, every ticket owned by that task with blockers, commits, tests, and tracker state, empty ticket-level implementation artifact collections, and role-limited helper tasks. |
+| `implementation_ownership` | The single SPEC implementation ownership ledger. Each SPEC names exactly one implementation task, that task's complete validated route receipt, every ticket owned by that task with blockers, commits, tests, and tracker state, empty ticket-level implementation artifact collections, and role-limited helper tasks. |
 | `pending_specs` | Ordered SPEC IDs not yet verified merged. |
 | `unverified_handoffs` | Exact set of child IDs in `handoff_received`. |
 | `unarchived_tasks` | Exact set of child IDs whose lifecycle is not `archived`. |
@@ -51,7 +53,7 @@ Test status is `pending`, `running`, `passed`, or `blocked`. `test_state.l4_chec
 
 ## Implementation ownership
 
-`implementation_ownership.specs` records one entry per dispatched SPEC. `implementation_task_id` must equal the matching `child_tasks` SPEC task ID, and `route.task_id` must be that same task for both the locked recommendation and any approved fallback. A fallback is a route substitution inside the existing SPEC task; it never creates a replacement owner.
+`implementation_ownership.specs` records one entry per dispatched SPEC. `implementation_task_id` must equal the matching `child_tasks` SPEC task ID, and `route.task_id` plus `route.receipt.task_id` must be that same task for both the locked recommendation and any approved fallback. The complete self-hashed route receipt retains the planning-record identity, readback identity, exact locked recommendation and fallbacks, selection, and applied pair. The terminal validator rejects an arbitrary allow-listed pair, a weaker or unlocked fallback, a changed receipt, or free-form evidence in place of the receipt. A fallback is a route substitution inside the existing SPEC task; it never creates a replacement owner.
 
 Each ticket entry records the planned blocking edge, `owner_task_id`, retained commit evidence, retained test evidence, and tracker state. The owner is always the SPEC implementation task. Terminal success requires every ticket to be `closed` with non-empty commit and test evidence.
 
@@ -93,7 +95,23 @@ Any malformed field, inconsistent aggregate, task-tree mismatch, source-hash mis
           "selection": "recommended",
           "model": "gpt-5.6-terra",
           "thinking": "xhigh",
-          "evidence": ["receipt://SPEC-02-route"]
+          "receipt": {
+            "schema_version": 1,
+            "decision": "allow",
+            "gate": "task_route",
+            "run_id": "payments-v2-20260909",
+            "target": "SPEC-02",
+            "task_id": "thread-spec-02",
+            "selection": "recommended",
+            "applied": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+            "locked_route": {
+              "recommended": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+              "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}]
+            },
+            "planning_record_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "route_readback_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "receipt_sha256": "1d547b758ee115a1c52c3556fea6c5549175a80f9abebbddd62fd4e0a0a89e2b"
+          }
         },
         "tickets": [
           {

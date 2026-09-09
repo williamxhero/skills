@@ -25,7 +25,7 @@ Record an `owner` for every release event. SPEC children may emit only merge, te
 3. Run the final `test-release-train` gate against those exact revisions and artifacts. Reuse the last L4 checkpoint only when its candidate revision set exactly matches the frozen release candidate; otherwise rerun final L4 and record the new evidence. Reuse the artifacts and isolated environments for installed-artifact checks, deterministic replays, packaging, deployment, and smoke verification.
 4. Deploy through the configured non-interactive path to the designated default target. Reuse existing credentials and bindings; do not create or guess a target.
 5. Run configured smoke tests or the smallest representative user journey plus health checks. Confirm the deployed revision or artifact ID matches the tested artifact.
-6. Record train, release, deployment, and smoke evidence before refreshing controller state and invoking the terminal validator. The final evidence packet names completed SPECs, child IDs with applied model/effort, merge commits, artifacts, deployment target, and verification results.
+6. Record train, release, deployment, and smoke evidence before refreshing controller state and invoking the terminal validator. The final evidence packet names completed SPECs, child IDs with their exact persisted route receipts, merge commits, artifacts, deployment target, and verification results.
 
 When no deployment target exists by design, finish after the verified package and record deployment as `not_applicable` with evidence. When deployment is expected but its target or credentials are absent, complete safe preceding work and enter the blocker protocol.
 

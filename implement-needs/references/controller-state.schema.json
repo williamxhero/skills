@@ -248,14 +248,69 @@
     "specImplementationRoute": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["target", "task_id", "selection", "model", "thinking", "evidence"],
+      "required": ["target", "task_id", "selection", "model", "thinking", "receipt"],
       "properties": {
         "target": {"type": "string", "minLength": 1},
         "task_id": {"type": "string", "minLength": 1},
         "selection": {"enum": ["recommended", "fallback"]},
         "model": {"type": "string", "minLength": 1},
         "thinking": {"type": "string", "minLength": 1},
-        "evidence": {"$ref": "#/$defs/evidence"}
+        "receipt": {"$ref": "#/$defs/routeReceipt"}
+      }
+    },
+    "modelPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "thinking"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1},
+        "thinking": {"type": "string", "minLength": 1}
+      }
+    },
+    "lockedRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recommended", "fallbacks"],
+      "properties": {
+        "recommended": {"$ref": "#/$defs/modelPair"},
+        "fallbacks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/modelPair"}
+        }
+      }
+    },
+    "routeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "decision",
+        "gate",
+        "run_id",
+        "target",
+        "task_id",
+        "selection",
+        "applied",
+        "locked_route",
+        "planning_record_sha256",
+        "route_readback_sha256",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "decision": {"const": "allow"},
+        "gate": {"const": "task_route"},
+        "run_id": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "selection": {"enum": ["recommended", "fallback"]},
+        "applied": {"$ref": "#/$defs/modelPair"},
+        "locked_route": {"$ref": "#/$defs/lockedRoute"},
+        "planning_record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "route_readback_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
     "ticketExecution": {

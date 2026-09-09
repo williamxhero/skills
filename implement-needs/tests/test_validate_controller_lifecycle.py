@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -37,6 +38,37 @@ class LifecycleValidatorTests(unittest.TestCase):
         kind: str, target: str, instruction: str = "Execute the recorded action."
     ) -> dict:
         return {"kind": kind, "target": target, "instruction": instruction}
+
+    @staticmethod
+    def route_receipt(
+        spec_id: str,
+        task_id: str,
+        *,
+        selection: str = "recommended",
+        model: str = "gpt-5.6-terra",
+        thinking: str = "xhigh",
+    ) -> dict:
+        payload = {
+            "schema_version": 1,
+            "decision": "allow",
+            "gate": "task_route",
+            "run_id": "run-001",
+            "target": spec_id,
+            "task_id": task_id,
+            "selection": selection,
+            "applied": {"model": model, "thinking": thinking},
+            "locked_route": {
+                "recommended": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+                "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}],
+            },
+            "planning_record_sha256": "a" * 64,
+            "route_readback_sha256": "b" * 64,
+        }
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
+        return payload
 
     @staticmethod
     def add(
@@ -95,6 +127,7 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "checkpoints": self.checkpoint_plan(spec_count),
                 "default_branch": "main",
                 "default_revision": "base-0",
+                "planning_record_sha256": "a" * 64,
             },
         )
 
@@ -109,7 +142,7 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "route_selection": "recommended",
                 "model": "gpt-5.6-terra",
                 "thinking": "xhigh",
-                "route_evidence": [f"receipt://SPEC-{number}/route"],
+                "route_receipt": self.route_receipt(f"SPEC-{number}", f"task-{number}"),
             },
         )
 
@@ -584,7 +617,7 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "route_selection": "recommended",
                 "model": "gpt-5.6-terra",
                 "thinking": "xhigh",
-                "route_evidence": ["receipt://SPEC-2/route"],
+                "route_receipt": self.route_receipt("SPEC-2", "task-2"),
             },
         )
         payload, exit_code = self.evaluate(events, "active")
@@ -610,6 +643,61 @@ class LifecycleValidatorTests(unittest.TestCase):
         payload, exit_code = self.evaluate(sequential, "active")
         self.assertEqual(1, exit_code)
         self.assertIn("stale_spec_base", self.codes(payload))
+
+    def test_dispatch_binds_locked_route_owner_and_receipt_identity(self) -> None:
+        valid: list[dict] = []
+        self.planning(valid)
+        self.add(
+            valid,
+            "spec_dispatched",
+            {
+                "task_id": "task-1",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+                "route_selection": "fallback",
+                "model": "gpt-5.6-sol",
+                "thinking": "xhigh",
+                "route_receipt": self.route_receipt(
+                    "SPEC-1",
+                    "task-1",
+                    selection="fallback",
+                    model="gpt-5.6-sol",
+                ),
+            },
+        )
+        payload, exit_code = self.evaluate(valid, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            "fallback",
+            payload["implementation_ownership"]["specs"][0]["route"]["selection"],
+        )
+
+        unlocked: list[dict] = []
+        self.planning(unlocked)
+        self.add(
+            unlocked,
+            "spec_dispatched",
+            {
+                "task_id": "task-1",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+                "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "high",
+                "route_receipt": self.route_receipt(
+                    "SPEC-1", "task-1", thinking="high"
+                ),
+            },
+        )
+        payload, exit_code = self.evaluate(unlocked, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("route_not_locked_recommendation", self.codes(payload))
+
+        bad_identity = copy.deepcopy(valid)
+        bad_identity[-1]["data"]["route_receipt"]["receipt_sha256"] = "c" * 64
+        payload, exit_code = self.evaluate(bad_identity, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("route_receipt_hash_mismatch", self.codes(payload))
 
     def test_blocker_repair_archives_then_returns_to_exact_breakpoint(self) -> None:
         events: list[dict] = []
@@ -751,12 +839,33 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "observed_task_ids": ["plan-1", "task-1"],
             },
         )
-        self.add(events, "child_reconnected", {"task_id": "task-1"})
+        self.add(
+            events,
+            "child_reconnected",
+            {
+                "task_id": "task-1",
+                "route_receipt": events[1]["data"]["route_receipt"],
+            },
+        )
         self.add(events, "stored_action_resumed", {"action": stored})
         self.add(events, "waited", {"task_id": "task-1"})
         payload, exit_code = self.evaluate(events, "active")
         self.assertEqual(0, exit_code)
         self.assertEqual(2, len(payload["child_tasks"]))
+
+        route_drift = copy.deepcopy(events)
+        reconnect = next(
+            event for event in route_drift if event["type"] == "child_reconnected"
+        )
+        reconnect["data"]["route_receipt"] = self.route_receipt(
+            "SPEC-1",
+            "task-1",
+            selection="fallback",
+            model="gpt-5.6-sol",
+        )
+        payload, exit_code = self.evaluate(route_drift, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("recovery_route_mismatch", self.codes(payload))
 
         duplicate = events[:3]
         self.add(
@@ -769,7 +878,7 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "route_selection": "recommended",
                 "model": "gpt-5.6-terra",
                 "thinking": "xhigh",
-                "route_evidence": ["receipt://SPEC-1/route"],
+                "route_receipt": self.route_receipt("SPEC-1", "task-duplicate"),
             },
         )
         payload, exit_code = self.evaluate(duplicate, "active")

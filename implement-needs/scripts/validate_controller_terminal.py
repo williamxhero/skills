@@ -74,6 +74,143 @@ def _candidate_revision_set(revisions: list[str]) -> frozenset[str]:
     return frozenset(revisions)
 
 
+def _policy_pair(value: Any) -> dict[str, str] | None:
+    if (
+        MODEL_POLICY is None
+        or not isinstance(value, dict)
+        or set(value) != {"model", "thinking"}
+        or value.get("model") not in MODEL_POLICY["models"]
+        or value.get("thinking") not in MODEL_POLICY["efforts"]
+    ):
+        return None
+    return {"model": value["model"], "thinking": value["thinking"]}
+
+
+def _same_or_stronger(candidate: dict[str, str], baseline: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return (
+        MODEL_POLICY["model_rank"][candidate["model"]]
+        >= MODEL_POLICY["model_rank"][baseline["model"]]
+        and MODEL_POLICY["effort_rank"][candidate["thinking"]]
+        >= MODEL_POLICY["effort_rank"][baseline["thinking"]]
+    )
+
+
+def _distinct_same_or_stronger_allowed(pair: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return any(
+        candidate != pair and _same_or_stronger(candidate, pair)
+        for candidate in (
+            {"model": model, "thinking": thinking}
+            for model in MODEL_POLICY["models"]
+            for thinking in MODEL_POLICY["efforts"]
+        )
+    )
+
+
+def _persisted_route_issues(
+    route: dict[str, Any],
+    *,
+    path: str,
+    run_id: str,
+    spec_id: str,
+    owner_id: str,
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    receipt = route["receipt"]
+    selected_pair = _policy_pair(
+        {"model": route["model"], "thinking": route["thinking"]}
+    )
+    applied = _policy_pair(receipt["applied"])
+    recommended = _policy_pair(receipt["locked_route"]["recommended"])
+    fallbacks = [
+        _policy_pair(fallback) for fallback in receipt["locked_route"]["fallbacks"]
+    ]
+
+    if (
+        selected_pair is None
+        or applied is None
+        or recommended is None
+        or any(fallback is None for fallback in fallbacks)
+    ):
+        issues.append(
+            _issue(
+                "invalid_persisted_model_policy",
+                path,
+                "Persisted SPEC route and receipt pairs must be allowed by the Implement Needs policy.",
+            )
+        )
+        return issues
+
+    parsed_fallbacks = [fallback for fallback in fallbacks if fallback is not None]
+    expected_receipt_fields = (
+        ("run_id", run_id),
+        ("target", spec_id),
+        ("task_id", owner_id),
+        ("selection", route["selection"]),
+        ("applied", selected_pair),
+    )
+    for field, expected in expected_receipt_fields:
+        if receipt[field] != expected:
+            issues.append(
+                _issue(
+                    "persisted_route_receipt_mismatch",
+                    f"{path}.receipt.{field}",
+                    "Route receipt must match the persisted run, owner, selection, and pair.",
+                )
+            )
+
+    receipt_body = dict(receipt)
+    receipt_sha256 = receipt_body.pop("receipt_sha256")
+    if _decision_hash(receipt_body) != receipt_sha256:
+        issues.append(
+            _issue(
+                "persisted_route_receipt_hash_mismatch",
+                f"{path}.receipt.receipt_sha256",
+                "Persisted route receipt identity does not match its canonical content.",
+            )
+        )
+
+    for index, fallback in enumerate(parsed_fallbacks):
+        fallback_path = f"{path}.receipt.locked_route.fallbacks[{index}]"
+        if not _same_or_stronger(fallback, recommended):
+            issues.append(
+                _issue(
+                    "persisted_fallback_weaker",
+                    fallback_path,
+                    "Persisted fallback must be same-or-stronger than the recommendation.",
+                )
+            )
+        if fallback == recommended and _distinct_same_or_stronger_allowed(recommended):
+            issues.append(
+                _issue(
+                    "persisted_fallback_not_distinct",
+                    fallback_path,
+                    "Same-pair fallback is valid only at the maximum allowed route.",
+                )
+            )
+
+    if route["selection"] == "recommended" and selected_pair != recommended:
+        issues.append(
+            _issue(
+                "persisted_route_not_locked",
+                path,
+                "Recommended route must equal the exact locked recommendation.",
+            )
+        )
+    if route["selection"] == "fallback" and selected_pair not in parsed_fallbacks:
+        issues.append(
+            _issue(
+                "persisted_route_not_locked",
+                path,
+                "Fallback route must equal an exact preapproved fallback.",
+            )
+        )
+    return issues
+
+
 def _read_bytes(path: Path, label: str, issues: list[dict[str, str]]) -> bytes | None:
     try:
         return path.read_bytes()
@@ -217,6 +354,14 @@ def _schema_issues(
                 _issue(code, path, "String does not match the required pattern.")
             )
     if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            issues.append(
+                _issue(
+                    "too_few_items",
+                    path,
+                    "Array has fewer entries than the contract permits.",
+                )
+            )
         if schema.get("uniqueItems"):
             encoded = [
                 json.dumps(
@@ -643,18 +788,15 @@ def _implementation_ownership_issues(
                     "Route fallback or recommendation must resume the same SPEC task.",
                 )
             )
-        if (
-            MODEL_POLICY is None
-            or route["model"] not in MODEL_POLICY["models"]
-            or route["thinking"] not in MODEL_POLICY["efforts"]
-        ):
-            issues.append(
-                _issue(
-                    "invalid_persisted_model_policy",
-                    f"{spec_path}.route",
-                    "Persisted SPEC model and effort must be allowed by the Implement Needs policy.",
-                )
+        issues.extend(
+            _persisted_route_issues(
+                route,
+                path=f"{spec_path}.route",
+                run_id=state["run_id"],
+                spec_id=spec_id,
+                owner_id=owner_id,
             )
+        )
 
         tickets = spec["tickets"]
         if not tickets:

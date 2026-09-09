@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,9 +15,6 @@ from pathlib import Path
 from typing import Any
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
-PLANNING = SKILL_ROOT / "scripts" / "validate_planning.py"
-LIFECYCLE = SKILL_ROOT / "scripts" / "validate_controller_lifecycle.py"
-TERMINAL = SKILL_ROOT / "scripts" / "validate_controller_terminal.py"
 RUN_ID = "acceptance-run"
 
 
@@ -34,6 +32,8 @@ class ProtocolFixture:
         self.delivery_map_path = root / "delivery-map.md"
         self.task_tree_path = root / "task-tree.json"
         self.terminal_state_path = root / "controller-state.json"
+        self.planning_record_sha256 = "a" * 64
+        self.route_receipts: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def pair(model: str, thinking: str) -> dict[str, str]:
@@ -99,6 +99,37 @@ class ProtocolFixture:
             "fallbacks": [fallback],
             "rationale": "Risk and coupling justify this route.",
         }
+
+    def route_receipt(
+        self,
+        target: str,
+        task_id: str,
+        *,
+        selection: str = "recommended",
+        model: str = "gpt-5.6-terra",
+        thinking: str = "xhigh",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "decision": "allow",
+            "gate": "task_route",
+            "run_id": RUN_ID,
+            "target": target,
+            "task_id": task_id,
+            "selection": selection,
+            "applied": self.pair(model, thinking),
+            "locked_route": {
+                "recommended": self.pair("gpt-5.6-terra", "xhigh"),
+                "fallbacks": [self.pair("gpt-5.6-sol", "xhigh")],
+            },
+            "planning_record_sha256": self.planning_record_sha256,
+            "route_readback_sha256": "b" * 64,
+        }
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
+        return payload
 
     def planning_record(self, spec_count: int = 1) -> dict[str, Any]:
         approval = {
@@ -261,6 +292,7 @@ class ProtocolFixture:
         readback: dict[str, Any] | None = None,
     ) -> None:
         self.write_json(self.record_path, self.planning_record(spec_count))
+        self.planning_record_sha256 = _sha256(self.record_path)
         self.write_json(self.readback_path, readback or self.readback(target, task_id))
 
     def write_planning_handoff_state(self) -> None:
@@ -332,6 +364,7 @@ class ProtocolFixture:
                 ),
                 "default_branch": "main",
                 "default_revision": "base-0",
+                "planning_record_sha256": self.planning_record_sha256,
             },
         )
 
@@ -344,17 +377,25 @@ class ProtocolFixture:
         fallback: bool = False,
     ) -> None:
         selection = "fallback" if fallback else "recommended"
+        target = self.spec_id(number)
+        task_id = self.task_id(number)
+        receipt = self.route_receipts.get(target) or self.route_receipt(
+            target,
+            task_id,
+            selection=selection,
+            model="gpt-5.6-sol" if fallback else "gpt-5.6-terra",
+        )
         self.event(
             events,
             "spec_dispatched",
             {
-                "task_id": self.task_id(number),
-                "spec_id": self.spec_id(number),
+                "task_id": task_id,
+                "spec_id": target,
                 "base_revision": base_revision,
                 "route_selection": selection,
                 "model": "gpt-5.6-sol" if fallback else "gpt-5.6-terra",
                 "thinking": "xhigh",
-                "route_evidence": [f"receipt://{self.spec_id(number)}/{selection}"],
+                "route_receipt": receipt,
             },
         )
 
@@ -369,7 +410,15 @@ class ProtocolFixture:
             "controller_resumed",
             {"persisted_next_action": wait, "observed_task_ids": observed},
         )
-        self.event(events, "child_reconnected", {"task_id": task_id})
+        self.event(
+            events,
+            "child_reconnected",
+            {
+                "task_id": task_id,
+                "route_receipt": self.route_receipts.get(self.spec_id(number))
+                or self.route_receipt(self.spec_id(number), task_id),
+            },
+        )
         self.event(events, "stored_action_resumed", {"action": wait})
         self.event(events, "waited", {"task_id": task_id})
 
@@ -679,18 +728,32 @@ class BehavioralAcceptance(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.fixture = ProtocolFixture(self.root)
+        self.installed_skill_root = self.root / "installed" / "implement-needs"
+        shutil.copytree(
+            SKILL_ROOT,
+            self.installed_skill_root,
+            ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"),
+        )
+        self.planning = self.installed_skill_root / "scripts" / "validate_planning.py"
+        self.lifecycle = (
+            self.installed_skill_root / "scripts" / "validate_controller_lifecycle.py"
+        )
+        self.terminal = (
+            self.installed_skill_root / "scripts" / "validate_controller_terminal.py"
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
     def run_validator(self, args: list[str]) -> tuple[dict[str, Any], int]:
         completed = subprocess.run(
-            [sys.executable, *args],
+            [sys.executable, "-I", *args],
             check=False,
             capture_output=True,
             text=True,
             encoding="utf-8",
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            cwd=self.root,
         )
         self.assertTrue(
             completed.stdout.strip(),
@@ -708,7 +771,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_route_artifacts("planning", "plan-1", spec_count=spec_count)
         route_payload, route_code = self.run_validator(
             [
-                str(PLANNING),
+                str(self.planning),
                 "route",
                 "--record",
                 str(self.fixture.record_path),
@@ -730,7 +793,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_planning_handoff_state()
         handoff_payload, handoff_code = self.run_validator(
             [
-                str(PLANNING),
+                str(self.planning),
                 "handoff",
                 "--record",
                 str(self.fixture.record_path),
@@ -750,7 +813,9 @@ class BehavioralAcceptance(unittest.TestCase):
             handoff_payload["spec_ids"],
         )
 
-        for number, fallback in route_specs or []:
+        fallback_specs = {number for number, fallback in route_specs or [] if fallback}
+        for number in range(1, spec_count + 1):
+            fallback = number in fallback_specs
             target = self.fixture.spec_id(number)
             task_id = self.fixture.task_id(number)
             readback = None
@@ -770,7 +835,7 @@ class BehavioralAcceptance(unittest.TestCase):
             )
             payload, code = self.run_validator(
                 [
-                    str(PLANNING),
+                    str(self.planning),
                     "route",
                     "--record",
                     str(self.fixture.record_path),
@@ -786,6 +851,7 @@ class BehavioralAcceptance(unittest.TestCase):
             )
             self.assertEqual(0, code)
             self.assertEqual(task_id, payload["task_id"])
+            self.fixture.route_receipts[target] = payload
         return handoff_payload
 
     def evaluate_lifecycle(
@@ -794,7 +860,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_lifecycle_log(events)
         return self.run_validator(
             [
-                str(LIFECYCLE),
+                str(self.lifecycle),
                 "--log",
                 str(self.fixture.lifecycle_log_path),
                 "--expected-run-id",
@@ -812,7 +878,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_terminal_state(lifecycle_payload)
         return self.run_validator(
             [
-                str(TERMINAL),
+                str(self.terminal),
                 "--state",
                 str(self.fixture.terminal_state_path),
                 "--delivery-map",
@@ -872,7 +938,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_planning_handoff_state()
         return self.run_validator(
             [
-                str(PLANNING),
+                str(self.planning),
                 "handoff",
                 "--record",
                 str(self.fixture.record_path),
@@ -884,6 +950,110 @@ class BehavioralAcceptance(unittest.TestCase):
                 RUN_ID,
             ]
         )
+
+    def test_installed_artifact_accepts_locked_route_and_rejects_route_drift(
+        self,
+    ) -> None:
+        self.assertFalse((self.installed_skill_root / "tests").exists())
+        self.assertNotEqual(SKILL_ROOT.resolve(), self.installed_skill_root.resolve())
+        self.validate_planning(1)
+
+        valid: list[dict[str, Any]] = []
+        self.fixture.emit_planning_event(valid, 1)
+        self.fixture.emit_dispatch(valid, 1, "base-0")
+        payload, code = self.evaluate_lifecycle(valid, "active")
+        self.assertEqual(0, code)
+        self.assertEqual("allow", payload["decision"])
+
+        outside_policy = copy.deepcopy(valid)
+        outside_policy[-1]["data"]["model"] = "gpt-5.6-unknown"
+        payload, code = self.evaluate_lifecycle(outside_policy, "active")
+        self.assertEqual(1, code)
+        self.assertIn("invalid_spec_model_policy", self.codes(payload))
+        self.assertEqual("repair_state", payload["next_action"]["kind"])
+
+        unlocked_allowed = copy.deepcopy(valid)
+        unlocked_allowed[-1]["data"]["thinking"] = "high"
+        unlocked_allowed[-1]["data"]["route_receipt"] = self.fixture.route_receipt(
+            "SPEC-1", "task-1", thinking="high"
+        )
+        payload, code = self.evaluate_lifecycle(unlocked_allowed, "active")
+        self.assertEqual(1, code)
+        self.assertIn("route_not_locked_recommendation", self.codes(payload))
+        self.assertEqual("repair_state", payload["next_action"]["kind"])
+
+    def test_malformed_policy_ranks_fail_closed_without_type_error(self) -> None:
+        self.validate_planning(1)
+        events = self.fixture.success_events(1)
+        lifecycle_payload, lifecycle_code = self.evaluate_lifecycle(
+            events, "terminal_success"
+        )
+        self.assertEqual(0, lifecycle_code)
+        self.fixture.write_terminal_state(lifecycle_payload)
+
+        policy_path = self.installed_skill_root / "references" / "model-policy.json"
+        policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        policy["model_rank"]["gpt-5.6-sol"] = "maximum"
+        self.fixture.write_json(policy_path, policy)
+
+        commands = (
+            (
+                [
+                    str(self.planning),
+                    "route",
+                    "--record",
+                    str(self.fixture.record_path),
+                    "--readback",
+                    str(self.fixture.readback_path),
+                    "--expected-run-id",
+                    RUN_ID,
+                    "--target",
+                    "SPEC-1",
+                    "--expected-task-id",
+                    "task-1",
+                ],
+                "repair",
+            ),
+            (
+                [
+                    str(self.lifecycle),
+                    "--log",
+                    str(self.fixture.lifecycle_log_path),
+                    "--expected-run-id",
+                    RUN_ID,
+                    "--expected-state",
+                    "terminal_success",
+                ],
+                "repair_state",
+            ),
+            (
+                [
+                    str(self.terminal),
+                    "--state",
+                    str(self.fixture.terminal_state_path),
+                    "--delivery-map",
+                    str(self.fixture.delivery_map_path),
+                    "--task-tree",
+                    str(self.fixture.task_tree_path),
+                    "--expected-run-id",
+                    RUN_ID,
+                    "--proposed-state",
+                    "terminal_success",
+                    "--goal-status",
+                    "complete",
+                ],
+                "repair_state",
+            ),
+        )
+        for command, repair_kind in commands:
+            with self.subTest(validator=Path(command[0]).name):
+                first = self.run_validator(command)
+                second = self.run_validator(command)
+                self.assertEqual(first, second)
+                payload, code = first
+                self.assertEqual(1, code)
+                self.assertIn("model_policy_invalid", self.codes(payload))
+                self.assertEqual(repair_kind, payload["next_action"]["kind"])
 
     def test_full_32_spec_protocol_trace_covers_release_train_and_ownership(
         self,
@@ -1002,7 +1172,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_lifecycle_log(events)
         payload, code = self.run_validator(
             [
-                str(LIFECYCLE),
+                str(self.lifecycle),
                 "--log",
                 str(self.fixture.lifecycle_log_path),
                 "--expected-run-id",
@@ -1124,7 +1294,12 @@ class BehavioralAcceptance(unittest.TestCase):
                 "route_selection": "fallback",
                 "model": "gpt-5.6-sol",
                 "thinking": "xhigh",
-                "route_evidence": ["receipt://SPEC-1/fallback"],
+                "route_receipt": self.fixture.route_receipt(
+                    "SPEC-1",
+                    "task-1-escalated",
+                    selection="fallback",
+                    model="gpt-5.6-sol",
+                ),
             },
         )
         payload, code = self.evaluate_lifecycle(replacement_owner, "active")
@@ -1177,7 +1352,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_json(self.fixture.terminal_state_path, state)
         payload, code = self.run_validator(
             [
-                str(TERMINAL),
+                str(self.terminal),
                 "--state",
                 str(self.fixture.terminal_state_path),
                 "--delivery-map",
@@ -1201,7 +1376,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_json(self.fixture.terminal_state_path, state)
         payload, code = self.run_validator(
             [
-                str(TERMINAL),
+                str(self.terminal),
                 "--state",
                 str(self.fixture.terminal_state_path),
                 "--delivery-map",
@@ -1226,7 +1401,7 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.write_lifecycle_log(events)
         payload, code = self.run_validator(
             [
-                str(LIFECYCLE),
+                str(self.lifecycle),
                 "--log",
                 str(self.fixture.lifecycle_log_path),
                 "--expected-run-id",

@@ -48,6 +48,46 @@ class TerminalValidatorTests(unittest.TestCase):
         self.temporary.cleanup()
 
     @staticmethod
+    def route_receipt(
+        spec_id: str,
+        task_id: str,
+        *,
+        selection: str = "recommended",
+        model: str = "gpt-5.6-terra",
+        thinking: str = "xhigh",
+    ) -> dict:
+        payload = {
+            "schema_version": 1,
+            "decision": "allow",
+            "gate": "task_route",
+            "run_id": "run-001",
+            "target": spec_id,
+            "task_id": task_id,
+            "selection": selection,
+            "applied": {"model": model, "thinking": thinking},
+            "locked_route": {
+                "recommended": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+                "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}],
+            },
+            "planning_record_sha256": "a" * 64,
+            "route_readback_sha256": "b" * 64,
+        }
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
+        return payload
+
+    @staticmethod
+    def rehash_receipt(receipt: dict) -> None:
+        payload = dict(receipt)
+        payload.pop("receipt_sha256", None)
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        receipt["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
+
+    @staticmethod
     def l4_state(
         *,
         checkpoint_status: str = "passed",
@@ -131,7 +171,7 @@ class TerminalValidatorTests(unittest.TestCase):
                             "selection": "recommended",
                             "model": "gpt-5.6-terra",
                             "thinking": "xhigh",
-                            "evidence": ["receipt://SPEC-1-route"],
+                            "receipt": self.route_receipt("SPEC-1", "spec-1"),
                         },
                         "tickets": [
                             {
@@ -234,7 +274,12 @@ class TerminalValidatorTests(unittest.TestCase):
                                 "selection": "fallback",
                                 "model": "gpt-5.6-sol",
                                 "thinking": "xhigh",
-                                "evidence": ["receipt://SPEC-2-route"],
+                                "receipt": self.route_receipt(
+                                    "SPEC-2",
+                                    "spec-2",
+                                    selection="fallback",
+                                    model="gpt-5.6-sol",
+                                ),
                             },
                             "tickets": [
                                 {
@@ -412,6 +457,79 @@ class TerminalValidatorTests(unittest.TestCase):
         payload, exit_code = self.evaluate(state, "terminal_success")
         self.assertEqual(1, exit_code)
         self.assertIn("invalid_persisted_model_policy", self.codes(payload))
+
+    def test_persisted_route_rejects_unlocked_pair_owner_and_receipt_drift(
+        self,
+    ) -> None:
+        unlocked = self.success_state()
+        route = unlocked["implementation_ownership"]["specs"][0]["route"]
+        route["thinking"] = "high"
+        route["receipt"] = self.route_receipt("SPEC-1", "spec-1", thinking="high")
+        payload, exit_code = self.evaluate(unlocked, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_route_not_locked", self.codes(payload))
+        self.assertEqual("repair_state", payload["next_action"]["kind"])
+
+        wrong_owner = self.success_state()
+        receipt = wrong_owner["implementation_ownership"]["specs"][0]["route"][
+            "receipt"
+        ]
+        receipt["task_id"] = "replacement-task"
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(wrong_owner, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_route_receipt_mismatch", self.codes(payload))
+
+        wrong_hash = self.success_state()
+        wrong_hash["implementation_ownership"]["specs"][0]["route"]["receipt"][
+            "receipt_sha256"
+        ] = "c" * 64
+        payload, exit_code = self.evaluate(wrong_hash, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_route_receipt_hash_mismatch", self.codes(payload))
+
+    def test_persisted_fallback_must_be_same_or_stronger(self) -> None:
+        state = self.success_state()
+        route = state["implementation_ownership"]["specs"][0]["route"]
+        route.update(selection="fallback", model="gpt-5.6-luna", thinking="medium")
+        receipt = route["receipt"]
+        receipt.update(
+            selection="fallback",
+            applied={"model": "gpt-5.6-luna", "thinking": "medium"},
+        )
+        receipt["locked_route"]["fallbacks"] = [
+            {"model": "gpt-5.6-luna", "thinking": "medium"}
+        ]
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(state, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_fallback_weaker", self.codes(payload))
+
+        missing = self.success_state()
+        missing["implementation_ownership"]["specs"][0]["route"]["receipt"][
+            "locked_route"
+        ]["fallbacks"] = []
+        payload, exit_code = self.evaluate(missing, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("too_few_items", self.codes(payload))
+
+    def test_maximum_route_may_repeat_as_its_fallback(self) -> None:
+        state = self.success_state()
+        route = state["implementation_ownership"]["specs"][0]["route"]
+        route.update(selection="fallback", model="gpt-5.6-sol", thinking="xhigh")
+        receipt = route["receipt"]
+        receipt.update(
+            selection="fallback",
+            applied={"model": "gpt-5.6-sol", "thinking": "xhigh"},
+        )
+        receipt["locked_route"] = {
+            "recommended": {"model": "gpt-5.6-sol", "thinking": "xhigh"},
+            "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}],
+        }
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(state, "terminal_success")
+        self.assertEqual(0, exit_code)
+        self.assertEqual("allow", payload["decision"])
 
     def test_success_allows_explicit_deployment_not_applicable(self) -> None:
         payload, exit_code = self.evaluate(
@@ -1066,9 +1184,12 @@ class TerminalValidatorTests(unittest.TestCase):
         self.assertEqual("repair_state", payload["next_action"]["kind"])
 
     def test_wrong_run_id_fails_as_stale(self) -> None:
-        payload, exit_code = self.evaluate(
-            {**self.success_state(), "run_id": "other-run"}
-        )
+        state = self.success_state()
+        state["run_id"] = "other-run"
+        receipt = state["implementation_ownership"]["specs"][0]["route"]["receipt"]
+        receipt["run_id"] = "other-run"
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(state)
         self.assertEqual(1, exit_code)
         self.assertIn("run_id_mismatch", self.codes(payload))
         self.assertEqual("refresh_state", payload["next_action"]["kind"])
