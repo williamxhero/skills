@@ -76,6 +76,8 @@ Use the closest supported class when model names change. If the target effort is
 
 Treat the controller's message phase as control flow, not presentation. `final_answer` yields and ends the controller's current turn; never use it as a progress heartbeat. A polished progress recap is still `commentary` while work remains.
 
+Write every controller message addressed to the user in Chinese, including Grill rounds, progress updates, blocker reports, answers to side questions, and the terminal response. Keep exact identifiers, commands, paths, logs, protocol field names, and quoted evidence in their original language when translation would reduce precision. Internal reasoning, child-task prompts, and task-to-task handoffs may use English or whichever language is most token-efficient. Summarize child-task results in Chinese instead of forwarding an English handoff as the controller's user-facing update.
+
 Maintain these top-level fields in the delivery map and refresh them before every controller update: `controller_state`, `active_phase`, `active_task_stack`, `pending_specs`, `test_train_state`, `release_state`, and `next_action`. `controller_state` is one of `active`, `terminal_success`, `terminal_blocked`, or `user_stopped`. Any executable `next_action`, active or paused child task, pending spec, unverified merge, open repair, incomplete test-train gate, or incomplete release gate requires `controller_state: active`.
 
 The controller may emit `final_answer` only in one of these terminal states:
@@ -112,11 +114,13 @@ The Implement Needs controller owns the train state across child tasks. Each SPE
 
 ## 0. Default-grill the requirement
 
-Apply the `grilling` design-tree and frontier discipline in the controller before partitioning specs. Invocation supplies a standing answer of **“接受默认”** for every Grill round: formulate the complete current frontier with a recommended answer for each decision, then immediately adopt every recommendation and recompute the frontier. This is semantic auto-acceptance; record the decisions as accepted defaults without fabricating user-authored messages or waiting for a reply.
+Apply the `grilling` design-tree and frontier discipline in the controller before partitioning specs. Invocation supplies a standing answer of **“接受默认”** for every Grill round. For each round, formulate the complete current frontier, then emit a Chinese `commentary` update before adoption. Number every frontier question and show its question or a faithful concise summary, recommended answer, and brief evidence or rationale. Represent every question individually; when a frontier is large, split it across consecutive commentary updates rather than omitting questions. Label the round as automatically answered under the standing “接受默认” instruction so visibility cannot be mistaken for a request to pause.
+
+After the round is visible in Chat, immediately adopt every recommendation and recompute the frontier without waiting for a reply. This is semantic auto-acceptance: record the decisions as accepted defaults without fabricating user-authored messages. When the frontier becomes empty, emit a concise Chinese Grill completion summary of the adopted decisions, then continue directly into the delivery map.
 
 Facts are still evidence, not defaults. Investigate repository state, configuration, existing behavior, history, and available integrations wherever a question depends on them. Build recommendations from that evidence and the default policy. Prefer a reversible seam or the smallest backward-compatible behavior when several answers remain viable.
 
-Persist `.scratch/<initiative>/default-grill.md` with each round's questions, adopted recommendations, rationale, evidence pointers, and downstream decisions. Apply `domain-modeling` as decisions settle: update canonical domain terms in the appropriate `CONTEXT.md`, and create an ADR only when the decision is hard to reverse, surprising without context, and the result of a real trade-off.
+Persist `.scratch/<initiative>/default-grill.md` with each visible round's questions, adopted recommendations, rationale, evidence pointers, and downstream decisions. The persisted record and Chat updates must account for the same question set. Apply `domain-modeling` as decisions settle: update canonical domain terms in the appropriate `CONTEXT.md`, and create an ADR only when the decision is hard to reverse, surprising without context, and the result of a real trade-off.
 
 Continue until the design-tree frontier is empty and no requirement branch is silently assumed. Treat that state as the confirmation normally required by `grilling`; do not request a final user confirmation. The accepted decisions become the authoritative input to the delivery map and every subsequent spec.
 
