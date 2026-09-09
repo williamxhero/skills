@@ -39,18 +39,29 @@ class ProtocolFixture:
     def pair(model: str, thinking: str) -> dict[str, str]:
         return {"model": model, "thinking": thinking}
 
-    def route(
-        self, recommended: dict[str, str], fallback: dict[str, str]
-    ) -> dict[str, Any]:
-        return {
-            "recommended": recommended,
-            "fallbacks": [fallback],
-            "rationale": "Risk and coupling justify this route.",
-        }
+    @staticmethod
+    def spec_id(number: int) -> str:
+        return f"SPEC-{number}"
 
     @staticmethod
-    def checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
-        checkpoints = []
+    def task_id(number: int) -> str:
+        return f"task-{number}"
+
+    @staticmethod
+    def revision(number: int) -> str:
+        return f"merge-{number}"
+
+    @staticmethod
+    def checkpoint_surfaces(end_spec_index: int) -> dict[str, list[str]]:
+        segment = ((end_spec_index - 1) // 10) + 1
+        return {
+            "affected_owners": [f"owner-{segment}"],
+            "affected_repositories": [f"repo-{segment}"],
+        }
+
+    @classmethod
+    def checkpoint_plan(cls, spec_ids: list[str]) -> list[dict[str, Any]]:
+        checkpoints: list[dict[str, Any]] = []
         for start in range(0, len(spec_ids), 10):
             members = spec_ids[start : start + 10]
             end = start + len(members)
@@ -61,13 +72,35 @@ class ProtocolFixture:
                     "end_spec_index": end,
                     "specs": members,
                     "final_tail": len(members) < 10,
-                    "affected_owners": ["owner-a"],
-                    "affected_repositories": ["repo-a"],
+                    **cls.checkpoint_surfaces(end),
                 }
             )
         return checkpoints
 
-    def planning_record(self) -> dict[str, Any]:
+    @staticmethod
+    def checkpoint_for_spec(number: int, spec_count: int) -> str:
+        return f"checkpoint-{min(((number + 9) // 10) * 10, spec_count)}"
+
+    @classmethod
+    def ticket_plan(cls, number: int) -> list[dict[str, Any]]:
+        if number == 7:
+            return [
+                {"id": "T7-foundation", "blocked_by": []},
+                {"id": "T7-api", "blocked_by": ["T7-foundation"]},
+                {"id": "T7-smoke", "blocked_by": ["T7-foundation"]},
+            ]
+        return [{"id": f"T{number}", "blocked_by": []}]
+
+    def route(
+        self, recommended: dict[str, str], fallback: dict[str, str]
+    ) -> dict[str, Any]:
+        return {
+            "recommended": recommended,
+            "fallbacks": [fallback],
+            "rationale": "Risk and coupling justify this route.",
+        }
+
+    def planning_record(self, spec_count: int = 1) -> dict[str, Any]:
         approval = {
             "confirmation_mode": "auto_approve",
             "approval_source": "implement-needs",
@@ -75,6 +108,20 @@ class ProtocolFixture:
             "spec_state": "auto_approved",
             "approval_provenance": "controller_decision",
         }
+        ticket_check = {
+            "granularity": "pass",
+            "blocking_edges": "pass",
+            "acyclic": "pass",
+            "evidence": ["tracker://ticket-self-check"],
+        }
+        spec_ids = [self.spec_id(number) for number in range(1, spec_count + 1)]
+        checkpoints = self.checkpoint_plan(spec_ids)
+        owners = []
+        repositories = []
+        for checkpoint in checkpoints:
+            owners.extend(checkpoint["affected_owners"])
+            repositories.extend(checkpoint["affected_repositories"])
+
         return {
             "schema_version": 1,
             "run_id": RUN_ID,
@@ -106,7 +153,7 @@ class ProtocolFixture:
                 "tickets": "plan-1",
                 "routing": "plan-1",
             },
-            "requirements": ["R1"],
+            "requirements": [f"R{number}" for number in range(1, spec_count + 1)],
             "grill_rounds": [
                 {
                     "round": 1,
@@ -127,42 +174,42 @@ class ProtocolFixture:
             "frontier_empty": True,
             "specs": [
                 {
-                    "id": "SPEC-1",
-                    "artifact": "tracker://spec-1",
-                    "requirements": ["R1"],
-                    "blocked_by": [],
-                    "auto_approval": approval,
+                    "id": self.spec_id(number),
+                    "artifact": f"tracker://spec-{number}",
+                    "requirements": [f"R{number}"],
+                    "blocked_by": [] if number == 1 else [self.spec_id(number - 1)],
+                    "auto_approval": copy.deepcopy(approval),
                     "tickets": [
                         {
-                            "id": "T1",
-                            "artifact": "tracker://ticket-1",
-                            "blocked_by": [],
-                            "vertical_slice": "Delivers the behavior end to end.",
+                            "id": ticket["id"],
+                            "artifact": f"tracker://ticket-{ticket['id']}",
+                            "blocked_by": list(ticket["blocked_by"]),
+                            "vertical_slice": (
+                                f"Delivers {self.spec_id(number)} ticket "
+                                f"{ticket['id']} through commit and test evidence."
+                            ),
                         }
+                        for ticket in self.ticket_plan(number)
                     ],
-                    "ticket_self_check": {
-                        "granularity": "pass",
-                        "blocking_edges": "pass",
-                        "acyclic": "pass",
-                        "evidence": ["tracker://ticket-self-check"],
-                    },
+                    "ticket_self_check": copy.deepcopy(ticket_check),
                     "difficulty": "hard",
                     "route": self.route(
                         self.pair("reliable-1", "xhigh"),
                         self.pair("strongest-1", "max"),
                     ),
-                    "checkpoint": "checkpoint-1",
+                    "checkpoint": self.checkpoint_for_spec(number, spec_count),
                 }
+                for number in range(1, spec_count + 1)
             ],
             "release_train": {
-                "owners": ["owner-a"],
-                "repositories": ["repo-a"],
+                "owners": list(dict.fromkeys(owners)),
+                "repositories": list(dict.fromkeys(repositories)),
                 "acceptance_scopes": ["scope-a"],
-                "public_contract_specs": ["SPEC-1"],
+                "public_contract_specs": [self.spec_id(spec_count)],
                 "environment_specs": [],
                 "baselines": ["main@base-0"],
                 "checkpoint_size": 10,
-                "checkpoints": self.checkpoint_plan(["SPEC-1"]),
+                "checkpoints": checkpoints,
             },
             "code_read_only": {
                 "product_test_tree_before_sha256": "a" * 64,
@@ -173,17 +220,25 @@ class ProtocolFixture:
             "handoff_evidence": ["thread://plan-1/handoff"],
         }
 
-    def readback(self, target: str, task_id: str) -> dict[str, Any]:
-        pair = self.pair("reliable-1", "xhigh")
+    def readback(
+        self,
+        target: str,
+        task_id: str,
+        *,
+        requested: dict[str, str] | None = None,
+        selection: str = "recommended",
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        requested = requested or self.pair("reliable-1", "xhigh")
         return {
             "schema_version": 1,
             "run_id": RUN_ID,
             "task_id": task_id,
             "target": target,
-            "requested": pair,
-            "applied": copy.deepcopy(pair),
-            "selection": "recommended",
-            "substitution_reason": None,
+            "requested": requested,
+            "applied": copy.deepcopy(requested),
+            "selection": selection,
+            "substitution_reason": reason,
             "readback_evidence": [f"thread://{task_id}/settings"],
         }
 
@@ -197,9 +252,16 @@ class ProtocolFixture:
             newline="\n",
         )
 
-    def write_route_artifacts(self, target: str, task_id: str) -> None:
-        self.write_json(self.record_path, self.planning_record())
-        self.write_json(self.readback_path, self.readback(target, task_id))
+    def write_route_artifacts(
+        self,
+        target: str,
+        task_id: str,
+        *,
+        spec_count: int = 1,
+        readback: dict[str, Any] | None = None,
+    ) -> None:
+        self.write_json(self.record_path, self.planning_record(spec_count))
+        self.write_json(self.readback_path, readback or self.readback(target, task_id))
 
     def write_planning_handoff_state(self) -> None:
         self.write_json(
@@ -216,6 +278,12 @@ class ProtocolFixture:
                 ],
             },
         )
+
+    @staticmethod
+    def action(
+        kind: str, target: str, instruction: str = "Execute the recorded action."
+    ) -> dict[str, str]:
+        return {"kind": kind, "target": target, "instruction": instruction}
 
     def event(
         self,
@@ -237,75 +305,89 @@ class ProtocolFixture:
             }
         )
 
-    def success_events(self) -> list[dict[str, Any]]:
-        wait_task = {
-            "kind": "wait",
-            "target": "task-1",
-            "instruction": "Wait for the current SPEC task.",
-        }
-        wait_repair = {
-            "kind": "wait",
-            "target": "repair-1",
-            "instruction": "Wait for the focused repair task.",
-        }
-        events: list[dict[str, Any]] = []
+    def emit_planning_event(
+        self, events: list[dict[str, Any]], spec_count: int
+    ) -> None:
+        specs = [
+            {
+                "id": self.spec_id(number),
+                "tickets": [
+                    {"id": ticket["id"], "blocked_by": list(ticket["blocked_by"])}
+                    for ticket in self.ticket_plan(number)
+                ],
+            }
+            for number in range(1, spec_count + 1)
+        ]
         self.event(
             events,
             "planning_archived",
             {
                 "task_id": "plan-1",
-                "specs": [
-                    {
-                        "id": "SPEC-1",
-                        "tickets": [{"id": "T1", "blocked_by": []}],
-                    }
-                ],
+                "specs": specs,
                 "checkpoint_size": 10,
-                "checkpoints": self.checkpoint_plan(["SPEC-1"]),
+                "checkpoints": self.checkpoint_plan(
+                    [self.spec_id(number) for number in range(1, spec_count + 1)]
+                ),
                 "default_branch": "main",
                 "default_revision": "base-0",
             },
         )
+
+    def emit_dispatch(
+        self,
+        events: list[dict[str, Any]],
+        number: int,
+        base_revision: str,
+        *,
+        fallback: bool = False,
+    ) -> None:
+        selection = "fallback" if fallback else "recommended"
         self.event(
             events,
             "spec_dispatched",
             {
-                "task_id": "task-1",
-                "spec_id": "SPEC-1",
-                "base_revision": "base-0",
-                "route_selection": "recommended",
-                "route_evidence": ["receipt://SPEC-1-route"],
+                "task_id": self.task_id(number),
+                "spec_id": self.spec_id(number),
+                "base_revision": base_revision,
+                "route_selection": selection,
+                "route_evidence": [f"receipt://{self.spec_id(number)}/{selection}"],
             },
         )
-        self.event(
-            events,
-            "commentary",
-            {
-                "category": "heartbeat",
-                "text": "\u5b9e\u73b0\u4efb\u52a1\u4ecd\u5728\u8fd0\u884c\uff0c\u7ee7\u7eed\u7b49\u5f85\u3002",
-                "next_action": wait_task,
-            },
+
+    def emit_recovery(self, events: list[dict[str, Any]], number: int) -> None:
+        task_id = self.task_id(number)
+        wait = self.action("wait", task_id, "Wait for the existing SPEC task.")
+        observed = sorted(
+            ["plan-1"] + [self.task_id(index) for index in range(1, number + 1)]
         )
-        self.event(events, "waited", {"task_id": "task-1"})
         self.event(
             events,
             "controller_resumed",
-            {
-                "persisted_next_action": wait_task,
-                "observed_task_ids": ["plan-1", "task-1"],
-            },
+            {"persisted_next_action": wait, "observed_task_ids": observed},
         )
-        self.event(events, "child_reconnected", {"task_id": "task-1"})
-        self.event(events, "stored_action_resumed", {"action": wait_task})
-        self.event(events, "waited", {"task_id": "task-1"})
+        self.event(events, "child_reconnected", {"task_id": task_id})
+        self.event(events, "stored_action_resumed", {"action": wait})
+        self.event(events, "waited", {"task_id": task_id})
+
+    def emit_blocker_round_trip(
+        self, events: list[dict[str, Any]], number: int
+    ) -> None:
+        task_id = self.task_id(number)
+        repair_id = f"repair-{number}"
+        blocked_action = self.action(
+            "wait", task_id, "Wait for implementation evidence."
+        )
+        wait_repair = self.action(
+            "wait", repair_id, "Wait for the focused repair task."
+        )
         self.event(
             events,
             "blocker_opened",
             {
-                "repair_task_id": "repair-1",
-                "parent_task_id": "task-1",
+                "repair_task_id": repair_id,
+                "parent_task_id": task_id,
                 "fingerprint": "ci:network",
-                "blocked_action": wait_task,
+                "blocked_action": blocked_action,
             },
         )
         self.event(
@@ -317,124 +399,202 @@ class ProtocolFixture:
                 "next_action": wait_repair,
             },
         )
-        self.event(events, "waited", {"task_id": "repair-1"})
+        self.event(events, "waited", {"task_id": repair_id})
         self.event(
             events,
             "child_handoff",
-            {"task_id": "repair-1", "boundary": "repair_evidence", "revision": None},
+            {"task_id": repair_id, "boundary": "repair_evidence", "revision": None},
             actor="repair_child",
         )
         self.event(
             events,
             "handoff_verified",
-            {"task_id": "repair-1", "result": "pass", "revision": None},
+            {"task_id": repair_id, "result": "pass", "revision": None},
         )
-        self.event(events, "child_archived", {"task_id": "repair-1"})
+        self.event(events, "child_archived", {"task_id": repair_id})
         self.event(
             events,
             "blocked_action_resumed",
             {
-                "repair_task_id": "repair-1",
-                "parent_task_id": "task-1",
-                "action": wait_task,
+                "repair_task_id": repair_id,
+                "parent_task_id": task_id,
+                "action": blocked_action,
             },
         )
-        self.event(events, "waited", {"task_id": "task-1"})
+
+    def emit_read_only_review(self, events: list[dict[str, Any]], number: int) -> None:
         self.event(
             events,
-            "ticket_evidence",
+            "role_limited_task",
             {
-                "spec_id": "SPEC-1",
-                "ticket_id": "T1",
-                "owner_task_id": "task-1",
-                "blocked_by": [],
-                "commits": ["git://merge-1/ticket-1"],
-                "test_evidence": ["test://ticket-1"],
-                "tracker_state": "closed",
+                "task_id": f"review-{number}",
+                "spec_id": self.spec_id(number),
+                "parent_task_id": self.task_id(number),
+                "role": "read_only_review",
+                "writes_product_code": False,
+                "merge_commits": [],
             },
-            actor="spec_child",
         )
+
+    def emit_ticket_evidence(
+        self, events: list[dict[str, Any]], number: int, revision: str
+    ) -> None:
+        for ticket in self.ticket_plan(number):
+            self.event(
+                events,
+                "ticket_evidence",
+                {
+                    "spec_id": self.spec_id(number),
+                    "ticket_id": ticket["id"],
+                    "owner_task_id": self.task_id(number),
+                    "blocked_by": list(ticket["blocked_by"]),
+                    "commits": [f"git://{revision}/{ticket['id']}"],
+                    "test_evidence": [f"test://{ticket['id']}"],
+                    "tracker_state": "closed",
+                },
+                actor="spec_child",
+            )
+
+    def finish_spec(
+        self, events: list[dict[str, Any]], number: int, revision: str
+    ) -> None:
+        task_id = self.task_id(number)
+        self.emit_ticket_evidence(events, number, revision)
         self.event(
             events,
             "child_handoff",
-            {"task_id": "task-1", "boundary": "merged_evidence", "revision": "merge-1"},
+            {"task_id": task_id, "boundary": "merged_evidence", "revision": revision},
             actor="spec_child",
         )
         self.event(
             events,
             "handoff_verified",
-            {"task_id": "task-1", "result": "pass", "revision": "merge-1"},
+            {"task_id": task_id, "result": "pass", "revision": revision},
         )
-        self.event(events, "child_archived", {"task_id": "task-1"})
+        self.event(events, "child_archived", {"task_id": task_id})
         self.event(
             events,
             "default_branch_verified",
-            {"spec_id": "SPEC-1", "revision": "merge-1"},
+            {"spec_id": self.spec_id(number), "revision": revision},
         )
+
+    def pass_checkpoint(
+        self, events: list[dict[str, Any]], position: int, revision: str
+    ) -> None:
         self.event(
             events,
             "checkpoint_passed",
             {
-                "checkpoint_id": "checkpoint-1",
-                "revision": "merge-1",
-                "candidate_revisions": ["merge-1"],
-                "affected_owners": ["owner-a"],
-                "affected_repositories": ["repo-a"],
+                "checkpoint_id": f"checkpoint-{position}",
+                "revision": revision,
+                "candidate_revisions": [revision],
+                **self.checkpoint_surfaces(position),
             },
         )
-        self.event(events, "release_candidate_frozen", {"revision": "merge-1"})
+
+    def emit_release(
+        self, events: list[dict[str, Any]], revision: str, *, deploy: bool = True
+    ) -> None:
+        artifact_id = "artifact-1"
+        package_id = "package-1"
+        self.event(events, "release_candidate_frozen", {"revision": revision})
         self.event(
             events,
             "artifact_built",
-            {"revision": "merge-1", "artifact_id": "artifact-1"},
+            {"revision": revision, "artifact_id": artifact_id},
         )
         self.event(
             events,
             "final_tests_passed",
             {
-                "revision": "merge-1",
-                "artifact_id": "artifact-1",
-                "candidate_revisions": ["merge-1"],
-                "l4_reused_checkpoint": "checkpoint-1",
+                "revision": revision,
+                "artifact_id": artifact_id,
+                "candidate_revisions": [revision],
+                "l4_reused_checkpoint": f"checkpoint-{revision.removeprefix('merge-')}",
             },
         )
         self.event(
             events,
             "package_completed",
             {
-                "revision": "merge-1",
-                "artifact_id": "artifact-1",
-                "package_id": "package-1",
+                "revision": revision,
+                "artifact_id": artifact_id,
+                "package_id": package_id,
             },
         )
-        self.event(
-            events,
-            "deployment_completed",
-            {
-                "revision": "merge-1",
-                "artifact_id": "artifact-1",
-                "package_id": "package-1",
-                "target": "production",
-            },
-        )
-        self.event(
-            events,
-            "smoke_passed",
-            {
-                "revision": "merge-1",
-                "artifact_id": "artifact-1",
-                "target": "production",
-            },
-        )
+        if deploy:
+            self.event(
+                events,
+                "deployment_completed",
+                {
+                    "revision": revision,
+                    "artifact_id": artifact_id,
+                    "package_id": package_id,
+                    "target": "production",
+                },
+            )
+            self.event(
+                events,
+                "smoke_passed",
+                {
+                    "revision": revision,
+                    "artifact_id": artifact_id,
+                    "target": "production",
+                },
+            )
+        else:
+            self.event(
+                events,
+                "deployment_not_applicable",
+                {
+                    "revision": revision,
+                    "artifact_id": artifact_id,
+                    "package_id": package_id,
+                    "reason": "The repository intentionally has no deployment target.",
+                },
+            )
         self.event(
             events,
             "terminal_ready",
             {
                 "controller_state": "terminal_success",
-                "candidate_revision": "merge-1",
+                "candidate_revision": revision,
                 "next_action": None,
             },
         )
+
+    def success_events(
+        self,
+        spec_count: int = 1,
+        *,
+        include_recovery: bool = False,
+        include_blocker: bool = False,
+        include_review: bool = False,
+        fallback_spec: int | None = None,
+        deploy: bool = True,
+    ) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        self.emit_planning_event(events, spec_count)
+        base_revision = "base-0"
+        for number in range(1, spec_count + 1):
+            self.emit_dispatch(
+                events,
+                number,
+                base_revision,
+                fallback=fallback_spec == number,
+            )
+            if include_recovery and number == 5:
+                self.emit_recovery(events, number)
+            if include_blocker and number == 12:
+                self.emit_blocker_round_trip(events, number)
+            if include_review and number == 16:
+                self.emit_read_only_review(events, number)
+            revision = self.revision(number)
+            self.finish_spec(events, number, revision)
+            base_revision = revision
+            if number % 10 == 0 or number == spec_count:
+                self.pass_checkpoint(events, number, revision)
+        self.emit_release(events, self.revision(spec_count), deploy=deploy)
         return events
 
     def write_lifecycle_log(self, events: list[dict[str, Any]]) -> None:
@@ -454,7 +614,8 @@ class ProtocolFixture:
         child_tasks = lifecycle_receipt["child_tasks"]
         implementation_ownership = lifecycle_receipt["implementation_ownership"]
         self.delivery_map_path.write_text(
-            "# Delivery map\n\nPlanning, implementation, repair, release, and smoke evidence verified.\n",
+            "# Delivery map\n\n"
+            "Planning, implementation, repair, release, and smoke evidence verified.\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -537,8 +698,10 @@ class BehavioralAcceptance(unittest.TestCase):
     def codes(payload: dict[str, Any]) -> set[str]:
         return {reason["code"] for reason in payload.get("reasons", [])}
 
-    def test_full_protocol_trace_reaches_one_terminal_success(self) -> None:
-        self.fixture.write_route_artifacts("planning", "plan-1")
+    def validate_planning(
+        self, spec_count: int, route_specs: list[tuple[int, bool]] | None = None
+    ) -> dict[str, Any]:
+        self.fixture.write_route_artifacts("planning", "plan-1", spec_count=spec_count)
         route_payload, route_code = self.run_validator(
             [
                 str(PLANNING),
@@ -578,32 +741,54 @@ class BehavioralAcceptance(unittest.TestCase):
             ]
         )
         self.assertEqual(0, handoff_code)
-        self.assertEqual(["SPEC-1"], handoff_payload["spec_ids"])
-
-        self.fixture.write_route_artifacts("SPEC-1", "task-1")
-        spec_route_payload, spec_route_code = self.run_validator(
-            [
-                str(PLANNING),
-                "route",
-                "--record",
-                str(self.fixture.record_path),
-                "--readback",
-                str(self.fixture.readback_path),
-                "--expected-run-id",
-                RUN_ID,
-                "--target",
-                "SPEC-1",
-                "--expected-task-id",
-                "task-1",
-            ]
+        self.assertEqual(
+            [self.fixture.spec_id(number) for number in range(1, spec_count + 1)],
+            handoff_payload["spec_ids"],
         )
-        self.assertEqual(0, spec_route_code)
-        self.assertEqual("task-1", spec_route_payload["task_id"])
 
-        events = self.fixture.success_events()
-        self.assertEqual(1, sum(event["type"] == "terminal_ready" for event in events))
+        for number, fallback in route_specs or []:
+            target = self.fixture.spec_id(number)
+            task_id = self.fixture.task_id(number)
+            readback = None
+            if fallback:
+                readback = self.fixture.readback(
+                    target,
+                    task_id,
+                    requested=self.fixture.pair("strongest-1", "max"),
+                    selection="fallback",
+                    reason="Recommended route became unavailable.",
+                )
+            self.fixture.write_route_artifacts(
+                target,
+                task_id,
+                spec_count=spec_count,
+                readback=readback,
+            )
+            payload, code = self.run_validator(
+                [
+                    str(PLANNING),
+                    "route",
+                    "--record",
+                    str(self.fixture.record_path),
+                    "--readback",
+                    str(self.fixture.readback_path),
+                    "--expected-run-id",
+                    RUN_ID,
+                    "--target",
+                    target,
+                    "--expected-task-id",
+                    task_id,
+                ]
+            )
+            self.assertEqual(0, code)
+            self.assertEqual(task_id, payload["task_id"])
+        return handoff_payload
+
+    def evaluate_lifecycle(
+        self, events: list[dict[str, Any]], expected_state: str
+    ) -> tuple[dict[str, Any], int]:
         self.fixture.write_lifecycle_log(events)
-        lifecycle_payload, lifecycle_code = self.run_validator(
+        return self.run_validator(
             [
                 str(LIFECYCLE),
                 "--log",
@@ -611,26 +796,17 @@ class BehavioralAcceptance(unittest.TestCase):
                 "--expected-run-id",
                 RUN_ID,
                 "--expected-state",
-                "terminal_success",
+                expected_state,
                 "--receipt",
                 str(self.root / "lifecycle-receipt.json"),
             ]
         )
-        self.assertEqual(0, lifecycle_code)
-        self.assertEqual(
-            "terminal_success", lifecycle_payload["derived_controller_state"]
-        )
-        self.assertIsNone(lifecycle_payload["next_action"])
-        self.assertEqual([], lifecycle_payload["pending_specs"])
-        self.assertTrue(
-            all(
-                task["lifecycle"] == "archived"
-                for task in lifecycle_payload["child_tasks"]
-            )
-        )
 
+    def evaluate_terminal(
+        self, lifecycle_payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
         self.fixture.write_terminal_state(lifecycle_payload)
-        terminal_payload, terminal_code = self.run_validator(
+        return self.run_validator(
             [
                 str(TERMINAL),
                 "--state",
@@ -649,40 +825,169 @@ class BehavioralAcceptance(unittest.TestCase):
                 str(self.root / "terminal-receipt.json"),
             ]
         )
+
+    def validate_success_flow(
+        self,
+        spec_count: int,
+        *,
+        route_specs: list[tuple[int, bool]] | None = None,
+        include_recovery: bool = False,
+        include_blocker: bool = False,
+        include_review: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+        self.validate_planning(spec_count, route_specs=route_specs)
+        events = self.fixture.success_events(
+            spec_count,
+            include_recovery=include_recovery,
+            include_blocker=include_blocker,
+            include_review=include_review,
+            fallback_spec=next(
+                (number for number, fallback in route_specs or [] if fallback), None
+            ),
+        )
+        lifecycle_payload, lifecycle_code = self.evaluate_lifecycle(
+            events, "terminal_success"
+        )
+        self.assertEqual(0, lifecycle_code)
+        self.assertEqual(
+            "terminal_success", lifecycle_payload["derived_controller_state"]
+        )
+        terminal_payload, terminal_code = self.evaluate_terminal(lifecycle_payload)
         self.assertEqual(0, terminal_code)
         self.assertEqual("allow", terminal_payload["decision"])
         self.assertEqual("terminal_success", terminal_payload["terminal_state"])
+        return events, lifecycle_payload, terminal_payload
+
+    def planning_handoff_for_record(
+        self, record: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
+        self.fixture.write_json(self.fixture.record_path, record)
+        self.fixture.write_json(
+            self.fixture.readback_path, self.fixture.readback("planning", "plan-1")
+        )
+        self.fixture.write_planning_handoff_state()
+        return self.run_validator(
+            [
+                str(PLANNING),
+                "handoff",
+                "--record",
+                str(self.fixture.record_path),
+                "--controller-state",
+                str(self.fixture.planning_state_path),
+                "--planning-readback",
+                str(self.fixture.readback_path),
+                "--expected-run-id",
+                RUN_ID,
+            ]
+        )
+
+    def test_full_32_spec_protocol_trace_covers_release_train_and_ownership(
+        self,
+    ) -> None:
+        events, lifecycle_payload, terminal_payload = self.validate_success_flow(
+            32,
+            route_specs=[(1, False), (14, True), (32, False)],
+            include_recovery=True,
+            include_blocker=True,
+            include_review=True,
+        )
+        checkpoints = lifecycle_payload["l4_checkpoints"]["checkpoints"]
+        self.assertEqual(
+            [10, 20, 30, 32],
+            [checkpoint["end_spec_index"] for checkpoint in checkpoints],
+        )
+        self.assertEqual(4, terminal_payload["l4_checkpoint_count"])
+        final_tests = next(
+            event for event in events if event["type"] == "final_tests_passed"
+        )
+        self.assertEqual(
+            {
+                "mode": "reused_checkpoint",
+                "checkpoint_id": "checkpoint-32",
+                "candidate_revisions": ["merge-32"],
+                "evidence": final_tests["evidence"],
+            },
+            lifecycle_payload["l4_checkpoints"]["release_l4"],
+        )
+        self.assertEqual(
+            4, sum(event["type"] == "checkpoint_passed" for event in events)
+        )
+
+        ownership = lifecycle_payload["implementation_ownership"]
+        self.assertTrue(
+            all(
+                not values
+                for values in ownership["ticket_implementation_artifacts"].values()
+            )
+        )
+        spec_7 = next(
+            spec for spec in ownership["specs"] if spec["spec_id"] == "SPEC-7"
+        )
+        self.assertEqual("task-7", spec_7["implementation_task_id"])
+        self.assertEqual(
+            {"task-7"}, {ticket["owner_task_id"] for ticket in spec_7["tickets"]}
+        )
+        self.assertEqual(
+            {
+                "T7-foundation": [],
+                "T7-api": ["T7-foundation"],
+                "T7-smoke": ["T7-foundation"],
+            },
+            {ticket["id"]: ticket["blocked_by"] for ticket in spec_7["tickets"]},
+        )
+        self.assertTrue(
+            all(
+                ticket["commits"] and ticket["test_evidence"]
+                for ticket in spec_7["tickets"]
+            )
+        )
+
+        spec_14 = next(
+            spec for spec in ownership["specs"] if spec["spec_id"] == "SPEC-14"
+        )
+        self.assertEqual("fallback", spec_14["route"]["selection"])
+        self.assertEqual("task-14", spec_14["route"]["task_id"])
+
+        helpers = {
+            helper["task_id"]: helper for helper in ownership["role_limited_tasks"]
+        }
+        self.assertEqual("blocker_repair", helpers["repair-12"]["role"])
+        self.assertEqual("task-12", helpers["repair-12"]["parent_task_id"])
+        self.assertEqual("read_only_review", helpers["review-16"]["role"])
+        self.assertFalse(helpers["review-16"]["writes_product_code"])
+        self.assertEqual([], helpers["review-16"]["merge_commits"])
+
+    def test_short_and_exact_ten_trains_reuse_final_checkpoint_without_duplicate_l4(
+        self,
+    ) -> None:
+        for spec_count in (7, 10):
+            with self.subTest(spec_count=spec_count):
+                events, lifecycle_payload, terminal_payload = (
+                    self.validate_success_flow(
+                        spec_count,
+                        route_specs=[(1, False), (spec_count, False)],
+                    )
+                )
+                checkpoints = lifecycle_payload["l4_checkpoints"]["checkpoints"]
+                self.assertEqual(1, len(checkpoints))
+                self.assertEqual(spec_count, checkpoints[0]["end_spec_index"])
+                self.assertEqual(
+                    f"checkpoint-{spec_count}",
+                    lifecycle_payload["l4_checkpoints"]["release_l4"]["checkpoint_id"],
+                )
+                self.assertEqual(
+                    "reused_checkpoint",
+                    lifecycle_payload["l4_checkpoints"]["release_l4"]["mode"],
+                )
+                self.assertEqual(1, terminal_payload["l4_checkpoint_count"])
+                self.assertEqual(
+                    1, sum(event["type"] == "checkpoint_passed" for event in events)
+                )
 
     def test_audit_failure_trace_is_rejected_by_real_lifecycle_gate(self) -> None:
         events: list[dict[str, Any]] = []
-        self.fixture.event(
-            events,
-            "planning_archived",
-            {
-                "task_id": "plan-1",
-                "specs": [
-                    {
-                        "id": "SPEC-1",
-                        "tickets": [{"id": "T1", "blocked_by": []}],
-                    }
-                ],
-                "checkpoint_size": 10,
-                "checkpoints": self.fixture.checkpoint_plan(["SPEC-1"]),
-                "default_branch": "main",
-                "default_revision": "base-0",
-            },
-        )
-        self.fixture.event(
-            events,
-            "spec_dispatched",
-            {
-                "task_id": "task-1",
-                "spec_id": "SPEC-1",
-                "base_revision": "base-0",
-                "route_selection": "recommended",
-                "route_evidence": ["receipt://SPEC-1-route"],
-            },
-        )
+        self.fixture.emit_planning_event(events, 1)
+        self.fixture.emit_dispatch(events, 1, "base-0")
         self.fixture.event(
             events,
             "release_candidate_frozen",
@@ -705,6 +1010,206 @@ class BehavioralAcceptance(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertIn("actor_mismatch", self.codes(payload))
         self.assertIn("release_before_specs_complete", self.codes(payload))
+
+    def test_l4_planning_rejects_old_six_schedule_and_tail_omission(self) -> None:
+        old_schedule = self.fixture.planning_record(32)
+        old_schedule["release_train"]["checkpoint_size"] = 6
+        old_schedule["release_train"]["checkpoints"] = [
+            {
+                "id": f"checkpoint-{position}",
+                "start_spec_index": position - 5,
+                "end_spec_index": position,
+                "specs": [
+                    self.fixture.spec_id(number)
+                    for number in range(position - 5, position + 1)
+                ],
+                "final_tail": False,
+                **self.fixture.checkpoint_surfaces(position),
+            }
+            for position in (6, 12, 18, 24, 30)
+        ]
+        payload, code = self.planning_handoff_for_record(old_schedule)
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_size_mismatch", self.codes(payload))
+        self.assertIn("checkpoint_mismatch", self.codes(payload))
+
+        omitted_tail = self.fixture.planning_record(32)
+        omitted_tail["release_train"]["checkpoints"].pop()
+        payload, code = self.planning_handoff_for_record(omitted_tail)
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_mismatch", self.codes(payload))
+
+    def test_lifecycle_rejects_due_failed_stale_and_overbroad_l4(self) -> None:
+        due_events: list[dict[str, Any]] = []
+        self.fixture.emit_planning_event(due_events, 11)
+        base = "base-0"
+        for number in range(1, 11):
+            self.fixture.emit_dispatch(due_events, number, base)
+            revision = self.fixture.revision(number)
+            self.fixture.finish_spec(due_events, number, revision)
+            base = revision
+        self.fixture.emit_dispatch(due_events, 11, "merge-10")
+        payload, code = self.evaluate_lifecycle(due_events, "active")
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_blocks_next_segment", self.codes(payload))
+
+        failed_events = copy.deepcopy(due_events[:-1])
+        self.fixture.event(
+            failed_events,
+            "checkpoint_failed",
+            {
+                "checkpoint_id": "checkpoint-10",
+                "revision": "merge-10",
+                "candidate_revisions": ["merge-10"],
+                **self.fixture.checkpoint_surfaces(10),
+                "reason": "Owner regression failed.",
+            },
+        )
+        self.fixture.emit_dispatch(failed_events, 11, "merge-10")
+        payload, code = self.evaluate_lifecycle(failed_events, "active")
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_blocks_next_segment", self.codes(payload))
+
+        stale_reuse = self.fixture.success_events(7)
+        final_tests = next(
+            event for event in stale_reuse if event["type"] == "final_tests_passed"
+        )
+        final_tests["data"]["candidate_revisions"] = ["merge-7", "repo-2@later"]
+        payload, code = self.evaluate_lifecycle(stale_reuse, "terminal_success")
+        self.assertEqual(1, code)
+        self.assertIn("stale_final_checkpoint_revisions", self.codes(payload))
+
+        overbroad = self.fixture.success_events(7)
+        checkpoint = next(
+            event for event in overbroad if event["type"] == "checkpoint_passed"
+        )
+        checkpoint["data"]["affected_repositories"] = ["repo-1", "repo-unrelated"]
+        payload, code = self.evaluate_lifecycle(overbroad, "terminal_success")
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_repository_scope_mismatch", self.codes(payload))
+
+    def test_lifecycle_rejects_ticket_thread_and_owner_topology_regressions(
+        self,
+    ) -> None:
+        ticket_thread = self.fixture.success_events(1)
+        events = ticket_thread[:2]
+        self.fixture.event(
+            events,
+            "ticket_implementation_artifact",
+            {
+                "artifact_type": "thread",
+                "id": "ticket-thread-1",
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+            },
+        )
+        payload, code = self.evaluate_lifecycle(events, "active")
+        self.assertEqual(1, code)
+        self.assertIn("ticket_implementation_artifact_present", self.codes(payload))
+
+        replacement_owner: list[dict[str, Any]] = []
+        self.fixture.emit_planning_event(replacement_owner, 1)
+        self.fixture.emit_dispatch(replacement_owner, 1, "base-0")
+        self.fixture.event(
+            replacement_owner,
+            "spec_dispatched",
+            {
+                "task_id": "task-1-escalated",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+                "route_selection": "fallback",
+                "route_evidence": ["receipt://SPEC-1/fallback"],
+            },
+        )
+        payload, code = self.evaluate_lifecycle(replacement_owner, "active")
+        self.assertEqual(1, code)
+        self.assertIn("overlapping_spec", self.codes(payload))
+        self.assertIn("duplicate_spec_task", self.codes(payload))
+
+        owner_mismatch = self.fixture.success_events(1)
+        ticket = next(
+            event for event in owner_mismatch if event["type"] == "ticket_evidence"
+        )
+        ticket["data"]["owner_task_id"] = "ticket-task-1"
+        payload, code = self.evaluate_lifecycle(owner_mismatch, "terminal_success")
+        self.assertEqual(1, code)
+        self.assertIn("ticket_owner_mismatch", self.codes(payload))
+
+    def test_lifecycle_rejects_repair_or_reviewer_ownership_breach(self) -> None:
+        repair_takeover = self.fixture.success_events(12, include_blocker=True)
+        takeover_ticket = next(
+            event
+            for event in repair_takeover
+            if event["type"] == "ticket_evidence"
+            and event["data"]["spec_id"] == "SPEC-12"
+        )
+        takeover_ticket["data"]["owner_task_id"] = "repair-12"
+        takeover_ticket["actor"] = "repair_child"
+        payload, code = self.evaluate_lifecycle(repair_takeover, "terminal_success")
+        self.assertEqual(1, code)
+        self.assertIn("actor_mismatch", self.codes(payload))
+        self.assertIn("ticket_owner_mismatch", self.codes(payload))
+
+        reviewer_commit = self.fixture.success_events(16, include_review=True)
+        review = next(
+            event for event in reviewer_commit if event["type"] == "role_limited_task"
+        )
+        review["data"]["writes_product_code"] = True
+        review["data"]["merge_commits"] = ["merge-review"]
+        payload, code = self.evaluate_lifecycle(reviewer_commit, "terminal_success")
+        self.assertEqual(1, code)
+        self.assertIn("role_limited_task_mutated_product", self.codes(payload))
+
+    def test_terminal_counterexamples_reject_machine_state_regressions(self) -> None:
+        _, lifecycle_payload, _ = self.validate_success_flow(10)
+        self.fixture.write_terminal_state(lifecycle_payload)
+        state = json.loads(self.fixture.terminal_state_path.read_text(encoding="utf-8"))
+        state["test_state"]["l4_checkpoints"]["release_l4"]["candidate_revisions"] = [
+            "merge-10",
+            "repo-2@later",
+        ]
+        self.fixture.write_json(self.fixture.terminal_state_path, state)
+        payload, code = self.run_validator(
+            [
+                str(TERMINAL),
+                "--state",
+                str(self.fixture.terminal_state_path),
+                "--delivery-map",
+                str(self.fixture.delivery_map_path),
+                "--task-tree",
+                str(self.fixture.task_tree_path),
+                "--expected-run-id",
+                RUN_ID,
+                "--proposed-state",
+                "terminal_success",
+            ]
+        )
+        self.assertEqual(1, code)
+        self.assertIn("stale_final_checkpoint_revisions", self.codes(payload))
+
+        self.fixture.write_terminal_state(lifecycle_payload)
+        state = json.loads(self.fixture.terminal_state_path.read_text(encoding="utf-8"))
+        state["implementation_ownership"]["ticket_implementation_artifacts"][
+            "tasks"
+        ].append("ticket-task-1")
+        self.fixture.write_json(self.fixture.terminal_state_path, state)
+        payload, code = self.run_validator(
+            [
+                str(TERMINAL),
+                "--state",
+                str(self.fixture.terminal_state_path),
+                "--delivery-map",
+                str(self.fixture.delivery_map_path),
+                "--task-tree",
+                str(self.fixture.task_tree_path),
+                "--expected-run-id",
+                RUN_ID,
+                "--proposed-state",
+                "terminal_success",
+            ]
+        )
+        self.assertEqual(1, code)
+        self.assertIn("ticket_implementation_artifact_present", self.codes(payload))
 
     def test_second_terminal_event_is_rejected(self) -> None:
         events = self.fixture.success_events()
