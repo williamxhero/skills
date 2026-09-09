@@ -13,7 +13,7 @@ class FixtureController:
     def side_question(self): self.events.append({"kind":"side_question","owner":"controller","prior_action":self.next_action,"resumed_action":self.next_action})
     def handoff(self,task): self.events += [{"kind":"child_final","owner":task,"task":task},{"kind":"verify","owner":"controller","task":task},{"kind":"archive","owner":"controller","task":task}]; self.next_action="advance"
     def recover(self,task): self.events.append({"kind":"recover","owner":"controller","task":task,"created_duplicate":False}); self.next_action=f"wait:{task}"
-    def release(self): self.events += [{"kind":k,"owner":"controller"} for k in ("freeze","build","package","deploy","smoke")]; self.next_action=None; self.finals.append("terminal_success")
+    def release(self): self.events += [{"kind":k,"owner":"controller"} for k in ("freeze","build","package","deploy","smoke")]; self.next_action=None; self.events.append({"kind":"controller_final","owner":"controller","state":"terminal_success"}); self.finals.append("terminal_success")
 
 class BehavioralAcceptance(unittest.TestCase):
     def validate(self,events):

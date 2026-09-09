@@ -200,7 +200,7 @@ class PlanningValidatorTests(unittest.TestCase):
 
     def route_gate(self, record: dict, readback: dict, target: str):
         self.write(record, readback=readback)
-        return validator.evaluate_route(self.record_path, self.readback_path, "run-001", target)
+        return validator.evaluate_route(self.record_path, self.readback_path, "run-001", target, readback["task_id"])
 
     def test_complete_handoff_is_allowed_and_deterministic(self) -> None:
         first = self.handoff(self.record())
@@ -318,6 +318,13 @@ class PlanningValidatorTests(unittest.TestCase):
         )
         self.assertEqual(0, code)
         self.assertEqual("spec-task-1", payload["task_id"])
+
+    def test_spec_route_readback_is_bound_to_created_task(self) -> None:
+        readback = self.readback(target="SPEC-1", task_id="stale-task", requested=self.pair("fast-1", "medium"))
+        self.write(self.record(), readback=readback)
+        payload, code = validator.evaluate_route(self.record_path, self.readback_path, "run-001", "SPEC-1", "created-task")
+        self.assertEqual(1, code)
+        self.assertIn("task_id_mismatch", self.codes(payload))
 
     def test_cli_writes_the_exact_handoff_receipt(self) -> None:
         self.write(self.record())

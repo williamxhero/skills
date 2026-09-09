@@ -540,6 +540,7 @@ def _readback_issues(
     expected_run_id: str,
     target: str,
     capabilities: dict[str, tuple[str, set[str]]],
+    expected_task_id: str,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     obj = _object(
@@ -564,10 +565,11 @@ def _readback_issues(
     _supported_pair(applied, "$readback.applied", capabilities, issues)
 
     route: dict[str, Any] | None = None
-    expected_task_id: str | None = None
     if target == "planning":
         task, route = _planning_task(record, capabilities, issues)
-        expected_task_id = task.get("id") if task else None
+        recorded_task_id = task.get("id") if task else None
+        if recorded_task_id != expected_task_id:
+            issues.append(_issue("expected_task_id_mismatch", "$record.planning_task.id", "Expected task does not match the planning record."))
     else:
         specs = record.get("specs")
         match = next((spec for spec in specs if isinstance(spec, dict) and spec.get("id") == target), None) if isinstance(specs, list) else None
@@ -575,8 +577,8 @@ def _readback_issues(
             issues.append(_issue("route_target_unknown", "$readback.target", "Target SPEC is absent from the planning record."))
         else:
             route = _route(match.get("route"), f"$.specs[{target}].route", capabilities, issues)
-    if expected_task_id is not None and obj.get("task_id") != expected_task_id:
-        issues.append(_issue("planning_task_id_mismatch", "$readback.task_id", "Planning readback names a different task."))
+    if obj.get("task_id") != expected_task_id:
+        issues.append(_issue("task_id_mismatch", "$readback.task_id", "Readback does not name the child created for this gate."))
 
     selection = obj.get("selection")
     reason = obj.get("substitution_reason")
@@ -607,6 +609,7 @@ def evaluate_route(
     readback_path: Path,
     expected_run_id: str,
     target: str,
+    expected_task_id: str,
 ) -> tuple[dict[str, Any], int]:
     issues: list[dict[str, str]] = []
     record, record_raw = _read_json(record_path, "planning_record", issues)
@@ -617,7 +620,7 @@ def evaluate_route(
         if target == "planning":
             _planning_task(record, capabilities, issues)
         if readback is not None:
-            issues.extend(_readback_issues(record, readback, expected_run_id, target, capabilities))
+            issues.extend(_readback_issues(record, readback, expected_run_id, target, capabilities, expected_task_id))
     issues = _sorted(issues)
     if issues:
         payload: dict[str, Any] = {
@@ -669,7 +672,8 @@ def evaluate_handoff(
         _, capabilities = _route_scaffold(record, expected_run_id, [])
         issues.extend(_controller_issues(state, record))
         if readback is not None:
-            issues.extend(_readback_issues(record, readback, expected_run_id, "planning", capabilities))
+            planning_task = record.get("planning_task") if isinstance(record.get("planning_task"), dict) else {}
+            issues.extend(_readback_issues(record, readback, expected_run_id, "planning", capabilities, planning_task.get("id", "")))
     issues = _sorted(issues)
     if issues:
         planning_id = record.get("planning_task", {}).get("id") if isinstance(record, dict) and isinstance(record.get("planning_task"), dict) else "planning"
@@ -745,6 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--readback", required=True, type=Path)
     route.add_argument("--expected-run-id", required=True)
     route.add_argument("--target", required=True)
+    route.add_argument("--expected-task-id", required=True)
     route.add_argument("--receipt", type=Path)
     handoff = subparsers.add_parser("handoff", help="Validate the complete planning handoff and dispatch boundary")
     handoff.add_argument("--record", required=True, type=Path)
@@ -758,7 +763,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "route":
-        payload, exit_code = evaluate_route(args.record, args.readback, args.expected_run_id, args.target)
+        payload, exit_code = evaluate_route(args.record, args.readback, args.expected_run_id, args.target, args.expected_task_id)
     else:
         payload, exit_code = evaluate_handoff(args.record, args.controller_state, args.planning_readback, args.expected_run_id)
     serialized = _serialize(payload)
