@@ -1,0 +1,4 @@
+interface:
+  display_name: "Unblock Development"
+  short_description: "Route development blockers into repair tasks"
+  default_prompt: "Use $unblock-development to repair this blocker in a dedicated task and resume the parent work."
