@@ -434,6 +434,45 @@ class PlanningValidatorTests(unittest.TestCase):
                 )
                 self.assertIn(expected, {issue["code"] for issue in issues})
 
+    def test_pair_non_string_inputs_reject_with_persistable_repair(self) -> None:
+        cases = (
+            ("model", []),
+            ("model", {}),
+            ("model", 1),
+            ("thinking", []),
+            ("thinking", {}),
+            ("thinking", 1),
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                readback = self.readback()
+                readback["requested"][field] = value
+                readback["applied"][field] = copy.deepcopy(value)
+
+                first = self.route_gate(self.record(), readback, "planning")
+                second = self.route_gate(self.record(), readback, "planning")
+
+                self.assertEqual(first, second)
+                payload, code = first
+                self.assertEqual(1, code)
+                self.assertEqual("reject", payload["decision"])
+                self.assertEqual("repair", payload["next_action"]["kind"])
+                self.assertIn(
+                    ("invalid_text", f"$readback.requested.{field}"),
+                    {
+                        (issue["code"], issue["path"])
+                        for issue in payload["reasons"]
+                    },
+                )
+                self.assertIn(
+                    ("invalid_text", f"$readback.applied.{field}"),
+                    {
+                        (issue["code"], issue["path"])
+                        for issue in payload["reasons"]
+                    },
+                )
+                self.assert_persistable_next_action(payload["next_action"])
+
     def test_model_policy_ranks_and_difficulty_floors_match_host_capabilities(
         self,
     ) -> None:

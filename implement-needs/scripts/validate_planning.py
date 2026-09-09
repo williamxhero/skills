@@ -167,7 +167,9 @@ def _pair(value: Any, path: str, issues: list[dict[str, str]]) -> dict[str, str]
     if obj is None:
         return None
     model = _text(obj.get("model"), f"{path}.model", issues)
-    thinking = obj.get("thinking")
+    thinking = _text(obj.get("thinking"), f"{path}.thinking", issues)
+    if thinking is None:
+        return None
     if thinking not in EFFORT_RANK:
         issues.append(
             _issue(

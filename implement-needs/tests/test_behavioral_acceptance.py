@@ -982,6 +982,80 @@ class BehavioralAcceptance(unittest.TestCase):
         self.assertIn("route_not_locked_recommendation", self.codes(payload))
         self.assertEqual("repair_state", payload["next_action"]["kind"])
 
+    def test_installed_route_gate_rejects_non_string_pair_fields_deterministically(
+        self,
+    ) -> None:
+        cases = (
+            ("model", []),
+            ("model", {}),
+            ("model", 1),
+            ("thinking", []),
+            ("thinking", {}),
+            ("thinking", 1),
+        )
+        action_kinds = set(
+            json.loads(
+                (
+                    self.installed_skill_root
+                    / "references"
+                    / "controller-state.schema.json"
+                ).read_text(encoding="utf-8")
+            )["$defs"]["action"]["properties"]["kind"]["enum"]
+        )
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                readback = self.fixture.readback("planning", "plan-1")
+                readback["requested"][field] = value
+                readback["applied"][field] = copy.deepcopy(value)
+                self.fixture.write_route_artifacts(
+                    "planning", "plan-1", readback=readback
+                )
+                receipt_path = self.root / f"{field}-route-receipt.json"
+                command = [
+                    str(self.planning),
+                    "route",
+                    "--record",
+                    str(self.fixture.record_path),
+                    "--readback",
+                    str(self.fixture.readback_path),
+                    "--expected-run-id",
+                    RUN_ID,
+                    "--target",
+                    "planning",
+                    "--expected-task-id",
+                    "plan-1",
+                    "--receipt",
+                    str(receipt_path),
+                ]
+
+                first = self.run_validator(command)
+                second = self.run_validator(command)
+
+                self.assertEqual(first, second)
+                payload, code = first
+                self.assertEqual(1, code)
+                self.assertEqual("reject", payload["decision"])
+                self.assertEqual("repair", payload["next_action"]["kind"])
+                self.assertIn(payload["next_action"]["kind"], action_kinds)
+                self.assertEqual(
+                    payload,
+                    json.loads(receipt_path.read_text(encoding="utf-8")),
+                )
+                self.assertIn(
+                    ("invalid_text", f"$readback.requested.{field}"),
+                    {
+                        (issue["code"], issue["path"])
+                        for issue in payload["reasons"]
+                    },
+                )
+                self.assertIn(
+                    ("invalid_text", f"$readback.applied.{field}"),
+                    {
+                        (issue["code"], issue["path"])
+                        for issue in payload["reasons"]
+                    },
+                )
+
     def test_malformed_policy_ranks_fail_closed_without_type_error(self) -> None:
         self.validate_planning(1)
         events = self.fixture.success_events(1)
