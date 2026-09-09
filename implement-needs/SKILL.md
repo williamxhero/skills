@@ -5,7 +5,7 @@ description: 'Autonomously orchestrate a broad software requirement end to end: 
 
 # Implement Needs
 
-The invoking task is the **controller**. It stress-tests the requirement, plans, creates specs and tickets, dispatches and verifies spec and blocker tasks, then owns the final build and deployment. It does not implement a spec's product code itself. Each spec gets one fresh Codex child task that owns implementation through merge; any issue blocking forward progress gets a focused repair task. Archive each task after its outcome is verified, then resume its parent workflow.
+The invoking task is the **controller**. It stress-tests the requirement, delegates high-reasoning planning, dispatches and verifies planning, spec, and blocker tasks, then owns the final build and deployment. It is a medium-cost supervisor: it does not author the SPEC/ticket decomposition or implement a spec's product code itself. One fresh planning task owns the complete multi-SPEC and ticket design; each spec then gets one fresh implementation task that owns implementation through merge. Any issue blocking forward progress gets a focused repair task. Archive each task after its outcome is verified, then resume its parent workflow.
 
 Deliver without interviews or approval checkpoints. A run is not complete until every spec is merged into the default branch, the complete `test-release-train` gate is green, and the resulting revision is built, deployed when the repository has a configured deployment target, and smoke-tested.
 
@@ -57,11 +57,13 @@ Preserve unrelated user changes. Work from isolated branches or worktrees when t
 
 ## Controller and child tasks
 
-Use `list_projects`, `create_thread`, `wait_threads`, `send_message_to_thread`, and `set_thread_archived` for spec boundaries; present them to the user as Codex tasks. Apply `unblock-development` for blocker task boundaries. `implement-spec` may still use subagents inside a spec task for parallel tickets. If these task-lifecycle tools are unavailable, report a hard blocker instead of silently substituting the controller context or a subagent.
+Use `list_projects`, `create_thread`, `wait_threads`, `send_message_to_thread`, and `set_thread_archived` for the planning boundary and every spec boundary; present them to the user as Codex tasks. Apply `unblock-development` for blocker task boundaries. The planning task may use subagents for repository exploration, and `implement-spec` may use them inside a spec task for parallel tickets. If these task-lifecycle tools are unavailable, report a hard blocker instead of silently substituting the controller context or a subagent.
 
-Before dispatching, resolve the Codex project that owns the repository. Use a project worktree for repository-scoped code repairs and spec implementation; use the saved project directly only when a host-level tool, network, credential, or shared-environment repair must affect the blocked environment. Start spec tasks from the latest default-branch state containing every prior spec merge. Create exactly one child task for the active spec and never overlap two spec tasks.
+Before dispatching, resolve the Codex project that owns the repository. Run the planning task against the saved project so it can inspect the repository and publish tracker artifacts while remaining code-read-only. Use a project worktree for repository-scoped code repairs and spec implementation; use the saved project directly when a host-level tool, network, credential, or shared-environment repair must affect the blocked environment. Start spec tasks from the latest default-branch state containing every prior spec merge. The planning task must be verified and archived before the first spec task starts. Create exactly one child task for the active spec and never overlap two spec tasks.
 
-Choose every spec task's model and reasoning effort from the combinations advertised for the target host at task-creation time. Classify the complete ticket graph; ticket count alone does not determine difficulty. Let `unblock-development` classify and route repair tasks.
+Treat planning as a critical high-reasoning task. Select at least a reliable high-intelligence agentic model with `xhigh` effort; for broad cross-repository, migration-heavy, or unusually ambiguous requirements, use the strongest reliable model with the highest supported effort of `max` or `ultra`. If those exact options are unavailable, choose the closest advertised model class and the highest supported effort at or above `high`. Never assign planning to the fast/economical model class. Record the selected model, effort, and rationale before creating the task.
+
+The planning task selects and locks one concrete `model` and `thinking` pair for every spec implementation task after it has created that spec's complete ticket graph. It must choose from combinations advertised for the target host and classify the graph by risk and coupling; ticket count alone does not determine difficulty. The planning model's high floor applies only to planning, not to implementation tasks. Use the following routing table so easy implementations may remain economical while difficult work receives stronger models:
 
 | Difficulty | Typical shape | Model class | Reasoning effort |
 | --- | --- | --- | --- |
@@ -70,7 +72,7 @@ Choose every spec task's model and reasoning effort from the combinations advert
 | Hard | Cross-cutting behavior, migrations, concurrency, security, or performance work | Reliable agentic workhorse | `xhigh` |
 | Extreme | Multi-repository coordination or unusually fragile compatibility and release constraints | Strongest reliable model available | Highest supported of `max` or `ultra` |
 
-Use the closest supported class when model names change. If the target effort is unsupported, use the nearest supported effort at or above it, or the model's highest supported effort. Pass the selection explicitly as the task's `model` and `thinking`; record both and a concise rationale in the delivery map before creating the task.
+Record each implementation task's exact recommended model, effort, difficulty, rationale, and fallback class in the delivery map. The controller executes that recommendation without reclassifying the work. If the exact pair is unavailable at task creation, use the nearest currently advertised pair in the same or stronger class and record the substitution. If the spec or ticket graph changed materially, invalidate the recommendation and create a high-reasoning planning revision task; verify and archive it before implementation. Let `unblock-development` classify and route repair tasks independently when blockers actually arise.
 
 ## Message phase and controller liveness
 
@@ -78,11 +80,11 @@ Treat the controller's message phase as control flow, not presentation. `final_a
 
 Write every controller message addressed to the user in Chinese, including Grill rounds, progress updates, blocker reports, answers to side questions, and the terminal response. Keep exact identifiers, commands, paths, logs, protocol field names, and quoted evidence in their original language when translation would reduce precision. Internal reasoning, child-task prompts, and task-to-task handoffs may use English or whichever language is most token-efficient. Summarize child-task results in Chinese instead of forwarding an English handoff as the controller's user-facing update.
 
-Maintain these top-level fields in the delivery map and refresh them before every controller update: `controller_state`, `active_phase`, `active_task_stack`, `pending_specs`, `test_train_state`, `release_state`, and `next_action`. `controller_state` is one of `active`, `terminal_success`, `terminal_blocked`, or `user_stopped`. Any executable `next_action`, active or paused child task, pending spec, unverified merge, open repair, incomplete test-train gate, or incomplete release gate requires `controller_state: active`.
+Maintain these top-level fields in the delivery map and refresh them before every controller update: `controller_state`, `active_phase`, `active_task_stack`, `planning_task_state`, `pending_specs`, `test_train_state`, `release_state`, and `next_action`. `controller_state` is one of `active`, `terminal_success`, `terminal_blocked`, or `user_stopped`. Any executable `next_action`, active or paused child task, incomplete or unarchived planning task, pending spec, unverified merge, open repair, incomplete test-train gate, or incomplete release gate requires `controller_state: active`.
 
 The controller may emit `final_answer` only in one of these terminal states:
 
-1. `terminal_success`: every spec and ticket is verified complete and merged, every spec and repair task is archived, the test release train is green for the exact candidate, the default branch is healthy, and build, package, deployment or explicit deployment-not-applicable, and smoke-test evidence are recorded.
+1. `terminal_success`: the planning task is verified and archived, every spec and ticket is verified complete and merged, every spec and repair task is archived, the test release train is green for the exact candidate, the default branch is healthy, and build, package, deployment or explicit deployment-not-applicable, and smoke-test evidence are recorded.
 2. `terminal_blocked`: the same objective blocker has met the hard-blocker stopping rule, no safe in-scope action remains, and the exact resume point is recorded.
 3. `user_stopped`: the user explicitly pauses, cancels, or stops the controller itself, and the exact resume point is recorded.
 
@@ -91,14 +93,14 @@ All other controller messages must use `commentary`, including status recaps, an
 Run this preflight immediately before every proposed controller final:
 
 1. Re-read the delivery map and current task tree.
-2. Assert that no spec or repair task is active, paused, queued, or awaiting independent verification, unless entering `terminal_blocked` or `user_stopped`.
+2. Assert that no planning, spec, or repair task is active, paused, queued, unarchived, or awaiting independent verification, unless entering `terminal_blocked` or `user_stopped`.
 3. Assert that `pending_specs` is empty and `next_action` is empty.
 4. Assert that `test_train_state` and `release_state` are terminal and supported by evidence.
 5. Name the terminal state and its evidence in the final response.
 
 If any assertion fails, reject the final, set `controller_state: active`, emit only a concise commentary update, and execute `next_action`. Apply the same gate to goal status: mark a goal complete only for `terminal_success`, and blocked only for `terminal_blocked`; otherwise leave it active.
 
-A spec or repair child task may use its final response only as a structured handoff to the controller: `completed` with evidence for its assigned outcome, or `needs_repair` with a blocker packet. That child final is an event inside the active controller run. The controller must verify it, archive or resume the child as appropriate, and continue; it must never forward the child final as the controller's final response.
+A planning, spec, or repair child task may use its final response only as a structured handoff to the controller: `completed` with evidence for its assigned outcome, or `needs_repair` with a blocker packet. That child final is an event inside the active controller run. The controller must verify it, archive or resume the child as appropriate, and continue; it must never forward the child final as the controller's final response.
 
 ## Development blockers
 
@@ -124,23 +126,20 @@ Persist `.scratch/<initiative>/default-grill.md` with each visible round's quest
 
 Continue until the design-tree frontier is empty and no requirement branch is silently assumed. Treat that state as the confirmation normally required by `grilling`; do not request a final user confirmation. The accepted decisions become the authoritative input to the delivery map and every subsequent spec.
 
-## 1. Build the delivery map
+## 1. Delegate SPEC and ticket planning
 
-Translate the requirement into the minimum ordered set of **scoped specs** that keeps each delivery coherent and reviewable. Split at domain, user outcome, integration, migration, or release boundaries when those scopes can be implemented and merged independently. Keep tightly coupled behavior together. A small requirement may produce one spec; a broad requirement must not become one omnibus spec.
+Create a skeleton `.scratch/<initiative>/delivery-map.md` containing the requirement, `protocol_registry`, Grill evidence, controller-liveness fields, and the planning task's selected model and effort. Then create exactly one fresh planning task titled `Implement Needs Plan: <initiative>`. This task owns the complete multi-SPEC decomposition and every ticket graph; the controller owns only evidence-based verification and scheduling.
 
-Each spec must:
+Give the planning task context pointers to the requirement, visible Grill record, repository instructions, domain vocabulary and ADRs, tracker configuration, default branch, protocol registry, default policy, `test-release-train`, and the target host's currently advertised model/effort combinations. Its outcome is to:
 
-- deliver an observable increment on the default branch;
-- fit one `implement-spec` cycle and fresh implementation contexts per ticket;
-- declare dependencies on earlier specs and exclude later scopes;
-- leave the repository buildable and tests green after merge;
-- include rollout or compatibility work needed for that increment.
+1. Translate the requirement into the minimum ordered set of scoped specs. Split at domain, user outcome, integration, migration, or release boundaries; keep tightly coupled behavior together and avoid an omnibus spec.
+2. Apply `to-spec` to every scope with the documented auto-approval fields, publish each SPEC, and verify that planning changed no product or test code.
+3. Apply `to-tickets` to every SPEC, skip its human quiz, self-verify tracer-bullet granularity and blocking edges, and publish every ticket graph.
+4. Assign and lock one concrete implementation `model + effort` recommendation for every SPEC using the routing policy above.
+5. Initialize `test-release-train`: resolve owners, repositories, acceptance scopes, public-contract and environment flags, fixed baselines, and 5-8-SPEC checkpoint boundaries.
+6. Complete the delivery map with ordered specs, dependencies, published artifact references, auto-approval evidence, locked implementation routing, status, future implementation task fields, blocker evidence fields, test-train state, and release state.
 
-Order specs topologically, using enabling architecture or compatibility expansions before dependent behavior and cleanup after all migrations. Persist a resumable delivery map at `.scratch/<initiative>/delivery-map.md` with the requirement, `protocol_registry`, ordered specs, dependencies, SPEC publication and auto-approval evidence, status, child task ID, model, effort, branch or PR, merge commit, archive status, blocker fingerprints and repair-task evidence, test-train state and evidence path, release status, and the controller-liveness fields required above. Resume from this map instead of duplicating completed work.
-
-Initialize `test-release-train` from the complete map before dispatching the first SPEC. Resolve owners, repositories, acceptance-scope manifests, public-contract and environment flags, fixed baselines, and checkpoint boundaries. Use six SPECs per checkpoint by default, adjusting only to remain within the skill's 5-8-SPEC range or to respect an owner, migration, or integration-risk boundary.
-
-The delivery map is complete when every requirement is owned by exactly one spec, cross-spec dependencies are acyclic, every spec can merge safely before the next begins, and every SPEC belongs to exactly one test-train checkpoint.
+Follow the planning task with compact waits. Answer preference requests from the default policy; route blocker packets through `unblock-development`. Treat its final as a claim. Verify that every requirement is owned by exactly one spec, dependencies are acyclic, every spec can merge safely before the next, every ticket graph is complete, every SPEC has a supported implementation routing pair and one checkpoint, all artifacts were published, and no product or test code changed. Return any failure to the same planning task. Archive it only after every condition passes, then record `planning_task_state: verified_archived`.
 
 ## 2. Dispatch and deliver each spec
 
@@ -148,14 +147,12 @@ Process specs sequentially. Begin the next spec only after the current spec is m
 
 For each spec:
 
-1. Refresh from the default branch and mark the spec active in the delivery map.
-2. Apply the `to-spec` protocol to this scope only with the documented Implement Needs auto-approval fields. Infer the highest practical existing test seam, publish the SPEC, verify that the phase changed no product or test code, record `spec_state: auto_approved` and the controller decision “同意”, then continue immediately to ticket decomposition without a user-facing confirmation stop.
-3. Apply the `to-tickets` protocol. Produce tracer-bullet tickets with explicit blocking edges; skip its quiz, verify the graph yourself, and publish it.
-4. Assess the spec-ticket graph, select and record its model and effort, then create a fresh project child task titled `Implement Needs <NN>: <spec title>` from the latest default branch.
-5. Give the child a self-contained prompt with context pointers to the requirement, spec, every ticket and blocking edge, repository instructions, default branch, delivery-map entry, current test-train state and acceptance scope, blocker packet contract, and child handoff contract from the controller-liveness section. Its outcome is: apply `implement-spec`, implement every ticket with narrow ticket tests, apply the per-SPEC `test-release-train` gate, run the full review, rerun only the review-fix impact set, fix findings, merge the completed spec into the default branch, clean up its implementation worktrees, and return the PR, merge commit, closed tickets, test evidence packet, checks, and blocker evidence. Tell it to apply defaults without user checkpoints, stay within this one spec, and return a `needs_repair` blocker packet whenever `unblock-development` is required.
-6. Follow the child with compact task-wait snapshots. When it requests a preference, answer from the default policy and continue it in the same task. When it returns a blocker packet, apply `unblock-development`, then resume this same spec task after the repair is verified and archived. When it stops before merge without a blocker, send a focused completion follow-up to the same task. Do not replace it merely to obtain a fresh context.
-7. Treat the child's final message as a claim, then independently verify that every ticket is complete, the selected per-SPEC test layers and any public-contract L3 obligation are green, the PR or local integration is merged, and the reported merge commit is reachable from the current default branch. Validate the evidence packet against `test-release-train`; if any condition fails, return the evidence to the same child task and wait again.
-8. After verification, close the spec and tickets, record the merge and per-SPEC test evidence, archive the child task, and record archival success. Update the train state. When this SPEC closes a checkpoint, run its affected-owner regression before starting the next SPEC. Start the next spec only after the current child is archived, every due checkpoint is green, and the refreshed default branch is healthy.
+1. Refresh from the default branch, mark the spec active, and verify that its published SPEC and ticket graph still match the locked planning artifacts. If scope changed materially, run a planning revision task before continuing.
+2. Read the locked implementation model and effort from the delivery map, resolve only an availability substitution when necessary, record the exact pair, and create a fresh project child task titled `Implement Needs <NN>: <spec title>` from the latest default branch.
+3. Give the child a self-contained prompt with context pointers to the requirement, spec, every ticket and blocking edge, repository instructions, default branch, delivery-map entry, current test-train state and acceptance scope, blocker packet contract, and child handoff contract from the controller-liveness section. Its outcome is: apply `implement-spec`, implement every ticket with narrow ticket tests, apply the per-SPEC `test-release-train` gate, run the full review, rerun only the review-fix impact set, fix findings, merge the completed spec into the default branch, clean up its implementation worktrees, and return the PR, merge commit, closed tickets, test evidence packet, checks, and blocker evidence. Tell it to apply defaults without user checkpoints, stay within this one spec, and return a `needs_repair` blocker packet whenever `unblock-development` is required.
+4. Follow the child with compact task-wait snapshots. When it requests a preference, answer from the default policy and continue it in the same task. When it returns a blocker packet, apply `unblock-development`, then resume this same spec task after the repair is verified and archived. When it stops before merge without a blocker, send a focused completion follow-up to the same task. Do not replace it merely to obtain a fresh context.
+5. Treat the child's final message as a claim, then independently verify that every ticket is complete, the selected per-SPEC test layers and any public-contract L3 obligation are green, the PR or local integration is merged, and the reported merge commit is reachable from the current default branch. Validate the evidence packet against `test-release-train`; if any condition fails, return the evidence to the same child task and wait again.
+6. After verification, close the spec and tickets, record the merge and per-SPEC test evidence, archive the child task, and record archival success. Update the train state. When this SPEC closes a checkpoint, run its affected-owner regression before starting the next SPEC. Start the next spec only after the current child is archived, every due checkpoint is green, and the refreshed default branch is healthy.
 
 One child task owns one spec from implementation through merge. Never reuse it for another spec, and never let two spec child tasks overlap. The controller retains the delivery map and release context while completed implementation context disappears into archived tasks.
 
