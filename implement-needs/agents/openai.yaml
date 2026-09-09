@@ -1,4 +1,4 @@
 interface:
   display_name: "Implement Needs"
   short_description: "Delegate planning, implementation, tests, and release"
-  default_prompt: "Use $implement-needs to show and auto-accept a Chinese default Grill, delegate SPEC/ticket planning and implementation routing to one high-reasoning task, supervise each spec in its own task, repair blockers, test, build, and deploy."
+  default_prompt: "Use $implement-needs to delegate transparent Chinese Grill, SPEC/ticket planning, and implementation routing to one high-reasoning task, auto-accept its defaults, verify every applied route, then supervise delivery and release."

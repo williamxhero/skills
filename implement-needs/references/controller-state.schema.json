@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/williamxhero/skills/implement-needs/controller-state.schema.json",
+  "title": "Implement Needs controller state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "state_revision",
+    "controller_state",
+    "active_phase",
+    "active_task_stack",
+    "child_tasks",
+    "pending_specs",
+    "unverified_handoffs",
+    "unarchived_tasks",
+    "test_state",
+    "release_state",
+    "next_action",
+    "resume_action",
+    "freshness",
+    "terminal"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "state_revision": {"type": "integer", "minimum": 1},
+    "controller_state": {
+      "enum": ["active", "terminal_success", "terminal_blocked", "user_stopped"]
+    },
+    "active_phase": {
+      "enum": ["bootstrap", "planning", "implementation", "testing", "release", "blocked", "stopped", "complete"]
+    },
+    "active_task_stack": {"$ref": "#/$defs/uniqueStrings"},
+    "child_tasks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/childTask"}
+    },
+    "pending_specs": {"$ref": "#/$defs/uniqueStrings"},
+    "unverified_handoffs": {"$ref": "#/$defs/uniqueStrings"},
+    "unarchived_tasks": {"$ref": "#/$defs/uniqueStrings"},
+    "test_state": {"$ref": "#/$defs/testState"},
+    "release_state": {"$ref": "#/$defs/releaseState"},
+    "next_action": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/action"}]
+    },
+    "resume_action": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/action"}]
+    },
+    "freshness": {"$ref": "#/$defs/freshness"},
+    "terminal": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/terminal"}]
+    }
+  },
+  "$defs": {
+    "uniqueStrings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "evidence": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "nullableRevision": {
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+    },
+    "childTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "spec_id", "lifecycle"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["planning", "spec", "repair"]},
+        "spec_id": {
+          "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+        },
+        "lifecycle": {
+          "enum": ["queued", "active", "paused", "handoff_received", "verified", "archived"]
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "target", "instruction"],
+      "properties": {
+        "kind": {
+          "description": "Canonical controller action verb. Validator-specific recovery detail belongs in target and instruction; planning-gate failures use repair rather than adding gate-specific kinds.",
+          "enum": ["wait", "verify", "archive", "repair", "dispatch", "advance", "resume", "refresh_state", "repair_state"]
+        },
+        "target": {"type": "string", "minLength": 1},
+        "instruction": {"type": "string", "minLength": 1}
+      }
+    },
+    "testState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "candidate_revision", "evidence"],
+      "properties": {
+        "status": {"enum": ["pending", "running", "passed", "blocked"]},
+        "candidate_revision": {"$ref": "#/$defs/nullableRevision"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "releaseState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "candidate_revision", "evidence"],
+      "properties": {
+        "status": {"enum": ["pending", "building", "packaged", "deployed", "not_applicable", "blocked"]},
+        "candidate_revision": {"$ref": "#/$defs/nullableRevision"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["delivery_map_sha256", "task_tree_sha256"],
+      "properties": {
+        "delivery_map_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "task_tree_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "terminal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "evidence", "stopping_rule_met", "user_stop_recorded"],
+      "properties": {
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "stopping_rule_met": {"type": "boolean"},
+        "user_stop_recorded": {"type": "boolean"}
+      }
+    },
+    "taskTree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "tasks"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "tasks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/childTask"}
+        }
+      }
+    }
+  }
+}
