@@ -92,7 +92,7 @@ class PlanningValidatorTests(unittest.TestCase):
             "capability_evidence": ["tool://create-thread-schema"],
             "supported_routes": [
                 {
-                    "model": "gpt-5.6-sol",
+                    "model": "gpt-5.6-luna",
                     "thinking": ["medium", "high"],
                 },
                 {
@@ -100,7 +100,7 @@ class PlanningValidatorTests(unittest.TestCase):
                     "thinking": ["high", "xhigh"],
                 },
                 {
-                    "model": "gpt-5.6-luna",
+                    "model": "gpt-5.6-sol",
                     "thinking": ["medium", "high", "xhigh"],
                 },
             ],
@@ -109,7 +109,7 @@ class PlanningValidatorTests(unittest.TestCase):
                 "generation": 1,
                 "route": self.route(
                     self.pair("gpt-5.6-terra", "xhigh"),
-                    self.pair("gpt-5.6-luna", "xhigh"),
+                    self.pair("gpt-5.6-sol", "xhigh"),
                 ),
             },
             "ownership": {
@@ -157,7 +157,7 @@ class PlanningValidatorTests(unittest.TestCase):
                     "owners": ["owner-a"],
                     "repositories": ["repo-a"],
                     "route": self.route(
-                        self.pair("gpt-5.6-sol", "medium"),
+                        self.pair("gpt-5.6-luna", "medium"),
                         self.pair("gpt-5.6-terra", "high"),
                     ),
                     "checkpoint": "checkpoint-2",
@@ -182,7 +182,7 @@ class PlanningValidatorTests(unittest.TestCase):
                     "repositories": ["repo-a"],
                     "route": self.route(
                         self.pair("gpt-5.6-terra", "xhigh"),
-                        self.pair("gpt-5.6-luna", "xhigh"),
+                        self.pair("gpt-5.6-sol", "xhigh"),
                     ),
                     "checkpoint": "checkpoint-2",
                 },
@@ -434,6 +434,28 @@ class PlanningValidatorTests(unittest.TestCase):
                 )
                 self.assertIn(expected, {issue["code"] for issue in issues})
 
+    def test_model_policy_ranks_and_difficulty_floors_match_host_capabilities(
+        self,
+    ) -> None:
+        self.assertEqual(
+            {
+                "gpt-5.6-luna": 0,
+                "gpt-5.6-terra": 1,
+                "gpt-5.6-sol": 2,
+            },
+            validator.MODEL_CLASS_RANK,
+        )
+        self.assertEqual({"medium": 0, "high": 1, "xhigh": 2}, validator.EFFORT_RANK)
+        self.assertEqual(
+            {
+                "easy": ("gpt-5.6-luna", "medium"),
+                "standard": ("gpt-5.6-terra", "high"),
+                "hard": ("gpt-5.6-terra", "xhigh"),
+                "extreme": ("gpt-5.6-sol", "xhigh"),
+            },
+            validator.DIFFICULTY_FLOOR,
+        )
+
     def test_release_train_checkpoint_plan_is_fixed_and_exact(self) -> None:
         record = self.record()
         record["release_train"]["checkpoint_size"] = 6
@@ -591,7 +613,7 @@ class PlanningValidatorTests(unittest.TestCase):
     def test_recorded_fallback_requires_reason_and_is_allowed_without_drift(
         self,
     ) -> None:
-        fallback = self.pair("gpt-5.6-luna", "xhigh")
+        fallback = self.pair("gpt-5.6-sol", "xhigh")
         payload, code = self.route_gate(
             self.record(),
             self.readback(
@@ -624,7 +646,7 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assert_persistable_next_action(payload["next_action"])
 
     def test_spec_route_readback_uses_locked_spec_route(self) -> None:
-        requested = self.pair("gpt-5.6-sol", "medium")
+        requested = self.pair("gpt-5.6-luna", "medium")
         payload, code = self.route_gate(
             self.record(),
             self.readback(target="SPEC-1", task_id="spec-task-1", requested=requested),
@@ -637,7 +659,7 @@ class PlanningValidatorTests(unittest.TestCase):
         readback = self.readback(
             target="SPEC-1",
             task_id="stale-task",
-            requested=self.pair("gpt-5.6-sol", "medium"),
+            requested=self.pair("gpt-5.6-luna", "medium"),
         )
         self.write(self.record(), readback=readback)
         payload, code = validator.evaluate_route(

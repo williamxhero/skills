@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_controller_terminal.py"
 SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
+CONTRACT_PATH = SKILL_ROOT / "references" / "controller-state.md"
 SPEC = importlib.util.spec_from_file_location(
     "validate_controller_terminal", SCRIPT_PATH
 )
@@ -230,7 +232,7 @@ class TerminalValidatorTests(unittest.TestCase):
                                 "target": "SPEC-2",
                                 "task_id": "spec-2",
                                 "selection": "fallback",
-                                "model": "gpt-5.6-luna",
+                                "model": "gpt-5.6-sol",
                                 "thinking": "xhigh",
                                 "evidence": ["receipt://SPEC-2-route"],
                             },
@@ -705,6 +707,16 @@ class TerminalValidatorTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("stale_final_checkpoint_revisions", self.codes(payload))
 
+    def test_final_l4_reuse_accepts_permuted_candidate_revision_set(self) -> None:
+        state = self.success_state()
+        state["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123", "repo-b@later"],
+            release_revisions=["repo-b@later", "abc123"],
+        )
+        payload, exit_code = self.evaluate(state)
+        self.assertEqual(0, exit_code)
+        self.assertEqual("allow", payload["decision"])
+
     def test_final_l4_rerun_is_required_after_candidate_changes(self) -> None:
         state = self.success_state()
         state["test_state"]["l4_checkpoints"] = self.l4_state(
@@ -723,6 +735,16 @@ class TerminalValidatorTests(unittest.TestCase):
             release_revisions=["abc123"],
         )
         payload, exit_code = self.evaluate(duplicate)
+        self.assertEqual(1, exit_code)
+        self.assertIn("final_l4_duplicate", self.codes(payload))
+
+        permuted_duplicate = self.success_state()
+        permuted_duplicate["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123", "repo-b@later"],
+            release_mode="rerun_final",
+            release_revisions=["repo-b@later", "abc123"],
+        )
+        payload, exit_code = self.evaluate(permuted_duplicate)
         self.assertEqual(1, exit_code)
         self.assertIn("final_l4_duplicate", self.codes(payload))
 
@@ -1146,6 +1168,17 @@ class TerminalValidatorTests(unittest.TestCase):
         )
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(1, schema["properties"]["schema_version"]["const"])
+
+    def test_active_state_contract_example_validates_against_schema(self) -> None:
+        contract = CONTRACT_PATH.read_text(encoding="utf-8")
+        match = re.search(
+            r"## Active-state example\n\n```json\n(.*?)\n```", contract, re.DOTALL
+        )
+        self.assertIsNotNone(match)
+        assert match is not None
+        example = json.loads(match.group(1))
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.assertEqual([], validator._schema_issues(example, schema, schema, "$"))
 
 
 if __name__ == "__main__":

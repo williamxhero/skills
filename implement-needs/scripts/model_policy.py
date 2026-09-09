@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 POLICY_PATH = Path(__file__).resolve().parents[1] / "references" / "model-policy.json"
 
 

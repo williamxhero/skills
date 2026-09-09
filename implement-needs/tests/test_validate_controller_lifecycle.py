@@ -361,6 +361,7 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.dispatch(events, 1, "base-0")
         self.finish_spec(events, 1, "merge-1")
         self.pass_checkpoint(events, 1, "merge-1")
+        events[-1]["data"]["candidate_revisions"] = ["merge-1", "repo-a@locked"]
         self.add(events, "release_candidate_frozen", {"revision": "merge-1"})
         self.add(
             events,
@@ -382,12 +383,41 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("stale_final_checkpoint_revisions", self.codes(payload))
 
+    def test_final_l4_reuse_accepts_permuted_candidate_revision_set(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.finish_spec(events, 1, "merge-1")
+        self.pass_checkpoint(events, 1, "merge-1")
+        events[-1]["data"]["candidate_revisions"] = ["merge-1", "repo-b@later"]
+        self.add(events, "release_candidate_frozen", {"revision": "merge-1"})
+        self.add(
+            events,
+            "artifact_built",
+            {"revision": "merge-1", "artifact_id": "artifact-1"},
+        )
+        self.add(
+            events,
+            "final_tests_passed",
+            {
+                "revision": "merge-1",
+                "artifact_id": "artifact-1",
+                "candidate_revisions": ["repo-b@later", "merge-1"],
+                "l4_reused_checkpoint": "checkpoint-1",
+            },
+        )
+
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual("package", payload["next_action"]["target"])
+
     def test_final_l4_rerun_is_required_only_after_candidate_changes(self) -> None:
         events: list[dict] = []
         self.planning(events)
         self.dispatch(events, 1, "base-0")
         self.finish_spec(events, 1, "merge-1")
         self.pass_checkpoint(events, 1, "merge-1")
+        events[-1]["data"]["candidate_revisions"] = ["merge-1", "repo-a@locked"]
         self.add(events, "release_candidate_frozen", {"revision": "merge-1"})
         self.add(
             events,
@@ -410,8 +440,20 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertEqual("package", payload["next_action"]["target"])
 
         duplicate = copy.deepcopy(events)
-        duplicate[-1]["data"]["candidate_revisions"] = ["merge-1"]
+        duplicate[-1]["data"]["candidate_revisions"] = [
+            "merge-1",
+            "repo-a@locked",
+        ]
         payload, exit_code = self.evaluate(duplicate, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("final_l4_duplicate", self.codes(payload))
+
+        permuted_duplicate = copy.deepcopy(events)
+        permuted_duplicate[-1]["data"]["candidate_revisions"] = [
+            "repo-a@locked",
+            "merge-1",
+        ]
+        payload, exit_code = self.evaluate(permuted_duplicate, "active")
         self.assertEqual(1, exit_code)
         self.assertIn("final_l4_duplicate", self.codes(payload))
 

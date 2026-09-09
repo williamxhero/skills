@@ -8,11 +8,10 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
-
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model_policy import load_policy
@@ -68,6 +67,11 @@ def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
             }
         )
     return checkpoints
+
+
+def _candidate_revision_set(revisions: list[str]) -> frozenset[str]:
+    """Return the order-independent identity of repository candidate revisions."""
+    return frozenset(revisions)
 
 
 def _read_bytes(path: Path, label: str, issues: list[dict[str, str]]) -> bytes | None:
@@ -490,7 +494,9 @@ def _l4_checkpoint_issues(
                     "Final L4 reuse must name the last checkpoint.",
                 )
             )
-        if release_l4["candidate_revisions"] != latest["candidate_revisions"]:
+        if _candidate_revision_set(
+            release_l4["candidate_revisions"]
+        ) != _candidate_revision_set(latest["candidate_revisions"]):
             issues.append(
                 _issue(
                     "stale_final_checkpoint_revisions",
@@ -507,7 +513,9 @@ def _l4_checkpoint_issues(
                     "A final L4 rerun must not claim checkpoint reuse.",
                 )
             )
-        if release_l4["candidate_revisions"] == latest["candidate_revisions"]:
+        if _candidate_revision_set(
+            release_l4["candidate_revisions"]
+        ) == _candidate_revision_set(latest["candidate_revisions"]):
             issues.append(
                 _issue(
                     "final_l4_duplicate",

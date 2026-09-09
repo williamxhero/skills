@@ -8,12 +8,11 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
-
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model_policy import load_policy
@@ -22,10 +21,10 @@ MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
 MODEL_CLASS_RANK = (MODEL_POLICY or {}).get("model_rank", {})
 EFFORT_RANK = (MODEL_POLICY or {}).get("effort_rank", {})
 DIFFICULTY_FLOOR = {
-    "easy": ("gpt-5.6-sol", "medium"),
+    "easy": ("gpt-5.6-luna", "medium"),
     "standard": ("gpt-5.6-terra", "high"),
     "hard": ("gpt-5.6-terra", "xhigh"),
-    "extreme": ("gpt-5.6-luna", "xhigh"),
+    "extreme": ("gpt-5.6-sol", "xhigh"),
 }
 AUTO_APPROVAL = {
     "confirmation_mode": "auto_approve",

@@ -8,11 +8,10 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
-
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from model_policy import load_policy
@@ -232,6 +231,11 @@ def _decision_hash(payload: dict[str, Any]) -> str:
 
 def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _candidate_revision_set(revisions: list[str]) -> frozenset[str]:
+    """Return the order-independent identity of repository candidate revisions."""
+    return frozenset(revisions)
 
 
 def _nullable_text(value: Any) -> bool:
@@ -710,7 +714,7 @@ class _Replay:
             )
         checkpoint["status"] = status
         checkpoint["revision"] = data.get("revision")
-        checkpoint["candidate_revisions"] = list(candidate_revisions or [])
+        checkpoint["candidate_revisions"] = sorted(candidate_revisions or [])
         return checkpoint
 
     def _before_event(self, event: dict[str, Any], path: str) -> None:
@@ -1646,7 +1650,9 @@ class _Replay:
                 "The final checkpoint must pass before final tests can reuse or rerun L4.",
             )
         elif reused_checkpoint is None:
-            if candidate_revisions == last_checkpoint["candidate_revisions"]:
+            if _candidate_revision_set(candidate_revisions) == _candidate_revision_set(
+                last_checkpoint["candidate_revisions"]
+            ):
                 self.add(
                     "final_l4_duplicate",
                     path,
@@ -1655,7 +1661,7 @@ class _Replay:
             self.release_l4 = {
                 "mode": "rerun_final",
                 "checkpoint_id": None,
-                "candidate_revisions": list(candidate_revisions or []),
+                "candidate_revisions": sorted(candidate_revisions or []),
                 "evidence": list(event["evidence"]),
             }
         elif reused_checkpoint != last_checkpoint["id"]:
@@ -1664,7 +1670,9 @@ class _Replay:
                 f"{path}.data.l4_reused_checkpoint",
                 "Final L4 reuse must name the last checkpoint.",
             )
-        elif candidate_revisions != last_checkpoint["candidate_revisions"]:
+        elif _candidate_revision_set(candidate_revisions) != _candidate_revision_set(
+            last_checkpoint["candidate_revisions"]
+        ):
             self.add(
                 "stale_final_checkpoint_revisions",
                 f"{path}.data.candidate_revisions",
@@ -1674,7 +1682,7 @@ class _Replay:
             self.release_l4 = {
                 "mode": "reused_checkpoint",
                 "checkpoint_id": reused_checkpoint,
-                "candidate_revisions": list(candidate_revisions or []),
+                "candidate_revisions": sorted(candidate_revisions or []),
                 "evidence": list(event["evidence"]),
             }
         self.tests_passed = True

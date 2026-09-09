@@ -133,7 +133,7 @@ class ProtocolFixture:
                     "thinking": ["medium", "high", "xhigh"],
                 },
                 {
-                    "model": "gpt-5.6-luna",
+                    "model": "gpt-5.6-sol",
                     "thinking": ["medium", "high", "xhigh"],
                 },
             ],
@@ -142,7 +142,7 @@ class ProtocolFixture:
                 "generation": 1,
                 "route": self.route(
                     self.pair("gpt-5.6-terra", "xhigh"),
-                    self.pair("gpt-5.6-luna", "xhigh"),
+                    self.pair("gpt-5.6-sol", "xhigh"),
                 ),
             },
             "ownership": {
@@ -195,7 +195,7 @@ class ProtocolFixture:
                     "repositories": [f"repo-{((number - 1) // 10) + 1}"],
                     "route": self.route(
                         self.pair("gpt-5.6-terra", "xhigh"),
-                        self.pair("gpt-5.6-luna", "xhigh"),
+                        self.pair("gpt-5.6-sol", "xhigh"),
                     ),
                     "checkpoint": self.checkpoint_for_spec(number, spec_count),
                 }
@@ -352,7 +352,7 @@ class ProtocolFixture:
                 "spec_id": self.spec_id(number),
                 "base_revision": base_revision,
                 "route_selection": selection,
-                "model": "gpt-5.6-luna" if fallback else "gpt-5.6-terra",
+                "model": "gpt-5.6-sol" if fallback else "gpt-5.6-terra",
                 "thinking": "xhigh",
                 "route_evidence": [f"receipt://{self.spec_id(number)}/{selection}"],
             },
@@ -758,7 +758,7 @@ class BehavioralAcceptance(unittest.TestCase):
                 readback = self.fixture.readback(
                     target,
                     task_id,
-                    requested=self.fixture.pair("gpt-5.6-luna", "xhigh"),
+                    requested=self.fixture.pair("gpt-5.6-sol", "xhigh"),
                     selection="fallback",
                     reason="Recommended route became unavailable.",
                 )
@@ -1122,7 +1122,7 @@ class BehavioralAcceptance(unittest.TestCase):
                 "spec_id": "SPEC-1",
                 "base_revision": "base-0",
                 "route_selection": "fallback",
-                "model": "gpt-5.6-luna",
+                "model": "gpt-5.6-sol",
                 "thinking": "xhigh",
                 "route_evidence": ["receipt://SPEC-1/fallback"],
             },
