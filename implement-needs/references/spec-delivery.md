@@ -11,6 +11,10 @@ For each SPEC:
 5. Treat its final as a claim. Independently verify ticket completion, selected per-SPEC layers and public-contract L3 obligations, integration, and reachability of the merge commit from the default branch. Validate its evidence packet with `test-release-train`; return any failure to the same child and wait again.
 6. Close the SPEC and tickets, record merge/test evidence, archive the child, record archival, and update the train. Run any due affected-owner checkpoint before the next SPEC.
 
+Persist each observation before acting. A `running` snapshot records another `wait`; a side question records the Chinese answer and then the unchanged prior action; a child final moves only to `handoff_received`. Verification, archival, and next-SPEC dispatch are separate recorded transitions. Never infer archival from a final message.
+
+On recovery, reconcile the saved child IDs with the fresh task tree before dispatch. If the recorded child still exists, reconnect and resume its exact action. A missing recorded child is state repair or blocker work, never permission to create a duplicate. The next SPEC must be based on the integration revision that contains the independently verified predecessor merge.
+
 One child owns one SPEC through merge and evidence handoff. Do not reuse it for another SPEC or overlap it with another implementation child. The controller retains release context while archived implementation context disappears.
 
 If a later SPEC exposes a defect in an earlier merged increment, add the smallest repair ticket to the current SPEC unless it changes the earlier accepted behavior; in that case plan and deliver a repair SPEC before continuing.

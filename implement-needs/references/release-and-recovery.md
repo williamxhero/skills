@@ -18,6 +18,8 @@ The controller owns train state across children. Each SPEC child runs its narrow
 
 After all SPECs are merged, all checkpoints are green, and no repair remains open:
 
+Record an `owner` for every release event. SPEC children may emit only merge, test, review, and evidence events. The controller alone may emit `freeze`, `build`, `package`, `deploy`, and `smoke` events, in that order, after every SPEC child is archived. Reject and repair any evidence packet that crosses this boundary.
+
 1. Derive build, packaging, release, deployment, and smoke commands from repository configuration and CI before prose documentation.
 2. Freeze exact release-candidate revisions. Build each standard artifact once; record its version, checksum or immutable ID, and source commit.
 3. Run the final `test-release-train` gate against those exact revisions and artifacts. Reuse the artifacts and isolated environments for installed-artifact checks, deterministic replays, packaging, deployment, and smoke verification.
