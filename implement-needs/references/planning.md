@@ -1,30 +1,82 @@
 # Planning
 
-Read this reference when the controller enters Grill or planning delegation. The Controller Kernel remains authoritative for state and message phase.
+Read this reference when the controller enters planning. The Controller Kernel remains authoritative for state and message phase.
 
-## Default-grill the requirement
+## Create the one planning task
 
-Apply the `grilling` design-tree and frontier discipline. Invocation supplies a standing answer of **“接受默认”** for every round. Formulate the complete current frontier, then show every numbered question in Chinese commentary with its recommended answer and concise evidence or rationale. Split a large frontier across consecutive commentary updates instead of omitting questions. Label it as automatically answered under the standing instruction.
+The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
 
-After each visible round, immediately adopt every recommendation and recompute the frontier without waiting for a reply. Record these as controller-accepted defaults, not fabricated user-authored messages. When the frontier is empty, give a concise Chinese commentary summary and proceed to the delivery map.
+Before creation, capture the target host's advertised model/`thinking` combinations and classify each model as `fast`, `balanced`, `reliable`, or `strongest`. Create `.scratch/<initiative>/planning-record.json` with that capability evidence and a planning route. Bounded planning requires at least `reliable` + `xhigh`; broad, cross-repository, migration-heavy, or unusually ambiguous planning requires `strongest` + `max` or `ultra`. Every route contains one supported recommendation, rationale, and at least one supported fallback that is same-or-stronger in both model class and effort.
 
-Treat facts as evidence, not defaults. Investigate repository state, configuration, behavior, history, and integrations wherever a question depends on them. Prefer a reversible seam or the smallest backward-compatible behavior when several answers remain viable.
+Create exactly one fresh saved-project task titled `Implement Needs Plan: <initiative>` with the selected `model` and `thinking`. Its bootstrap prompt permits no exploration, publication, or repository mutation until the controller sends `ROUTE_VERIFIED`. Capture the applied settings from the creation result and a fresh task readback in `.scratch/<initiative>/planning-route-readback.json`, then run:
 
-Persist `.scratch/<initiative>/default-grill.md` with every visible question, adopted recommendation, rationale, evidence pointer, and downstream decision. The file and Chat must account for the same questions. Apply `domain-modeling` as decisions settle: update canonical terms in the appropriate `CONTEXT.md`, and create an ADR only for a consequential, surprising, hard-to-reverse trade-off.
+```text
+python <implement-needs>/scripts/validate_planning.py route --record .scratch/<initiative>/planning-record.json --readback .scratch/<initiative>/planning-route-readback.json --expected-run-id <run-id> --target planning --receipt .scratch/<initiative>/planning-route-receipt.json
+```
 
-The frontier is complete only when no requirement branch remains silently assumed. That state replaces the normal Grill confirmation. The accepted decisions become authoritative planning input.
+Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. A rejection keeps the same task at bootstrap. Select only a fallback already locked in the record, state why it replaced the recommendation, and capture a fresh readback; an applied pair different from the explicit request is silent drift and cannot begin planning. Unavailable readback is a blocker, not evidence of the requested route.
 
-## Delegate SPEC and ticket planning
+## Run the delegated Grill
 
-Create the delivery-map skeleton with the requirement, `protocol_registry`, Grill evidence, a pointer to `controller-state.json`, and the planning model/effort. Create exactly one fresh task titled `Implement Needs Plan: <initiative>`. It owns the complete multi-SPEC decomposition and ticket graphs; the controller owns verification and scheduling.
+The full assignment points the planner to the requirement, repository instructions, domain vocabulary and ADRs, tracker and default branch, resolved `grilling`, `to-spec`, `to-tickets`, and `test-release-train` protocols, the default policy, and the supported route matrix. Repository exploration and subagents are read-only. Capture a controller-computed product/test-tree fingerprint before the assignment.
 
-Point the task to the requirement, Grill record, repository instructions, domain vocabulary and ADRs, tracker configuration, default branch, protocol registry, default policy, `test-release-train`, and currently advertised model/effort combinations. Require it to:
+The planner returns each complete numbered Grill frontier with a recommended default and rationale for every question, then pauses. For every round, the controller:
 
-1. Produce the minimum ordered set of scoped SPECs. Split at domain, user outcome, integration, migration, or release boundaries; keep tightly coupled behavior together.
-2. Apply `to-spec` with the documented auto-approval fields, publish each SPEC, and change no product or test code.
-3. Apply `to-tickets`, skip its human quiz, verify tracer-bullet granularity and blocking edges, and publish every ticket graph.
-4. Lock one concrete implementation model/effort recommendation for every SPEC.
-5. Initialize `test-release-train`: owners, repositories, acceptance scopes, public-contract/environment flags, baselines, and 5–8-SPEC checkpoint boundaries.
-6. Complete the delivery map with ordered dependencies, artifact references, auto-approval evidence, implementation routing, task placeholders, blocker fields, train state, and release state.
+1. faithfully relays every question number, question, recommendation, and rationale in Chinese commentary, splitting only for readability;
+2. records Chat evidence and acceptance as `implement-needs-standing-authorization`;
+3. sends all recommended answers to the same planning task immediately, without requesting or waiting for user confirmation.
 
-Follow the planning task with compact waits. Answer preference requests from the default policy and route blocker packets through `unblock-development`. Its final is a claim. Verify that every requirement belongs to exactly one SPEC, dependencies are acyclic, each SPEC can merge before the next, every ticket graph is complete, every SPEC has supported routing and one checkpoint, all artifacts were published, and no product or test code changed. Return failures to the same task. Archive it only after all conditions pass, then record its archived lifecycle in controller state.
+The planner alone applies those answers, recomputes the design tree, and returns the next frontier. Continue until it reports an empty frontier. The controller may translate or ask the planner to repair an incomplete round; it does not add, omit, merge, or answer a planning question independently.
+
+## Publish and route
+
+After Grill, the same planning task must:
+
+1. Partition every requirement into exactly one member of the minimum ordered set of coherent SPECs, with acyclic inter-SPEC blockers.
+2. Invoke `to-spec` for every SPEC with `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`; require `spec_state: auto_approved` and provenance `controller_decision`.
+3. Invoke `to-tickets`, bypass its quiz under the standing authorization, publish tracer-bullet tickets, and self-check granularity, blocking edges, and acyclicity.
+4. Lock one currently supported implementation route and one or more same-or-stronger fallbacks per SPEC from risk and coupling, not ticket count.
+5. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, and every SPEC checkpoint.
+6. Return the completed planning record and artifact evidence without changing product or test code.
+
+Use these exact planning-record shapes; fields not shown are rejected:
+
+```text
+route = {recommended:{model,thinking}, fallbacks:[{model,thinking}], rationale}
+planning_record = {
+  schema_version, run_id, scope, capability_evidence,
+  supported_routes:[{model,model_class,thinking:[...]}],
+  planning_task:{id,generation,route},
+  ownership:{grill,specs,tickets,routing}, requirements:[...],
+  grill_rounds:[{round,questions:[{number,question,recommendation,rationale}],
+    commentary_evidence:[...],acceptance_source,acceptance_evidence:[...],planner_resume_evidence:[...]}],
+  frontier_empty,
+  specs:[{id,artifact,requirements:[...],blocked_by:[...],auto_approval,
+    tickets:[{id,artifact,blocked_by:[...],vertical_slice}],
+    ticket_self_check:{granularity,blocking_edges,acyclic,evidence:[...]},
+    difficulty,route,checkpoint}],
+  release_train:{owners,repositories,acceptance_scopes,public_contract_specs,
+    environment_specs,baselines,checkpoints},
+  code_read_only:{product_test_tree_before_sha256,product_test_tree_after_sha256,
+    changed_product_or_test_paths:[],evidence:[...]}, handoff_evidence:[...]
+}
+```
+
+For any planning or SPEC task, record post-create evidence as:
+
+```text
+route_readback = {schema_version,run_id,task_id,target,requested,applied,
+  selection,substitution_reason,readback_evidence:[...]}
+```
+
+Use `selection: recommended` with `substitution_reason: null`, or `selection: fallback` with a non-empty reason.
+
+## Verify and archive
+
+Treat the planner's final as a claim. Independently compare the product/test-tree fingerprint, verify published artifacts, and complete the record. Return failures to the same task. When corrected, archive that task, refresh controller state, and run the dispatch gate:
+
+```text
+python <implement-needs>/scripts/validate_planning.py handoff --record .scratch/<initiative>/planning-record.json --controller-state .scratch/<initiative>/controller-state.json --planning-readback .scratch/<initiative>/planning-route-readback.json --expected-run-id <run-id> --receipt .scratch/<initiative>/planning-receipt.json
+```
+
+Only `decision: allow` permits the first implementation task. Rejection unarchives and resumes the same planner; no second planning task is created. A material later change also reuses that one task with an incremented `generation`, while every implementation task remains archived.

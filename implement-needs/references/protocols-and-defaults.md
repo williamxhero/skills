@@ -50,7 +50,7 @@ Use `list_projects`, `create_thread`, `wait_threads`, `send_message_to_thread`, 
 
 Resolve the Codex project that owns the repository before dispatch. Run planning against the saved project so it can inspect the repository and publish tracker artifacts while remaining code-read-only. Use a project worktree for repository-scoped code repairs and SPEC implementation; use the saved project directly for host-level, network, credential, or shared-environment repairs. Start each SPEC task from the default-branch state containing every prior merge. Verify and archive planning before the first SPEC. Keep exactly one SPEC child active.
 
-Planning uses at least a reliable high-intelligence agentic model with `xhigh` effort. For broad cross-repository, migration-heavy, or unusually ambiguous requirements, use the strongest reliable model with the highest supported effort of `max` or `ultra`. If unavailable, choose the closest advertised model class and the highest supported effort at or above `high`. Record the selection and rationale before creation; never route planning to the fast/economical class.
+Planning uses at least a reliable high-intelligence agentic model with `xhigh` effort. For broad cross-repository, migration-heavy, or unusually ambiguous requirements, use the strongest reliable model with the highest supported effort of `max` or `ultra`. Lock only advertised pairs and same-or-stronger fallbacks; if the floor has no supported pair, enter blocker handling before creation. Record the selection and rationale before creation; never route planning to the fast/economical class.
 
 The planning task locks one advertised `model` and `thinking` pair for each SPEC after producing its ticket graph:
 
@@ -61,4 +61,4 @@ The planning task locks one advertised `model` and `thinking` pair for each SPEC
 | Hard | Cross-cutting behavior, migrations, concurrency, security, or performance | Reliable agentic workhorse | `xhigh` |
 | Extreme | Multi-repository or unusually fragile compatibility/release constraints | Strongest reliable model | Highest supported of `max` or `ultra` |
 
-Record the exact recommendation, difficulty, rationale, and fallback class in the delivery map. The controller does not reclassify it. If the exact pair is unavailable, choose the nearest advertised pair in the same or stronger class and record the substitution. A material SPEC or ticket-graph change invalidates the recommendation and requires a verified, archived high-reasoning planning revision. Let `unblock-development` route actual repair tasks independently.
+Record the exact recommendation, difficulty, rationale, and concrete same-or-stronger fallback pairs in the planning record. The controller does not reclassify it. A material SPEC or ticket-graph change invalidates the recommendation and must be returned to the same planning task; never create a second planner. Let `unblock-development` route actual repair tasks independently.
