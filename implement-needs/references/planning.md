@@ -14,7 +14,7 @@ Create exactly one fresh saved-project task titled `Implement Needs Plan: <initi
 python <implement-needs>/scripts/validate_planning.py route --record .scratch/<initiative>/planning-record.json --readback .scratch/<initiative>/planning-route-readback.json --expected-run-id <run-id> --target planning --expected-task-id <created-task-id> --receipt .scratch/<initiative>/planning-route-receipt.json
 ```
 
-Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. A rejection keeps the same task at bootstrap. Select only a fallback already locked in the record, state why it replaced the recommendation, and capture a fresh readback; an applied pair different from the explicit request is silent drift and cannot begin planning. Unavailable readback is a blocker, not evidence of the requested route.
+Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. A rejection returns a canonical `repair` next action and keeps the same task at bootstrap. Select only a fallback already locked in the record, state why it replaced the recommendation, and capture a fresh readback; an applied pair different from the explicit request is silent drift and cannot begin planning. Unavailable readback is a blocker, not evidence of the requested route.
 
 ## Run the delegated Grill
 
@@ -79,4 +79,4 @@ Treat the planner's final as a claim. Independently compare the product/test-tre
 python <implement-needs>/scripts/validate_planning.py handoff --record .scratch/<initiative>/planning-record.json --controller-state .scratch/<initiative>/controller-state.json --planning-readback .scratch/<initiative>/planning-route-readback.json --expected-run-id <run-id> --receipt .scratch/<initiative>/planning-receipt.json
 ```
 
-Only `decision: allow` permits the first implementation task. Rejection unarchives and resumes the same planner; no second planning task is created. A material later change also reuses that one task with an incremented `generation`, while every implementation task remains archived.
+Only `decision: allow` permits the first implementation task. Rejection returns a canonical `repair` next action, unarchives and resumes the same planner; no second planning task is created. A material later change also reuses that one task with an incremented `generation`, while every implementation task remains archived.

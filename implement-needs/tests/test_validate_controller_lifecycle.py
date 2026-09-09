@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib.util
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_controller_lifecycle.py"
-SPEC = importlib.util.spec_from_file_location("validate_controller_lifecycle", SCRIPT_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "validate_controller_lifecycle", SCRIPT_PATH
+)
 assert SPEC is not None and SPEC.loader is not None
 validator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(validator)
@@ -28,11 +33,15 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.temporary.cleanup()
 
     @staticmethod
-    def action(kind: str, target: str, instruction: str = "Execute the recorded action.") -> dict:
+    def action(
+        kind: str, target: str, instruction: str = "Execute the recorded action."
+    ) -> dict:
         return {"kind": kind, "target": target, "instruction": instruction}
 
     @staticmethod
-    def add(events: list[dict], event_type: str, data: dict, actor: str = "controller") -> None:
+    def add(
+        events: list[dict], event_type: str, data: dict, actor: str = "controller"
+    ) -> None:
         sequence = len(events) + 1
         events.append(
             {
@@ -72,7 +81,9 @@ class LifecycleValidatorTests(unittest.TestCase):
             },
         )
 
-    def finish_spec(self, events: list[dict], number: int, revision: str, *, checkpoint: bool) -> None:
+    def finish_spec(
+        self, events: list[dict], number: int, revision: str, *, checkpoint: bool
+    ) -> None:
         task_id = f"task-{number}"
         spec_id = f"SPEC-{number}"
         self.add(
@@ -88,16 +99,24 @@ class LifecycleValidatorTests(unittest.TestCase):
         )
         self.add(events, "child_archived", {"task_id": task_id})
         if checkpoint:
-            self.add(events, "checkpoint_passed", {"spec_id": spec_id, "revision": revision})
+            self.add(
+                events, "checkpoint_passed", {"spec_id": spec_id, "revision": revision}
+            )
         self.add(
             events,
             "default_branch_verified",
             {"spec_id": spec_id, "revision": revision},
         )
 
-    def release(self, events: list[dict], revision: str = "merge-2", *, deploy: bool = True) -> None:
+    def release(
+        self, events: list[dict], revision: str = "merge-2", *, deploy: bool = True
+    ) -> None:
         self.add(events, "release_candidate_frozen", {"revision": revision})
-        self.add(events, "artifact_built", {"revision": revision, "artifact_id": "artifact-1"})
+        self.add(
+            events,
+            "artifact_built",
+            {"revision": revision, "artifact_id": "artifact-1"},
+        )
         self.add(
             events,
             "final_tests_passed",
@@ -106,7 +125,11 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.add(
             events,
             "package_completed",
-            {"revision": revision, "artifact_id": "artifact-1", "package_id": "package-1"},
+            {
+                "revision": revision,
+                "artifact_id": "artifact-1",
+                "package_id": "package-1",
+            },
         )
         if deploy:
             self.add(
@@ -122,7 +145,11 @@ class LifecycleValidatorTests(unittest.TestCase):
             self.add(
                 events,
                 "smoke_passed",
-                {"revision": revision, "artifact_id": "artifact-1", "target": "production"},
+                {
+                    "revision": revision,
+                    "artifact_id": "artifact-1",
+                    "target": "production",
+                },
             )
         else:
             self.add(
@@ -153,7 +180,11 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.add(
             events,
             "commentary",
-            {"category": "heartbeat", "text": "实现线程仍在运行，我会继续等待。", "next_action": wait},
+            {
+                "category": "heartbeat",
+                "text": "实现线程仍在运行，我会继续等待。",
+                "next_action": wait,
+            },
         )
         self.add(events, "waited", {"task_id": "task-1"})
         self.finish_spec(events, 1, "merge-1", checkpoint=True)
@@ -164,7 +195,8 @@ class LifecycleValidatorTests(unittest.TestCase):
 
     def write(self, events: list[dict]) -> None:
         serialized = "".join(
-            json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+            json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n"
             for event in events
         )
         self.log_path.write_text(serialized, encoding="utf-8", newline="\n")
@@ -192,7 +224,9 @@ class LifecycleValidatorTests(unittest.TestCase):
             ["plan-1", "task-1", "task-2"],
             [task["id"] for task in payload["child_tasks"]],
         )
-        self.assertTrue(all(task["lifecycle"] == "archived" for task in payload["child_tasks"]))
+        self.assertTrue(
+            all(task["lifecycle"] == "archived" for task in payload["child_tasks"])
+        )
 
     def test_running_child_heartbeats_continue_waiting_without_terminal(self) -> None:
         events: list[dict] = []
@@ -212,7 +246,10 @@ class LifecycleValidatorTests(unittest.TestCase):
 
         payload, exit_code = self.evaluate(events, "active")
         self.assertEqual(0, exit_code)
-        self.assertEqual(self.action("wait", "task-1", "Wait for the current SPEC task."), payload["next_action"])
+        self.assertEqual(
+            self.action("wait", "task-1", "Wait for the current SPEC task."),
+            payload["next_action"],
+        )
         self.assertFalse(any(event["actor"] == "user" for event in events))
 
         rejected, rejected_code = self.evaluate(events, "terminal_success")
@@ -302,7 +339,9 @@ class LifecycleValidatorTests(unittest.TestCase):
         events: list[dict] = []
         self.planning(events)
         self.dispatch(events, 1, "base-0")
-        blocked_action = self.action("wait", "task-1", "Wait for implementation evidence.")
+        blocked_action = self.action(
+            "wait", "task-1", "Wait for implementation evidence."
+        )
         self.add(
             events,
             "blocker_opened",
@@ -338,7 +377,11 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.add(
             events,
             "blocked_action_resumed",
-            {"repair_task_id": "repair-1", "parent_task_id": "task-1", "action": blocked_action},
+            {
+                "repair_task_id": "repair-1",
+                "parent_task_id": "task-1",
+                "action": blocked_action,
+            },
         )
         payload, exit_code = self.evaluate(events, "active")
         self.assertEqual(0, exit_code)
@@ -360,7 +403,10 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.add(
             events,
             "controller_resumed",
-            {"persisted_next_action": stored, "observed_task_ids": ["plan-1", "task-1"]},
+            {
+                "persisted_next_action": stored,
+                "observed_task_ids": ["plan-1", "task-1"],
+            },
         )
         self.add(events, "child_reconnected", {"task_id": "task-1"})
         self.add(events, "stored_action_resumed", {"action": stored})
@@ -373,7 +419,11 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.add(
             duplicate,
             "spec_dispatched",
-            {"task_id": "task-duplicate", "spec_id": "SPEC-1", "base_revision": "base-0"},
+            {
+                "task_id": "task-duplicate",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+            },
         )
         payload, exit_code = self.evaluate(duplicate, "active")
         self.assertEqual(1, exit_code)
@@ -389,16 +439,29 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertIn("release_before_specs_complete", self.codes(payload))
 
         child_release = self.complete_events()
-        artifact = next(event for event in child_release if event["type"] == "artifact_built")
+        artifact = next(
+            event for event in child_release if event["type"] == "artifact_built"
+        )
         artifact["actor"] = "spec_child"
         payload, exit_code = self.evaluate(child_release, "terminal_success")
         self.assertEqual(1, exit_code)
         self.assertIn("actor_mismatch", self.codes(payload))
 
         bad_order = self.complete_events()
-        build_index = next(index for index, event in enumerate(bad_order) if event["type"] == "artifact_built")
-        test_index = next(index for index, event in enumerate(bad_order) if event["type"] == "final_tests_passed")
-        bad_order[build_index], bad_order[test_index] = bad_order[test_index], bad_order[build_index]
+        build_index = next(
+            index
+            for index, event in enumerate(bad_order)
+            if event["type"] == "artifact_built"
+        )
+        test_index = next(
+            index
+            for index, event in enumerate(bad_order)
+            if event["type"] == "final_tests_passed"
+        )
+        bad_order[build_index], bad_order[test_index] = (
+            bad_order[test_index],
+            bad_order[build_index],
+        )
         for sequence, event in enumerate(bad_order, start=1):
             event["sequence"] = sequence
         payload, exit_code = self.evaluate(bad_order, "terminal_success")
@@ -444,7 +507,9 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("stopping_rule_not_met", self.codes(payload))
 
-    def test_explicit_user_stop_requires_paused_children_and_resume_action(self) -> None:
+    def test_explicit_user_stop_requires_paused_children_and_resume_action(
+        self,
+    ) -> None:
         events: list[dict] = []
         self.planning(events)
         self.dispatch(events, 1, "base-0")
@@ -484,9 +549,39 @@ class LifecycleValidatorTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(completed.stdout, self.receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            completed.stdout, self.receipt_path.read_text(encoding="utf-8")
+        )
         payload = json.loads(completed.stdout)
         self.assertEqual("not_applicable", payload["release_status"])
+
+    def test_receipt_write_failure_preserves_derived_lifecycle_state(self) -> None:
+        self.write(self.complete_events())
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                validator, "_write_atomic", side_effect=OSError("denied")
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            exit_code = validator.main(
+                [
+                    "--log",
+                    str(self.log_path),
+                    "--expected-run-id",
+                    "run-001",
+                    "--expected-state",
+                    "terminal_success",
+                    "--receipt",
+                    str(self.receipt_path),
+                ]
+            )
+        payload = json.loads(output.getvalue())
+        self.assertEqual(1, exit_code)
+        self.assertEqual("reject", payload["decision"])
+        self.assertEqual("terminal_success", payload["derived_controller_state"])
+        self.assertIn("receipt_unwritable", self.codes(payload))
+        self.assertIn("lifecycle receipt", payload["reasons"][0]["message"])
 
 
 if __name__ == "__main__":

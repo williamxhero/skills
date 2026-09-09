@@ -334,6 +334,30 @@ def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
                     "A SPEC child requires spec_id.",
                 )
             )
+    planning_tasks = [
+        child for child in state["child_tasks"] if child["kind"] == "planning"
+    ]
+    if len(planning_tasks) > 1:
+        issues.append(
+            _issue(
+                "planning_task_count",
+                "$.child_tasks",
+                "Controller state may record at most one planning task.",
+            )
+        )
+    spec_owners: dict[str, list[str]] = {}
+    for child in state["child_tasks"]:
+        if child["kind"] == "spec" and child["spec_id"] is not None:
+            spec_owners.setdefault(child["spec_id"], []).append(child["id"])
+    for spec_id, task_ids in sorted(spec_owners.items()):
+        if len(task_ids) > 1:
+            issues.append(
+                _issue(
+                    "spec_task_owner_count",
+                    "$.child_tasks",
+                    f"SPEC {spec_id} has multiple implementation task owners: {', '.join(sorted(task_ids))}.",
+                )
+            )
 
     controller_state = state["controller_state"]
     phase = state["active_phase"]
@@ -410,7 +434,7 @@ def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
                     "Every child must be archived.",
                 )
             )
-        if not any(task["kind"] == "planning" for task in children.values()):
+        if not planning_tasks:
             issues.append(
                 _issue(
                     "terminal_planning_task_missing",

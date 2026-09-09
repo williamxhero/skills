@@ -44,7 +44,7 @@ Retain archived tasks. The validator requires the task-tree IDs and fields to ma
 
 Child lifecycle is one of `queued`, `active`, `paused`, `handoff_received`, `verified`, or `archived`. Move a returned child to `handoff_received`, then `verified` only after independent verification, then `archived` only after archival succeeds.
 
-An action has exactly `kind`, `target`, and `instruction`. `kind` is one of `wait`, `verify`, `archive`, `repair`, `dispatch`, `advance`, `resume`, `refresh_state`, or `repair_state`. `target` names the task, gate, or artifact. `instruction` is directly executable rather than a status description.
+An action has exactly `kind`, `target`, and `instruction`. `kind` is one of `wait`, `verify`, `archive`, `repair`, `dispatch`, `advance`, `resume`, `refresh_state`, or `repair_state`. Gate-specific failures still persist through this canonical vocabulary: route drift, planning handoff repair, and receipt-write repair use `repair` with the task, gate, or artifact named in `target`. `instruction` is directly executable rather than a status description.
 
 Test status is `pending`, `running`, `passed`, or `blocked`. Release status is `pending`, `building`, `packaged`, `deployed`, `not_applicable`, or `blocked`.
 

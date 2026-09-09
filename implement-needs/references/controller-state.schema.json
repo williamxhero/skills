@@ -88,6 +88,7 @@
       "required": ["kind", "target", "instruction"],
       "properties": {
         "kind": {
+          "description": "Canonical controller action verb. Validator-specific recovery detail belongs in target and instruction; planning-gate failures use repair rather than adding gate-specific kinds.",
           "enum": ["wait", "verify", "archive", "repair", "dispatch", "advance", "resume", "refresh_state", "repair_state"]
         },
         "target": {"type": "string", "minLength": 1},

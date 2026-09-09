@@ -330,6 +330,42 @@ class TerminalValidatorTests(unittest.TestCase):
         self.assertIn("terminal_planning_task_missing", self.codes(payload))
         self.assertIn("terminal_spec_task_missing", self.codes(payload))
 
+    def test_success_rejects_duplicate_archived_child_ownership(self) -> None:
+        cases = (
+            (
+                "planning",
+                lambda state: state["child_tasks"].append(
+                    {
+                        "id": "plan-2",
+                        "kind": "planning",
+                        "spec_id": None,
+                        "lifecycle": "archived",
+                    }
+                ),
+                "planning_task_count",
+            ),
+            (
+                "spec",
+                lambda state: state["child_tasks"].append(
+                    {
+                        "id": "spec-1-retry",
+                        "kind": "spec",
+                        "spec_id": "SPEC-1",
+                        "lifecycle": "archived",
+                    }
+                ),
+                "spec_task_owner_count",
+            ),
+        )
+        for name, mutate, expected in cases:
+            with self.subTest(name=name):
+                state = self.success_state()
+                mutate(state)
+                payload, exit_code = self.evaluate(state, goal="complete")
+                self.assertEqual(1, exit_code)
+                self.assertIn(expected, self.codes(payload))
+                self.assertEqual("repair_state", payload["next_action"]["kind"])
+
     def test_each_pending_gate_rejects_success(self) -> None:
         mutations = {
             "pending_spec": lambda state: state["pending_specs"].append("SPEC-2"),

@@ -1,20 +1,32 @@
 from __future__ import annotations
 
+import contextlib
 import copy
+import hashlib
 import importlib.util
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_planning.py"
+TERMINAL_SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_controller_terminal.py"
+SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
 SPEC = importlib.util.spec_from_file_location("validate_planning", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
 validator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(validator)
+TERMINAL_SPEC = importlib.util.spec_from_file_location(
+    "validate_controller_terminal_for_planning_tests", TERMINAL_SCRIPT_PATH
+)
+assert TERMINAL_SPEC is not None and TERMINAL_SPEC.loader is not None
+terminal_validator = importlib.util.module_from_spec(TERMINAL_SPEC)
+TERMINAL_SPEC.loader.exec_module(terminal_validator)
 
 
 class PlanningValidatorTests(unittest.TestCase):
@@ -60,15 +72,33 @@ class PlanningValidatorTests(unittest.TestCase):
             "scope": "bounded",
             "capability_evidence": ["tool://create-thread-schema"],
             "supported_routes": [
-                {"model": "fast-1", "model_class": "fast", "thinking": ["medium", "high"]},
-                {"model": "balanced-1", "model_class": "balanced", "thinking": ["high", "xhigh"]},
-                {"model": "reliable-1", "model_class": "reliable", "thinking": ["xhigh", "max"]},
-                {"model": "strongest-1", "model_class": "strongest", "thinking": ["max", "ultra"]},
+                {
+                    "model": "fast-1",
+                    "model_class": "fast",
+                    "thinking": ["medium", "high"],
+                },
+                {
+                    "model": "balanced-1",
+                    "model_class": "balanced",
+                    "thinking": ["high", "xhigh"],
+                },
+                {
+                    "model": "reliable-1",
+                    "model_class": "reliable",
+                    "thinking": ["xhigh", "max"],
+                },
+                {
+                    "model": "strongest-1",
+                    "model_class": "strongest",
+                    "thinking": ["max", "ultra"],
+                },
             ],
             "planning_task": {
                 "id": "plan-1",
                 "generation": 1,
-                "route": self.route(self.pair("reliable-1", "xhigh"), self.pair("strongest-1", "max")),
+                "route": self.route(
+                    self.pair("reliable-1", "xhigh"), self.pair("strongest-1", "max")
+                ),
             },
             "ownership": {
                 "grill": "plan-1",
@@ -112,7 +142,9 @@ class PlanningValidatorTests(unittest.TestCase):
                     ],
                     "ticket_self_check": copy.deepcopy(ticket_check),
                     "difficulty": "easy",
-                    "route": self.route(self.pair("fast-1", "medium"), self.pair("balanced-1", "high")),
+                    "route": self.route(
+                        self.pair("fast-1", "medium"), self.pair("balanced-1", "high")
+                    ),
                     "checkpoint": "checkpoint-1",
                 },
                 {
@@ -131,7 +163,10 @@ class PlanningValidatorTests(unittest.TestCase):
                     ],
                     "ticket_self_check": copy.deepcopy(ticket_check),
                     "difficulty": "hard",
-                    "route": self.route(self.pair("reliable-1", "xhigh"), self.pair("strongest-1", "max")),
+                    "route": self.route(
+                        self.pair("reliable-1", "xhigh"),
+                        self.pair("strongest-1", "max"),
+                    ),
                     "checkpoint": "checkpoint-2",
                 },
             ],
@@ -158,7 +193,12 @@ class PlanningValidatorTests(unittest.TestCase):
         return {
             "run_id": "run-001",
             "child_tasks": [
-                {"id": "plan-1", "kind": "planning", "spec_id": None, "lifecycle": "archived"}
+                {
+                    "id": "plan-1",
+                    "kind": "planning",
+                    "spec_id": None,
+                    "lifecycle": "archived",
+                }
             ],
         }
 
@@ -185,22 +225,103 @@ class PlanningValidatorTests(unittest.TestCase):
             "readback_evidence": [f"thread://{task_id}/settings"],
         }
 
-    def write(self, record: dict, state: dict | None = None, readback: dict | None = None) -> None:
-        self.record_path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-        self.state_path.write_text(json.dumps(state or self.state(), ensure_ascii=False), encoding="utf-8")
-        self.readback_path.write_text(json.dumps(readback or self.readback(), ensure_ascii=False), encoding="utf-8")
+    def write(
+        self, record: dict, state: dict | None = None, readback: dict | None = None
+    ) -> None:
+        self.record_path.write_text(
+            json.dumps(record, ensure_ascii=False), encoding="utf-8"
+        )
+        self.state_path.write_text(
+            json.dumps(state or self.state(), ensure_ascii=False), encoding="utf-8"
+        )
+        self.readback_path.write_text(
+            json.dumps(readback or self.readback(), ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     @staticmethod
     def codes(payload: dict) -> set[str]:
         return {reason["code"] for reason in payload.get("reasons", [])}
 
-    def handoff(self, record: dict, state: dict | None = None, readback: dict | None = None):
+    def assert_persistable_next_action(self, action: dict) -> None:
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        allowed = set(schema["$defs"]["action"]["properties"]["kind"]["enum"])
+        self.assertIn(action["kind"], allowed)
+
+        delivery_map = self.root / "delivery-map.md"
+        task_tree = self.root / "task-tree.json"
+        state_path = self.root / "active-controller-state.json"
+        delivery_map.write_text(
+            "# Delivery map\n\nPlanning repair pending.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        task_tree.write_text(
+            json.dumps({"run_id": "run-001", "tasks": []}, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        state = {
+            "schema_version": 1,
+            "run_id": "run-001",
+            "state_revision": 1,
+            "controller_state": "active",
+            "active_phase": "planning",
+            "active_task_stack": [],
+            "child_tasks": [],
+            "pending_specs": [],
+            "unverified_handoffs": [],
+            "unarchived_tasks": [],
+            "test_state": {
+                "status": "pending",
+                "candidate_revision": None,
+                "evidence": [],
+            },
+            "release_state": {
+                "status": "pending",
+                "candidate_revision": None,
+                "evidence": [],
+            },
+            "next_action": action,
+            "resume_action": None,
+            "freshness": {
+                "delivery_map_sha256": hashlib.sha256(
+                    delivery_map.read_bytes()
+                ).hexdigest(),
+                "task_tree_sha256": hashlib.sha256(task_tree.read_bytes()).hexdigest(),
+            },
+            "terminal": None,
+        }
+        state_path.write_text(
+            json.dumps(state, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        payload, code = terminal_validator.evaluate(
+            state_path,
+            delivery_map,
+            task_tree,
+            "run-001",
+            "terminal_success",
+        )
+        self.assertEqual(1, code)
+        self.assertEqual(action, payload["next_action"])
+        self.assertEqual({"proposed_state_mismatch"}, self.codes(payload))
+
+    def handoff(
+        self, record: dict, state: dict | None = None, readback: dict | None = None
+    ):
         self.write(record, state, readback)
-        return validator.evaluate_handoff(self.record_path, self.state_path, self.readback_path, "run-001")
+        return validator.evaluate_handoff(
+            self.record_path, self.state_path, self.readback_path, "run-001"
+        )
 
     def route_gate(self, record: dict, readback: dict, target: str):
         self.write(record, readback=readback)
-        return validator.evaluate_route(self.record_path, self.readback_path, "run-001", target, readback["task_id"])
+        return validator.evaluate_route(
+            self.record_path, self.readback_path, "run-001", target, readback["task_id"]
+        )
 
     def test_complete_handoff_is_allowed_and_deterministic(self) -> None:
         first = self.handoff(self.record())
@@ -211,16 +332,32 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertEqual(["SPEC-1", "SPEC-2"], first[0]["spec_ids"])
         self.assertEqual(1, first[0]["grill_question_count"])
 
-    def test_dispatch_gate_requires_exactly_one_archived_planner_before_any_spec(self) -> None:
+    def test_dispatch_gate_requires_exactly_one_archived_planner_before_any_spec(
+        self,
+    ) -> None:
         cases = []
         active = self.state()
         active["child_tasks"][0]["lifecycle"] = "verified"
         cases.append((active, "planning_not_archived"))
         duplicate = self.state()
-        duplicate["child_tasks"].append({"id": "plan-2", "kind": "planning", "spec_id": None, "lifecycle": "archived"})
+        duplicate["child_tasks"].append(
+            {
+                "id": "plan-2",
+                "kind": "planning",
+                "spec_id": None,
+                "lifecycle": "archived",
+            }
+        )
         cases.append((duplicate, "planning_task_count"))
         early_spec = self.state()
-        early_spec["child_tasks"].append({"id": "spec-1", "kind": "spec", "spec_id": "SPEC-1", "lifecycle": "archived"})
+        early_spec["child_tasks"].append(
+            {
+                "id": "spec-1",
+                "kind": "spec",
+                "spec_id": "SPEC-1",
+                "lifecycle": "archived",
+            }
+        )
         cases.append((early_spec, "implementation_preceded_initial_planning_gate"))
         for state, expected in cases:
             with self.subTest(expected=expected):
@@ -230,10 +367,28 @@ class PlanningValidatorTests(unittest.TestCase):
 
     def test_grill_must_be_chinese_visible_auto_accepted_and_returned(self) -> None:
         mutations = [
-            (lambda record: record["grill_rounds"][0]["questions"][0].update(question="English only"), "relay_not_chinese"),
-            (lambda record: record["grill_rounds"][0].update(commentary_evidence=[]), "empty_list"),
-            (lambda record: record["grill_rounds"][0].update(acceptance_source="user"), "manual_confirmation_required"),
-            (lambda record: record["grill_rounds"][0].update(planner_resume_evidence=[]), "empty_list"),
+            (
+                lambda record: record["grill_rounds"][0]["questions"][0].update(
+                    question="English only"
+                ),
+                "relay_not_chinese",
+            ),
+            (
+                lambda record: record["grill_rounds"][0].update(commentary_evidence=[]),
+                "empty_list",
+            ),
+            (
+                lambda record: record["grill_rounds"][0].update(
+                    acceptance_source="user"
+                ),
+                "manual_confirmation_required",
+            ),
+            (
+                lambda record: record["grill_rounds"][0].update(
+                    planner_resume_evidence=[]
+                ),
+                "empty_list",
+            ),
         ]
         for mutate, expected in mutations:
             with self.subTest(expected=expected):
@@ -245,10 +400,28 @@ class PlanningValidatorTests(unittest.TestCase):
 
     def test_spec_approval_ticket_self_check_and_partition_are_enforced(self) -> None:
         mutations = [
-            (lambda record: record["specs"][0]["auto_approval"].update(approval_text="确认"), "auto_approval_invalid"),
-            (lambda record: record["specs"][0]["ticket_self_check"].update(granularity="fail"), "ticket_self_check_failed"),
-            (lambda record: record["specs"][1].update(requirements=["R1"]), "requirement_partition_invalid"),
-            (lambda record: record["specs"][0]["tickets"][0].update(blocked_by=["T-later"]), "unknown_blocker"),
+            (
+                lambda record: record["specs"][0]["auto_approval"].update(
+                    approval_text="确认"
+                ),
+                "auto_approval_invalid",
+            ),
+            (
+                lambda record: record["specs"][0]["ticket_self_check"].update(
+                    granularity="fail"
+                ),
+                "ticket_self_check_failed",
+            ),
+            (
+                lambda record: record["specs"][1].update(requirements=["R1"]),
+                "requirement_partition_invalid",
+            ),
+            (
+                lambda record: record["specs"][0]["tickets"][0].update(
+                    blocked_by=["T-later"]
+                ),
+                "unknown_blocker",
+            ),
         ]
         for mutate, expected in mutations:
             with self.subTest(expected=expected):
@@ -268,12 +441,16 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertIn("planning_ownership_drift", self.codes(payload))
         self.assertIn("planning_code_changed", self.codes(payload))
 
-    def test_planning_route_floor_and_same_or_stronger_fallback_are_enforced(self) -> None:
+    def test_planning_route_floor_and_same_or_stronger_fallback_are_enforced(
+        self,
+    ) -> None:
         record = self.record()
         record["planning_task"]["route"] = self.route(
             self.pair("balanced-1", "high"), self.pair("fast-1", "medium")
         )
-        payload, code = self.handoff(record, readback=self.readback(requested=self.pair("balanced-1", "high")))
+        payload, code = self.handoff(
+            record, readback=self.readback(requested=self.pair("balanced-1", "high"))
+        )
         self.assertEqual(1, code)
         self.assertIn("route_below_floor", self.codes(payload))
         self.assertIn("fallback_weaker", self.codes(payload))
@@ -284,11 +461,17 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertEqual("recommended", payload["selection"])
         self.assertEqual(self.pair("reliable-1", "xhigh"), payload["applied"])
 
-    def test_recorded_fallback_requires_reason_and_is_allowed_without_drift(self) -> None:
+    def test_recorded_fallback_requires_reason_and_is_allowed_without_drift(
+        self,
+    ) -> None:
         fallback = self.pair("strongest-1", "max")
         payload, code = self.route_gate(
             self.record(),
-            self.readback(requested=fallback, selection="fallback", reason="Recommended pair became unavailable."),
+            self.readback(
+                requested=fallback,
+                selection="fallback",
+                reason="Recommended pair became unavailable.",
+            ),
             "planning",
         )
         self.assertEqual(0, code)
@@ -299,6 +482,8 @@ class PlanningValidatorTests(unittest.TestCase):
         payload, code = self.route_gate(self.record(), drift, "planning")
         self.assertEqual(1, code)
         self.assertIn("silent_route_drift", self.codes(payload))
+        self.assertEqual("repair", payload["next_action"]["kind"])
+        self.assert_persistable_next_action(payload["next_action"])
 
         unrecorded = self.readback(
             requested=self.pair("reliable-1", "max"),
@@ -308,6 +493,8 @@ class PlanningValidatorTests(unittest.TestCase):
         payload, code = self.route_gate(self.record(), unrecorded, "planning")
         self.assertEqual(1, code)
         self.assertIn("fallback_not_preapproved", self.codes(payload))
+        self.assertEqual("repair", payload["next_action"]["kind"])
+        self.assert_persistable_next_action(payload["next_action"])
 
     def test_spec_route_readback_uses_locked_spec_route(self) -> None:
         requested = self.pair("fast-1", "medium")
@@ -320,11 +507,56 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertEqual("spec-task-1", payload["task_id"])
 
     def test_spec_route_readback_is_bound_to_created_task(self) -> None:
-        readback = self.readback(target="SPEC-1", task_id="stale-task", requested=self.pair("fast-1", "medium"))
+        readback = self.readback(
+            target="SPEC-1",
+            task_id="stale-task",
+            requested=self.pair("fast-1", "medium"),
+        )
         self.write(self.record(), readback=readback)
-        payload, code = validator.evaluate_route(self.record_path, self.readback_path, "run-001", "SPEC-1", "created-task")
+        payload, code = validator.evaluate_route(
+            self.record_path, self.readback_path, "run-001", "SPEC-1", "created-task"
+        )
         self.assertEqual(1, code)
         self.assertIn("task_id_mismatch", self.codes(payload))
+
+    def test_planning_handoff_rejection_uses_persistable_repair_action(self) -> None:
+        record = self.record()
+        record["frontier_empty"] = False
+        payload, code = self.handoff(record)
+        self.assertEqual(1, code)
+        self.assertIn("grill_incomplete", self.codes(payload))
+        self.assertEqual("repair", payload["next_action"]["kind"])
+        self.assert_persistable_next_action(payload["next_action"])
+
+    def test_receipt_failure_uses_persistable_repair_action(self) -> None:
+        self.write(self.record())
+        output = io.StringIO()
+        with (
+            mock.patch.object(
+                validator, "_write_atomic", side_effect=OSError("denied")
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            exit_code = validator.main(
+                [
+                    "handoff",
+                    "--record",
+                    str(self.record_path),
+                    "--controller-state",
+                    str(self.state_path),
+                    "--planning-readback",
+                    str(self.readback_path),
+                    "--expected-run-id",
+                    "run-001",
+                    "--receipt",
+                    str(self.receipt_path),
+                ]
+            )
+        payload = json.loads(output.getvalue())
+        self.assertEqual(1, exit_code)
+        self.assertIn("receipt_unwritable", self.codes(payload))
+        self.assertEqual("repair", payload["next_action"]["kind"])
+        self.assert_persistable_next_action(payload["next_action"])
 
     def test_cli_writes_the_exact_handoff_receipt(self) -> None:
         self.write(self.record())
@@ -350,7 +582,9 @@ class PlanningValidatorTests(unittest.TestCase):
             encoding="utf-8",
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
-        self.assertEqual(completed.stdout, self.receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            completed.stdout, self.receipt_path.read_text(encoding="utf-8")
+        )
         self.assertEqual("allow", json.loads(completed.stdout)["decision"])
 
 
