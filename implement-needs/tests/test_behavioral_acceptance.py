@@ -254,7 +254,12 @@ class ProtocolFixture:
             "planning_archived",
             {
                 "task_id": "plan-1",
-                "specs": [{"id": "SPEC-1"}],
+                "specs": [
+                    {
+                        "id": "SPEC-1",
+                        "tickets": [{"id": "T1", "blocked_by": []}],
+                    }
+                ],
                 "checkpoint_size": 10,
                 "checkpoints": self.checkpoint_plan(["SPEC-1"]),
                 "default_branch": "main",
@@ -264,7 +269,13 @@ class ProtocolFixture:
         self.event(
             events,
             "spec_dispatched",
-            {"task_id": "task-1", "spec_id": "SPEC-1", "base_revision": "base-0"},
+            {
+                "task_id": "task-1",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+                "route_selection": "recommended",
+                "route_evidence": ["receipt://SPEC-1-route"],
+            },
         )
         self.event(
             events,
@@ -329,6 +340,20 @@ class ProtocolFixture:
             },
         )
         self.event(events, "waited", {"task_id": "task-1"})
+        self.event(
+            events,
+            "ticket_evidence",
+            {
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+                "owner_task_id": "task-1",
+                "blocked_by": [],
+                "commits": ["git://merge-1/ticket-1"],
+                "test_evidence": ["test://ticket-1"],
+                "tracker_state": "closed",
+            },
+            actor="spec_child",
+        )
         self.event(
             events,
             "child_handoff",
@@ -427,6 +452,7 @@ class ProtocolFixture:
 
     def write_terminal_state(self, lifecycle_receipt: dict[str, Any]) -> None:
         child_tasks = lifecycle_receipt["child_tasks"]
+        implementation_ownership = lifecycle_receipt["implementation_ownership"]
         self.delivery_map_path.write_text(
             "# Delivery map\n\nPlanning, implementation, repair, release, and smoke evidence verified.\n",
             encoding="utf-8",
@@ -437,6 +463,7 @@ class ProtocolFixture:
             {
                 "run_id": RUN_ID,
                 "tasks": sorted(child_tasks, key=lambda task: task["id"]),
+                "implementation_ownership": implementation_ownership,
             },
         )
         state = {
@@ -447,6 +474,7 @@ class ProtocolFixture:
             "active_phase": "complete",
             "active_task_stack": [],
             "child_tasks": child_tasks,
+            "implementation_ownership": implementation_ownership,
             "pending_specs": lifecycle_receipt["pending_specs"],
             "unverified_handoffs": [],
             "unarchived_tasks": [],
@@ -632,7 +660,12 @@ class BehavioralAcceptance(unittest.TestCase):
             "planning_archived",
             {
                 "task_id": "plan-1",
-                "specs": [{"id": "SPEC-1"}],
+                "specs": [
+                    {
+                        "id": "SPEC-1",
+                        "tickets": [{"id": "T1", "blocked_by": []}],
+                    }
+                ],
                 "checkpoint_size": 10,
                 "checkpoints": self.fixture.checkpoint_plan(["SPEC-1"]),
                 "default_branch": "main",
@@ -642,7 +675,13 @@ class BehavioralAcceptance(unittest.TestCase):
         self.fixture.event(
             events,
             "spec_dispatched",
-            {"task_id": "task-1", "spec_id": "SPEC-1", "base_revision": "base-0"},
+            {
+                "task_id": "task-1",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+                "route_selection": "recommended",
+                "route_evidence": ["receipt://SPEC-1-route"],
+            },
         )
         self.fixture.event(
             events,

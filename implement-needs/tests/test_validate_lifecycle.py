@@ -60,6 +60,35 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertGreaterEqual(len(payload["reasons"]), 3)
 
+    def test_ticket_implementation_topology_rejects(self):
+        payload, code = self.run_events(
+            [
+                {"kind": "dispatch_spec", "task": "s1", "spec": "SPEC-1"},
+                {
+                    "kind": "ticket_evidence",
+                    "owner": "ticket-task",
+                    "task": "T1",
+                    "spec": "SPEC-1",
+                },
+                {
+                    "kind": "ticket_implementation_thread",
+                    "task": "ticket-thread",
+                    "spec": "SPEC-1",
+                },
+                {
+                    "kind": "role_limited_task",
+                    "task": "review-1",
+                    "role": "read_only_review",
+                    "writes_product_code": True,
+                    "merge_commit": "merge-review",
+                },
+            ]
+        )
+        self.assertEqual(1, code)
+        self.assertIn("event_1_ticket_owner_mismatch", payload["reasons"])
+        self.assertIn("event_2_ticket_implementation_artifact", payload["reasons"])
+        self.assertIn("event_3_role_limited_mutation", payload["reasons"])
+
     def test_child_cannot_release_and_controller_cannot_release_early(self):
         events = [
             {"kind": "dispatch_spec", "task": "s1"},

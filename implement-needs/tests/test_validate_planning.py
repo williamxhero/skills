@@ -277,7 +277,25 @@ class PlanningValidatorTests(unittest.TestCase):
             newline="\n",
         )
         task_tree.write_text(
-            json.dumps({"run_id": "run-001", "tasks": []}, sort_keys=True) + "\n",
+            json.dumps(
+                {
+                    "run_id": "run-001",
+                    "tasks": [],
+                    "implementation_ownership": {
+                        "specs": [],
+                        "ticket_implementation_artifacts": {
+                            "tasks": [],
+                            "threads": [],
+                            "worktrees": [],
+                            "branches": [],
+                            "pull_requests": [],
+                        },
+                        "role_limited_tasks": [],
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -289,6 +307,17 @@ class PlanningValidatorTests(unittest.TestCase):
             "active_phase": "planning",
             "active_task_stack": [],
             "child_tasks": [],
+            "implementation_ownership": {
+                "specs": [],
+                "ticket_implementation_artifacts": {
+                    "tasks": [],
+                    "threads": [],
+                    "worktrees": [],
+                    "branches": [],
+                    "pull_requests": [],
+                },
+                "role_limited_tasks": [],
+            },
             "pending_specs": [],
             "unverified_handoffs": [],
             "unarchived_tasks": [],

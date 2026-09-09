@@ -36,7 +36,11 @@ class TerminalValidatorTests(unittest.TestCase):
         self.delivery_map.write_text(
             "# Delivery map\n\nAll work verified.\n", encoding="utf-8", newline="\n"
         )
-        self.task_tree.write_text('{"tasks":[]}\n', encoding="utf-8", newline="\n")
+        self.task_tree.write_text(
+            '{"implementation_ownership":{"role_limited_tasks":[],"specs":[],"ticket_implementation_artifacts":{"branches":[],"pull_requests":[],"tasks":[],"threads":[],"worktrees":[]}},"run_id":"run-001","tasks":[]}\n',
+            encoding="utf-8",
+            newline="\n",
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -112,6 +116,48 @@ class TerminalValidatorTests(unittest.TestCase):
                     "lifecycle": "archived",
                 },
             ],
+            "implementation_ownership": {
+                "specs": [
+                    {
+                        "spec_id": "SPEC-1",
+                        "implementation_task_id": "spec-1",
+                        "route": {
+                            "target": "SPEC-1",
+                            "task_id": "spec-1",
+                            "selection": "recommended",
+                            "evidence": ["receipt://SPEC-1-route"],
+                        },
+                        "tickets": [
+                            {
+                                "id": "T1",
+                                "owner_task_id": "spec-1",
+                                "blocked_by": [],
+                                "commits": ["git://ticket-1"],
+                                "test_evidence": ["test://ticket-1"],
+                                "tracker_state": "closed",
+                            }
+                        ],
+                    }
+                ],
+                "ticket_implementation_artifacts": {
+                    "tasks": [],
+                    "threads": [],
+                    "worktrees": [],
+                    "branches": [],
+                    "pull_requests": [],
+                },
+                "role_limited_tasks": [
+                    {
+                        "task_id": "repair-1",
+                        "spec_id": None,
+                        "parent_task_id": None,
+                        "role": "blocker_repair",
+                        "writes_product_code": False,
+                        "merge_commits": [],
+                        "evidence": ["repair/evidence.json"],
+                    }
+                ],
+            },
             "pending_specs": [],
             "unverified_handoffs": [],
             "unarchived_tasks": [],
@@ -169,6 +215,38 @@ class TerminalValidatorTests(unittest.TestCase):
                         "lifecycle": "paused",
                     },
                 ],
+                "implementation_ownership": {
+                    "specs": [
+                        {
+                            "spec_id": "SPEC-2",
+                            "implementation_task_id": "spec-2",
+                            "route": {
+                                "target": "SPEC-2",
+                                "task_id": "spec-2",
+                                "selection": "fallback",
+                                "evidence": ["receipt://SPEC-2-route"],
+                            },
+                            "tickets": [
+                                {
+                                    "id": "T2",
+                                    "owner_task_id": "spec-2",
+                                    "blocked_by": [],
+                                    "commits": [],
+                                    "test_evidence": [],
+                                    "tracker_state": "active",
+                                }
+                            ],
+                        }
+                    ],
+                    "ticket_implementation_artifacts": {
+                        "tasks": [],
+                        "threads": [],
+                        "worktrees": [],
+                        "branches": [],
+                        "pull_requests": [],
+                    },
+                    "role_limited_tasks": [],
+                },
                 "pending_specs": ["SPEC-2"],
                 "unarchived_tasks": ["spec-2"],
                 "test_state": {
@@ -243,6 +321,22 @@ class TerminalValidatorTests(unittest.TestCase):
                     key=lambda task: (
                         str(task.get("id", "")) if isinstance(task, dict) else ""
                     ),
+                ),
+                "implementation_ownership": copy.deepcopy(
+                    state.get(
+                        "implementation_ownership",
+                        {
+                            "specs": [],
+                            "ticket_implementation_artifacts": {
+                                "tasks": [],
+                                "threads": [],
+                                "worktrees": [],
+                                "branches": [],
+                                "pull_requests": [],
+                            },
+                            "role_limited_tasks": [],
+                        },
+                    )
                 ),
             }
             self.task_tree.write_text(
@@ -430,6 +524,78 @@ class TerminalValidatorTests(unittest.TestCase):
                 self.assertEqual(1, exit_code)
                 self.assertIn(expected, self.codes(payload))
                 self.assertEqual("repair_state", payload["next_action"]["kind"])
+
+    def test_success_rejects_invalid_implementation_ownership(self) -> None:
+        cases = (
+            (
+                "missing_ledger",
+                lambda state: state["implementation_ownership"].update(specs=[]),
+                "spec_ownership_missing",
+            ),
+            (
+                "duplicate_ledger",
+                lambda state: state["implementation_ownership"]["specs"].append(
+                    copy.deepcopy(state["implementation_ownership"]["specs"][0])
+                ),
+                "duplicate_spec_ownership",
+            ),
+            (
+                "route_replacement",
+                lambda state: state["implementation_ownership"]["specs"][0][
+                    "route"
+                ].update(task_id="replacement-task"),
+                "spec_route_owner_mismatch",
+            ),
+            (
+                "ticket_owner",
+                lambda state: state["implementation_ownership"]["specs"][0]["tickets"][
+                    0
+                ].update(owner_task_id="ticket-task"),
+                "ticket_owner_mismatch",
+            ),
+            (
+                "ticket_artifact",
+                lambda state: state["implementation_ownership"][
+                    "ticket_implementation_artifacts"
+                ]["tasks"].append("ticket-task"),
+                "ticket_implementation_artifact_present",
+            ),
+        )
+        for name, mutate, expected in cases:
+            with self.subTest(name=name):
+                state = self.success_state()
+                mutate(state)
+                payload, exit_code = self.evaluate(state, goal="complete")
+                self.assertEqual(1, exit_code)
+                self.assertIn(expected, self.codes(payload))
+                self.assertEqual("repair_state", payload["next_action"]["kind"])
+
+    def test_terminal_success_requires_ticket_commit_test_and_close_evidence(
+        self,
+    ) -> None:
+        state = self.success_state()
+        ticket = state["implementation_ownership"]["specs"][0]["tickets"][0]
+        ticket.update(commits=[], test_evidence=[], tracker_state="active")
+        payload, exit_code = self.evaluate(state, goal="complete")
+        self.assertEqual(1, exit_code)
+        codes = self.codes(payload)
+        self.assertIn("ticket_not_closed", codes)
+        self.assertIn("ticket_commit_evidence_missing", codes)
+        self.assertIn("ticket_test_evidence_missing", codes)
+
+    def test_role_limited_tasks_cannot_own_or_merge(self) -> None:
+        state = self.success_state()
+        helper = state["implementation_ownership"]["role_limited_tasks"][0]
+        helper.update(
+            task_id="spec-1",
+            writes_product_code=True,
+            merge_commits=["merge-review"],
+        )
+        payload, exit_code = self.evaluate(state, goal="complete")
+        self.assertEqual(1, exit_code)
+        codes = self.codes(payload)
+        self.assertIn("role_limited_task_is_owner", codes)
+        self.assertIn("role_limited_task_mutated_product", codes)
 
     def test_each_pending_gate_rejects_success(self) -> None:
         mutations = {
@@ -710,7 +876,9 @@ class TerminalValidatorTests(unittest.TestCase):
                     "# Delivery map\n", encoding="utf-8", newline="\n"
                 )
                 self.task_tree.write_text(
-                    '{"tasks":[]}\n', encoding="utf-8", newline="\n"
+                    '{"implementation_ownership":{"role_limited_tasks":[],"specs":[],"ticket_implementation_artifacts":{"branches":[],"pull_requests":[],"tasks":[],"threads":[],"worktrees":[]}},"run_id":"run-001","tasks":[]}\n',
+                    encoding="utf-8",
+                    newline="\n",
                 )
                 self.write_state(self.success_state())
                 suffix = "\n" if source == self.task_tree else "changed\n"
@@ -740,7 +908,9 @@ class TerminalValidatorTests(unittest.TestCase):
                     "# Delivery map\n", encoding="utf-8", newline="\n"
                 )
                 self.task_tree.write_text(
-                    '{"tasks":[]}\n', encoding="utf-8", newline="\n"
+                    '{"implementation_ownership":{"role_limited_tasks":[],"specs":[],"ticket_implementation_artifacts":{"branches":[],"pull_requests":[],"tasks":[],"threads":[],"worktrees":[]}},"run_id":"run-001","tasks":[]}\n',
+                    encoding="utf-8",
+                    newline="\n",
                 )
                 self.write_state(self.success_state())
                 source.unlink()
@@ -790,6 +960,31 @@ class TerminalValidatorTests(unittest.TestCase):
         )
         self.assertEqual(1, exit_code)
         self.assertIn("task_tree_task_mismatch", self.codes(payload))
+        self.assertNotIn("stale_task_tree", self.codes(payload))
+
+    def test_task_tree_and_state_ownership_must_match_exactly(self) -> None:
+        state = self.success_state()
+        self.write_state(state)
+        task_tree = json.loads(self.task_tree.read_text(encoding="utf-8"))
+        task_tree["implementation_ownership"]["specs"][0]["tickets"][0][
+            "owner_task_id"
+        ] = "ticket-task"
+        self.task_tree.write_text(
+            json.dumps(task_tree, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        state["freshness"]["task_tree_sha256"] = sha256(self.task_tree)
+        self.write_state_file_only(state)
+        payload, exit_code = validator.evaluate(
+            self.state_path,
+            self.delivery_map,
+            self.task_tree,
+            "run-001",
+            "terminal_success",
+        )
+        self.assertEqual(1, exit_code)
+        self.assertIn("task_tree_ownership_mismatch", self.codes(payload))
         self.assertNotIn("stale_task_tree", self.codes(payload))
 
     def test_current_task_tree_cannot_omit_a_recorded_child(self) -> None:
@@ -919,6 +1114,7 @@ class TerminalValidatorTests(unittest.TestCase):
                 "active_phase",
                 "active_task_stack",
                 "child_tasks",
+                "implementation_ownership",
                 "pending_specs",
                 "unverified_handoffs",
                 "unarchived_tasks",

@@ -35,7 +35,7 @@ After Grill, the same planning task must:
 1. Partition every requirement into exactly one member of the minimum ordered set of coherent SPECs, with acyclic inter-SPEC blockers.
 2. Invoke `to-spec` for every SPEC with `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`; require `spec_state: auto_approved` and provenance `controller_decision`.
 3. Invoke `to-tickets`, bypass its quiz under the standing authorization, publish tracer-bullet tickets, and self-check granularity, blocking edges, and acyclicity.
-4. Lock one currently supported implementation route and one or more same-or-stronger fallbacks per SPEC from risk and coupling, not ticket count.
+4. Lock one currently supported implementation route and one or more same-or-stronger fallbacks per SPEC from risk and coupling, not ticket count. Tickets inherit their SPEC route; planning never assigns model, effort, or owner per ticket.
 5. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, `checkpoint_size: 10`, and every deterministic L4 checkpoint.
 6. Return the completed planning record and artifact evidence without changing product or test code.
 
@@ -74,6 +74,8 @@ route_readback = {schema_version,run_id,task_id,target,requested,applied,
 ```
 
 Use `selection: recommended` with `substitution_reason: null`, or `selection: fallback` with a non-empty reason.
+
+For SPEC route readback, `task_id` is the one SPEC implementation owner recorded in `implementation_ownership`. A fallback readback is accepted only for that same task ID; a second task is duplicate ownership, not escalation.
 
 ## Verify and archive
 
