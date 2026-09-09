@@ -41,6 +41,49 @@ class TerminalValidatorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    @staticmethod
+    def l4_state(
+        *,
+        checkpoint_status: str = "passed",
+        checkpoint_revisions: list[str] | None = None,
+        release_mode: str = "reused_checkpoint",
+        release_revisions: list[str] | None = None,
+    ) -> dict:
+        checkpoint_revisions = checkpoint_revisions or ["abc123"]
+        release_revisions = release_revisions or list(checkpoint_revisions)
+        return {
+            "checkpoint_size": 10,
+            "ordered_specs": ["SPEC-1"],
+            "completed_spec_count": 1,
+            "checkpoints": [
+                {
+                    "id": "checkpoint-1",
+                    "start_spec_index": 1,
+                    "end_spec_index": 1,
+                    "specs": ["SPEC-1"],
+                    "final_tail": True,
+                    "affected_owners": ["owner-a"],
+                    "affected_repositories": ["repo-a"],
+                    "status": checkpoint_status,
+                    "revision": "abc123" if checkpoint_status == "passed" else None,
+                    "candidate_revisions": checkpoint_revisions
+                    if checkpoint_status == "passed"
+                    else [],
+                    "evidence": ["tests/l4-checkpoint.json"]
+                    if checkpoint_status == "passed"
+                    else [],
+                }
+            ],
+            "release_l4": {
+                "mode": release_mode,
+                "checkpoint_id": "checkpoint-1"
+                if release_mode == "reused_checkpoint"
+                else None,
+                "candidate_revisions": release_revisions,
+                "evidence": ["tests/l4-release.json"],
+            },
+        }
+
     def success_state(self, release_status: str = "deployed") -> dict:
         return {
             "schema_version": 1,
@@ -76,6 +119,7 @@ class TerminalValidatorTests(unittest.TestCase):
                 "status": "passed",
                 "candidate_revision": "abc123",
                 "evidence": ["tests/final.json"],
+                "l4_checkpoints": self.l4_state(),
             },
             "release_state": {
                 "status": release_status,
@@ -131,6 +175,27 @@ class TerminalValidatorTests(unittest.TestCase):
                     "status": "blocked",
                     "candidate_revision": None,
                     "evidence": ["blocker/test.txt"],
+                    "l4_checkpoints": {
+                        "checkpoint_size": 10,
+                        "ordered_specs": ["SPEC-2"],
+                        "completed_spec_count": 0,
+                        "checkpoints": [
+                            {
+                                "id": "checkpoint-1",
+                                "start_spec_index": 1,
+                                "end_spec_index": 1,
+                                "specs": ["SPEC-2"],
+                                "final_tail": True,
+                                "affected_owners": ["owner-a"],
+                                "affected_repositories": ["repo-a"],
+                                "status": "pending",
+                                "revision": None,
+                                "candidate_revisions": [],
+                                "evidence": [],
+                            }
+                        ],
+                        "release_l4": None,
+                    },
                 },
                 "release_state": {
                     "status": "pending",
@@ -414,6 +479,7 @@ class TerminalValidatorTests(unittest.TestCase):
                     "status": status,
                     "candidate_revision": None,
                     "evidence": [],
+                    "l4_checkpoints": self.l4_state(),
                 }
                 payload, exit_code = self.evaluate(state)
                 self.assertEqual(1, exit_code)
@@ -431,6 +497,51 @@ class TerminalValidatorTests(unittest.TestCase):
                 payload, exit_code = self.evaluate(state)
                 self.assertEqual(1, exit_code)
                 self.assertIn("terminal_release_incomplete", self.codes(payload))
+
+    def test_due_or_failed_l4_checkpoint_rejects_terminal_success(self) -> None:
+        for status, expected in (
+            ("pending", "due_checkpoint_not_passed"),
+            ("failed", "failed_checkpoint_blocks_success"),
+        ):
+            with self.subTest(status=status):
+                state = self.success_state()
+                state["test_state"]["l4_checkpoints"] = self.l4_state(
+                    checkpoint_status=status
+                )
+                payload, exit_code = self.evaluate(state)
+                self.assertEqual(1, exit_code)
+                self.assertIn(expected, self.codes(payload))
+
+    def test_final_l4_reuse_requires_exact_candidate_revisions(self) -> None:
+        state = self.success_state()
+        state["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123"],
+            release_revisions=["abc123", "repo-b@later"],
+        )
+        payload, exit_code = self.evaluate(state)
+        self.assertEqual(1, exit_code)
+        self.assertIn("stale_final_checkpoint_revisions", self.codes(payload))
+
+    def test_final_l4_rerun_is_required_after_candidate_changes(self) -> None:
+        state = self.success_state()
+        state["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123"],
+            release_mode="rerun_final",
+            release_revisions=["abc123", "repo-b@later"],
+        )
+        payload, exit_code = self.evaluate(state)
+        self.assertEqual(0, exit_code)
+        self.assertEqual("allow", payload["decision"])
+
+        duplicate = self.success_state()
+        duplicate["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123"],
+            release_mode="rerun_final",
+            release_revisions=["abc123"],
+        )
+        payload, exit_code = self.evaluate(duplicate)
+        self.assertEqual(1, exit_code)
+        self.assertIn("final_l4_duplicate", self.codes(payload))
 
     def test_missing_malformed_and_non_object_state_fail_closed(self) -> None:
         cases = (("{", "state_malformed"), ("[]", "invalid_type"))
@@ -488,6 +599,29 @@ class TerminalValidatorTests(unittest.TestCase):
                         lambda state, obj=object_name, key=field: state[obj].pop(key),
                     )
                 )
+        cases.append(
+            (
+                "test_state.l4_checkpoints",
+                self.success_state(),
+                lambda state: state["test_state"].pop("l4_checkpoints"),
+            )
+        )
+        for field in (
+            "checkpoint_size",
+            "ordered_specs",
+            "completed_spec_count",
+            "checkpoints",
+            "release_l4",
+        ):
+            cases.append(
+                (
+                    f"test_state.l4_checkpoints.{field}",
+                    self.success_state(),
+                    lambda state, key=field: state["test_state"]["l4_checkpoints"].pop(
+                        key
+                    ),
+                )
+            )
         for field in ("delivery_map_sha256", "task_tree_sha256"):
             cases.append(
                 (

@@ -39,6 +39,7 @@ AUTO_APPROVAL = {
 }
 HAN_RE = re.compile(r"[\u3400-\u9fff]")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+CHECKPOINT_SIZE = 10
 
 
 def _issue(code: str, path: str, message: str) -> dict[str, str]:
@@ -135,6 +136,33 @@ def _string_list(
             result.append(parsed)
     if len(result) != len(set(result)):
         issues.append(_issue("duplicate_item", path, "Entries must be unique."))
+    return result
+
+
+def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
+    checkpoints: list[dict[str, Any]] = []
+    for start in range(0, len(spec_ids), CHECKPOINT_SIZE):
+        members = spec_ids[start : start + CHECKPOINT_SIZE]
+        if not members:
+            continue
+        end = start + len(members)
+        checkpoints.append(
+            {
+                "id": f"checkpoint-{end}",
+                "start_spec_index": start + 1,
+                "end_spec_index": end,
+                "specs": members,
+                "final_tail": len(members) < CHECKPOINT_SIZE,
+            }
+        )
+    return checkpoints
+
+
+def _checkpoint_lookup(spec_ids: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for checkpoint in _checkpoint_plan(spec_ids):
+        for spec_id in checkpoint["specs"]:
+            result[spec_id] = checkpoint["id"]
     return result
 
 
@@ -780,6 +808,22 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                 f"SPEC owns undeclared requirement {requirement}.",
             )
         )
+    expected_checkpoint_by_spec = _checkpoint_lookup(spec_ids)
+    for spec_index, spec_value in enumerate(spec_values or []):
+        if not isinstance(spec_value, dict):
+            continue
+        spec_id = spec_value.get("id")
+        checkpoint = spec_value.get("checkpoint")
+        if isinstance(spec_id, str) and spec_id in expected_checkpoint_by_spec:
+            expected_checkpoint = expected_checkpoint_by_spec[spec_id]
+            if checkpoint != expected_checkpoint:
+                issues.append(
+                    _issue(
+                        "checkpoint_policy_mismatch",
+                        f"$.specs[{spec_index}].checkpoint",
+                        f"SPEC {spec_id} must belong to {expected_checkpoint}.",
+                    )
+                )
 
     train = _object(
         record_obj.get("release_train"),
@@ -791,12 +835,22 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
             "public_contract_specs",
             "environment_specs",
             "baselines",
+            "checkpoint_size",
             "checkpoints",
         },
         issues,
     )
     if train is not None:
-        for field in ("owners", "repositories", "acceptance_scopes", "baselines"):
+        train_owners = (
+            _string_list(train.get("owners"), "$.release_train.owners", issues) or []
+        )
+        train_repositories = (
+            _string_list(
+                train.get("repositories"), "$.release_train.repositories", issues
+            )
+            or []
+        )
+        for field in ("acceptance_scopes", "baselines"):
             _string_list(train.get(field), f"$.release_train.{field}", issues)
         for field in ("public_contract_specs", "environment_specs"):
             flagged = (
@@ -817,20 +871,141 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                             f"Unknown SPEC {spec_id}.",
                         )
                     )
-        train_checkpoints = (
-            _string_list(
-                train.get("checkpoints"), "$.release_train.checkpoints", issues
-            )
-            or []
-        )
-        if set(train_checkpoints) != set(checkpoints):
+        if train.get("checkpoint_size") != CHECKPOINT_SIZE:
             issues.append(
                 _issue(
-                    "checkpoint_mismatch",
-                    "$.release_train.checkpoints",
-                    "Release-train checkpoints must match every SPEC checkpoint.",
+                    "checkpoint_size_mismatch",
+                    "$.release_train.checkpoint_size",
+                    "Release train checkpoint_size must be the fixed value 10.",
                 )
             )
+        train_checkpoints = _list(
+            train.get("checkpoints"), "$.release_train.checkpoints", issues
+        )
+        if train_checkpoints is not None:
+            expected_checkpoints = _checkpoint_plan(spec_ids)
+            if len(train_checkpoints) != len(expected_checkpoints):
+                issues.append(
+                    _issue(
+                        "checkpoint_mismatch",
+                        "$.release_train.checkpoints",
+                        "Release-train checkpoints must match the deterministic fixed-size plan.",
+                    )
+                )
+            for index, checkpoint_value in enumerate(train_checkpoints):
+                checkpoint_path = f"$.release_train.checkpoints[{index}]"
+                checkpoint = _object(
+                    checkpoint_value,
+                    checkpoint_path,
+                    {
+                        "id",
+                        "start_spec_index",
+                        "end_spec_index",
+                        "specs",
+                        "final_tail",
+                        "affected_owners",
+                        "affected_repositories",
+                    },
+                    issues,
+                )
+                if checkpoint is None:
+                    continue
+                expected = (
+                    expected_checkpoints[index]
+                    if index < len(expected_checkpoints)
+                    else None
+                )
+                checkpoint_id = _text(
+                    checkpoint.get("id"), f"{checkpoint_path}.id", issues
+                )
+                members = (
+                    _string_list(
+                        checkpoint.get("specs"), f"{checkpoint_path}.specs", issues
+                    )
+                    or []
+                )
+                affected_owners = (
+                    _string_list(
+                        checkpoint.get("affected_owners"),
+                        f"{checkpoint_path}.affected_owners",
+                        issues,
+                    )
+                    or []
+                )
+                affected_repositories = (
+                    _string_list(
+                        checkpoint.get("affected_repositories"),
+                        f"{checkpoint_path}.affected_repositories",
+                        issues,
+                    )
+                    or []
+                )
+                for owner in affected_owners:
+                    if owner not in train_owners:
+                        issues.append(
+                            _issue(
+                                "unknown_checkpoint_owner",
+                                f"{checkpoint_path}.affected_owners",
+                                f"Unknown owner {owner}.",
+                            )
+                        )
+                for repository in affected_repositories:
+                    if repository not in train_repositories:
+                        issues.append(
+                            _issue(
+                                "unknown_checkpoint_repository",
+                                f"{checkpoint_path}.affected_repositories",
+                                f"Unknown repository {repository}.",
+                            )
+                        )
+                for field in ("start_spec_index", "end_spec_index"):
+                    value = checkpoint.get(field)
+                    if not isinstance(value, int) or isinstance(value, bool):
+                        issues.append(
+                            _issue(
+                                "invalid_checkpoint_index",
+                                f"{checkpoint_path}.{field}",
+                                "Checkpoint indexes must be integers.",
+                            )
+                        )
+                if not isinstance(checkpoint.get("final_tail"), bool):
+                    issues.append(
+                        _issue(
+                            "invalid_checkpoint_tail",
+                            f"{checkpoint_path}.final_tail",
+                            "final_tail must be a boolean.",
+                        )
+                    )
+                if expected is not None:
+                    comparisons = {
+                        "id": checkpoint_id,
+                        "start_spec_index": checkpoint.get("start_spec_index"),
+                        "end_spec_index": checkpoint.get("end_spec_index"),
+                        "specs": members,
+                        "final_tail": checkpoint.get("final_tail"),
+                    }
+                    for field, actual in comparisons.items():
+                        if actual != expected[field]:
+                            issues.append(
+                                _issue(
+                                    "checkpoint_policy_mismatch",
+                                    f"{checkpoint_path}.{field}",
+                                    f"Expected {expected[field]!r}.",
+                                )
+                            )
+            train_checkpoint_ids = [
+                checkpoint.get("id")
+                for checkpoint in train_checkpoints
+                if isinstance(checkpoint, dict)
+            ]
+            if set(train_checkpoint_ids) != set(checkpoints):
+                issues.append(
+                    _issue(
+                        "checkpoint_mismatch",
+                        "$.release_train.checkpoints",
+                        "Release-train checkpoints must match every SPEC checkpoint.",
+                    )
+                )
 
     code_check = _object(
         record_obj.get("code_read_only"),
@@ -1282,6 +1457,8 @@ def evaluate_handoff(
         "planning_task_id": record["planning_task"]["id"],
         "generation": record["planning_task"]["generation"],
         "spec_ids": [spec["id"] for spec in record["specs"]],
+        "checkpoint_size": record["release_train"]["checkpoint_size"],
+        "checkpoints": record["release_train"]["checkpoints"],
         "grill_question_count": question_count,
         "planning_record_sha256": _sha256(record_raw),
         "controller_state_sha256": _sha256(state_raw),

@@ -16,6 +16,7 @@ SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
 TERMINAL_STATES = {"terminal_success", "terminal_blocked", "user_stopped"}
 GOAL_STATUSES = {"unchanged", "complete", "blocked"}
+CHECKPOINT_SIZE = 10
 
 REPAIR_STATE_ACTION = {
     "kind": "repair_state",
@@ -41,6 +42,25 @@ def _sorted(issues: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
+    checkpoints: list[dict[str, Any]] = []
+    for start in range(0, len(spec_ids), CHECKPOINT_SIZE):
+        members = spec_ids[start : start + CHECKPOINT_SIZE]
+        if not members:
+            continue
+        end = start + len(members)
+        checkpoints.append(
+            {
+                "id": f"checkpoint-{end}",
+                "start_spec_index": start + 1,
+                "end_spec_index": end,
+                "specs": members,
+                "final_tail": len(members) < CHECKPOINT_SIZE,
+            }
+        )
+    return checkpoints
 
 
 def _read_bytes(path: Path, label: str, issues: list[dict[str, str]]) -> bytes | None:
@@ -266,6 +286,193 @@ def _terminal_record_issues(
     return issues
 
 
+def _l4_checkpoint_issues(
+    test_state: dict[str, Any], *, require_release_ready: bool
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    l4 = test_state["l4_checkpoints"]
+    ordered_specs = l4["ordered_specs"]
+    completed_count = l4["completed_spec_count"]
+    if completed_count > len(ordered_specs):
+        issues.append(
+            _issue(
+                "completed_spec_count_invalid",
+                "$.test_state.l4_checkpoints.completed_spec_count",
+                "Completed SPEC count cannot exceed the ordered SPEC count.",
+            )
+        )
+    expected = _checkpoint_plan(ordered_specs)
+    checkpoints = l4["checkpoints"]
+    if len(checkpoints) != len(expected):
+        issues.append(
+            _issue(
+                "checkpoint_mismatch",
+                "$.test_state.l4_checkpoints.checkpoints",
+                "Persisted L4 checkpoints must match the deterministic fixed-size plan.",
+            )
+        )
+    by_id = {checkpoint["id"]: checkpoint for checkpoint in checkpoints}
+    if len(by_id) != len(checkpoints):
+        issues.append(
+            _issue(
+                "duplicate_checkpoint_id",
+                "$.test_state.l4_checkpoints.checkpoints",
+                "Checkpoint IDs must be unique.",
+            )
+        )
+    for index, expected_checkpoint in enumerate(expected):
+        path = f"$.test_state.l4_checkpoints.checkpoints[{index}]"
+        if index >= len(checkpoints):
+            continue
+        checkpoint = checkpoints[index]
+        for field in (
+            "id",
+            "start_spec_index",
+            "end_spec_index",
+            "specs",
+            "final_tail",
+        ):
+            if checkpoint[field] != expected_checkpoint[field]:
+                issues.append(
+                    _issue(
+                        "checkpoint_policy_mismatch",
+                        f"{path}.{field}",
+                        f"Expected {expected_checkpoint[field]!r}.",
+                    )
+                )
+        due = expected_checkpoint["end_spec_index"] <= completed_count
+        if due and checkpoint["status"] != "passed":
+            issues.append(
+                _issue(
+                    "due_checkpoint_not_passed",
+                    path,
+                    "Every due L4 checkpoint must pass before continuing or completing.",
+                )
+            )
+        if checkpoint["status"] == "failed":
+            issues.append(
+                _issue(
+                    "failed_checkpoint_blocks_success",
+                    path,
+                    "A failed L4 checkpoint blocks terminal success until rerun green.",
+                )
+            )
+        if not checkpoint["affected_owners"]:
+            issues.append(
+                _issue(
+                    "checkpoint_owner_scope_missing",
+                    f"{path}.affected_owners",
+                    "Checkpoint affected owners are required.",
+                )
+            )
+        if not checkpoint["affected_repositories"]:
+            issues.append(
+                _issue(
+                    "checkpoint_repository_scope_missing",
+                    f"{path}.affected_repositories",
+                    "Checkpoint affected repositories are required.",
+                )
+            )
+        if checkpoint["status"] == "passed":
+            if checkpoint["revision"] is None or not checkpoint["candidate_revisions"]:
+                issues.append(
+                    _issue(
+                        "checkpoint_evidence_incomplete",
+                        path,
+                        "Passed checkpoints require tested revision and candidate revisions.",
+                    )
+                )
+            if not checkpoint["evidence"]:
+                issues.append(
+                    _issue(
+                        "checkpoint_evidence_missing",
+                        f"{path}.evidence",
+                        "Passed checkpoints require evidence.",
+                    )
+                )
+    if not require_release_ready:
+        return issues
+    if completed_count != len(ordered_specs):
+        issues.append(
+            _issue(
+                "terminal_checkpoint_count_incomplete",
+                "$.test_state.l4_checkpoints.completed_spec_count",
+                "Terminal success requires every planned SPEC to be complete.",
+            )
+        )
+    release_l4 = l4["release_l4"]
+    if release_l4 is None:
+        issues.append(
+            _issue(
+                "terminal_l4_release_missing",
+                "$.test_state.l4_checkpoints.release_l4",
+                "Terminal success requires final L4 reuse or rerun evidence.",
+            )
+        )
+        return issues
+    if not release_l4["evidence"]:
+        issues.append(
+            _issue(
+                "terminal_l4_release_evidence_missing",
+                "$.test_state.l4_checkpoints.release_l4.evidence",
+                "Final L4 release evidence is required.",
+            )
+        )
+    latest = checkpoints[-1] if checkpoints else None
+    if test_state["candidate_revision"] not in release_l4["candidate_revisions"]:
+        issues.append(
+            _issue(
+                "release_l4_candidate_mismatch",
+                "$.test_state.l4_checkpoints.release_l4.candidate_revisions",
+                "Final L4 candidate revisions must include the terminal test candidate.",
+            )
+        )
+    if latest is None or latest["status"] != "passed":
+        issues.append(
+            _issue(
+                "final_checkpoint_missing",
+                "$.test_state.l4_checkpoints.checkpoints",
+                "The final checkpoint must pass before terminal success.",
+            )
+        )
+        return issues
+    if release_l4["mode"] == "reused_checkpoint":
+        if release_l4["checkpoint_id"] != latest["id"]:
+            issues.append(
+                _issue(
+                    "final_checkpoint_reuse_mismatch",
+                    "$.test_state.l4_checkpoints.release_l4.checkpoint_id",
+                    "Final L4 reuse must name the last checkpoint.",
+                )
+            )
+        if release_l4["candidate_revisions"] != latest["candidate_revisions"]:
+            issues.append(
+                _issue(
+                    "stale_final_checkpoint_revisions",
+                    "$.test_state.l4_checkpoints.release_l4.candidate_revisions",
+                    "Final checkpoint L4 can be reused only for exact candidate revisions.",
+                )
+            )
+    else:
+        if release_l4["checkpoint_id"] is not None:
+            issues.append(
+                _issue(
+                    "final_l4_rerun_checkpoint_id",
+                    "$.test_state.l4_checkpoints.release_l4.checkpoint_id",
+                    "A final L4 rerun must not claim checkpoint reuse.",
+                )
+            )
+        if release_l4["candidate_revisions"] == latest["candidate_revisions"]:
+            issues.append(
+                _issue(
+                    "final_l4_duplicate",
+                    "$.test_state.l4_checkpoints.release_l4",
+                    "Do not repeat final L4 when checkpoint revisions are exact.",
+                )
+            )
+    return issues
+
+
 def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     child_ids = [child["id"] for child in state["child_tasks"]]
@@ -358,6 +565,12 @@ def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
                     f"SPEC {spec_id} has multiple implementation task owners: {', '.join(sorted(task_ids))}.",
                 )
             )
+    issues.extend(
+        _l4_checkpoint_issues(
+            state["test_state"],
+            require_release_ready=state["controller_state"] == "terminal_success",
+        )
+    )
 
     controller_state = state["controller_state"]
     phase = state["active_phase"]
@@ -765,6 +978,10 @@ def evaluate(
         "delivery_map_sha256": _sha256(delivery_raw),
         "task_tree_sha256": _sha256(task_tree_raw),
         "terminal_evidence": state["terminal"]["evidence"],
+        "l4_checkpoint_count": len(
+            state["test_state"]["l4_checkpoints"]["checkpoints"]
+        ),
+        "release_l4": state["test_state"]["l4_checkpoints"]["release_l4"],
     }
     payload["receipt_sha256"] = _decision_hash(payload)
     return payload, 0

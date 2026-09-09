@@ -52,6 +52,25 @@ class PlanningValidatorTests(unittest.TestCase):
             "rationale": "Risk and coupling justify this route.",
         }
 
+    @staticmethod
+    def checkpoint_plan(spec_ids: list[str]) -> list[dict]:
+        checkpoints = []
+        for start in range(0, len(spec_ids), 10):
+            members = spec_ids[start : start + 10]
+            end = start + len(members)
+            checkpoints.append(
+                {
+                    "id": f"checkpoint-{end}",
+                    "start_spec_index": start + 1,
+                    "end_spec_index": end,
+                    "specs": members,
+                    "final_tail": len(members) < 10,
+                    "affected_owners": ["owner-a"],
+                    "affected_repositories": ["repo-a"],
+                }
+            )
+        return checkpoints
+
     def record(self) -> dict:
         approval = {
             "confirmation_mode": "auto_approve",
@@ -145,7 +164,7 @@ class PlanningValidatorTests(unittest.TestCase):
                     "route": self.route(
                         self.pair("fast-1", "medium"), self.pair("balanced-1", "high")
                     ),
-                    "checkpoint": "checkpoint-1",
+                    "checkpoint": "checkpoint-2",
                 },
                 {
                     "id": "SPEC-2",
@@ -177,7 +196,8 @@ class PlanningValidatorTests(unittest.TestCase):
                 "public_contract_specs": ["SPEC-2"],
                 "environment_specs": [],
                 "baselines": ["main@abc"],
-                "checkpoints": ["checkpoint-1", "checkpoint-2"],
+                "checkpoint_size": 10,
+                "checkpoints": self.checkpoint_plan(["SPEC-1", "SPEC-2"]),
             },
             "code_read_only": {
                 "product_test_tree_before_sha256": "a" * 64,
@@ -276,6 +296,13 @@ class PlanningValidatorTests(unittest.TestCase):
                 "status": "pending",
                 "candidate_revision": None,
                 "evidence": [],
+                "l4_checkpoints": {
+                    "checkpoint_size": 10,
+                    "ordered_specs": [],
+                    "completed_spec_count": 0,
+                    "checkpoints": [],
+                    "release_l4": None,
+                },
             },
             "release_state": {
                 "status": "pending",
@@ -331,6 +358,43 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertEqual("allow", first[0]["decision"])
         self.assertEqual(["SPEC-1", "SPEC-2"], first[0]["spec_ids"])
         self.assertEqual(1, first[0]["grill_question_count"])
+
+    def test_fixed_checkpoint_policy_is_table_driven(self) -> None:
+        cases = {
+            1: [1],
+            7: [7],
+            10: [10],
+            11: [10, 11],
+            20: [10, 20],
+            23: [10, 20, 23],
+            30: [10, 20, 30],
+            32: [10, 20, 30, 32],
+        }
+        for count, expected_positions in cases.items():
+            with self.subTest(count=count):
+                spec_ids = [f"SPEC-{index}" for index in range(1, count + 1)]
+                checkpoints = self.checkpoint_plan(spec_ids)
+                self.assertEqual(
+                    expected_positions,
+                    [checkpoint["end_spec_index"] for checkpoint in checkpoints],
+                )
+                self.assertEqual(
+                    ["checkpoint-" + str(position) for position in expected_positions],
+                    [checkpoint["id"] for checkpoint in checkpoints],
+                )
+
+    def test_release_train_checkpoint_plan_is_fixed_and_exact(self) -> None:
+        record = self.record()
+        record["release_train"]["checkpoint_size"] = 6
+        payload, code = self.handoff(record)
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_size_mismatch", self.codes(payload))
+
+        record = self.record()
+        record["release_train"]["checkpoints"][0]["specs"] = ["SPEC-2", "SPEC-1"]
+        payload, code = self.handoff(record)
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_policy_mismatch", self.codes(payload))
 
     def test_dispatch_gate_requires_exactly_one_archived_planner_before_any_spec(
         self,

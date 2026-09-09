@@ -42,6 +42,8 @@ DATA_FIELDS = {
     "planning_archived": {
         "task_id",
         "specs",
+        "checkpoint_size",
+        "checkpoints",
         "default_branch",
         "default_revision",
     },
@@ -51,7 +53,21 @@ DATA_FIELDS = {
     "child_handoff": {"task_id", "boundary", "revision"},
     "handoff_verified": {"task_id", "result", "revision"},
     "child_archived": {"task_id"},
-    "checkpoint_passed": {"spec_id", "revision"},
+    "checkpoint_passed": {
+        "checkpoint_id",
+        "revision",
+        "candidate_revisions",
+        "affected_owners",
+        "affected_repositories",
+    },
+    "checkpoint_failed": {
+        "checkpoint_id",
+        "revision",
+        "candidate_revisions",
+        "affected_owners",
+        "affected_repositories",
+        "reason",
+    },
     "default_branch_verified": {"spec_id", "revision"},
     "blocker_opened": {
         "repair_task_id",
@@ -65,7 +81,12 @@ DATA_FIELDS = {
     "stored_action_resumed": {"action"},
     "release_candidate_frozen": {"revision"},
     "artifact_built": {"revision", "artifact_id"},
-    "final_tests_passed": {"revision", "artifact_id"},
+    "final_tests_passed": {
+        "revision",
+        "artifact_id",
+        "candidate_revisions",
+        "l4_reused_checkpoint",
+    },
     "package_completed": {"revision", "artifact_id", "package_id"},
     "deployment_completed": {
         "revision",
@@ -107,6 +128,26 @@ REPAIR_LOG_ACTION = {
     "target": "lifecycle-log.jsonl",
     "instruction": "Repair the lifecycle log from observed task and delivery evidence, then replay the lifecycle gate.",
 }
+CHECKPOINT_SIZE = 10
+
+
+def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
+    checkpoints: list[dict[str, Any]] = []
+    for start in range(0, len(spec_ids), CHECKPOINT_SIZE):
+        members = spec_ids[start : start + CHECKPOINT_SIZE]
+        if not members:
+            continue
+        end = start + len(members)
+        checkpoints.append(
+            {
+                "id": f"checkpoint-{end}",
+                "start_spec_index": start + 1,
+                "end_spec_index": end,
+                "specs": members,
+                "final_tail": len(members) < CHECKPOINT_SIZE,
+            }
+        )
+    return checkpoints
 
 
 def _issue(code: str, path: str, message: str) -> dict[str, str]:
@@ -322,9 +363,9 @@ def _matches_action(action: dict[str, str], event: dict[str, Any]) -> bool:
         if event_type == "handoff_verified":
             return data.get("task_id") == target
         return (
-            event_type in {"checkpoint_passed", "default_branch_verified"}
-            and data.get("spec_id") == target
-        )
+            event_type in {"checkpoint_passed", "checkpoint_failed"}
+            and data.get("checkpoint_id") == target
+        ) or (event_type == "default_branch_verified" and data.get("spec_id") == target)
     if kind == "archive":
         return event_type == "child_archived" and data.get("task_id") == target
     if kind == "repair":
@@ -340,6 +381,7 @@ def _matches_action(action: dict[str, str], event: dict[str, Any]) -> bool:
     if kind == "advance":
         return event_type in {
             "checkpoint_passed",
+            "checkpoint_failed",
             "default_branch_verified",
             "release_candidate_frozen",
             "artifact_built",
@@ -372,6 +414,9 @@ class _Replay:
         self.pending_specs: list[str] = []
         self.default_branch: str | None = None
         self.default_revision: str | None = None
+        self.checkpoint_size = CHECKPOINT_SIZE
+        self.checkpoints: list[dict[str, Any]] = []
+        self.checkpoint_state: dict[str, dict[str, Any]] = {}
         self.blocker: dict[str, Any] | None = None
         self.pending_action: dict[str, str] | None = None
         self.pending_action_source: str | None = None
@@ -381,6 +426,7 @@ class _Replay:
         self.candidate_revision: str | None = None
         self.artifact_id: str | None = None
         self.tests_passed = False
+        self.release_l4: dict[str, Any] | None = None
         self.package_id: str | None = None
         self.deployment_status = "pending"
         self.deployment_target: str | None = None
@@ -395,6 +441,177 @@ class _Replay:
             self.add("unknown_task", path, "Event names an unknown child task.")
             return None
         return self.tasks[task_id]
+
+    def _load_checkpoints(
+        self, value: Any, expected: list[dict[str, Any]], path: str
+    ) -> None:
+        if not isinstance(value, list) or len(value) != len(expected):
+            self.add(
+                "checkpoint_mismatch",
+                path,
+                "Lifecycle checkpoints must match the deterministic fixed-size plan.",
+            )
+            return
+        parsed: list[dict[str, Any]] = []
+        for index, checkpoint in enumerate(value):
+            checkpoint_path = f"{path}[{index}]"
+            if not isinstance(checkpoint, dict) or set(checkpoint) != {
+                "id",
+                "start_spec_index",
+                "end_spec_index",
+                "specs",
+                "final_tail",
+                "affected_owners",
+                "affected_repositories",
+            }:
+                self.add(
+                    "invalid_checkpoint_plan",
+                    checkpoint_path,
+                    "Checkpoint needs deterministic membership and affected surfaces.",
+                )
+                continue
+            actual_members = checkpoint.get("specs")
+            affected_owners = checkpoint.get("affected_owners")
+            affected_repositories = checkpoint.get("affected_repositories")
+            if not _string_list(actual_members, nonempty=True):
+                self.add(
+                    "invalid_checkpoint_plan",
+                    f"{checkpoint_path}.specs",
+                    "Checkpoint SPEC membership is required.",
+                )
+            if not _string_list(affected_owners, nonempty=True):
+                self.add(
+                    "invalid_checkpoint_surfaces",
+                    f"{checkpoint_path}.affected_owners",
+                    "Checkpoint affected owners are required.",
+                )
+            if not _string_list(affected_repositories, nonempty=True):
+                self.add(
+                    "invalid_checkpoint_surfaces",
+                    f"{checkpoint_path}.affected_repositories",
+                    "Checkpoint affected repositories are required.",
+                )
+            expected_checkpoint = expected[index]
+            for field in (
+                "id",
+                "start_spec_index",
+                "end_spec_index",
+                "specs",
+                "final_tail",
+            ):
+                if checkpoint.get(field) != expected_checkpoint[field]:
+                    self.add(
+                        "checkpoint_policy_mismatch",
+                        f"{checkpoint_path}.{field}",
+                        f"Expected {expected_checkpoint[field]!r}.",
+                    )
+            parsed_checkpoint = {
+                "id": checkpoint.get("id"),
+                "start_spec_index": checkpoint.get("start_spec_index"),
+                "end_spec_index": checkpoint.get("end_spec_index"),
+                "specs": checkpoint.get("specs"),
+                "final_tail": checkpoint.get("final_tail"),
+                "affected_owners": checkpoint.get("affected_owners"),
+                "affected_repositories": checkpoint.get("affected_repositories"),
+            }
+            parsed.append(parsed_checkpoint)
+            self.checkpoint_state[parsed_checkpoint["id"]] = {
+                **parsed_checkpoint,
+                "status": "pending",
+                "revision": None,
+                "candidate_revisions": [],
+                "evidence": [],
+            }
+        self.checkpoints = parsed
+
+    def _completed_spec_count(self) -> int:
+        return len(self.specs) - len(self.pending_specs)
+
+    def _due_checkpoint(self) -> dict[str, Any] | None:
+        completed = self._completed_spec_count()
+        for checkpoint in self.checkpoints:
+            state = self.checkpoint_state.get(checkpoint["id"])
+            if (
+                isinstance(checkpoint.get("end_spec_index"), int)
+                and checkpoint["end_spec_index"] <= completed
+                and state is not None
+                and state["status"] != "passed"
+            ):
+                return state
+        return None
+
+    def _last_checkpoint(self) -> dict[str, Any] | None:
+        if not self.checkpoints:
+            return None
+        return self.checkpoint_state.get(self.checkpoints[-1]["id"])
+
+    def _checkpoint_result(
+        self,
+        data: dict[str, Any],
+        path: str,
+        *,
+        status: str,
+    ) -> dict[str, Any] | None:
+        checkpoint_id = data.get("checkpoint_id")
+        if not _text(checkpoint_id) or checkpoint_id not in self.checkpoint_state:
+            self.add(
+                "unknown_checkpoint",
+                f"{path}.data.checkpoint_id",
+                "Unknown checkpoint.",
+            )
+            return None
+        checkpoint = self.checkpoint_state[checkpoint_id]
+        if (
+            isinstance(checkpoint.get("end_spec_index"), int)
+            and checkpoint["end_spec_index"] > self._completed_spec_count()
+        ):
+            self.add(
+                "checkpoint_before_due",
+                path,
+                "Checkpoint L4 is due only after every SPEC in its segment is closed.",
+            )
+        if data.get("revision") != self.default_revision:
+            self.add(
+                "checkpoint_revision_mismatch",
+                path,
+                "Checkpoint must test the current default revision.",
+            )
+        candidate_revisions = data.get("candidate_revisions")
+        affected_owners = data.get("affected_owners")
+        affected_repositories = data.get("affected_repositories")
+        if not _string_list(candidate_revisions, nonempty=True):
+            self.add(
+                "invalid_checkpoint_revisions",
+                f"{path}.data.candidate_revisions",
+                "Checkpoint candidate revisions are required.",
+            )
+            candidate_revisions = []
+        if data.get("revision") not in candidate_revisions:
+            self.add(
+                "checkpoint_candidate_mismatch",
+                path,
+                "Checkpoint candidate revisions must include the tested revision.",
+            )
+        if affected_owners != checkpoint.get("affected_owners"):
+            self.add(
+                "checkpoint_owner_scope_mismatch",
+                f"{path}.data.affected_owners",
+                "Checkpoint must run only the affected owners planned for this segment.",
+            )
+        if affected_repositories != checkpoint.get("affected_repositories"):
+            self.add(
+                "checkpoint_repository_scope_mismatch",
+                f"{path}.data.affected_repositories",
+                "Checkpoint must run only the affected repositories planned for this segment.",
+            )
+        if status == "passed" and checkpoint["status"] == "passed":
+            self.add(
+                "checkpoint_repeated", path, "A passed checkpoint may not be repeated."
+            )
+        checkpoint["status"] = status
+        checkpoint["revision"] = data.get("revision")
+        checkpoint["candidate_revisions"] = list(candidate_revisions or [])
+        return checkpoint
 
     def _before_event(self, event: dict[str, Any], path: str) -> None:
         if self.controller_state != "active":
@@ -466,14 +683,13 @@ class _Replay:
             spec_path = f"{path}.data.specs[{offset}]"
             if (
                 not isinstance(spec, dict)
-                or set(spec) != {"id", "checkpoint_required"}
+                or set(spec) != {"id"}
                 or not _text(spec.get("id"))
-                or not isinstance(spec.get("checkpoint_required"), bool)
             ):
                 self.add(
                     "invalid_spec_plan",
                     spec_path,
-                    "SPEC needs id and checkpoint_required.",
+                    "SPEC needs exactly one id.",
                 )
                 continue
             parsed.append(dict(spec))
@@ -496,13 +712,20 @@ class _Replay:
         self.pending_specs = ids
         self.spec_state = {
             spec["id"]: {
-                "checkpoint_required": spec["checkpoint_required"],
                 "task_id": None,
-                "checkpoint_passed": False,
                 "branch_verified": False,
             }
             for spec in parsed
         }
+        if data.get("checkpoint_size") != CHECKPOINT_SIZE:
+            self.add(
+                "checkpoint_size_mismatch",
+                f"{path}.data.checkpoint_size",
+                "Release train checkpoint_size must be the fixed value 10.",
+            )
+        self._load_checkpoints(
+            data.get("checkpoints"), _checkpoint_plan(ids), f"{path}.data.checkpoints"
+        )
         self.default_branch = data["default_branch"]
         self.default_revision = data["default_revision"]
 
@@ -529,6 +752,13 @@ class _Replay:
                 "stale_spec_base",
                 f"{path}.data.base_revision",
                 "SPEC must start from the latest verified default-branch revision.",
+            )
+        due_checkpoint = self._due_checkpoint()
+        if due_checkpoint is not None:
+            self.add(
+                "checkpoint_blocks_next_segment",
+                path,
+                "A due or failed L4 checkpoint must pass before dispatching the next SPEC.",
             )
         active_specs = [
             task
@@ -697,23 +927,24 @@ class _Replay:
         return self.task(task_id, path) if task_id is not None else None
 
     def on_checkpoint_passed(
-        self, _event: dict[str, Any], data: dict[str, Any], path: str
+        self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
-        task = self._current_spec_task(data.get("spec_id"), f"{path}.data.spec_id")
-        if task is not None and task["lifecycle"] != "archived":
+        checkpoint = self._checkpoint_result(data, path, status="passed")
+        if checkpoint is not None:
+            checkpoint["evidence"] = list(event["evidence"])
+
+    def on_checkpoint_failed(
+        self, event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        checkpoint = self._checkpoint_result(data, path, status="failed")
+        if checkpoint is not None:
+            checkpoint["evidence"] = list(event["evidence"])
+        if not _text(data.get("reason")):
             self.add(
-                "checkpoint_before_archive",
-                path,
-                "Checkpoint must follow verified task archival.",
+                "invalid_checkpoint_failure_reason",
+                f"{path}.data.reason",
+                "Failed checkpoint needs a reason.",
             )
-        if data.get("revision") != self.default_revision:
-            self.add(
-                "checkpoint_revision_mismatch",
-                path,
-                "Checkpoint must test the current default revision.",
-            )
-        if data.get("spec_id") in self.spec_state:
-            self.spec_state[data["spec_id"]]["checkpoint_passed"] = True
 
     def on_default_branch_verified(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -738,12 +969,6 @@ class _Replay:
             )
         if spec_id in self.spec_state:
             status = self.spec_state[spec_id]
-            if status["checkpoint_required"] and not status["checkpoint_passed"]:
-                self.add(
-                    "required_checkpoint_missing",
-                    path,
-                    "The due checkpoint must pass before the next SPEC.",
-                )
             status["branch_verified"] = True
         if self.pending_specs and spec_id == self.pending_specs[0]:
             self.pending_specs.pop(0)
@@ -947,6 +1172,13 @@ class _Replay:
                 path,
                 "Release starts only after every SPEC and child is complete.",
             )
+        due_checkpoint = self._due_checkpoint()
+        if due_checkpoint is not None:
+            self.add(
+                "release_before_checkpoint",
+                path,
+                "Release starts only after every due L4 checkpoint is green.",
+            )
         if data.get("revision") != self.default_revision or not _text(
             data.get("revision")
         ):
@@ -987,7 +1219,7 @@ class _Replay:
         self.artifact_id = data.get("artifact_id")
 
     def on_final_tests_passed(
-        self, _event: dict[str, Any], data: dict[str, Any], path: str
+        self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
         if self.artifact_id is None:
             self.add(
@@ -1002,6 +1234,60 @@ class _Replay:
                 path,
                 "Final release train may be recorded once.",
             )
+        candidate_revisions = data.get("candidate_revisions")
+        if not _string_list(candidate_revisions, nonempty=True):
+            self.add(
+                "invalid_final_candidate_revisions",
+                f"{path}.data.candidate_revisions",
+                "Final L4 candidate revisions are required.",
+            )
+            candidate_revisions = []
+        if data.get("revision") not in candidate_revisions:
+            self.add(
+                "final_candidate_revision_mismatch",
+                path,
+                "Final candidate revisions must include the tested revision.",
+            )
+        last_checkpoint = self._last_checkpoint()
+        reused_checkpoint = data.get("l4_reused_checkpoint")
+        if last_checkpoint is None or last_checkpoint["status"] != "passed":
+            self.add(
+                "final_checkpoint_missing",
+                path,
+                "The final checkpoint must pass before final tests can reuse or rerun L4.",
+            )
+        elif reused_checkpoint is None:
+            if candidate_revisions == last_checkpoint["candidate_revisions"]:
+                self.add(
+                    "final_l4_duplicate",
+                    path,
+                    "Do not repeat final L4 when the final checkpoint candidate revisions are exact.",
+                )
+            self.release_l4 = {
+                "mode": "rerun_final",
+                "checkpoint_id": None,
+                "candidate_revisions": list(candidate_revisions or []),
+                "evidence": list(event["evidence"]),
+            }
+        elif reused_checkpoint != last_checkpoint["id"]:
+            self.add(
+                "final_checkpoint_reuse_mismatch",
+                f"{path}.data.l4_reused_checkpoint",
+                "Final L4 reuse must name the last checkpoint.",
+            )
+        elif candidate_revisions != last_checkpoint["candidate_revisions"]:
+            self.add(
+                "stale_final_checkpoint_revisions",
+                f"{path}.data.candidate_revisions",
+                "Final checkpoint L4 can be reused only for the exact same candidate revisions.",
+            )
+        else:
+            self.release_l4 = {
+                "mode": "reused_checkpoint",
+                "checkpoint_id": reused_checkpoint,
+                "candidate_revisions": list(candidate_revisions or []),
+                "evidence": list(event["evidence"]),
+            }
         self.tests_passed = True
 
     def on_package_completed(
@@ -1180,6 +1466,18 @@ class _Replay:
                 path,
                 "Final tests and package evidence are required.",
             )
+        if self._due_checkpoint() is not None:
+            self.add(
+                "terminal_checkpoint_incomplete",
+                path,
+                "Terminal success requires every due L4 checkpoint to pass.",
+            )
+        if self.release_l4 is None:
+            self.add(
+                "terminal_l4_release_missing",
+                path,
+                "Terminal success requires final L4 reuse or rerun evidence.",
+            )
         if self.deployment_status == "deployed" and not self.smoke_passed:
             self.add(
                 "terminal_smoke_missing",
@@ -1250,17 +1548,18 @@ class _Replay:
             }
             kind, instruction = actions[task["lifecycle"]]
             return {"kind": kind, "target": task["id"], "instruction": instruction}
+        due_checkpoint = self._due_checkpoint()
+        if due_checkpoint is not None:
+            return {
+                "kind": "verify",
+                "target": due_checkpoint["id"],
+                "instruction": "Run the due release-train L4 checkpoint.",
+            }
         if self.pending_specs:
             spec_id = self.pending_specs[0]
             status = self.spec_state[spec_id]
             task_id = status["task_id"]
             if task_id is not None:
-                if status["checkpoint_required"] and not status["checkpoint_passed"]:
-                    return {
-                        "kind": "verify",
-                        "target": spec_id,
-                        "instruction": "Run the due release-train checkpoint.",
-                    }
                 return {
                     "kind": "verify",
                     "target": spec_id,
@@ -1401,6 +1700,13 @@ def evaluate(
         "pending_specs": replay.pending_specs,
         "candidate_revision": replay.candidate_revision,
         "test_status": "passed" if replay.tests_passed else "pending",
+        "l4_checkpoints": {
+            "checkpoint_size": replay.checkpoint_size,
+            "ordered_specs": [spec["id"] for spec in replay.specs],
+            "completed_spec_count": replay._completed_spec_count(),
+            "checkpoints": list(replay.checkpoint_state.values()),
+            "release_l4": replay.release_l4,
+        },
         "release_status": replay.release_status(),
         "lifecycle_log_sha256": _sha256(raw),
         "evidence_count": replay.evidence_count,

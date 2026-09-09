@@ -36,7 +36,7 @@ After Grill, the same planning task must:
 2. Invoke `to-spec` for every SPEC with `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`; require `spec_state: auto_approved` and provenance `controller_decision`.
 3. Invoke `to-tickets`, bypass its quiz under the standing authorization, publish tracer-bullet tickets, and self-check granularity, blocking edges, and acyclicity.
 4. Lock one currently supported implementation route and one or more same-or-stronger fallbacks per SPEC from risk and coupling, not ticket count.
-5. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, and every SPEC checkpoint.
+5. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, `checkpoint_size: 10`, and every deterministic L4 checkpoint.
 6. Return the completed planning record and artifact evidence without changing product or test code.
 
 Use these exact planning-record shapes; fields not shown are rejected:
@@ -56,11 +56,15 @@ planning_record = {
     ticket_self_check:{granularity,blocking_edges,acyclic,evidence:[...]},
     difficulty,route,checkpoint}],
   release_train:{owners,repositories,acceptance_scopes,public_contract_specs,
-    environment_specs,baselines,checkpoints},
+    environment_specs,baselines,checkpoint_size,
+    checkpoints:[{id,start_spec_index,end_spec_index,specs:[...],final_tail,
+      affected_owners:[...],affected_repositories:[...]}]},
   code_read_only:{product_test_tree_before_sha256,product_test_tree_after_sha256,
     changed_product_or_test_paths:[],evidence:[...]}, handoff_evidence:[...]
 }
 ```
+
+Checkpoint policy is fixed, not a planning preference. Use `checkpoint_size: 10`; assign consecutive ordered SPEC groups of ten to `checkpoint-10`, `checkpoint-20`, and so on, followed by one final tail checkpoint named for its ending SPEC index when the total is not divisible by ten. Do not rebalance tails or move boundaries to owner/migration seams.
 
 For any planning or SPEC task, record post-create evidence as:
 

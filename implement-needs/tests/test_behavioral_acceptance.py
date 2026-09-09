@@ -48,6 +48,25 @@ class ProtocolFixture:
             "rationale": "Risk and coupling justify this route.",
         }
 
+    @staticmethod
+    def checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
+        checkpoints = []
+        for start in range(0, len(spec_ids), 10):
+            members = spec_ids[start : start + 10]
+            end = start + len(members)
+            checkpoints.append(
+                {
+                    "id": f"checkpoint-{end}",
+                    "start_spec_index": start + 1,
+                    "end_spec_index": end,
+                    "specs": members,
+                    "final_tail": len(members) < 10,
+                    "affected_owners": ["owner-a"],
+                    "affected_repositories": ["repo-a"],
+                }
+            )
+        return checkpoints
+
     def planning_record(self) -> dict[str, Any]:
         approval = {
             "confirmation_mode": "auto_approve",
@@ -142,7 +161,8 @@ class ProtocolFixture:
                 "public_contract_specs": ["SPEC-1"],
                 "environment_specs": [],
                 "baselines": ["main@base-0"],
-                "checkpoints": ["checkpoint-1"],
+                "checkpoint_size": 10,
+                "checkpoints": self.checkpoint_plan(["SPEC-1"]),
             },
             "code_read_only": {
                 "product_test_tree_before_sha256": "a" * 64,
@@ -234,7 +254,9 @@ class ProtocolFixture:
             "planning_archived",
             {
                 "task_id": "plan-1",
-                "specs": [{"id": "SPEC-1", "checkpoint_required": True}],
+                "specs": [{"id": "SPEC-1"}],
+                "checkpoint_size": 10,
+                "checkpoints": self.checkpoint_plan(["SPEC-1"]),
                 "default_branch": "main",
                 "default_revision": "base-0",
             },
@@ -320,12 +342,20 @@ class ProtocolFixture:
         )
         self.event(events, "child_archived", {"task_id": "task-1"})
         self.event(
-            events, "checkpoint_passed", {"spec_id": "SPEC-1", "revision": "merge-1"}
-        )
-        self.event(
             events,
             "default_branch_verified",
             {"spec_id": "SPEC-1", "revision": "merge-1"},
+        )
+        self.event(
+            events,
+            "checkpoint_passed",
+            {
+                "checkpoint_id": "checkpoint-1",
+                "revision": "merge-1",
+                "candidate_revisions": ["merge-1"],
+                "affected_owners": ["owner-a"],
+                "affected_repositories": ["repo-a"],
+            },
         )
         self.event(events, "release_candidate_frozen", {"revision": "merge-1"})
         self.event(
@@ -336,7 +366,12 @@ class ProtocolFixture:
         self.event(
             events,
             "final_tests_passed",
-            {"revision": "merge-1", "artifact_id": "artifact-1"},
+            {
+                "revision": "merge-1",
+                "artifact_id": "artifact-1",
+                "candidate_revisions": ["merge-1"],
+                "l4_reused_checkpoint": "checkpoint-1",
+            },
         )
         self.event(
             events,
@@ -419,6 +454,7 @@ class ProtocolFixture:
                 "status": "passed",
                 "candidate_revision": lifecycle_receipt["candidate_revision"],
                 "evidence": ["receipt://lifecycle/final-tests"],
+                "l4_checkpoints": lifecycle_receipt["l4_checkpoints"],
             },
             "release_state": {
                 "status": lifecycle_receipt["release_status"],
@@ -596,7 +632,9 @@ class BehavioralAcceptance(unittest.TestCase):
             "planning_archived",
             {
                 "task_id": "plan-1",
-                "specs": [{"id": "SPEC-1", "checkpoint_required": False}],
+                "specs": [{"id": "SPEC-1"}],
+                "checkpoint_size": 10,
+                "checkpoints": self.fixture.checkpoint_plan(["SPEC-1"]),
                 "default_branch": "main",
                 "default_revision": "base-0",
             },

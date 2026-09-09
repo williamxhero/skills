@@ -35,7 +35,7 @@ Retain archived tasks. The validator requires the task-tree IDs and fields to ma
 | `pending_specs` | Ordered SPEC IDs not yet verified merged. |
 | `unverified_handoffs` | Exact set of child IDs in `handoff_received`. |
 | `unarchived_tasks` | Exact set of child IDs whose lifecycle is not `archived`. |
-| `test_state` | Test-train status, exact candidate revision, and evidence pointers. |
+| `test_state` | Test-train status, exact candidate revision, L4 checkpoint state, and evidence pointers. |
 | `release_state` | Release status, exact candidate revision, and evidence pointers. |
 | `next_action` | The one action executable now; required only while `active`. |
 | `resume_action` | Exact continuation after an accepted blocker or user stop; otherwise `null`. |
@@ -46,7 +46,7 @@ Child lifecycle is one of `queued`, `active`, `paused`, `handoff_received`, `ver
 
 An action has exactly `kind`, `target`, and `instruction`. `kind` is one of `wait`, `verify`, `archive`, `repair`, `dispatch`, `advance`, `resume`, `refresh_state`, or `repair_state`. Gate-specific failures still persist through this canonical vocabulary: route drift, planning handoff repair, and receipt-write repair use `repair` with the task, gate, or artifact named in `target`. `instruction` is directly executable rather than a status description.
 
-Test status is `pending`, `running`, `passed`, or `blocked`. Release status is `pending`, `building`, `packaged`, `deployed`, `not_applicable`, or `blocked`.
+Test status is `pending`, `running`, `passed`, or `blocked`. `test_state.l4_checkpoints` records `checkpoint_size: 10`, ordered SPECs, completed count, deterministic checkpoint objects, pass/fail evidence, exact candidate revisions, and final L4 reuse or rerun evidence. Release status is `pending`, `building`, `packaged`, `deployed`, `not_applicable`, or `blocked`.
 
 ## State transitions
 
@@ -74,7 +74,32 @@ Any malformed field, inconsistent aggregate, task-tree mismatch, source-hash mis
   "pending_specs": ["SPEC-02", "SPEC-03"],
   "unverified_handoffs": [],
   "unarchived_tasks": ["thread-spec-02"],
-  "test_state": {"status": "running", "candidate_revision": null, "evidence": []},
+  "test_state": {
+    "status": "running",
+    "candidate_revision": null,
+    "evidence": [],
+    "l4_checkpoints": {
+      "checkpoint_size": 10,
+      "ordered_specs": ["SPEC-02", "SPEC-03"],
+      "completed_spec_count": 0,
+      "checkpoints": [
+        {
+          "id": "checkpoint-2",
+          "start_spec_index": 1,
+          "end_spec_index": 2,
+          "specs": ["SPEC-02", "SPEC-03"],
+          "final_tail": true,
+          "affected_owners": ["payments"],
+          "affected_repositories": ["payments-api"],
+          "status": "pending",
+          "revision": null,
+          "candidate_revisions": [],
+          "evidence": []
+        }
+      ],
+      "release_l4": null
+    }
+  },
   "release_state": {"status": "pending", "candidate_revision": null, "evidence": []},
   "next_action": {"kind": "wait", "target": "thread-spec-02", "instruction": "Wait for the current SPEC task snapshot."},
   "resume_action": null,

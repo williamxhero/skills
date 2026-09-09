@@ -10,19 +10,19 @@ Keep Implement Needs as the controlling parent. Record blocker fingerprints, rep
 
 ## Test release train
 
-Apply `test-release-train` as the single source of truth for acceptance-scope selection, ticket evidence, per-SPEC gates, 5–8-SPEC checkpoints, reusable artifacts and environments, performance budgets, observability, and the final gate.
+Apply `test-release-train` as the single source of truth for acceptance-scope selection, ticket evidence, per-SPEC gates, fixed `checkpoint_size = 10` L4 checkpoints plus one final tail, reusable artifacts and environments, performance budgets, observability, and the final gate.
 
-The controller owns train state across children. Each SPEC child runs its narrow tests and selected per-SPEC layers, then returns evidence before merge. The controller verifies that packet, runs due checkpoints after merge, and runs the final train against the exact release candidate. Route test-infrastructure blockers through `unblock-development`; return product failures to the SPEC task that owns the behavior.
+The controller owns train state across children. Each SPEC child runs its narrow tests and selected per-SPEC layers, then returns evidence before merge. The controller verifies that packet, runs due checkpoints after each completed ten-SPEC segment and after the final tail, and runs the final train against the exact release candidate. A due or failed checkpoint blocks the next segment and terminal success. Route test-infrastructure blockers through `unblock-development`; return product failures to the SPEC task that owns the behavior.
 
 ## Build, package, and deploy
 
-After all SPECs are merged, all checkpoints are green, and no repair remains open:
+After all SPECs are merged, all fixed ten-SPEC checkpoints and the final tail checkpoint are green, and no repair remains open:
 
 Record an `owner` for every release event. SPEC children may emit only merge, test, review, and evidence events. The controller alone may emit `freeze`, `build`, `package`, `deploy`, and `smoke` events, in that order, after every SPEC child is archived. Reject and repair any evidence packet that crosses this boundary.
 
 1. Derive build, packaging, release, deployment, and smoke commands from repository configuration and CI before prose documentation.
 2. Freeze exact release-candidate revisions. Build each standard artifact once; record its version, checksum or immutable ID, and source commit.
-3. Run the final `test-release-train` gate against those exact revisions and artifacts. Reuse the artifacts and isolated environments for installed-artifact checks, deterministic replays, packaging, deployment, and smoke verification.
+3. Run the final `test-release-train` gate against those exact revisions and artifacts. Reuse the last L4 checkpoint only when its candidate revision set exactly matches the frozen release candidate; otherwise rerun final L4 and record the new evidence. Reuse the artifacts and isolated environments for installed-artifact checks, deterministic replays, packaging, deployment, and smoke verification.
 4. Deploy through the configured non-interactive path to the designated default target. Reuse existing credentials and bindings; do not create or guess a target.
 5. Run configured smoke tests or the smallest representative user journey plus health checks. Confirm the deployed revision or artifact ID matches the tested artifact.
 6. Record train, release, deployment, and smoke evidence before refreshing controller state and invoking the terminal validator. The final evidence packet names completed SPECs, child IDs with applied model/effort, merge commits, artifacts, deployment target, and verification results.

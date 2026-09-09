@@ -98,10 +98,77 @@
     "testState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "candidate_revision", "evidence"],
+      "required": ["status", "candidate_revision", "evidence", "l4_checkpoints"],
       "properties": {
         "status": {"enum": ["pending", "running", "passed", "blocked"]},
         "candidate_revision": {"$ref": "#/$defs/nullableRevision"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "l4_checkpoints": {"$ref": "#/$defs/l4CheckpointState"}
+      }
+    },
+    "l4CheckpointState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint_size",
+        "ordered_specs",
+        "completed_spec_count",
+        "checkpoints",
+        "release_l4"
+      ],
+      "properties": {
+        "checkpoint_size": {"const": 10},
+        "ordered_specs": {"$ref": "#/$defs/uniqueStrings"},
+        "completed_spec_count": {"type": "integer", "minimum": 0},
+        "checkpoints": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/l4Checkpoint"}
+        },
+        "release_l4": {
+          "oneOf": [{"type": "null"}, {"$ref": "#/$defs/releaseL4"}]
+        }
+      }
+    },
+    "l4Checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "start_spec_index",
+        "end_spec_index",
+        "specs",
+        "final_tail",
+        "affected_owners",
+        "affected_repositories",
+        "status",
+        "revision",
+        "candidate_revisions",
+        "evidence"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "start_spec_index": {"type": "integer", "minimum": 1},
+        "end_spec_index": {"type": "integer", "minimum": 1},
+        "specs": {"$ref": "#/$defs/uniqueStrings"},
+        "final_tail": {"type": "boolean"},
+        "affected_owners": {"$ref": "#/$defs/uniqueStrings"},
+        "affected_repositories": {"$ref": "#/$defs/uniqueStrings"},
+        "status": {"enum": ["pending", "running", "passed", "failed"]},
+        "revision": {"$ref": "#/$defs/nullableRevision"},
+        "candidate_revisions": {"$ref": "#/$defs/uniqueStrings"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "releaseL4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "checkpoint_id", "candidate_revisions", "evidence"],
+      "properties": {
+        "mode": {"enum": ["reused_checkpoint", "rerun_final"]},
+        "checkpoint_id": {
+          "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+        },
+        "candidate_revisions": {"$ref": "#/$defs/uniqueStrings"},
         "evidence": {"$ref": "#/$defs/evidence"}
       }
     },
