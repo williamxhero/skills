@@ -13,7 +13,17 @@ Invocation explicitly requests and authorizes the Codex child-task lifecycle, in
 
 ## Source protocols
 
-Resolve and read these protocols by canonical name from the current session's Available Skills catalog when their phase begins. Do not assume that they share this skill's filesystem root:
+Resolve every protocol at controller startup and read it in full before its phase begins. The current session's Available Skills catalog is the first lookup surface, not an availability boundary: Ask Matt intentionally marks user-invoked skills such as `to-tickets` and `implement-spec` with `disable-model-invocation: true`, so their absence from that catalog is expected.
+
+Use this resolution order:
+
+1. Use the canonical-name entry in the current session's Available Skills catalog when present.
+2. Locate the package lock by checking the parent of each advertised `.agents/skills` root, then the configured agent home, then the user's `.agents/.skill-lock.json`. When `skills.<canonical-name>` exists, resolve the installed protocol as `<lockfile-directory>/skills/<canonical-name>/SKILL.md`. Verify that the file exists and its frontmatter `name` matches. Treat this as the authoritative, package-managed copy even when a same-named directory exists under `.codex/skills`.
+3. For a protocol absent from the lockfile, resolve it from the current Codex skill root, normally `<CODEX_HOME>/skills/<canonical-name>/SKILL.md`, then verify its frontmatter name.
+
+Record each resolved canonical name, absolute path, package source, lockfile `updatedAt`, and file hash in a `protocol_registry` entry in the delivery map. Resolve from the lockfile again whenever a suspended controller run resumes; if a package update changed a protocol, refresh the registry before continuing. Keep package-managed Ask Matt skills in `.agents/skills`, read them in place, and leave them untouched so the package updater remains authoritative. Never copy those skills into `.codex/skills` as a discovery workaround. A protocol omitted from Available Skills but successfully resolved from the lockfile is available and must not trigger blocker handling.
+
+Resolve these canonical protocols:
 
 - Requirement stress-test: `grilling`
 - Domain vocabulary and durable decisions: `domain-modeling`
@@ -24,7 +34,7 @@ Resolve and read these protocols by canonical name from the current session's Av
 - Multi-SPEC test orchestration: `test-release-train`
 - Final review: `code-review`
 
-If a required protocol other than `unblock-development` is unavailable or unreadable, apply `unblock-development` to that condition. If `unblock-development` itself is unavailable, preserve the evidence and report a hard blocker. Do not silently skip a protocol or fall back to a stale relative path.
+Only after all three lookup steps fail, or after a resolved file fails its name/readability check, treat a required protocol as unavailable. Then apply `unblock-development` to that condition unless the missing protocol is `unblock-development` itself; in that case preserve the evidence and report a hard blocker. Never silently skip a protocol.
 
 This skill overrides their human checkpoints: auto-accept every Grill recommendation, infer testing seams, auto-approve each published SPEC through the `to-spec` controller contract, self-approve ticket granularity and blocking edges, fix review findings, and continue. Do not ask the user to choose among viable options.
 
@@ -122,7 +132,7 @@ Each spec must:
 - leave the repository buildable and tests green after merge;
 - include rollout or compatibility work needed for that increment.
 
-Order specs topologically, using enabling architecture or compatibility expansions before dependent behavior and cleanup after all migrations. Persist a resumable delivery map at `.scratch/<initiative>/delivery-map.md` with the requirement, ordered specs, dependencies, SPEC publication and auto-approval evidence, status, child task ID, model, effort, branch or PR, merge commit, archive status, blocker fingerprints and repair-task evidence, test-train state and evidence path, release status, and the controller-liveness fields required above. Resume from this map instead of duplicating completed work.
+Order specs topologically, using enabling architecture or compatibility expansions before dependent behavior and cleanup after all migrations. Persist a resumable delivery map at `.scratch/<initiative>/delivery-map.md` with the requirement, `protocol_registry`, ordered specs, dependencies, SPEC publication and auto-approval evidence, status, child task ID, model, effort, branch or PR, merge commit, archive status, blocker fingerprints and repair-task evidence, test-train state and evidence path, release status, and the controller-liveness fields required above. Resume from this map instead of duplicating completed work.
 
 Initialize `test-release-train` from the complete map before dispatching the first SPEC. Resolve owners, repositories, acceptance-scope manifests, public-contract and environment flags, fixed baselines, and checkpoint boundaries. Use six SPECs per checkpoint by default, adjusting only to remain within the skill's 5-8-SPEC range or to respect an owner, migration, or integration-risk boundary.
 

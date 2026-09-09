@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Release Train"
+  short_description: "Run impact-selected gates across many specs"
+  default_prompt: "Use $test-release-train to run impact-selected per-SPEC gates and centralized release validation for this delivery train."
