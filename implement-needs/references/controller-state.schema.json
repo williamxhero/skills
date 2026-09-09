@@ -232,10 +232,12 @@
     "specOwnership": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["spec_id", "implementation_task_id", "route", "tickets"],
+      "required": ["spec_id", "implementation_task_id", "owners", "repositories", "route", "tickets"],
       "properties": {
         "spec_id": {"type": "string", "minLength": 1},
         "implementation_task_id": {"type": "string", "minLength": 1},
+        "owners": {"$ref": "#/$defs/uniqueStrings"},
+        "repositories": {"$ref": "#/$defs/uniqueStrings"},
         "route": {"$ref": "#/$defs/specImplementationRoute"},
         "tickets": {
           "type": "array",
@@ -246,11 +248,13 @@
     "specImplementationRoute": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["target", "task_id", "selection", "evidence"],
+      "required": ["target", "task_id", "selection", "model", "thinking", "evidence"],
       "properties": {
         "target": {"type": "string", "minLength": 1},
         "task_id": {"type": "string", "minLength": 1},
         "selection": {"enum": ["recommended", "fallback"]},
+        "model": {"type": "string", "minLength": 1},
+        "thinking": {"type": "string", "minLength": 1},
         "evidence": {"$ref": "#/$defs/evidence"}
       }
     },

@@ -80,6 +80,8 @@ class LifecycleValidatorTests(unittest.TestCase):
             {
                 "id": f"SPEC-{number}",
                 "tickets": [{"id": f"T{number}", "blocked_by": []}],
+                "owners": ["owner-a"],
+                "repositories": ["repo-a"],
             }
             for number in range(1, spec_count + 1)
         ]
@@ -105,6 +107,8 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "spec_id": f"SPEC-{number}",
                 "base_revision": base,
                 "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "xhigh",
                 "route_evidence": [f"receipt://SPEC-{number}/route"],
             },
         )
@@ -536,12 +540,25 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "spec_id": "SPEC-2",
                 "base_revision": "base-0",
                 "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "xhigh",
                 "route_evidence": ["receipt://SPEC-2/route"],
             },
         )
         payload, exit_code = self.evaluate(events, "active")
         self.assertEqual(1, exit_code)
         self.assertIn("overlapping_spec", self.codes(payload))
+
+    def test_dispatch_rejects_non_policy_model_or_effort(self) -> None:
+        for field, value in (("model", "gpt-5.6-unknown"), ("thinking", "max")):
+            with self.subTest(field=field):
+                events: list[dict] = []
+                self.planning(events)
+                self.dispatch(events, 1, "base-0")
+                events[-1]["data"][field] = value
+                payload, exit_code = self.evaluate(events, "active")
+                self.assertEqual(1, exit_code)
+                self.assertIn("invalid_spec_model_policy", self.codes(payload))
 
         sequential: list[dict] = []
         self.planning(sequential, spec_count=2)
@@ -708,6 +725,8 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "spec_id": "SPEC-1",
                 "base_revision": "base-0",
                 "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "xhigh",
                 "route_evidence": ["receipt://SPEC-1/route"],
             },
         )

@@ -13,22 +13,19 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-MODEL_CLASS_RANK = {"fast": 0, "balanced": 1, "reliable": 2, "strongest": 3}
-EFFORT_RANK = {
-    "none": 0,
-    "minimal": 1,
-    "low": 2,
-    "medium": 3,
-    "high": 4,
-    "xhigh": 5,
-    "max": 6,
-    "ultra": 7,
-}
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_policy import load_policy
+
+MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
+MODEL_CLASS_RANK = (MODEL_POLICY or {}).get("model_rank", {})
+EFFORT_RANK = (MODEL_POLICY or {}).get("effort_rank", {})
 DIFFICULTY_FLOOR = {
-    "easy": ("fast", "medium"),
-    "standard": ("balanced", "high"),
-    "hard": ("reliable", "xhigh"),
-    "extreme": ("strongest", "max"),
+    "easy": ("gpt-5.6-sol", "medium"),
+    "standard": ("gpt-5.6-terra", "high"),
+    "hard": ("gpt-5.6-terra", "xhigh"),
+    "extreme": ("gpt-5.6-luna", "xhigh"),
 }
 AUTO_APPROVAL = {
     "confirmation_mode": "auto_approve",
@@ -181,12 +178,21 @@ def _pair(value: Any, path: str, issues: list[dict[str, str]]) -> dict[str, str]
         return None
     if model is None:
         return None
+    if model not in MODEL_CLASS_RANK:
+        issues.append(
+            _issue(
+                "unsupported_model",
+                f"{path}.model",
+                "Model is not allowed by the Implement Needs policy.",
+            )
+        )
+        return None
     return {"model": model, "thinking": thinking}
 
 
 def _capabilities(
     record: dict[str, Any], issues: list[dict[str, str]]
-) -> dict[str, tuple[str, set[str]]]:
+) -> dict[str, set[str]]:
     entries = _list(record.get("supported_routes"), "$.supported_routes", issues)
     if entries is None:
         return {}
@@ -198,20 +204,19 @@ def _capabilities(
                 "Advertised task routes are required.",
             )
         )
-    result: dict[str, tuple[str, set[str]]] = {}
+    result: dict[str, set[str]] = {}
     for index, entry in enumerate(entries):
         path = f"$.supported_routes[{index}]"
-        obj = _object(entry, path, {"model", "model_class", "thinking"}, issues)
+        obj = _object(entry, path, {"model", "thinking"}, issues)
         if obj is None:
             continue
         model = _text(obj.get("model"), f"{path}.model", issues)
-        model_class = obj.get("model_class")
-        if model_class not in MODEL_CLASS_RANK:
+        if model is not None and model not in MODEL_CLASS_RANK:
             issues.append(
                 _issue(
-                    "unsupported_model_class",
-                    f"{path}.model_class",
-                    "Unknown model class.",
+                    "unsupported_model",
+                    f"{path}.model",
+                    "Model is not allowed by the Implement Needs policy.",
                 )
             )
         thinking = _string_list(obj.get("thinking"), f"{path}.thinking", issues)
@@ -225,7 +230,7 @@ def _capabilities(
                             f"Unknown effort {effort}.",
                         )
                     )
-        if model is None or model_class not in MODEL_CLASS_RANK or thinking is None:
+        if model is None or model not in MODEL_CLASS_RANK or thinking is None:
             continue
         if model in result:
             issues.append(
@@ -233,20 +238,20 @@ def _capabilities(
                     "duplicate_model", f"{path}.model", "Each model must appear once."
                 )
             )
-        result[model] = (model_class, set(thinking))
+        result[model] = set(thinking)
     return result
 
 
 def _supported_pair(
     pair: dict[str, str] | None,
     path: str,
-    capabilities: dict[str, tuple[str, set[str]]],
+    capabilities: dict[str, set[str]],
     issues: list[dict[str, str]],
 ) -> tuple[int, int] | None:
     if pair is None:
         return None
     capability = capabilities.get(pair["model"])
-    if capability is None or pair["thinking"] not in capability[1]:
+    if capability is None or pair["thinking"] not in capability:
         issues.append(
             _issue(
                 "route_not_advertised",
@@ -255,13 +260,13 @@ def _supported_pair(
             )
         )
         return None
-    return MODEL_CLASS_RANK[capability[0]], EFFORT_RANK[pair["thinking"]]
+    return MODEL_CLASS_RANK[pair["model"]], EFFORT_RANK[pair["thinking"]]
 
 
 def _route(
     value: Any,
     path: str,
-    capabilities: dict[str, tuple[str, set[str]]],
+    capabilities: dict[str, set[str]],
     issues: list[dict[str, str]],
 ) -> dict[str, Any] | None:
     obj = _object(value, path, {"recommended", "fallbacks", "rationale"}, issues)
@@ -334,7 +339,7 @@ def _floor(
     model_floor: str,
     effort_floor: str,
     path: str,
-    capabilities: dict[str, tuple[str, set[str]]],
+    capabilities: dict[str, set[str]],
     issues: list[dict[str, str]],
 ) -> None:
     if route is None:
@@ -355,7 +360,7 @@ def _floor(
 
 def _route_scaffold(
     record: Any, expected_run_id: str, issues: list[dict[str, str]]
-) -> tuple[dict[str, Any] | None, dict[str, tuple[str, set[str]]]]:
+) -> tuple[dict[str, Any] | None, dict[str, set[str]]]:
     if not isinstance(record, dict):
         issues.append(_issue("invalid_type", "$", "Planning record must be an object."))
         return None, {}
@@ -384,7 +389,7 @@ def _route_scaffold(
 
 def _planning_task(
     record: dict[str, Any],
-    capabilities: dict[str, tuple[str, set[str]]],
+    capabilities: dict[str, set[str]],
     issues: list[dict[str, str]],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     task = _object(
@@ -413,10 +418,22 @@ def _planning_task(
     scope = record.get("scope")
     if scope == "bounded":
         _floor(
-            route, "reliable", "xhigh", "$.planning_task.route", capabilities, issues
+            route,
+            "gpt-5.6-terra",
+            "xhigh",
+            "$.planning_task.route",
+            capabilities,
+            issues,
         )
     elif scope == "broad_or_ambiguous":
-        _floor(route, "strongest", "max", "$.planning_task.route", capabilities, issues)
+        _floor(
+            route,
+            "gpt-5.6-luna",
+            "xhigh",
+            "$.planning_task.route",
+            capabilities,
+            issues,
+        )
     else:
         issues.append(
             _issue(
@@ -462,6 +479,14 @@ def _graph_order_issues(
 
 def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
+    if MODEL_POLICY_ERROR is not None:
+        issues.append(
+            _issue(
+                "model_policy_invalid",
+                "$.model_policy",
+                f"Implement Needs model policy is invalid: {MODEL_POLICY_ERROR}.",
+            )
+        )
     top_fields = {
         "schema_version",
         "run_id",
@@ -613,6 +638,7 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
     spec_values = _list(record_obj.get("specs"), "$.specs", issues)
     spec_ids: list[str] = []
     spec_blockers: dict[str, list[str]] = {}
+    spec_ownership: dict[str, dict[str, list[str]]] = {}
     requirement_owners: Counter[str] = Counter()
     checkpoints: list[str] = []
     if spec_values is not None:
@@ -638,6 +664,8 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                     "difficulty",
                     "route",
                     "checkpoint",
+                    "owners",
+                    "repositories",
                 },
                 issues,
             )
@@ -665,6 +693,16 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
             if spec_id:
                 spec_ids.append(spec_id)
                 spec_blockers[spec_id] = blocked_by
+                spec_ownership[spec_id] = {
+                    "owners": _string_list(
+                        spec.get("owners"), f"{spec_path}.owners", issues
+                    )
+                    or [],
+                    "repositories": _string_list(
+                        spec.get("repositories"), f"{spec_path}.repositories", issues
+                    )
+                    or [],
+                }
 
             approval = _object(
                 spec.get("auto_approval"),
@@ -993,6 +1031,40 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                                     f"Expected {expected[field]!r}.",
                                 )
                             )
+                    expected_owners = list(
+                        dict.fromkeys(
+                            owner
+                            for spec_id in expected["specs"]
+                            for owner in spec_ownership.get(spec_id, {}).get(
+                                "owners", []
+                            )
+                        )
+                    )
+                    expected_repositories = list(
+                        dict.fromkeys(
+                            repository
+                            for spec_id in expected["specs"]
+                            for repository in spec_ownership.get(spec_id, {}).get(
+                                "repositories", []
+                            )
+                        )
+                    )
+                    if affected_owners != expected_owners:
+                        issues.append(
+                            _issue(
+                                "checkpoint_owner_scope_mismatch",
+                                f"{checkpoint_path}.affected_owners",
+                                "Checkpoint owners must be derived from its member SPEC ownership.",
+                            )
+                        )
+                    if affected_repositories != expected_repositories:
+                        issues.append(
+                            _issue(
+                                "checkpoint_repository_scope_mismatch",
+                                f"{checkpoint_path}.affected_repositories",
+                                "Checkpoint repositories must be derived from its member SPEC ownership.",
+                            )
+                        )
             train_checkpoint_ids = [
                 checkpoint.get("id")
                 for checkpoint in train_checkpoints
@@ -1169,7 +1241,7 @@ def _readback_issues(
     readback: Any,
     expected_run_id: str,
     target: str,
-    capabilities: dict[str, tuple[str, set[str]]],
+    capabilities: dict[str, set[str]],
     expected_task_id: str,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
@@ -1333,9 +1405,17 @@ def evaluate_route(
     expected_task_id: str,
 ) -> tuple[dict[str, Any], int]:
     issues: list[dict[str, str]] = []
+    if MODEL_POLICY_ERROR is not None:
+        issues.append(
+            _issue(
+                "model_policy_invalid",
+                "$.model_policy",
+                f"Implement Needs model policy is invalid: {MODEL_POLICY_ERROR}.",
+            )
+        )
     record, record_raw = _read_json(record_path, "planning_record", issues)
     readback, readback_raw = _read_json(readback_path, "route_readback", issues)
-    capabilities: dict[str, tuple[str, set[str]]] = {}
+    capabilities: dict[str, set[str]] = {}
     if isinstance(record, dict):
         _, capabilities = _route_scaffold(record, expected_run_id, issues)
         if target == "planning":
@@ -1394,12 +1474,20 @@ def evaluate_handoff(
     expected_run_id: str,
 ) -> tuple[dict[str, Any], int]:
     issues: list[dict[str, str]] = []
+    if MODEL_POLICY_ERROR is not None:
+        issues.append(
+            _issue(
+                "model_policy_invalid",
+                "$.model_policy",
+                f"Implement Needs model policy is invalid: {MODEL_POLICY_ERROR}.",
+            )
+        )
     record, record_raw = _read_json(record_path, "planning_record", issues)
     state, state_raw = _read_json(state_path, "controller_state", issues)
     readback, readback_raw = _read_json(
         planning_readback_path, "route_readback", issues
     )
-    capabilities: dict[str, tuple[str, set[str]]] = {}
+    capabilities: dict[str, set[str]] = {}
     if record is not None:
         issues.extend(_record_issues(record, expected_run_id))
     if isinstance(record, dict):

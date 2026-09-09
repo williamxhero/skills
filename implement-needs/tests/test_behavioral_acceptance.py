@@ -129,22 +129,20 @@ class ProtocolFixture:
             "capability_evidence": ["tool://create-thread-schema"],
             "supported_routes": [
                 {
-                    "model": "reliable-1",
-                    "model_class": "reliable",
-                    "thinking": ["xhigh", "max"],
+                    "model": "gpt-5.6-terra",
+                    "thinking": ["medium", "high", "xhigh"],
                 },
                 {
-                    "model": "strongest-1",
-                    "model_class": "strongest",
-                    "thinking": ["max", "ultra"],
+                    "model": "gpt-5.6-luna",
+                    "thinking": ["medium", "high", "xhigh"],
                 },
             ],
             "planning_task": {
                 "id": "plan-1",
                 "generation": 1,
                 "route": self.route(
-                    self.pair("reliable-1", "xhigh"),
-                    self.pair("strongest-1", "max"),
+                    self.pair("gpt-5.6-terra", "xhigh"),
+                    self.pair("gpt-5.6-luna", "xhigh"),
                 ),
             },
             "ownership": {
@@ -193,9 +191,11 @@ class ProtocolFixture:
                     ],
                     "ticket_self_check": copy.deepcopy(ticket_check),
                     "difficulty": "hard",
+                    "owners": [f"owner-{((number - 1) // 10) + 1}"],
+                    "repositories": [f"repo-{((number - 1) // 10) + 1}"],
                     "route": self.route(
-                        self.pair("reliable-1", "xhigh"),
-                        self.pair("strongest-1", "max"),
+                        self.pair("gpt-5.6-terra", "xhigh"),
+                        self.pair("gpt-5.6-luna", "xhigh"),
                     ),
                     "checkpoint": self.checkpoint_for_spec(number, spec_count),
                 }
@@ -229,7 +229,7 @@ class ProtocolFixture:
         selection: str = "recommended",
         reason: str | None = None,
     ) -> dict[str, Any]:
-        requested = requested or self.pair("reliable-1", "xhigh")
+        requested = requested or self.pair("gpt-5.6-terra", "xhigh")
         return {
             "schema_version": 1,
             "run_id": RUN_ID,
@@ -315,6 +315,8 @@ class ProtocolFixture:
                     {"id": ticket["id"], "blocked_by": list(ticket["blocked_by"])}
                     for ticket in self.ticket_plan(number)
                 ],
+                "owners": [f"owner-{((number - 1) // 10) + 1}"],
+                "repositories": [f"repo-{((number - 1) // 10) + 1}"],
             }
             for number in range(1, spec_count + 1)
         ]
@@ -350,6 +352,8 @@ class ProtocolFixture:
                 "spec_id": self.spec_id(number),
                 "base_revision": base_revision,
                 "route_selection": selection,
+                "model": "gpt-5.6-luna" if fallback else "gpt-5.6-terra",
+                "thinking": "xhigh",
                 "route_evidence": [f"receipt://{self.spec_id(number)}/{selection}"],
             },
         )
@@ -754,7 +758,7 @@ class BehavioralAcceptance(unittest.TestCase):
                 readback = self.fixture.readback(
                     target,
                     task_id,
-                    requested=self.fixture.pair("strongest-1", "max"),
+                    requested=self.fixture.pair("gpt-5.6-luna", "xhigh"),
                     selection="fallback",
                     reason="Recommended route became unavailable.",
                 )
@@ -1118,6 +1122,8 @@ class BehavioralAcceptance(unittest.TestCase):
                 "spec_id": "SPEC-1",
                 "base_revision": "base-0",
                 "route_selection": "fallback",
+                "model": "gpt-5.6-luna",
+                "thinking": "xhigh",
                 "route_evidence": ["receipt://SPEC-1/fallback"],
             },
         )

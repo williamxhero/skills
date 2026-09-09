@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "owner": "implement-needs",
+  "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+  "efforts": ["medium", "high", "xhigh"],
+  "model_rank": {
+    "gpt-5.6-sol": 0,
+    "gpt-5.6-terra": 1,
+    "gpt-5.6-luna": 2
+  },
+  "effort_rank": {
+    "medium": 0,
+    "high": 1,
+    "xhigh": 2
+  }
+}

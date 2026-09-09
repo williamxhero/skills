@@ -92,31 +92,24 @@ class PlanningValidatorTests(unittest.TestCase):
             "capability_evidence": ["tool://create-thread-schema"],
             "supported_routes": [
                 {
-                    "model": "fast-1",
-                    "model_class": "fast",
+                    "model": "gpt-5.6-sol",
                     "thinking": ["medium", "high"],
                 },
                 {
-                    "model": "balanced-1",
-                    "model_class": "balanced",
+                    "model": "gpt-5.6-terra",
                     "thinking": ["high", "xhigh"],
                 },
                 {
-                    "model": "reliable-1",
-                    "model_class": "reliable",
-                    "thinking": ["xhigh", "max"],
-                },
-                {
-                    "model": "strongest-1",
-                    "model_class": "strongest",
-                    "thinking": ["max", "ultra"],
+                    "model": "gpt-5.6-luna",
+                    "thinking": ["medium", "high", "xhigh"],
                 },
             ],
             "planning_task": {
                 "id": "plan-1",
                 "generation": 1,
                 "route": self.route(
-                    self.pair("reliable-1", "xhigh"), self.pair("strongest-1", "max")
+                    self.pair("gpt-5.6-terra", "xhigh"),
+                    self.pair("gpt-5.6-luna", "xhigh"),
                 ),
             },
             "ownership": {
@@ -161,8 +154,11 @@ class PlanningValidatorTests(unittest.TestCase):
                     ],
                     "ticket_self_check": copy.deepcopy(ticket_check),
                     "difficulty": "easy",
+                    "owners": ["owner-a"],
+                    "repositories": ["repo-a"],
                     "route": self.route(
-                        self.pair("fast-1", "medium"), self.pair("balanced-1", "high")
+                        self.pair("gpt-5.6-sol", "medium"),
+                        self.pair("gpt-5.6-terra", "high"),
                     ),
                     "checkpoint": "checkpoint-2",
                 },
@@ -182,9 +178,11 @@ class PlanningValidatorTests(unittest.TestCase):
                     ],
                     "ticket_self_check": copy.deepcopy(ticket_check),
                     "difficulty": "hard",
+                    "owners": ["owner-a"],
+                    "repositories": ["repo-a"],
                     "route": self.route(
-                        self.pair("reliable-1", "xhigh"),
-                        self.pair("strongest-1", "max"),
+                        self.pair("gpt-5.6-terra", "xhigh"),
+                        self.pair("gpt-5.6-luna", "xhigh"),
                     ),
                     "checkpoint": "checkpoint-2",
                 },
@@ -232,7 +230,7 @@ class PlanningValidatorTests(unittest.TestCase):
         selection: str = "recommended",
         reason: str | None = None,
     ) -> dict:
-        requested = requested or self.pair("reliable-1", "xhigh")
+        requested = requested or self.pair("gpt-5.6-terra", "xhigh")
         return {
             "schema_version": 1,
             "run_id": "run-001",
@@ -412,6 +410,30 @@ class PlanningValidatorTests(unittest.TestCase):
                     [checkpoint["id"] for checkpoint in checkpoints],
                 )
 
+    def test_model_policy_table_permits_only_every_allowed_model_effort_pair(
+        self,
+    ) -> None:
+        for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
+            for thinking in ("medium", "high", "xhigh"):
+                with self.subTest(model=model, thinking=thinking):
+                    issues: list[dict] = []
+                    self.assertEqual(
+                        {"model": model, "thinking": thinking},
+                        validator._pair(self.pair(model, thinking), "$.pair", issues),
+                    )
+                    self.assertEqual([], issues)
+        for model, thinking, expected in (
+            ("gpt-5.6-unknown", "medium", "unsupported_model"),
+            ("gpt-5.6-sol", "max", "unsupported_effort"),
+            ("gpt-5.6-unknown", "max", "unsupported_effort"),
+        ):
+            with self.subTest(model=model, thinking=thinking):
+                issues = []
+                self.assertIsNone(
+                    validator._pair(self.pair(model, thinking), "$.pair", issues)
+                )
+                self.assertIn(expected, {issue["code"] for issue in issues})
+
     def test_release_train_checkpoint_plan_is_fixed_and_exact(self) -> None:
         record = self.record()
         record["release_train"]["checkpoint_size"] = 6
@@ -424,6 +446,18 @@ class PlanningValidatorTests(unittest.TestCase):
         payload, code = self.handoff(record)
         self.assertEqual(1, code)
         self.assertIn("checkpoint_policy_mismatch", self.codes(payload))
+
+    def test_checkpoint_repositories_are_derived_from_member_spec_ownership(
+        self,
+    ) -> None:
+        record = self.record()
+        record["release_train"]["repositories"].append("repo-globally-listed")
+        record["release_train"]["checkpoints"][0]["affected_repositories"].append(
+            "repo-globally-listed"
+        )
+        payload, code = self.handoff(record)
+        self.assertEqual(1, code)
+        self.assertIn("checkpoint_repository_scope_mismatch", self.codes(payload))
 
     def test_dispatch_gate_requires_exactly_one_archived_planner_before_any_spec(
         self,
@@ -539,10 +573,10 @@ class PlanningValidatorTests(unittest.TestCase):
     ) -> None:
         record = self.record()
         record["planning_task"]["route"] = self.route(
-            self.pair("balanced-1", "high"), self.pair("fast-1", "medium")
+            self.pair("gpt-5.6-terra", "high"), self.pair("gpt-5.6-sol", "medium")
         )
         payload, code = self.handoff(
-            record, readback=self.readback(requested=self.pair("balanced-1", "high"))
+            record, readback=self.readback(requested=self.pair("gpt-5.6-terra", "high"))
         )
         self.assertEqual(1, code)
         self.assertIn("route_below_floor", self.codes(payload))
@@ -552,12 +586,12 @@ class PlanningValidatorTests(unittest.TestCase):
         payload, code = self.route_gate(self.record(), self.readback(), "planning")
         self.assertEqual(0, code)
         self.assertEqual("recommended", payload["selection"])
-        self.assertEqual(self.pair("reliable-1", "xhigh"), payload["applied"])
+        self.assertEqual(self.pair("gpt-5.6-terra", "xhigh"), payload["applied"])
 
     def test_recorded_fallback_requires_reason_and_is_allowed_without_drift(
         self,
     ) -> None:
-        fallback = self.pair("strongest-1", "max")
+        fallback = self.pair("gpt-5.6-luna", "xhigh")
         payload, code = self.route_gate(
             self.record(),
             self.readback(
@@ -571,7 +605,7 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertEqual("fallback", payload["selection"])
 
     def test_silent_drift_and_unrecorded_fallback_fail_closed(self) -> None:
-        drift = self.readback(applied=self.pair("balanced-1", "high"))
+        drift = self.readback(applied=self.pair("gpt-5.6-terra", "high"))
         payload, code = self.route_gate(self.record(), drift, "planning")
         self.assertEqual(1, code)
         self.assertIn("silent_route_drift", self.codes(payload))
@@ -579,7 +613,7 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assert_persistable_next_action(payload["next_action"])
 
         unrecorded = self.readback(
-            requested=self.pair("reliable-1", "max"),
+            requested=self.pair("gpt-5.6-terra", "medium"),
             selection="fallback",
             reason="Unavailable",
         )
@@ -590,7 +624,7 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assert_persistable_next_action(payload["next_action"])
 
     def test_spec_route_readback_uses_locked_spec_route(self) -> None:
-        requested = self.pair("fast-1", "medium")
+        requested = self.pair("gpt-5.6-sol", "medium")
         payload, code = self.route_gate(
             self.record(),
             self.readback(target="SPEC-1", task_id="spec-task-1", requested=requested),
@@ -603,7 +637,7 @@ class PlanningValidatorTests(unittest.TestCase):
         readback = self.readback(
             target="SPEC-1",
             task_id="stale-task",
-            requested=self.pair("fast-1", "medium"),
+            requested=self.pair("gpt-5.6-sol", "medium"),
         )
         self.write(self.record(), readback=readback)
         payload, code = validator.evaluate_route(

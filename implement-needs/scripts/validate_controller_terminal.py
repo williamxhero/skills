@@ -12,6 +12,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_policy import load_policy
+
+MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
+
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
 TERMINAL_STATES = {"terminal_success", "terminal_blocked", "user_stopped"}
@@ -287,7 +294,10 @@ def _terminal_record_issues(
 
 
 def _l4_checkpoint_issues(
-    test_state: dict[str, Any], *, require_release_ready: bool
+    test_state: dict[str, Any],
+    ownership: dict[str, Any],
+    *,
+    require_release_ready: bool,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     l4 = test_state["l4_checkpoints"]
@@ -312,6 +322,11 @@ def _l4_checkpoint_issues(
             )
         )
     by_id = {checkpoint["id"]: checkpoint for checkpoint in checkpoints}
+    specs_by_id = {
+        spec["spec_id"]: spec
+        for spec in ownership.get("specs", [])
+        if isinstance(spec, dict)
+    }
     if len(by_id) != len(checkpoints):
         issues.append(
             _issue(
@@ -371,6 +386,36 @@ def _l4_checkpoint_issues(
                     "checkpoint_repository_scope_missing",
                     f"{path}.affected_repositories",
                     "Checkpoint affected repositories are required.",
+                )
+            )
+        expected_owners = list(
+            dict.fromkeys(
+                owner
+                for spec_id in expected_checkpoint["specs"]
+                for owner in specs_by_id.get(spec_id, {}).get("owners", [])
+            )
+        )
+        expected_repositories = list(
+            dict.fromkeys(
+                repository
+                for spec_id in expected_checkpoint["specs"]
+                for repository in specs_by_id.get(spec_id, {}).get("repositories", [])
+            )
+        )
+        if checkpoint["affected_owners"] != expected_owners:
+            issues.append(
+                _issue(
+                    "checkpoint_owner_scope_mismatch",
+                    f"{path}.affected_owners",
+                    "Checkpoint owners must be derived from persisted member SPEC ownership.",
+                )
+            )
+        if checkpoint["affected_repositories"] != expected_repositories:
+            issues.append(
+                _issue(
+                    "checkpoint_repository_scope_mismatch",
+                    f"{path}.affected_repositories",
+                    "Checkpoint repositories must be derived from persisted member SPEC ownership.",
                 )
             )
         if checkpoint["status"] == "passed":
@@ -590,6 +635,18 @@ def _implementation_ownership_issues(
                     "Route fallback or recommendation must resume the same SPEC task.",
                 )
             )
+        if (
+            MODEL_POLICY is None
+            or route["model"] not in MODEL_POLICY["models"]
+            or route["thinking"] not in MODEL_POLICY["efforts"]
+        ):
+            issues.append(
+                _issue(
+                    "invalid_persisted_model_policy",
+                    f"{spec_path}.route",
+                    "Persisted SPEC model and effort must be allowed by the Implement Needs policy.",
+                )
+            )
 
         tickets = spec["tickets"]
         if not tickets:
@@ -778,6 +835,7 @@ def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
     issues.extend(
         _l4_checkpoint_issues(
             state["test_state"],
+            state["implementation_ownership"],
             require_release_ready=state["controller_state"] == "terminal_success",
         )
     )
@@ -1032,6 +1090,14 @@ def evaluate(
 ) -> tuple[dict[str, Any], int]:
     """Return a deterministic decision payload and process exit code."""
     issues: list[dict[str, str]] = []
+    if MODEL_POLICY_ERROR is not None:
+        issues.append(
+            _issue(
+                "model_policy_invalid",
+                "$.model_policy",
+                f"Implement Needs model policy is invalid: {MODEL_POLICY_ERROR}.",
+            )
+        )
     if proposed_state not in TERMINAL_STATES:
         issues.append(
             _issue(

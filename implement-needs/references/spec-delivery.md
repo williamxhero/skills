@@ -6,6 +6,16 @@ For each SPEC:
 
 1. Refresh from the default branch, mark the SPEC active, and verify its published SPEC and ticket graph against the locked planning artifacts. A material scope change must return to, verify, and rearchive the same planning task.
 2. Read the locked model and effort, select only that pair or a recorded same-or-stronger fallback, and create a fresh project task titled `Implement Needs <NN>: <spec title>` from the latest default branch with a bootstrap-only prompt. Capture the applied model/effort from a fresh task readback and run `validate_planning.py route --expected-task-id <created-task-id>` for this SPEC. Send the implementation assignment only after `decision: allow`; silent drift stays at bootstrap and is repaired on the same task. A fallback changes only the route used by this same task ID.
+
+At SPEC entry and after recovery, show this Chinese controller status with the persisted applied pair:
+
+```text
+SPEC {spec_id} 当前由任务 {task_id} 执行；实际模型：{model}；推理强度：{thinking}；路由：{selection}。
+可选模型仅为：gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna；可选推理强度仅为：medium、high、xhigh。
+下一步：{next_action}
+```
+
+`{model}` and `{thinking}` are the actual validated readback/persisted values, never placeholders for a requested route.
 3. Give the child pointers to the requirement, SPEC, tickets and blocking edges, repository instructions, default branch, its delivery-map entry, current train scope, blocker packet contract, implementation ownership ledger, and Controller Kernel handoff contract. Its boundary is: apply `implement-spec` for its task graph, PR, review, test, and cleanup semantics while overriding ticket-worker topology locally; implement every ticket inside this same task, worktree, branch, and PR; run narrow ticket and selected per-SPEC tests; apply `code-review` and fix findings; merge the SPEC; clean implementation worktrees; and return the PR, merge commit, closed tickets, ticket-level commit evidence, test evidence, checks, and blocker evidence. Packaging and deployment remain controller work.
 4. Follow it with compact waits. Answer preferences from the default policy. Route `needs_repair` packets through `unblock-development`, then resume the same SPEC task. If it stops before merge without a blocker, send a focused completion follow-up to that task.
 5. Treat its final as a claim. Independently verify ticket completion, selected per-SPEC layers and public-contract L3 obligations, integration, and reachability of the merge commit from the default branch. Validate its evidence packet with `test-release-train`; return any failure to the same child and wait again.

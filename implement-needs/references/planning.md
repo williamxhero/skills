@@ -6,7 +6,7 @@ Read this reference when the controller enters planning. The Controller Kernel r
 
 The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
 
-Before creation, capture the target host's advertised model/`thinking` combinations and classify each model as `fast`, `balanced`, `reliable`, or `strongest`. Create `.scratch/<initiative>/planning-record.json` with that capability evidence and a planning route. Bounded planning requires at least `reliable` + `xhigh`; broad, cross-repository, migration-heavy, or unusually ambiguous planning requires `strongest` + `max` or `ultra`. Every route contains one supported recommendation, rationale, and at least one supported fallback that is same-or-stronger in both model class and effort.
+Before creation, capture the target host's advertised combinations from the sole allow-list in `model-policy.json`. Create `.scratch/<initiative>/planning-record.json` with that capability evidence and a planning route. Bounded planning requires at least `gpt-5.6-terra` + `xhigh`; broad, cross-repository, migration-heavy, or unusually ambiguous planning requires `gpt-5.6-luna` + `xhigh`. Every route contains one supported recommendation, rationale, and at least one supported fallback that is same-or-stronger on the deterministic policy ranks.
 
 Create exactly one fresh saved-project task titled `Implement Needs Plan: <initiative>` with the selected `model` and `thinking`. Its bootstrap prompt permits no exploration, publication, or repository mutation until the controller sends `ROUTE_VERIFIED`. Capture the applied settings from the creation result and a fresh task readback in `.scratch/<initiative>/planning-route-readback.json`, then run:
 
@@ -45,7 +45,7 @@ Use these exact planning-record shapes; fields not shown are rejected:
 route = {recommended:{model,thinking}, fallbacks:[{model,thinking}], rationale}
 planning_record = {
   schema_version, run_id, scope, capability_evidence,
-  supported_routes:[{model,model_class,thinking:[...]}],
+  supported_routes:[{model,thinking:[...]}],
   planning_task:{id,generation,route},
   ownership:{grill,specs,tickets,routing}, requirements:[...],
   grill_rounds:[{round,questions:[{number,question,recommendation,rationale}],

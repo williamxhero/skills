@@ -121,10 +121,14 @@ class TerminalValidatorTests(unittest.TestCase):
                     {
                         "spec_id": "SPEC-1",
                         "implementation_task_id": "spec-1",
+                        "owners": ["owner-a"],
+                        "repositories": ["repo-a"],
                         "route": {
                             "target": "SPEC-1",
                             "task_id": "spec-1",
                             "selection": "recommended",
+                            "model": "gpt-5.6-terra",
+                            "thinking": "xhigh",
                             "evidence": ["receipt://SPEC-1-route"],
                         },
                         "tickets": [
@@ -220,10 +224,14 @@ class TerminalValidatorTests(unittest.TestCase):
                         {
                             "spec_id": "SPEC-2",
                             "implementation_task_id": "spec-2",
+                            "owners": ["owner-a"],
+                            "repositories": ["repo-a"],
                             "route": {
                                 "target": "SPEC-2",
                                 "task_id": "spec-2",
                                 "selection": "fallback",
+                                "model": "gpt-5.6-luna",
+                                "thinking": "xhigh",
                                 "evidence": ["receipt://SPEC-2-route"],
                             },
                             "tickets": [
@@ -393,6 +401,15 @@ class TerminalValidatorTests(unittest.TestCase):
                 self.assertEqual("allow", payload["decision"])
                 self.assertEqual(proposed, payload["terminal_state"])
                 self.assertRegex(payload["receipt_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_persisted_spec_model_policy_rejects_recovery_drift(self) -> None:
+        state = self.success_state()
+        state["implementation_ownership"]["specs"][0]["route"]["model"] = (
+            "gpt-5.6-unknown"
+        )
+        payload, exit_code = self.evaluate(state, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("invalid_persisted_model_policy", self.codes(payload))
 
     def test_success_allows_explicit_deployment_not_applicable(self) -> None:
         payload, exit_code = self.evaluate(

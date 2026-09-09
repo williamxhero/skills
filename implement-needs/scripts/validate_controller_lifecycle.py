@@ -12,6 +12,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_policy import load_policy
+
+MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
+
 CONTROLLER_STATES = {
     "active",
     "terminal_success",
@@ -52,6 +59,8 @@ DATA_FIELDS = {
         "spec_id",
         "base_revision",
         "route_selection",
+        "model",
+        "thinking",
         "route_evidence",
     },
     "commentary": {"category", "text", "next_action"},
@@ -171,6 +180,14 @@ REPAIR_LOG_ACTION = {
     "instruction": "Repair the lifecycle log from observed task and delivery evidence, then replay the lifecycle gate.",
 }
 CHECKPOINT_SIZE = 10
+
+
+def _allowed_pair(model: Any, thinking: Any) -> bool:
+    return (
+        MODEL_POLICY is not None
+        and model in MODEL_POLICY["models"]
+        and thinking in MODEL_POLICY["efforts"]
+    )
 
 
 def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
@@ -559,6 +576,35 @@ class _Replay:
                         f"{checkpoint_path}.{field}",
                         f"Expected {expected_checkpoint[field]!r}.",
                     )
+            members = set(expected_checkpoint["specs"])
+            expected_owners = list(
+                dict.fromkeys(
+                    owner
+                    for spec in self.specs
+                    if spec["id"] in members
+                    for owner in spec["owners"]
+                )
+            )
+            expected_repositories = list(
+                dict.fromkeys(
+                    repository
+                    for spec in self.specs
+                    if spec["id"] in members
+                    for repository in spec["repositories"]
+                )
+            )
+            if affected_owners != expected_owners:
+                self.add(
+                    "checkpoint_owner_scope_mismatch",
+                    f"{checkpoint_path}.affected_owners",
+                    "Checkpoint owners must be derived from its member SPEC ownership.",
+                )
+            if affected_repositories != expected_repositories:
+                self.add(
+                    "checkpoint_repository_scope_mismatch",
+                    f"{checkpoint_path}.affected_repositories",
+                    "Checkpoint repositories must be derived from its member SPEC ownership.",
+                )
             parsed_checkpoint = {
                 "id": checkpoint.get("id"),
                 "start_spec_index": checkpoint.get("start_spec_index"),
@@ -737,15 +783,25 @@ class _Replay:
             spec_path = f"{path}.data.specs[{offset}]"
             if (
                 not isinstance(spec, dict)
-                or set(spec) != {"id", "tickets"}
+                or set(spec) != {"id", "tickets", "owners", "repositories"}
                 or not _text(spec.get("id"))
             ):
                 self.add(
                     "invalid_spec_plan",
                     spec_path,
-                    "SPEC needs id and tickets.",
+                    "SPEC needs persisted id, tickets, owners, and repositories.",
                 )
                 continue
+            owners = spec.get("owners")
+            repositories = spec.get("repositories")
+            if not _string_list(owners, nonempty=True) or not _string_list(
+                repositories, nonempty=True
+            ):
+                self.add(
+                    "invalid_spec_ownership",
+                    spec_path,
+                    "Every SPEC must persist non-empty owner and repository ownership.",
+                )
             ticket_values = spec.get("tickets")
             if not isinstance(ticket_values, list) or not ticket_values:
                 self.add(
@@ -804,6 +860,10 @@ class _Replay:
                 {
                     "id": spec["id"],
                     "tickets": parsed_tickets,
+                    "owners": list(owners) if isinstance(owners, list) else [],
+                    "repositories": list(repositories)
+                    if isinstance(repositories, list)
+                    else [],
                 }
             )
         ids = [spec["id"] for spec in parsed]
@@ -827,7 +887,11 @@ class _Replay:
             spec["id"]: {
                 "task_id": None,
                 "route_selection": None,
+                "model": None,
+                "thinking": None,
                 "route_evidence": [],
+                "owners": list(spec["owners"]),
+                "repositories": list(spec["repositories"]),
                 "ticket_order": [ticket["id"] for ticket in spec["tickets"]],
                 "tickets": {
                     ticket["id"]: {
@@ -874,6 +938,12 @@ class _Replay:
                 "invalid_spec_route",
                 path,
                 "Dispatch must record the validated SPEC route selection and evidence.",
+            )
+        if not _allowed_pair(data.get("model"), data.get("thinking")):
+            self.add(
+                "invalid_spec_model_policy",
+                path,
+                "Dispatch model and effort must be allowed by the Implement Needs policy.",
             )
         if not self.pending_specs or data["spec_id"] != self.pending_specs[0]:
             self.add(
@@ -934,6 +1004,8 @@ class _Replay:
         status = self.spec_state[spec_id]
         status["task_id"] = task_id
         status["route_selection"] = data.get("route_selection")
+        status["model"] = data.get("model")
+        status["thinking"] = data.get("thinking")
         status["route_evidence"] = list(data.get("route_evidence") or [])
         for ticket in status["tickets"].values():
             ticket["owner_task_id"] = task_id
@@ -1974,10 +2046,14 @@ class _Replay:
                 {
                     "spec_id": spec_id,
                     "implementation_task_id": task_id,
+                    "owners": list(status["owners"]),
+                    "repositories": list(status["repositories"]),
                     "route": {
                         "target": spec_id,
                         "task_id": task_id,
                         "selection": status["route_selection"] or "recommended",
+                        "model": status["model"],
+                        "thinking": status["thinking"],
                         "evidence": list(status["route_evidence"]),
                     },
                     "tickets": tickets,
@@ -2005,6 +2081,14 @@ def evaluate(
 ) -> tuple[dict[str, Any], int]:
     """Return a deterministic replay receipt and process exit code."""
     events, raw, issues = _read_log(log_path)
+    if MODEL_POLICY_ERROR is not None:
+        issues.append(
+            _issue(
+                "model_policy_invalid",
+                "$.model_policy",
+                f"Implement Needs model policy is invalid: {MODEL_POLICY_ERROR}.",
+            )
+        )
     if expected_state not in CONTROLLER_STATES:
         issues.append(
             _issue(

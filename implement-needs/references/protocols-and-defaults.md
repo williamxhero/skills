@@ -50,15 +50,17 @@ Use `list_projects`, `create_thread`, `wait_threads`, `send_message_to_thread`, 
 
 Resolve the Codex project that owns the repository before dispatch. Run planning against the saved project so it can inspect the repository and publish tracker artifacts while remaining code-read-only. Use a project worktree for repository-scoped code repairs and SPEC implementation; use the saved project directly for host-level, network, credential, or shared-environment repairs. Start each SPEC task from the default-branch state containing every prior merge. Verify and archive planning before the first SPEC. Keep exactly one SPEC child active.
 
-Planning uses at least a reliable high-intelligence agentic model with `xhigh` effort. For broad cross-repository, migration-heavy, or unusually ambiguous requirements, use the strongest reliable model with the highest supported effort of `max` or `ultra`. Lock only advertised pairs and same-or-stronger fallbacks; if the floor has no supported pair, enter blocker handling before creation. Record the selection and rationale before creation; never route planning to the fast/economical class.
+At SPEC entry, use only the Implement Needs policy values: models `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`; reasoning efforts `medium`, `high`, and `xhigh`. Planning uses at least `gpt-5.6-terra` with `xhigh`; for broad cross-repository, migration-heavy, or unusually ambiguous requirements, use `gpt-5.6-luna` with `xhigh`. Lock only advertised, allow-listed pairs and same-or-stronger fallbacks; if the floor has no supported pair, enter blocker handling before creation.
+
+The rank is deterministic and deliberately independent of task wording: `gpt-5.6-sol` < `gpt-5.6-terra` < `gpt-5.6-luna` by policy capability tier, and `medium` < `high` < `xhigh` by reasoning budget. A fallback must be different and at least the recommendation's rank on both axes, and it always resumes the existing SPEC owner task. Record the actual selected pair from readback—not merely the requested pair—before dispatch or recovery.
 
 The planning task locks one advertised `model` and `thinking` pair for each SPEC after producing its ticket graph:
 
-| Difficulty | Typical shape | Model class | Reasoning effort |
+| Difficulty | Typical shape | Model | Reasoning effort |
 | --- | --- | --- | --- |
-| Easy | Localized, known-pattern change | Fast, economical coding model | `medium` |
-| Standard | Several modules or an unfamiliar bounded integration | Balanced agentic coding model | `high` |
-| Hard | Cross-cutting behavior, migrations, concurrency, security, or performance | Reliable agentic workhorse | `xhigh` |
-| Extreme | Multi-repository or unusually fragile compatibility/release constraints | Strongest reliable model | Highest supported of `max` or `ultra` |
+| Easy | Localized, known-pattern change | `gpt-5.6-sol` | `medium` |
+| Standard | Several modules or an unfamiliar bounded integration | `gpt-5.6-terra` | `high` |
+| Hard | Cross-cutting behavior, migrations, concurrency, security, or performance | `gpt-5.6-terra` | `xhigh` |
+| Extreme | Multi-repository or unusually fragile compatibility/release constraints | `gpt-5.6-luna` | `xhigh` |
 
 Record the exact recommendation, difficulty, rationale, and concrete same-or-stronger fallback pairs in the planning record. The controller does not reclassify it. A material SPEC or ticket-graph change invalidates the recommendation and must be returned to the same planning task; never create a second planner. Let `unblock-development` route actual repair tasks independently.
