@@ -7,16 +7,16 @@ Read this contract at startup, recovery, and immediately before terminal validat
 Keep these files together under `.scratch/<initiative>/`:
 
 - `delivery-map.md`: human-readable decisions and evidence.
-- `task-tree.json`: the latest normalized JSON snapshot of every planning, SPEC, and repair task, sorted by task ID.
+- `task-tree.json`: the latest normalized JSON snapshot of every planning, SPEC, and repair task, sorted by task ID, plus the implementation ownership ledger.
 - `controller-state.json`: the machine-readable controller record described below.
 - `terminal-receipt.json`: the most recent validator decision.
 
 Generate `run_id` once and retain it across resumptions. Increment `state_revision` after each observed or performed controller action. After updating the delivery map and task-tree snapshot, hash their exact bytes with SHA-256 and store both lowercase digests in `freshness`. Write controller state last so a changed source makes the previous state deterministically stale.
 
-Normalize the task snapshot to exactly `run_id` and `tasks`. Each `tasks` entry uses the same `id`, `kind`, `spec_id`, and `lifecycle` fields as `child_tasks`:
+Normalize the task snapshot to exactly `run_id`, `tasks`, and `implementation_ownership`. Each `tasks` entry uses the same `id`, `kind`, `spec_id`, and `lifecycle` fields as `child_tasks`:
 
 ```json
-{"run_id":"payments-v2-20260909","tasks":[{"id":"thread-plan","kind":"planning","spec_id":null,"lifecycle":"archived"}]}
+{"run_id":"payments-v2-20260909","tasks":[{"id":"thread-plan","kind":"planning","spec_id":null,"lifecycle":"archived"}],"implementation_ownership":{"specs":[],"ticket_implementation_artifacts":{"tasks":[],"threads":[],"worktrees":[],"branches":[],"pull_requests":[]},"role_limited_tasks":[]}}
 ```
 
 Retain archived tasks. The validator requires the task-tree IDs and fields to match `child_tasks` exactly, so a child omitted from state or reported with a different lifecycle fails closed even when the source hash is current.
@@ -32,6 +32,7 @@ Retain archived tasks. The validator requires the task-tree IDs and fields to ma
 | `active_phase` | `bootstrap`, `planning`, `implementation`, `testing`, `release`, `blocked`, `stopped`, or `complete`. |
 | `active_task_stack` | Ordered IDs on the current control path. Every queued, active, or paused child appears here. |
 | `child_tasks` | Every planning, SPEC, and repair child with kind, optional SPEC ID, and lifecycle. Never delete a completed child; retain it as `archived`. |
+| `implementation_ownership` | The single SPEC implementation ownership ledger. Each SPEC names exactly one implementation task, that task's route readback, every ticket owned by that task with blockers, commits, tests, and tracker state, empty ticket-level implementation artifact collections, and role-limited helper tasks. |
 | `pending_specs` | Ordered SPEC IDs not yet verified merged. |
 | `unverified_handoffs` | Exact set of child IDs in `handoff_received`. |
 | `unarchived_tasks` | Exact set of child IDs whose lifecycle is not `archived`. |
@@ -47,6 +48,14 @@ Child lifecycle is one of `queued`, `active`, `paused`, `handoff_received`, `ver
 An action has exactly `kind`, `target`, and `instruction`. `kind` is one of `wait`, `verify`, `archive`, `repair`, `dispatch`, `advance`, `resume`, `refresh_state`, or `repair_state`. Gate-specific failures still persist through this canonical vocabulary: route drift, planning handoff repair, and receipt-write repair use `repair` with the task, gate, or artifact named in `target`. `instruction` is directly executable rather than a status description.
 
 Test status is `pending`, `running`, `passed`, or `blocked`. Release status is `pending`, `building`, `packaged`, `deployed`, `not_applicable`, or `blocked`.
+
+## Implementation ownership
+
+`implementation_ownership.specs` records one entry per dispatched SPEC. `implementation_task_id` must equal the matching `child_tasks` SPEC task ID, and `route.task_id` must be that same task for both the locked recommendation and any approved fallback. A fallback is a route substitution inside the existing SPEC task; it never creates a replacement owner.
+
+Each ticket entry records the planned blocking edge, `owner_task_id`, retained commit evidence, retained test evidence, and tracker state. The owner is always the SPEC implementation task. Terminal success requires every ticket to be `closed` with non-empty commit and test evidence.
+
+`ticket_implementation_artifacts.tasks`, `threads`, `worktrees`, `branches`, and `pull_requests` must remain empty. Any ticket-level implementation artifact is former ticket-worker topology and fails closed. Blocker repair, read-only exploration, and read-only review may appear only under `role_limited_tasks`; those entries cannot own tickets, write product code, or provide merge commits.
 
 ## State transitions
 
@@ -71,6 +80,38 @@ Any malformed field, inconsistent aggregate, task-tree mismatch, source-hash mis
     {"id": "thread-plan", "kind": "planning", "spec_id": null, "lifecycle": "archived"},
     {"id": "thread-spec-02", "kind": "spec", "spec_id": "SPEC-02", "lifecycle": "active"}
   ],
+  "implementation_ownership": {
+    "specs": [
+      {
+        "spec_id": "SPEC-02",
+        "implementation_task_id": "thread-spec-02",
+        "route": {
+          "target": "SPEC-02",
+          "task_id": "thread-spec-02",
+          "selection": "recommended",
+          "evidence": ["receipt://SPEC-02-route"]
+        },
+        "tickets": [
+          {
+            "id": "T-02-01",
+            "owner_task_id": "thread-spec-02",
+            "blocked_by": [],
+            "commits": [],
+            "test_evidence": [],
+            "tracker_state": "active"
+          }
+        ]
+      }
+    ],
+    "ticket_implementation_artifacts": {
+      "tasks": [],
+      "threads": [],
+      "worktrees": [],
+      "branches": [],
+      "pull_requests": []
+    },
+    "role_limited_tasks": []
+  },
   "pending_specs": ["SPEC-02", "SPEC-03"],
   "unverified_handoffs": [],
   "unarchived_tasks": ["thread-spec-02"],

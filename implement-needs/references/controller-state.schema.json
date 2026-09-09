@@ -12,6 +12,7 @@
     "active_phase",
     "active_task_stack",
     "child_tasks",
+    "implementation_ownership",
     "pending_specs",
     "unverified_handoffs",
     "unarchived_tasks",
@@ -37,6 +38,7 @@
       "type": "array",
       "items": {"$ref": "#/$defs/childTask"}
     },
+    "implementation_ownership": {"$ref": "#/$defs/implementationOwnership"},
     "pending_specs": {"$ref": "#/$defs/uniqueStrings"},
     "unverified_handoffs": {"$ref": "#/$defs/uniqueStrings"},
     "unarchived_tasks": {"$ref": "#/$defs/uniqueStrings"},
@@ -65,6 +67,9 @@
       "items": {"type": "string", "minLength": 1}
     },
     "nullableRevision": {
+      "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
+    },
+    "nullableString": {
       "oneOf": [{"type": "null"}, {"type": "string", "minLength": 1}]
     },
     "childTask": {
@@ -135,16 +140,120 @@
         "user_stop_recorded": {"type": "boolean"}
       }
     },
+    "implementationOwnership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "specs",
+        "ticket_implementation_artifacts",
+        "role_limited_tasks"
+      ],
+      "properties": {
+        "specs": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/specOwnership"}
+        },
+        "ticket_implementation_artifacts": {
+          "$ref": "#/$defs/ticketImplementationArtifacts"
+        },
+        "role_limited_tasks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/roleLimitedTask"}
+        }
+      }
+    },
+    "specOwnership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec_id", "implementation_task_id", "route", "tickets"],
+      "properties": {
+        "spec_id": {"type": "string", "minLength": 1},
+        "implementation_task_id": {"type": "string", "minLength": 1},
+        "route": {"$ref": "#/$defs/specImplementationRoute"},
+        "tickets": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/ticketExecution"}
+        }
+      }
+    },
+    "specImplementationRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "task_id", "selection", "evidence"],
+      "properties": {
+        "target": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "selection": {"enum": ["recommended", "fallback"]},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "ticketExecution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "owner_task_id",
+        "blocked_by",
+        "commits",
+        "test_evidence",
+        "tracker_state"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "owner_task_id": {"type": "string", "minLength": 1},
+        "blocked_by": {"$ref": "#/$defs/uniqueStrings"},
+        "commits": {"$ref": "#/$defs/evidence"},
+        "test_evidence": {"$ref": "#/$defs/evidence"},
+        "tracker_state": {"enum": ["planned", "active", "closed"]}
+      }
+    },
+    "ticketImplementationArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tasks", "threads", "worktrees", "branches", "pull_requests"],
+      "properties": {
+        "tasks": {"$ref": "#/$defs/uniqueStrings"},
+        "threads": {"$ref": "#/$defs/uniqueStrings"},
+        "worktrees": {"$ref": "#/$defs/uniqueStrings"},
+        "branches": {"$ref": "#/$defs/uniqueStrings"},
+        "pull_requests": {"$ref": "#/$defs/uniqueStrings"}
+      }
+    },
+    "roleLimitedTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "spec_id",
+        "parent_task_id",
+        "role",
+        "writes_product_code",
+        "merge_commits",
+        "evidence"
+      ],
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1},
+        "spec_id": {"$ref": "#/$defs/nullableString"},
+        "parent_task_id": {"$ref": "#/$defs/nullableString"},
+        "role": {
+          "enum": ["blocker_repair", "read_only_exploration", "read_only_review"]
+        },
+        "writes_product_code": {"type": "boolean"},
+        "merge_commits": {"$ref": "#/$defs/uniqueStrings"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
     "taskTree": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["run_id", "tasks"],
+      "required": ["run_id", "tasks", "implementation_ownership"],
       "properties": {
         "run_id": {"type": "string", "minLength": 1},
         "tasks": {
           "type": "array",
           "items": {"$ref": "#/$defs/childTask"}
-        }
+        },
+        "implementation_ownership": {"$ref": "#/$defs/implementationOwnership"}
       }
     }
   }

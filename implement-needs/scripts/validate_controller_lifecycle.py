@@ -45,9 +45,38 @@ DATA_FIELDS = {
         "default_branch",
         "default_revision",
     },
-    "spec_dispatched": {"task_id", "spec_id", "base_revision"},
+    "spec_dispatched": {
+        "task_id",
+        "spec_id",
+        "base_revision",
+        "route_selection",
+        "route_evidence",
+    },
     "commentary": {"category", "text", "next_action"},
     "waited": {"task_id"},
+    "ticket_evidence": {
+        "spec_id",
+        "ticket_id",
+        "owner_task_id",
+        "blocked_by",
+        "commits",
+        "test_evidence",
+        "tracker_state",
+    },
+    "ticket_implementation_artifact": {
+        "artifact_type",
+        "id",
+        "spec_id",
+        "ticket_id",
+    },
+    "role_limited_task": {
+        "task_id",
+        "spec_id",
+        "parent_task_id",
+        "role",
+        "writes_product_code",
+        "merge_commits",
+    },
     "child_handoff": {"task_id", "boundary", "revision"},
     "handoff_verified": {"task_id", "result", "revision"},
     "child_archived": {"task_id"},
@@ -97,9 +126,22 @@ DATA_FIELDS = {
 EXPECTED_ACTORS = {
     event_type: "controller"
     for event_type in DATA_FIELDS
-    if event_type != "child_handoff"
+    if event_type not in {"child_handoff", "ticket_evidence"}
 }
 COMMENTARY_CATEGORIES = {"heartbeat", "side_question_answer", "progress"}
+ROUTE_SELECTIONS = {"recommended", "fallback"}
+TICKET_IMPLEMENTATION_ARTIFACTS = {
+    "task": "tasks",
+    "thread": "threads",
+    "worktree": "worktrees",
+    "branch": "branches",
+    "pull_request": "pull_requests",
+}
+ROLE_LIMITED_ROLES = {
+    "blocker_repair",
+    "read_only_exploration",
+    "read_only_review",
+}
 CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
 
 REPAIR_LOG_ACTION = {
@@ -145,6 +187,16 @@ def _string_list(value: Any, *, nonempty: bool = False) -> bool:
         and all(_text(item) for item in value)
         and len(value) == len(set(value))
     )
+
+
+def _empty_ticket_artifacts() -> dict[str, list[str]]:
+    return {
+        "tasks": [],
+        "threads": [],
+        "worktrees": [],
+        "branches": [],
+        "pull_requests": [],
+    }
 
 
 def _action_issues(value: Any, path: str) -> list[dict[str, str]]:
@@ -385,6 +437,8 @@ class _Replay:
         self.deployment_status = "pending"
         self.deployment_target: str | None = None
         self.smoke_passed = False
+        self.ticket_implementation_artifacts = _empty_ticket_artifacts()
+        self.role_limited_tasks: list[dict[str, Any]] = []
         self.evidence_count = 0
 
     def add(self, code: str, path: str, message: str) -> None:
@@ -466,17 +520,77 @@ class _Replay:
             spec_path = f"{path}.data.specs[{offset}]"
             if (
                 not isinstance(spec, dict)
-                or set(spec) != {"id", "checkpoint_required"}
+                or set(spec) != {"id", "checkpoint_required", "tickets"}
                 or not _text(spec.get("id"))
                 or not isinstance(spec.get("checkpoint_required"), bool)
             ):
                 self.add(
                     "invalid_spec_plan",
                     spec_path,
-                    "SPEC needs id and checkpoint_required.",
+                    "SPEC needs id, checkpoint_required, and tickets.",
                 )
                 continue
-            parsed.append(dict(spec))
+            ticket_values = spec.get("tickets")
+            if not isinstance(ticket_values, list) or not ticket_values:
+                self.add(
+                    "invalid_ticket_plan",
+                    f"{spec_path}.tickets",
+                    "Every planned SPEC needs at least one ticket.",
+                )
+                continue
+            parsed_tickets: list[dict[str, Any]] = []
+            for ticket_offset, ticket in enumerate(ticket_values):
+                ticket_path = f"{spec_path}.tickets[{ticket_offset}]"
+                if (
+                    not isinstance(ticket, dict)
+                    or set(ticket) != {"id", "blocked_by"}
+                    or not _text(ticket.get("id"))
+                    or not _string_list(ticket.get("blocked_by"))
+                ):
+                    self.add(
+                        "invalid_ticket_plan",
+                        ticket_path,
+                        "Ticket plan entries need id and blocked_by.",
+                    )
+                    continue
+                parsed_tickets.append(
+                    {"id": ticket["id"], "blocked_by": list(ticket["blocked_by"])}
+                )
+            ticket_ids = [ticket["id"] for ticket in parsed_tickets]
+            if len(ticket_ids) != len(set(ticket_ids)) or len(parsed_tickets) != len(
+                ticket_values
+            ):
+                self.add(
+                    "invalid_ticket_plan",
+                    f"{spec_path}.tickets",
+                    "Planned ticket IDs must be unique and valid.",
+                )
+                continue
+            ticket_positions = {
+                ticket_id: ticket_index
+                for ticket_index, ticket_id in enumerate(ticket_ids)
+            }
+            for ticket in parsed_tickets:
+                for dependency in ticket["blocked_by"]:
+                    if dependency not in ticket_positions:
+                        self.add(
+                            "invalid_ticket_plan",
+                            f"{spec_path}.tickets",
+                            f"Unknown ticket blocker {dependency}.",
+                        )
+                    elif ticket_positions[dependency] >= ticket_positions[ticket["id"]]:
+                        self.add(
+                            "invalid_ticket_plan",
+                            f"{spec_path}.tickets",
+                            "Ticket blockers must precede blocked tickets.",
+                        )
+            parsed.append(
+                {
+                    "id": spec["id"],
+                    "checkpoint_required": spec["checkpoint_required"],
+                    "tickets": parsed_tickets,
+                }
+            )
         ids = [spec["id"] for spec in parsed]
         if len(ids) != len(set(ids)) or len(parsed) != len(specs):
             self.add(
@@ -498,6 +612,19 @@ class _Replay:
             spec["id"]: {
                 "checkpoint_required": spec["checkpoint_required"],
                 "task_id": None,
+                "route_selection": None,
+                "route_evidence": [],
+                "ticket_order": [ticket["id"] for ticket in spec["tickets"]],
+                "tickets": {
+                    ticket["id"]: {
+                        "blocked_by": ticket["blocked_by"],
+                        "owner_task_id": None,
+                        "commits": [],
+                        "test_evidence": [],
+                        "tracker_state": "planned",
+                    }
+                    for ticket in spec["tickets"]
+                },
                 "checkpoint_passed": False,
                 "branch_verified": False,
             }
@@ -518,6 +645,14 @@ class _Replay:
                 "Dispatch requires task, SPEC, and base revision.",
             )
             return
+        if data.get("route_selection") not in ROUTE_SELECTIONS or not _string_list(
+            data.get("route_evidence"), nonempty=True
+        ):
+            self.add(
+                "invalid_spec_route",
+                path,
+                "Dispatch must record the validated SPEC route selection and evidence.",
+            )
         if not self.pending_specs or data["spec_id"] != self.pending_specs[0]:
             self.add(
                 "spec_order",
@@ -567,7 +702,12 @@ class _Replay:
             "spec_id": spec_id,
             "lifecycle": "active",
         }
-        self.spec_state[spec_id]["task_id"] = task_id
+        status = self.spec_state[spec_id]
+        status["task_id"] = task_id
+        status["route_selection"] = data.get("route_selection")
+        status["route_evidence"] = list(data.get("route_evidence") or [])
+        for ticket in status["tickets"].values():
+            ticket["owner_task_id"] = task_id
 
     def on_commentary(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -599,6 +739,160 @@ class _Replay:
         if task is not None and task["lifecycle"] != "active":
             self.add("wait_ineligible", path, "Only an active child may be waited on.")
 
+    def on_ticket_evidence(
+        self, event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        spec_id = data.get("spec_id")
+        ticket_id = data.get("ticket_id")
+        if event["actor"] != "spec_child":
+            self.add(
+                "actor_mismatch",
+                f"{path}.actor",
+                "Ticket evidence must be emitted by the SPEC child.",
+            )
+        task = self._current_spec_task(spec_id, f"{path}.data.spec_id")
+        if task is None:
+            return
+        if task["lifecycle"] != "active":
+            self.add(
+                "ticket_evidence_ineligible",
+                path,
+                "Ticket evidence must belong to the active SPEC task.",
+            )
+        tickets = self.spec_state[spec_id]["tickets"]
+        if not _text(ticket_id) or ticket_id not in tickets:
+            self.add(
+                "unknown_ticket",
+                f"{path}.data.ticket_id",
+                "Ticket evidence names a ticket outside the SPEC graph.",
+            )
+            return
+        ticket = tickets[ticket_id]
+        if data.get("owner_task_id") != task["id"]:
+            self.add(
+                "ticket_owner_mismatch",
+                f"{path}.data.owner_task_id",
+                "Ticket implementation owner must equal the SPEC task.",
+            )
+        if data.get("blocked_by") != ticket["blocked_by"]:
+            self.add(
+                "ticket_blockers_mismatch",
+                f"{path}.data.blocked_by",
+                "Ticket evidence must preserve the planned blocking edge.",
+            )
+        for dependency in ticket["blocked_by"]:
+            dependency_ticket = tickets.get(dependency)
+            if dependency_ticket is None:
+                continue
+            if dependency_ticket["tracker_state"] != "closed":
+                self.add(
+                    "ticket_frontier_not_ready",
+                    path,
+                    "Ticket evidence may be recorded only after blockers close.",
+                )
+        if ticket["tracker_state"] == "closed":
+            self.add(
+                "duplicate_ticket_evidence",
+                path,
+                "Each ticket may close once in the SPEC task.",
+            )
+        if not _string_list(data.get("commits"), nonempty=True):
+            self.add(
+                "ticket_commit_evidence_missing",
+                f"{path}.data.commits",
+                "Ticket evidence requires retained commit pointers.",
+            )
+        if not _string_list(data.get("test_evidence"), nonempty=True):
+            self.add(
+                "ticket_test_evidence_missing",
+                f"{path}.data.test_evidence",
+                "Ticket evidence requires retained test pointers.",
+            )
+        if data.get("tracker_state") != "closed":
+            self.add(
+                "ticket_not_closed",
+                f"{path}.data.tracker_state",
+                "Ticket evidence must close the tracker ticket.",
+            )
+        ticket.update(
+            {
+                "owner_task_id": data.get("owner_task_id"),
+                "commits": list(data.get("commits") or []),
+                "test_evidence": list(data.get("test_evidence") or []),
+                "tracker_state": data.get("tracker_state"),
+            }
+        )
+
+    def on_ticket_implementation_artifact(
+        self, _event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        artifact_type = data.get("artifact_type")
+        if artifact_type not in TICKET_IMPLEMENTATION_ARTIFACTS or not all(
+            _text(data.get(field)) for field in ("id", "spec_id", "ticket_id")
+        ):
+            self.add(
+                "invalid_ticket_implementation_artifact",
+                path,
+                "Forbidden ticket implementation artifacts need type, id, SPEC, and ticket.",
+            )
+            return
+        bucket = TICKET_IMPLEMENTATION_ARTIFACTS[artifact_type]
+        self.ticket_implementation_artifacts[bucket].append(data["id"])
+        self.add(
+            "ticket_implementation_artifact_present",
+            path,
+            "Ticket-level implementation tasks, threads, worktrees, branches, and PRs are forbidden.",
+        )
+
+    def on_role_limited_task(
+        self, event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        if (
+            not _text(data.get("task_id"))
+            or not _nullable_text(data.get("spec_id"))
+            or not _nullable_text(data.get("parent_task_id"))
+            or data.get("role") not in ROLE_LIMITED_ROLES
+        ):
+            self.add(
+                "invalid_role_limited_task",
+                path,
+                "Role-limited tasks need task, optional SPEC/parent, and a supported role.",
+            )
+            return
+        if data["task_id"] in {
+            task["id"] for task in self.tasks.values() if task["kind"] == "spec"
+        }:
+            self.add(
+                "role_limited_task_is_owner",
+                path,
+                "Role-limited tasks cannot be SPEC implementation owners.",
+            )
+        if data.get("writes_product_code") is not False or data.get("merge_commits"):
+            self.add(
+                "role_limited_task_mutated_product",
+                path,
+                "Role-limited helpers cannot write product code or provide merge commits.",
+            )
+        if not isinstance(data.get("merge_commits"), list) or not all(
+            _text(item) for item in data.get("merge_commits", [])
+        ):
+            self.add(
+                "invalid_role_limited_task",
+                f"{path}.data.merge_commits",
+                "Merge commit evidence must be an array of strings.",
+            )
+        self.role_limited_tasks.append(
+            {
+                "task_id": data["task_id"],
+                "spec_id": data.get("spec_id"),
+                "parent_task_id": data.get("parent_task_id"),
+                "role": data["role"],
+                "writes_product_code": data.get("writes_product_code"),
+                "merge_commits": list(data.get("merge_commits") or []),
+                "evidence": list(event["evidence"]),
+            }
+        )
+
     def on_child_handoff(
         self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
@@ -624,6 +918,19 @@ class _Replay:
                     "spec_boundary",
                     path,
                     "SPEC handoff must stop at merged evidence with a revision.",
+                )
+            status = self.spec_state.get(task["spec_id"], {})
+            tickets = status.get("tickets", {})
+            missing = [
+                ticket_id
+                for ticket_id in status.get("ticket_order", [])
+                if tickets.get(ticket_id, {}).get("tracker_state") != "closed"
+            ]
+            if missing:
+                self.add(
+                    "ticket_evidence_missing",
+                    path,
+                    "SPEC handoff requires closed ticket evidence for every ticket.",
                 )
         elif boundary != "repair_evidence" or not _nullable_text(revision):
             self.add(
@@ -749,7 +1056,7 @@ class _Replay:
             self.pending_specs.pop(0)
 
     def on_blocker_opened(
-        self, _event: dict[str, Any], data: dict[str, Any], path: str
+        self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
         repair_id = data.get("repair_task_id")
         parent_id = data.get("parent_task_id")
@@ -800,6 +1107,17 @@ class _Replay:
             "fingerprint": data.get("fingerprint"),
             "blocked_action": data.get("blocked_action"),
         }
+        self.role_limited_tasks.append(
+            {
+                "task_id": repair_id,
+                "spec_id": spec_id,
+                "parent_task_id": parent_id,
+                "role": "blocker_repair",
+                "writes_product_code": False,
+                "merge_commits": [],
+                "evidence": list(event["evidence"]),
+            }
+        )
 
     def on_blocked_action_resumed(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -1333,6 +1651,49 @@ class _Replay:
             for task in sorted(self.tasks.values(), key=lambda item: item["id"])
         ]
 
+    def implementation_ownership(self) -> dict[str, Any]:
+        specs: list[dict[str, Any]] = []
+        for spec in self.specs:
+            spec_id = spec["id"]
+            status = self.spec_state[spec_id]
+            task_id = status["task_id"]
+            if task_id is None:
+                continue
+            tickets = []
+            for ticket_id in status["ticket_order"]:
+                ticket = status["tickets"][ticket_id]
+                tickets.append(
+                    {
+                        "id": ticket_id,
+                        "owner_task_id": ticket["owner_task_id"] or task_id,
+                        "blocked_by": list(ticket["blocked_by"]),
+                        "commits": list(ticket["commits"]),
+                        "test_evidence": list(ticket["test_evidence"]),
+                        "tracker_state": ticket["tracker_state"],
+                    }
+                )
+            specs.append(
+                {
+                    "spec_id": spec_id,
+                    "implementation_task_id": task_id,
+                    "route": {
+                        "target": spec_id,
+                        "task_id": task_id,
+                        "selection": status["route_selection"] or "recommended",
+                        "evidence": list(status["route_evidence"]),
+                    },
+                    "tickets": tickets,
+                }
+            )
+        return {
+            "specs": specs,
+            "ticket_implementation_artifacts": {
+                key: list(values)
+                for key, values in self.ticket_implementation_artifacts.items()
+            },
+            "role_limited_tasks": list(self.role_limited_tasks),
+        }
+
     def release_status(self) -> str:
         if self.deployment_status in {"deployed", "not_applicable", "packaged"}:
             return self.deployment_status
@@ -1398,6 +1759,7 @@ def evaluate(
         "next_action": next_action,
         "resume_action": replay.resume_action,
         "child_tasks": replay.child_tasks(),
+        "implementation_ownership": replay.implementation_ownership(),
         "pending_specs": replay.pending_specs,
         "candidate_revision": replay.candidate_revision,
         "test_status": "passed" if replay.tests_passed else "pending",

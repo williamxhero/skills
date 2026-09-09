@@ -266,6 +266,216 @@ def _terminal_record_issues(
     return issues
 
 
+def _ticket_graph_issues(
+    tickets: list[dict[str, Any]], path: str
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    ticket_ids = [ticket["id"] for ticket in tickets]
+    if len(ticket_ids) != len(set(ticket_ids)):
+        issues.append(
+            _issue("duplicate_ticket_id", path, "Ticket IDs must be unique per SPEC.")
+        )
+    positions = {ticket_id: index for index, ticket_id in enumerate(ticket_ids)}
+    for ticket in tickets:
+        ticket_path = f"{path}[{positions.get(ticket['id'], '?')}]"
+        for dependency in ticket["blocked_by"]:
+            if dependency not in positions:
+                issues.append(
+                    _issue(
+                        "unknown_ticket_blocker",
+                        f"{ticket_path}.blocked_by",
+                        f"Unknown ticket blocker {dependency}.",
+                    )
+                )
+            elif positions[dependency] >= positions[ticket["id"]]:
+                issues.append(
+                    _issue(
+                        "ticket_blocker_not_ordered",
+                        f"{ticket_path}.blocked_by",
+                        "Ticket blockers must precede the blocked ticket.",
+                    )
+                )
+    return issues
+
+
+def _implementation_ownership_issues(
+    state: dict[str, Any], children: dict[str, dict[str, Any]]
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    ownership = state["implementation_ownership"]
+    child_spec_owners: dict[str, str] = {}
+    for child in state["child_tasks"]:
+        if child["kind"] == "spec" and child["spec_id"] is not None:
+            child_spec_owners.setdefault(child["spec_id"], child["id"])
+
+    specs = ownership["specs"]
+    spec_ids = [spec["spec_id"] for spec in specs]
+    if len(spec_ids) != len(set(spec_ids)):
+        issues.append(
+            _issue(
+                "duplicate_spec_ownership",
+                "$.implementation_ownership.specs",
+                "Each SPEC may appear once in the implementation ownership ledger.",
+            )
+        )
+    ledger_by_spec = {spec["spec_id"]: spec for spec in specs}
+    for spec_id in sorted(set(child_spec_owners) - set(ledger_by_spec)):
+        issues.append(
+            _issue(
+                "spec_ownership_missing",
+                "$.implementation_ownership.specs",
+                f"SPEC {spec_id} has no implementation ownership ledger entry.",
+            )
+        )
+
+    implementation_task_ids = {
+        spec["implementation_task_id"]
+        for spec in specs
+        if spec["implementation_task_id"]
+    }
+    ticket_owner_ids: set[str] = set()
+    terminal_success = state["controller_state"] == "terminal_success"
+
+    for spec_index, spec in enumerate(specs):
+        spec_path = f"$.implementation_ownership.specs[{spec_index}]"
+        spec_id = spec["spec_id"]
+        owner_id = spec["implementation_task_id"]
+        owner = children.get(owner_id)
+        if owner is None:
+            issues.append(
+                _issue(
+                    "unknown_spec_owner",
+                    f"{spec_path}.implementation_task_id",
+                    "SPEC owner must name a recorded child task.",
+                )
+            )
+        elif owner["kind"] != "spec" or owner["spec_id"] != spec_id:
+            issues.append(
+                _issue(
+                    "spec_owner_mismatch",
+                    f"{spec_path}.implementation_task_id",
+                    "SPEC owner must be the SPEC child task for the same SPEC.",
+                )
+            )
+        elif child_spec_owners.get(spec_id) != owner_id:
+            issues.append(
+                _issue(
+                    "spec_owner_mismatch",
+                    f"{spec_path}.implementation_task_id",
+                    "Ownership ledger must match the child task ledger.",
+                )
+            )
+
+        route = spec["route"]
+        if route["target"] != spec_id:
+            issues.append(
+                _issue(
+                    "spec_route_target_mismatch",
+                    f"{spec_path}.route.target",
+                    "SPEC route readback must target the owning SPEC.",
+                )
+            )
+        if route["task_id"] != owner_id:
+            issues.append(
+                _issue(
+                    "spec_route_owner_mismatch",
+                    f"{spec_path}.route.task_id",
+                    "Route fallback or recommendation must resume the same SPEC task.",
+                )
+            )
+
+        tickets = spec["tickets"]
+        if not tickets:
+            issues.append(
+                _issue(
+                    "tickets_missing",
+                    f"{spec_path}.tickets",
+                    "Every SPEC owner must carry its ticket execution ledger.",
+                )
+            )
+        issues.extend(_ticket_graph_issues(tickets, f"{spec_path}.tickets"))
+        for ticket_index, ticket in enumerate(tickets):
+            ticket_path = f"{spec_path}.tickets[{ticket_index}]"
+            ticket_owner_ids.add(ticket["owner_task_id"])
+            if ticket["owner_task_id"] != owner_id:
+                issues.append(
+                    _issue(
+                        "ticket_owner_mismatch",
+                        f"{ticket_path}.owner_task_id",
+                        "Ticket implementation owner must equal the SPEC owner task.",
+                    )
+                )
+            closed = ticket["tracker_state"] == "closed"
+            if terminal_success and not closed:
+                issues.append(
+                    _issue(
+                        "ticket_not_closed",
+                        f"{ticket_path}.tracker_state",
+                        "Terminal success requires every ticket to be closed.",
+                    )
+                )
+            if closed or terminal_success:
+                if not ticket["commits"]:
+                    issues.append(
+                        _issue(
+                            "ticket_commit_evidence_missing",
+                            f"{ticket_path}.commits",
+                            "Closed tickets require retained commit evidence.",
+                        )
+                    )
+                if not ticket["test_evidence"]:
+                    issues.append(
+                        _issue(
+                            "ticket_test_evidence_missing",
+                            f"{ticket_path}.test_evidence",
+                            "Closed tickets require retained test evidence.",
+                        )
+                    )
+
+    artifacts = ownership["ticket_implementation_artifacts"]
+    for field, values in sorted(artifacts.items()):
+        if values:
+            issues.append(
+                _issue(
+                    "ticket_implementation_artifact_present",
+                    f"$.implementation_ownership.ticket_implementation_artifacts.{field}",
+                    "Ticket-level implementation tasks, threads, worktrees, branches, and PRs must be absent.",
+                )
+            )
+
+    role_task_ids = [task["task_id"] for task in ownership["role_limited_tasks"]]
+    if len(role_task_ids) != len(set(role_task_ids)):
+        issues.append(
+            _issue(
+                "duplicate_role_limited_task",
+                "$.implementation_ownership.role_limited_tasks",
+                "Role-limited task IDs must be unique.",
+            )
+        )
+    for index, task in enumerate(ownership["role_limited_tasks"]):
+        path = f"$.implementation_ownership.role_limited_tasks[{index}]"
+        if (
+            task["task_id"] in implementation_task_ids
+            or task["task_id"] in ticket_owner_ids
+        ):
+            issues.append(
+                _issue(
+                    "role_limited_task_is_owner",
+                    f"{path}.task_id",
+                    "Role-limited helper tasks cannot own SPECs or tickets.",
+                )
+            )
+        if task["writes_product_code"] or task["merge_commits"]:
+            issues.append(
+                _issue(
+                    "role_limited_task_mutated_product",
+                    path,
+                    "Blocker repair, exploration, and review exceptions cannot provide product implementation commits.",
+                )
+            )
+    return _sorted(issues)
+
+
 def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     child_ids = [child["id"] for child in state["child_tasks"]]
@@ -358,6 +568,7 @@ def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
                     f"SPEC {spec_id} has multiple implementation task owners: {', '.join(sorted(task_ids))}.",
                 )
             )
+    issues.extend(_implementation_ownership_issues(state, children))
 
     controller_state = state["controller_state"]
     phase = state["active_phase"]
@@ -572,6 +783,14 @@ def _task_tree_consistency_issues(
                     "Observed task fields differ from state.",
                 )
             )
+    if task_tree["implementation_ownership"] != state["implementation_ownership"]:
+        issues.append(
+            _issue(
+                "task_tree_ownership_mismatch",
+                "$task_tree.implementation_ownership",
+                "Observed implementation ownership differs from state.",
+            )
+        )
     if tree_ids != sorted(tree_ids):
         issues.append(
             _issue(

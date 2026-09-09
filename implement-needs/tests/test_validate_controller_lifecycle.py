@@ -56,9 +56,21 @@ class LifecycleValidatorTests(unittest.TestCase):
         )
 
     def planning(self, events: list[dict], *, two_specs: bool = False) -> None:
-        specs = [{"id": "SPEC-1", "checkpoint_required": True}]
+        specs = [
+            {
+                "id": "SPEC-1",
+                "checkpoint_required": True,
+                "tickets": [{"id": "T1", "blocked_by": []}],
+            }
+        ]
         if two_specs:
-            specs.append({"id": "SPEC-2", "checkpoint_required": False})
+            specs.append(
+                {
+                    "id": "SPEC-2",
+                    "checkpoint_required": False,
+                    "tickets": [{"id": "T2", "blocked_by": []}],
+                }
+            )
         self.add(
             events,
             "planning_archived",
@@ -78,6 +90,8 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "task_id": f"task-{number}",
                 "spec_id": f"SPEC-{number}",
                 "base_revision": base,
+                "route_selection": "recommended",
+                "route_evidence": [f"receipt://SPEC-{number}/route"],
             },
         )
 
@@ -86,6 +100,20 @@ class LifecycleValidatorTests(unittest.TestCase):
     ) -> None:
         task_id = f"task-{number}"
         spec_id = f"SPEC-{number}"
+        self.add(
+            events,
+            "ticket_evidence",
+            {
+                "spec_id": spec_id,
+                "ticket_id": f"T{number}",
+                "owner_task_id": task_id,
+                "blocked_by": [],
+                "commits": [f"git://{revision}/ticket-{number}"],
+                "test_evidence": [f"test://ticket-{number}"],
+                "tracker_state": "closed",
+            },
+            actor="spec_child",
+        )
         self.add(
             events,
             "child_handoff",
@@ -298,6 +326,20 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.dispatch(events, 1, "base-0")
         self.add(
             events,
+            "ticket_evidence",
+            {
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+                "owner_task_id": "task-1",
+                "blocked_by": [],
+                "commits": ["git://merge-1/ticket-1"],
+                "test_evidence": ["test://ticket-1"],
+                "tracker_state": "closed",
+            },
+            actor="spec_child",
+        )
+        self.add(
+            events,
             "child_handoff",
             {"task_id": "task-1", "boundary": "merged_evidence", "revision": "merge-1"},
             actor="spec_child",
@@ -313,6 +355,20 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("archive_before_verification", self.codes(payload))
 
+    def test_spec_handoff_requires_all_ticket_evidence(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.add(
+            events,
+            "child_handoff",
+            {"task_id": "task-1", "boundary": "merged_evidence", "revision": "merge-1"},
+            actor="spec_child",
+        )
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("ticket_evidence_missing", self.codes(payload))
+
     def test_only_one_spec_runs_and_next_uses_latest_verified_default(self) -> None:
         events: list[dict] = []
         self.planning(events, two_specs=True)
@@ -320,7 +376,13 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.add(
             events,
             "spec_dispatched",
-            {"task_id": "task-2", "spec_id": "SPEC-2", "base_revision": "base-0"},
+            {
+                "task_id": "task-2",
+                "spec_id": "SPEC-2",
+                "base_revision": "base-0",
+                "route_selection": "recommended",
+                "route_evidence": ["receipt://SPEC-2/route"],
+            },
         )
         payload, exit_code = self.evaluate(events, "active")
         self.assertEqual(1, exit_code)
@@ -395,6 +457,73 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("resume_action_mismatch", self.codes(payload))
 
+    def test_ticket_owner_mismatch_and_ticket_artifacts_reject(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.add(
+            events,
+            "ticket_evidence",
+            {
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+                "owner_task_id": "ticket-task-1",
+                "blocked_by": [],
+                "commits": ["git://ticket-1"],
+                "test_evidence": ["test://ticket-1"],
+                "tracker_state": "closed",
+            },
+            actor="spec_child",
+        )
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("ticket_owner_mismatch", self.codes(payload))
+
+        artifact = events[:2]
+        self.add(
+            artifact,
+            "ticket_implementation_artifact",
+            {
+                "artifact_type": "thread",
+                "id": "ticket-thread-1",
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+            },
+        )
+        payload, exit_code = self.evaluate(artifact, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("ticket_implementation_artifact_present", self.codes(payload))
+
+    def test_read_only_review_is_role_limited_and_cannot_merge(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.add(
+            events,
+            "role_limited_task",
+            {
+                "task_id": "review-1",
+                "spec_id": "SPEC-1",
+                "parent_task_id": "task-1",
+                "role": "read_only_review",
+                "writes_product_code": False,
+                "merge_commits": [],
+            },
+        )
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            "review-1",
+            payload["implementation_ownership"]["role_limited_tasks"][0]["task_id"],
+        )
+
+        mutated = copy.deepcopy(events)
+        mutated[-1]["data"]["writes_product_code"] = True
+        mutated[-1]["data"]["merge_commits"] = ["merge-review"]
+        payload, exit_code = self.evaluate(mutated, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("role_limited_task_mutated_product", self.codes(payload))
+
     def test_restart_reconnects_recorded_child_without_duplicate_creation(self) -> None:
         events: list[dict] = []
         self.planning(events)
@@ -423,6 +552,8 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "task_id": "task-duplicate",
                 "spec_id": "SPEC-1",
                 "base_revision": "base-0",
+                "route_selection": "recommended",
+                "route_evidence": ["receipt://SPEC-1/route"],
             },
         )
         payload, exit_code = self.evaluate(duplicate, "active")
