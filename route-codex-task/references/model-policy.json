@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "owner": "route-codex-task",
+  "models": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"],
+  "efforts": ["light", "medium", "high", "xhigh"],
+  "model_rank": {
+    "gpt-5.6-luna": 0,
+    "gpt-5.6-terra": 1,
+    "gpt-5.6-sol": 2
+  },
+  "effort_rank": {
+    "light": 0,
+    "medium": 1,
+    "high": 2,
+    "xhigh": 3
+  },
+  "difficulty_floor": {
+    "easy": {"model": "gpt-5.6-luna", "thinking": "light"},
+    "standard": {"model": "gpt-5.6-terra", "thinking": "medium"},
+    "hard": {"model": "gpt-5.6-terra", "thinking": "high"},
+    "extreme": {"model": "gpt-5.6-sol", "thinking": "xhigh"}
+  }
+}
+

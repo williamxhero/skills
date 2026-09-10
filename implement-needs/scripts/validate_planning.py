@@ -14,18 +14,21 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from model_policy import load_policy
-
-MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
-MODEL_CLASS_RANK = (MODEL_POLICY or {}).get("model_rank", {})
-EFFORT_RANK = (MODEL_POLICY or {}).get("effort_rank", {})
-DIFFICULTY_FLOOR = {
-    "easy": ("gpt-5.6-luna", "medium"),
-    "standard": ("gpt-5.6-terra", "high"),
-    "hard": ("gpt-5.6-terra", "xhigh"),
-    "extreme": ("gpt-5.6-sol", "xhigh"),
-}
+ROUTE_POLICY_DIR = Path(__file__).resolve().parents[2] / "route-codex-task" / "scripts"
+sys.path.insert(0, str(ROUTE_POLICY_DIR))
+from route_policy import (
+    DIFFICULTY_FLOOR,
+    EFFORT_RANK,
+    MODEL_RANK as MODEL_CLASS_RANK,
+    POLICY_ERROR as MODEL_POLICY_ERROR,
+    build_route_receipt,
+    decision_hash as _decision_hash,
+    validate_capabilities,
+    validate_floor,
+    validate_pair as _pair,
+    validate_route as _shared_route,
+    validate_task_readback,
+)
 AUTO_APPROVAL = {
     "confirmation_mode": "auto_approve",
     "approval_source": "implement-needs",
@@ -162,195 +165,10 @@ def _checkpoint_lookup(spec_ids: list[str]) -> dict[str, str]:
     return result
 
 
-def _pair(value: Any, path: str, issues: list[dict[str, str]]) -> dict[str, str] | None:
-    obj = _object(value, path, {"model", "thinking"}, issues)
-    if obj is None:
-        return None
-    model = _text(obj.get("model"), f"{path}.model", issues)
-    thinking = _text(obj.get("thinking"), f"{path}.thinking", issues)
-    if thinking is None:
-        return None
-    if thinking not in EFFORT_RANK:
-        issues.append(
-            _issue(
-                "unsupported_effort", f"{path}.thinking", "Unknown reasoning effort."
-            )
-        )
-        return None
-    if model is None:
-        return None
-    if model not in MODEL_CLASS_RANK:
-        issues.append(
-            _issue(
-                "unsupported_model",
-                f"{path}.model",
-                "Model is not allowed by the Implement Needs policy.",
-            )
-        )
-        return None
-    return {"model": model, "thinking": thinking}
-
-
 def _capabilities(
     record: dict[str, Any], issues: list[dict[str, str]]
 ) -> dict[str, set[str]]:
-    entries = _list(record.get("supported_routes"), "$.supported_routes", issues)
-    if entries is None:
-        return {}
-    if not entries:
-        issues.append(
-            _issue(
-                "empty_capabilities",
-                "$.supported_routes",
-                "Advertised task routes are required.",
-            )
-        )
-    result: dict[str, set[str]] = {}
-    for index, entry in enumerate(entries):
-        path = f"$.supported_routes[{index}]"
-        obj = _object(entry, path, {"model", "thinking"}, issues)
-        if obj is None:
-            continue
-        model = _text(obj.get("model"), f"{path}.model", issues)
-        if model is not None and model not in MODEL_CLASS_RANK:
-            issues.append(
-                _issue(
-                    "unsupported_model",
-                    f"{path}.model",
-                    "Model is not allowed by the Implement Needs policy.",
-                )
-            )
-        thinking = _string_list(obj.get("thinking"), f"{path}.thinking", issues)
-        if thinking is not None:
-            for effort in thinking:
-                if effort not in EFFORT_RANK:
-                    issues.append(
-                        _issue(
-                            "unsupported_effort",
-                            f"{path}.thinking",
-                            f"Unknown effort {effort}.",
-                        )
-                    )
-        if model is None or model not in MODEL_CLASS_RANK or thinking is None:
-            continue
-        if model in result:
-            issues.append(
-                _issue(
-                    "duplicate_model", f"{path}.model", "Each model must appear once."
-                )
-            )
-        result[model] = set(thinking)
-    return result
-
-
-def _supported_pair(
-    pair: dict[str, str] | None,
-    path: str,
-    capabilities: dict[str, set[str]],
-    issues: list[dict[str, str]],
-) -> tuple[int, int] | None:
-    if pair is None:
-        return None
-    capability = capabilities.get(pair["model"])
-    if capability is None or pair["thinking"] not in capability:
-        issues.append(
-            _issue(
-                "route_not_advertised",
-                path,
-                "Model and effort pair is not in the captured capability matrix.",
-            )
-        )
-        return None
-    return MODEL_CLASS_RANK[pair["model"]], EFFORT_RANK[pair["thinking"]]
-
-
-def _distinct_same_or_stronger_allowed(pair: dict[str, str] | None) -> bool:
-    if pair is None or MODEL_POLICY is None:
-        return False
-    pair_rank = MODEL_CLASS_RANK[pair["model"]], EFFORT_RANK[pair["thinking"]]
-    return any(
-        candidate != pair
-        and MODEL_CLASS_RANK[candidate["model"]] >= pair_rank[0]
-        and EFFORT_RANK[candidate["thinking"]] >= pair_rank[1]
-        for candidate in (
-            {"model": model, "thinking": thinking}
-            for model in MODEL_POLICY["models"]
-            for thinking in MODEL_POLICY["efforts"]
-        )
-    )
-
-
-def _route(
-    value: Any,
-    path: str,
-    capabilities: dict[str, set[str]],
-    issues: list[dict[str, str]],
-) -> dict[str, Any] | None:
-    obj = _object(value, path, {"recommended", "fallbacks", "rationale"}, issues)
-    if obj is None:
-        return None
-    rationale = _text(obj.get("rationale"), f"{path}.rationale", issues)
-    recommended = _pair(obj.get("recommended"), f"{path}.recommended", issues)
-    recommended_rank = _supported_pair(
-        recommended, f"{path}.recommended", capabilities, issues
-    )
-    fallback_values = _list(obj.get("fallbacks"), f"{path}.fallbacks", issues)
-    fallbacks: list[dict[str, str]] = []
-    if fallback_values is not None:
-        if not fallback_values:
-            issues.append(
-                _issue(
-                    "fallback_missing",
-                    f"{path}.fallbacks",
-                    "At least one pre-authorized fallback is required.",
-                )
-            )
-        for index, fallback_value in enumerate(fallback_values):
-            fallback_path = f"{path}.fallbacks[{index}]"
-            fallback = _pair(fallback_value, fallback_path, issues)
-            fallback_rank = _supported_pair(
-                fallback, fallback_path, capabilities, issues
-            )
-            if fallback is None:
-                continue
-            fallbacks.append(fallback)
-            if fallback == recommended and _distinct_same_or_stronger_allowed(
-                recommended
-            ):
-                issues.append(
-                    _issue(
-                        "fallback_duplicates_recommendation",
-                        fallback_path,
-                        "Fallback must be distinct while another same-or-stronger allowed pair exists.",
-                    )
-                )
-            if (
-                recommended_rank is not None
-                and fallback_rank is not None
-                and (
-                    fallback_rank[0] < recommended_rank[0]
-                    or fallback_rank[1] < recommended_rank[1]
-                )
-            ):
-                issues.append(
-                    _issue(
-                        "fallback_weaker",
-                        fallback_path,
-                        "Fallback must be same-or-stronger in model class and effort.",
-                    )
-                )
-        encoded = [json.dumps(item, sort_keys=True) for item in fallbacks]
-        if len(encoded) != len(set(encoded)):
-            issues.append(
-                _issue(
-                    "duplicate_fallback",
-                    f"{path}.fallbacks",
-                    "Fallback pairs must be unique.",
-                )
-            )
-    if recommended is None or rationale is None:
-        return None
-    return {"recommended": recommended, "fallbacks": fallbacks, "rationale": rationale}
+    return validate_capabilities(record.get("supported_routes"), "$.supported_routes", issues)
 
 
 def _floor(
@@ -361,20 +179,13 @@ def _floor(
     capabilities: dict[str, set[str]],
     issues: list[dict[str, str]],
 ) -> None:
-    if route is None:
-        return
-    recommended = route["recommended"]
-    rank = _supported_pair(recommended, f"{path}.recommended", capabilities, [])
-    if rank is not None and (
-        rank[0] < MODEL_CLASS_RANK[model_floor] or rank[1] < EFFORT_RANK[effort_floor]
-    ):
-        issues.append(
-            _issue(
-                "route_below_floor",
-                path,
-                f"Route must be at least {model_floor}/{effort_floor}.",
-            )
-        )
+    validate_floor(
+        route["recommended"] if route is not None else None,
+        (model_floor, effort_floor),
+        path,
+        capabilities,
+        issues,
+    )
 
 
 def _route_scaffold(
@@ -433,13 +244,28 @@ def _planning_task(
                 "Generation must be a positive integer.",
             )
         )
-    route = _route(task.get("route"), "$.planning_task.route", capabilities, issues)
+    xhigh_evidence = (
+        _string_list(
+            record.get("planning_xhigh_evidence"),
+            "$.planning_xhigh_evidence",
+            issues,
+            allow_empty=True,
+        )
+        or []
+    )
+    route = _shared_route(
+        task.get("route"),
+        "$.planning_task.route",
+        capabilities,
+        issues,
+        xhigh_evidence=xhigh_evidence,
+    )
     scope = record.get("scope")
     if scope == "bounded":
         _floor(
             route,
-            "gpt-5.6-terra",
-            "xhigh",
+            "gpt-5.6-sol",
+            "high",
             "$.planning_task.route",
             capabilities,
             issues,
@@ -448,7 +274,7 @@ def _planning_task(
         _floor(
             route,
             "gpt-5.6-sol",
-            "xhigh",
+            "high",
             "$.planning_task.route",
             capabilities,
             issues,
@@ -512,6 +338,7 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
         "scope",
         "capability_evidence",
         "supported_routes",
+        "planning_xhigh_evidence",
         "planning_task",
         "ownership",
         "requirements",
@@ -692,6 +519,7 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                     "tickets",
                     "ticket_self_check",
                     "difficulty",
+                    "xhigh_evidence",
                     "route",
                     "checkpoint",
                     "owners",
@@ -853,8 +681,21 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                         "Unknown implementation difficulty.",
                     )
                 )
-            spec_route = _route(
-                spec.get("route"), f"{spec_path}.route", capabilities, issues
+            xhigh_evidence = (
+                _string_list(
+                    spec.get("xhigh_evidence"),
+                    f"{spec_path}.xhigh_evidence",
+                    issues,
+                    allow_empty=True,
+                )
+                or []
+            )
+            spec_route = _shared_route(
+                spec.get("route"),
+                f"{spec_path}.route",
+                capabilities,
+                issues,
+                xhigh_evidence=xhigh_evidence,
             )
             if difficulty in DIFFICULTY_FLOOR:
                 _floor(
@@ -1293,56 +1134,8 @@ def _readback_issues(
     expected_task_id: str,
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
-    obj = _object(
-        readback,
-        "$readback",
-        {
-            "schema_version",
-            "run_id",
-            "task_id",
-            "target",
-            "requested",
-            "applied",
-            "selection",
-            "substitution_reason",
-            "readback_evidence",
-        },
-        issues,
-    )
-    if obj is None:
-        return _sorted(issues)
-    if obj.get("schema_version") != 1:
-        issues.append(
-            _issue(
-                "schema_version_mismatch",
-                "$readback.schema_version",
-                "Readback schema version must be 1.",
-            )
-        )
-    if obj.get("run_id") != expected_run_id or record.get("run_id") != expected_run_id:
-        issues.append(
-            _issue(
-                "run_id_mismatch",
-                "$readback.run_id",
-                "Routing artifacts belong to another run.",
-            )
-        )
-    if obj.get("target") != target:
-        issues.append(
-            _issue(
-                "route_target_mismatch",
-                "$readback.target",
-                "Readback target does not match the requested gate.",
-            )
-        )
-    _text(obj.get("task_id"), "$readback.task_id", issues)
-    _string_list(obj.get("readback_evidence"), "$readback.readback_evidence", issues)
-    requested = _pair(obj.get("requested"), "$readback.requested", issues)
-    applied = _pair(obj.get("applied"), "$readback.applied", issues)
-    _supported_pair(requested, "$readback.requested", capabilities, issues)
-    _supported_pair(applied, "$readback.applied", capabilities, issues)
-
     route: dict[str, Any] | None = None
+    xhigh_evidence: list[str] = []
     if target == "planning":
         task, route = _planning_task(record, capabilities, issues)
         recorded_task_id = task.get("id") if task else None
@@ -1354,6 +1147,9 @@ def _readback_issues(
                     "Expected task does not match the planning record.",
                 )
             )
+        raw_evidence = record.get("planning_xhigh_evidence")
+        if isinstance(raw_evidence, list):
+            xhigh_evidence = [item for item in raw_evidence if isinstance(item, str) and item.strip()]
     else:
         specs = record.get("specs")
         match = (
@@ -1377,72 +1173,29 @@ def _readback_issues(
                 )
             )
         else:
-            route = _route(
-                match.get("route"), f"$.specs[{target}].route", capabilities, issues
+            raw_evidence = match.get("xhigh_evidence")
+            if isinstance(raw_evidence, list):
+                xhigh_evidence = [item for item in raw_evidence if isinstance(item, str) and item.strip()]
+            route = _shared_route(
+                match.get("route"),
+                f"$.specs[{target}].route",
+                capabilities,
+                issues,
+                xhigh_evidence=xhigh_evidence,
             )
-    if obj.get("task_id") != expected_task_id:
-        issues.append(
-            _issue(
-                "task_id_mismatch",
-                "$readback.task_id",
-                "Readback does not name the child created for this gate.",
-            )
-        )
-
-    selection = obj.get("selection")
-    reason = obj.get("substitution_reason")
-    if selection not in {"recommended", "fallback"}:
-        issues.append(
-            _issue(
-                "invalid_route_selection",
-                "$readback.selection",
-                "Selection must be recommended or fallback.",
-            )
-        )
-    elif route is not None and requested is not None:
-        if selection == "recommended":
-            if requested != route["recommended"]:
-                issues.append(
-                    _issue(
-                        "recommendation_not_requested",
-                        "$readback.requested",
-                        "Recommended selection must request the locked recommendation.",
-                    )
-                )
-            if reason is not None:
-                issues.append(
-                    _issue(
-                        "unexpected_substitution_reason",
-                        "$readback.substitution_reason",
-                        "Exact recommendation needs no substitution reason.",
-                    )
-                )
-        else:
-            if requested not in route["fallbacks"]:
-                issues.append(
-                    _issue(
-                        "fallback_not_preapproved",
-                        "$readback.requested",
-                        "Requested fallback was not locked by planning.",
-                    )
-                )
-            _text(reason, "$readback.substitution_reason", issues)
-    if requested is not None and applied is not None and requested != applied:
-        issues.append(
-            _issue(
-                "silent_route_drift",
-                "$readback.applied",
-                "Applied model and effort must exactly match the explicit request.",
-            )
-        )
+    validate_task_readback(
+        readback,
+        "$readback",
+        issues,
+        identity_field="run_id",
+        expected_identity=expected_run_id,
+        expected_target=target,
+        expected_task_id=expected_task_id,
+        route=route,
+        capabilities=capabilities,
+        xhigh_evidence=xhigh_evidence,
+    )
     return _sorted(issues)
-
-
-def _decision_hash(payload: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return _sha256(canonical)
 
 
 def evaluate_route(
@@ -1503,24 +1256,19 @@ def evaluate_route(
         route = record["planning_task"]["route"]
     else:
         route = next(spec["route"] for spec in record["specs"] if spec["id"] == target)
-    payload = {
-        "schema_version": 1,
-        "decision": "allow",
-        "gate": "task_route",
-        "run_id": expected_run_id,
-        "target": target,
-        "task_id": readback["task_id"],
-        "selection": readback["selection"],
-        "applied": readback["applied"],
-        "locked_route": {
-            "recommended": route["recommended"],
-            "fallbacks": route["fallbacks"],
-        },
-        "planning_record_sha256": _sha256(record_raw),
-        "route_readback_sha256": _sha256(readback_raw),
-    }
-    payload["receipt_sha256"] = _decision_hash(payload)
-    return payload, 0
+    return build_route_receipt(
+        identity_name="run_id",
+        identity=expected_run_id,
+        target=target,
+        task_id=readback["task_id"],
+        selection=readback["selection"],
+        applied=readback["applied"],
+        route=route,
+        record_hash_name="planning_record_sha256",
+        record_hash=_sha256(record_raw),
+        readback_hash_name="route_readback_sha256",
+        readback_hash=_sha256(readback_raw),
+    ), 0
 
 
 def evaluate_handoff(

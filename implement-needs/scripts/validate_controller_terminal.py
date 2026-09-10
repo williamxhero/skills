@@ -13,10 +13,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from model_policy import load_policy
-
-MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
+ROUTE_POLICY_DIR = Path(__file__).resolve().parents[2] / "route-codex-task" / "scripts"
+sys.path.insert(0, str(ROUTE_POLICY_DIR))
+from route_policy import (
+    POLICY_ERROR as MODEL_POLICY_ERROR,
+    decision_hash as _decision_hash,
+    persisted_route_issues as _persisted_route_issues,
+)
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
@@ -72,143 +75,6 @@ def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
 def _candidate_revision_set(revisions: list[str]) -> frozenset[str]:
     """Return the order-independent identity of repository candidate revisions."""
     return frozenset(revisions)
-
-
-def _policy_pair(value: Any) -> dict[str, str] | None:
-    if (
-        MODEL_POLICY is None
-        or not isinstance(value, dict)
-        or set(value) != {"model", "thinking"}
-        or value.get("model") not in MODEL_POLICY["models"]
-        or value.get("thinking") not in MODEL_POLICY["efforts"]
-    ):
-        return None
-    return {"model": value["model"], "thinking": value["thinking"]}
-
-
-def _same_or_stronger(candidate: dict[str, str], baseline: dict[str, str]) -> bool:
-    if MODEL_POLICY is None:
-        return False
-    return (
-        MODEL_POLICY["model_rank"][candidate["model"]]
-        >= MODEL_POLICY["model_rank"][baseline["model"]]
-        and MODEL_POLICY["effort_rank"][candidate["thinking"]]
-        >= MODEL_POLICY["effort_rank"][baseline["thinking"]]
-    )
-
-
-def _distinct_same_or_stronger_allowed(pair: dict[str, str]) -> bool:
-    if MODEL_POLICY is None:
-        return False
-    return any(
-        candidate != pair and _same_or_stronger(candidate, pair)
-        for candidate in (
-            {"model": model, "thinking": thinking}
-            for model in MODEL_POLICY["models"]
-            for thinking in MODEL_POLICY["efforts"]
-        )
-    )
-
-
-def _persisted_route_issues(
-    route: dict[str, Any],
-    *,
-    path: str,
-    run_id: str,
-    spec_id: str,
-    owner_id: str,
-) -> list[dict[str, str]]:
-    issues: list[dict[str, str]] = []
-    receipt = route["receipt"]
-    selected_pair = _policy_pair(
-        {"model": route["model"], "thinking": route["thinking"]}
-    )
-    applied = _policy_pair(receipt["applied"])
-    recommended = _policy_pair(receipt["locked_route"]["recommended"])
-    fallbacks = [
-        _policy_pair(fallback) for fallback in receipt["locked_route"]["fallbacks"]
-    ]
-
-    if (
-        selected_pair is None
-        or applied is None
-        or recommended is None
-        or any(fallback is None for fallback in fallbacks)
-    ):
-        issues.append(
-            _issue(
-                "invalid_persisted_model_policy",
-                path,
-                "Persisted SPEC route and receipt pairs must be allowed by the Implement Needs policy.",
-            )
-        )
-        return issues
-
-    parsed_fallbacks = [fallback for fallback in fallbacks if fallback is not None]
-    expected_receipt_fields = (
-        ("run_id", run_id),
-        ("target", spec_id),
-        ("task_id", owner_id),
-        ("selection", route["selection"]),
-        ("applied", selected_pair),
-    )
-    for field, expected in expected_receipt_fields:
-        if receipt[field] != expected:
-            issues.append(
-                _issue(
-                    "persisted_route_receipt_mismatch",
-                    f"{path}.receipt.{field}",
-                    "Route receipt must match the persisted run, owner, selection, and pair.",
-                )
-            )
-
-    receipt_body = dict(receipt)
-    receipt_sha256 = receipt_body.pop("receipt_sha256")
-    if _decision_hash(receipt_body) != receipt_sha256:
-        issues.append(
-            _issue(
-                "persisted_route_receipt_hash_mismatch",
-                f"{path}.receipt.receipt_sha256",
-                "Persisted route receipt identity does not match its canonical content.",
-            )
-        )
-
-    for index, fallback in enumerate(parsed_fallbacks):
-        fallback_path = f"{path}.receipt.locked_route.fallbacks[{index}]"
-        if not _same_or_stronger(fallback, recommended):
-            issues.append(
-                _issue(
-                    "persisted_fallback_weaker",
-                    fallback_path,
-                    "Persisted fallback must be same-or-stronger than the recommendation.",
-                )
-            )
-        if fallback == recommended and _distinct_same_or_stronger_allowed(recommended):
-            issues.append(
-                _issue(
-                    "persisted_fallback_not_distinct",
-                    fallback_path,
-                    "Same-pair fallback is valid only at the maximum allowed route.",
-                )
-            )
-
-    if route["selection"] == "recommended" and selected_pair != recommended:
-        issues.append(
-            _issue(
-                "persisted_route_not_locked",
-                path,
-                "Recommended route must equal the exact locked recommendation.",
-            )
-        )
-    if route["selection"] == "fallback" and selected_pair not in parsed_fallbacks:
-        issues.append(
-            _issue(
-                "persisted_route_not_locked",
-                path,
-                "Fallback route must equal an exact preapproved fallback.",
-            )
-        )
-    return issues
 
 
 def _read_bytes(path: Path, label: str, issues: list[dict[str, str]]) -> bytes | None:
@@ -1227,13 +1093,6 @@ def _task_tree_consistency_issues(
             )
         )
     return _sorted(issues)
-
-
-def _decision_hash(payload: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return _sha256(canonical)
 
 
 def evaluate(

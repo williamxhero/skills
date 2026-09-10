@@ -107,7 +107,7 @@ class ProtocolFixture:
         *,
         selection: str = "recommended",
         model: str = "gpt-5.6-terra",
-        thinking: str = "xhigh",
+        thinking: str = "high",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "schema_version": 1,
@@ -119,7 +119,7 @@ class ProtocolFixture:
             "selection": selection,
             "applied": self.pair(model, thinking),
             "locked_route": {
-                "recommended": self.pair("gpt-5.6-terra", "xhigh"),
+                "recommended": self.pair("gpt-5.6-terra", "high"),
                 "fallbacks": [self.pair("gpt-5.6-sol", "xhigh")],
             },
             "planning_record_sha256": self.planning_record_sha256,
@@ -131,7 +131,10 @@ class ProtocolFixture:
         payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
         return payload
 
-    def planning_record(self, spec_count: int = 1) -> dict[str, Any]:
+    def planning_record(
+        self, spec_count: int = 1, *, xhigh_specs: set[int] | None = None
+    ) -> dict[str, Any]:
+        xhigh_specs = xhigh_specs or set()
         approval = {
             "confirmation_mode": "auto_approve",
             "approval_source": "implement-needs",
@@ -158,6 +161,7 @@ class ProtocolFixture:
             "run_id": RUN_ID,
             "scope": "bounded",
             "capability_evidence": ["tool://create-thread-schema"],
+            "planning_xhigh_evidence": [],
             "supported_routes": [
                 {
                     "model": "gpt-5.6-terra",
@@ -172,7 +176,7 @@ class ProtocolFixture:
                 "id": "plan-1",
                 "generation": 1,
                 "route": self.route(
-                    self.pair("gpt-5.6-terra", "xhigh"),
+                    self.pair("gpt-5.6-sol", "high"),
                     self.pair("gpt-5.6-sol", "xhigh"),
                 ),
             },
@@ -235,10 +239,15 @@ class ProtocolFixture:
                     ],
                     "ticket_self_check": copy.deepcopy(ticket_check),
                     "difficulty": "hard",
+                    "xhigh_evidence": (
+                        ["A fragile compatibility proof makes high inadequate."]
+                        if number in xhigh_specs
+                        else []
+                    ),
                     "owners": [f"owner-{((number - 1) // 10) + 1}"],
                     "repositories": [f"repo-{((number - 1) // 10) + 1}"],
                     "route": self.route(
-                        self.pair("gpt-5.6-terra", "xhigh"),
+                        self.pair("gpt-5.6-terra", "high"),
                         self.pair("gpt-5.6-sol", "xhigh"),
                     ),
                     "checkpoint": self.checkpoint_for_spec(number, spec_count),
@@ -273,7 +282,11 @@ class ProtocolFixture:
         selection: str = "recommended",
         reason: str | None = None,
     ) -> dict[str, Any]:
-        requested = requested or self.pair("gpt-5.6-terra", "xhigh")
+        requested = requested or (
+            self.pair("gpt-5.6-sol", "high")
+            if target == "planning"
+            else self.pair("gpt-5.6-terra", "high")
+        )
         return {
             "schema_version": 1,
             "run_id": RUN_ID,
@@ -303,8 +316,12 @@ class ProtocolFixture:
         *,
         spec_count: int = 1,
         readback: dict[str, Any] | None = None,
+        xhigh_specs: set[int] | None = None,
     ) -> None:
-        self.write_json(self.record_path, self.planning_record(spec_count))
+        self.write_json(
+            self.record_path,
+            self.planning_record(spec_count, xhigh_specs=xhigh_specs),
+        )
         self.planning_record_sha256 = _sha256(self.record_path)
         self.write_json(self.readback_path, readback or self.readback(target, task_id))
 
@@ -397,6 +414,7 @@ class ProtocolFixture:
             task_id,
             selection=selection,
             model="gpt-5.6-sol" if fallback else "gpt-5.6-terra",
+            thinking="xhigh" if fallback else "high",
         )
         self.event(
             events,
@@ -407,7 +425,7 @@ class ProtocolFixture:
                 "base_revision": base_revision,
                 "route_selection": selection,
                 "model": "gpt-5.6-sol" if fallback else "gpt-5.6-terra",
-                "thinking": "xhigh",
+                "thinking": "xhigh" if fallback else "high",
                 "route_receipt": receipt,
             },
         )
@@ -752,6 +770,11 @@ class BehavioralAcceptance(unittest.TestCase):
             self.installed_skill_root,
             ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"),
         )
+        shutil.copytree(
+            SKILL_ROOT.parent / "route-codex-task",
+            self.installed_skill_root.parent / "route-codex-task",
+            ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"),
+        )
         self.planning = self.installed_skill_root / "scripts" / "validate_planning.py"
         self.lifecycle = (
             self.installed_skill_root / "scripts" / "validate_controller_lifecycle.py"
@@ -786,7 +809,13 @@ class BehavioralAcceptance(unittest.TestCase):
     def validate_planning(
         self, spec_count: int, route_specs: list[tuple[int, bool]] | None = None
     ) -> dict[str, Any]:
-        self.fixture.write_route_artifacts("planning", "plan-1", spec_count=spec_count)
+        fallback_specs = {number for number, fallback in route_specs or [] if fallback}
+        self.fixture.write_route_artifacts(
+            "planning",
+            "plan-1",
+            spec_count=spec_count,
+            xhigh_specs=fallback_specs,
+        )
         route_payload, route_code = self.run_validator(
             [
                 str(self.planning),
@@ -831,7 +860,6 @@ class BehavioralAcceptance(unittest.TestCase):
             handoff_payload["spec_ids"],
         )
 
-        fallback_specs = {number for number, fallback in route_specs or [] if fallback}
         for number in range(1, spec_count + 1):
             fallback = number in fallback_specs
             target = self.fixture.spec_id(number)
@@ -850,6 +878,7 @@ class BehavioralAcceptance(unittest.TestCase):
                 task_id,
                 spec_count=spec_count,
                 readback=readback,
+                xhigh_specs=fallback_specs,
             )
             payload, code = self.run_validator(
                 [
@@ -991,9 +1020,9 @@ class BehavioralAcceptance(unittest.TestCase):
         self.assertEqual("repair_state", payload["next_action"]["kind"])
 
         unlocked_allowed = copy.deepcopy(valid)
-        unlocked_allowed[-1]["data"]["thinking"] = "high"
+        unlocked_allowed[-1]["data"]["thinking"] = "medium"
         unlocked_allowed[-1]["data"]["route_receipt"] = self.fixture.route_receipt(
-            "SPEC-1", "task-1", thinking="high"
+            "SPEC-1", "task-1", thinking="medium"
         )
         payload, code = self.evaluate_lifecycle(unlocked_allowed, "active")
         self.assertEqual(1, code)
@@ -1083,7 +1112,12 @@ class BehavioralAcceptance(unittest.TestCase):
         self.assertEqual(0, lifecycle_code)
         self.fixture.write_terminal_state(lifecycle_payload)
 
-        policy_path = self.installed_skill_root / "references" / "model-policy.json"
+        policy_path = (
+            self.installed_skill_root.parent
+            / "route-codex-task"
+            / "references"
+            / "model-policy.json"
+        )
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
         policy["model_rank"]["gpt-5.6-sol"] = "maximum"
         self.fixture.write_json(policy_path, policy)

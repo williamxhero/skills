@@ -1,0 +1,5 @@
+interface:
+  display_name: "Route Codex Task"
+  short_description: "Route Codex tasks with verified model settings"
+  default_prompt: "Use $route-codex-task to select and verify a Codex task model and effort."
+

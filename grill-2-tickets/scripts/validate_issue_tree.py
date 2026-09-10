@@ -4,6 +4,17 @@ import json
 import sys
 from pathlib import Path
 
+ROUTE_POLICY_DIR = Path(__file__).resolve().parents[2] / "route-codex-task" / "scripts"
+sys.path.insert(0, str(ROUTE_POLICY_DIR))
+from route_policy import (
+    DIFFICULTY_FLOOR,
+    POLICY_ERROR,
+    all_policy_capabilities,
+    validate_route,
+)
+
+DIFFICULTIES = set(DIFFICULTY_FLOOR)
+
 
 def nonempty(value):
     return isinstance(value, str) and bool(value.strip())
@@ -20,8 +31,23 @@ def verified_parent(value, expected):
     )
 
 
+def verified_route(value, difficulty, xhigh_evidence):
+    issues = []
+    validate_route(
+        value,
+        "$.route",
+        all_policy_capabilities(),
+        issues,
+        minimum=DIFFICULTY_FLOOR.get(difficulty),
+        xhigh_evidence=xhigh_evidence if isinstance(xhigh_evidence, list) else [],
+    )
+    return not issues
+
+
 def validate(data):
     errors = []
+    if POLICY_ERROR is not None:
+        errors.append(f"route-codex-task policy is invalid: {POLICY_ERROR}")
     if set(data) != {"schema_version", "grill", "umbrella_spec", "specs"}:
         errors.append("top-level fields must match the contract")
     if data.get("schema_version") != 1:
@@ -40,13 +66,21 @@ def validate(data):
     spec_ids = []
     for si, spec in enumerate(specs):
         path = f"specs[{si}]"
-        if not isinstance(spec, dict) or set(spec) != {"id", "artifact", "parent_issue", "tickets"}:
+        if not isinstance(spec, dict) or set(spec) != {"id", "artifact", "difficulty", "xhigh_evidence", "route", "parent_issue", "tickets"}:
             errors.append(f"{path} fields must match the contract")
             continue
         spec_id = spec.get("id")
         spec_ids.append(spec_id)
         if not nonempty(spec_id) or not nonempty(spec.get("artifact")):
             errors.append(f"{path} id and artifact must be non-empty")
+        difficulty = spec.get("difficulty")
+        if difficulty not in DIFFICULTIES:
+            errors.append(f"{path} difficulty must be easy, standard, hard, or extreme")
+        xhigh_evidence = spec.get("xhigh_evidence")
+        if not isinstance(xhigh_evidence, list) or not all(nonempty(item) for item in xhigh_evidence):
+            errors.append(f"{path} xhigh_evidence must be an array of non-empty strings")
+        if not verified_route(spec.get("route"), difficulty, xhigh_evidence):
+            errors.append(f"{path} must have a valid justified whole-SPEC implementation route")
         if not verified_parent(spec.get("parent_issue"), umbrella_id):
             errors.append(f"{path} must have verified umbrella Parent issue")
         tickets = spec.get("tickets")

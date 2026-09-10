@@ -5,13 +5,12 @@ Read this reference before creating or supervising a SPEC implementation task. P
 For each SPEC:
 
 1. Refresh from the default branch, mark the SPEC active, and verify its published SPEC and ticket graph against the locked planning artifacts. A material scope change must return to, verify, and rearchive the same planning task.
-2. Read the locked model and effort, select only that pair or a recorded same-or-stronger fallback, and create a fresh project task titled `Implement Needs <NN>: <spec title>` from the latest default branch with a bootstrap-only prompt. Capture the applied model/effort from a fresh task readback and run `validate_planning.py route --expected-task-id <created-task-id>` for this SPEC. Send the implementation assignment only after `decision: allow`; persist the complete allow receipt in the lifecycle event and ownership ledger. Silent drift, an arbitrary allow-listed pair, a different owner, or evidence without the matching receipt stays at bootstrap and is repaired on the same task. A fallback changes only the route used by this same task ID.
+2. Invoke `route-codex-task` with the locked whole-SPEC prediction and current target host, then create a fresh project task titled `Implement Needs <NN>: <spec title>` from the latest default branch with a bootstrap-only prompt. Capture the applied settings from a fresh task readback and run `validate_planning.py route --expected-task-id <created-task-id>` for this SPEC. Send the implementation assignment only after `decision: allow`; persist the complete allow receipt in the lifecycle event and ownership ledger. Repair every rejected route on the same task boundary.
 
 At SPEC entry and after recovery, show this Chinese controller status with the persisted applied pair:
 
 ```text
 SPEC {spec_id} 当前由任务 {task_id} 执行；实际模型：{model}；推理强度：{thinking}；路由：{selection}。
-可选模型仅为：gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna；可选推理强度仅为：medium、high、xhigh。
 下一步：{next_action}
 ```
 

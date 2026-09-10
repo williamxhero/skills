@@ -6,7 +6,7 @@ Read this reference when the controller enters planning. The Controller Kernel r
 
 The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. It must invoke `grill-2-tickets` for the Grill-through-tickets portion, then extend that verified handoff with Implement Needs routing and release-train fields. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
 
-Before creation, capture the target host's advertised combinations from the sole allow-list in `model-policy.json`. Create `.scratch/<initiative>/planning-record.json` with that capability evidence and a planning route. Bounded planning requires at least `gpt-5.6-terra` + `xhigh`; broad, cross-repository, migration-heavy, or unusually ambiguous planning requires exactly the maximum `gpt-5.6-sol` + `xhigh` pair. Every route contains one supported recommendation, rationale, and at least one supported fallback that is same-or-stronger on the deterministic policy ranks. A fallback must be distinct whenever another same-or-stronger allowed pair exists; because `gpt-5.6-sol` + `xhigh` has no such alternative, that maximum route may repeat itself as its fallback.
+Invoke `route-codex-task` before creation and store its target-host capability evidence and locked route in `.scratch/<initiative>/planning-record.json`. Supply the complete requirement-understanding, SPEC decomposition, per-SPEC implementation-route prediction, and ticket decomposition sequence as the planning profile. Its caller default is `gpt-5.6-sol` + `high` for every scope; keep `planning_xhigh_evidence` empty unless concrete complexity evidence proves `high` inadequate. Let `route-codex-task` own every allow-list, rank, fallback, `xhigh`, readback, drift, and receipt decision.
 
 Create exactly one fresh saved-project task titled `Implement Needs Plan: <initiative>` with the selected `model` and `thinking`. Its bootstrap prompt permits no exploration, publication, or repository mutation until the controller sends `ROUTE_VERIFIED`. Capture the applied settings from the creation result and a fresh task readback in `.scratch/<initiative>/planning-route-readback.json`, then run:
 
@@ -37,7 +37,7 @@ Run the complete `grill-2-tickets` workflow in the same planning task. Validate 
 3. Set every child SPEC's GitHub **Parent issue** relationship to the umbrella SPEC. Read the relationship back from GitHub and record evidence; labels, body links, task-list links, and dependency edges do not satisfy this requirement.
 4. Invoke `to-spec` for the umbrella and every child SPEC with `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`; require `spec_state: auto_approved` and provenance `controller_decision`.
 5. Invoke `to-tickets` for child SPECs only, bypass its quiz under the standing authorization, publish tracer-bullet tickets, set every ticket's GitHub **Parent issue** to its owning child SPEC, read every relationship back, and self-check granularity, blocking edges, and acyclicity. A body link, task-list link, label, or dependency edge is not a Parent issue.
-6. Lock one currently supported implementation route and one or more same-or-stronger fallbacks per child SPEC from risk and coupling, not ticket count. Tickets inherit their child SPEC route; planning never assigns model, effort, or owner per ticket.
+6. Invoke `route-codex-task` once per child SPEC prediction using whole-SPEC difficulty and risk evidence, not ticket count. Record its route and any `xhigh_evidence`; tickets inherit their child SPEC route and never receive a separate model, effort, or owner.
 7. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, `checkpoint_size: 10`, and every deterministic L4 checkpoint over child SPECs only.
 8. Return the completed planning record and artifact evidence without changing product or test code.
 
@@ -46,7 +46,7 @@ Use these exact planning-record shapes; fields not shown are rejected:
 ```text
 route = {recommended:{model,thinking}, fallbacks:[{model,thinking}], rationale}
 planning_record = {
-  schema_version, run_id, scope, capability_evidence,
+  schema_version, run_id, scope, capability_evidence, planning_xhigh_evidence:[...],
   supported_routes:[{model,thinking:[...]}],
   planning_task:{id,generation,route},
   ownership:{grill,specs,tickets,routing}, requirements:[...],
@@ -57,7 +57,7 @@ planning_record = {
   specs:[{id,artifact,parent_issue:{parent_id,evidence:[...]},requirements:[...],blocked_by:[...],auto_approval,
     tickets:[{id,artifact,parent_issue:{parent_id,evidence:[...]},blocked_by:[...],vertical_slice}],
     ticket_self_check:{granularity,blocking_edges,acyclic,evidence:[...]},
-    difficulty,route,checkpoint}],
+    difficulty,xhigh_evidence:[...],route,checkpoint}],
   release_train:{owners,repositories,acceptance_scopes,public_contract_specs,
     environment_specs,baselines,checkpoint_size,
     checkpoints:[{id,start_spec_index,end_spec_index,specs:[...],final_tail,

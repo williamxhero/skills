@@ -38,16 +38,9 @@ Fingerprint from the probe, symptom, environment, and suspected scope. Reuse an 
 
 ## 3. Route model and effort
 
-Inspect the model and reasoning combinations advertised by the target host at task-creation time. Classify the blocker by diagnostic uncertainty, blast radius, reversibility, systems and permissions involved, and verification difficulty.
+Invoke `route-codex-task` with the blocker packet. Supply diagnostic uncertainty, blast radius, reversibility, systems and permissions involved, reliability requirement, failure cost, search space, and verification burden as routing context. Let that skill own the allow-list, independent model/effort choice, exceptional `xhigh` gate, target-host capability readback, locked same-or-stronger fallback, post-create applied-settings readback, silent-drift rejection, and route receipt.
 
-| Difficulty | Typical blocker | Model class | Reasoning effort |
-| --- | --- | --- | --- |
-| Easy | Localized known-pattern tool or configuration repair | Fast, economical coding model | `medium` |
-| Standard | Unfamiliar but bounded integration, environment, or repository failure | Balanced agentic coding model | `high` |
-| Hard | Cross-system networking, permissions, security, concurrency, data integrity, or difficult debugging | Reliable agentic workhorse | `xhigh` |
-| Extreme | Multi-repository coordination, fragile production recovery, or irreversible compatibility risk | Strongest reliable model available | Highest supported of `max` or `ultra` |
-
-Use the closest supported model class. If the target effort is unavailable, choose the nearest supported effort at or above it, or the model's highest supported effort. Record the selected `model`, `thinking`, and rationale before dispatch.
+Keep the repair task bootstrap-only until `route-codex-task` emits and persists `decision: allow`. A rejected route is the same blocker workflow at bootstrap, not permission to dispatch unverified repair work.
 
 ## 4. Dispatch one repair task
 
@@ -55,7 +48,7 @@ Use the Codex task-lifecycle tools exposed by the host, including project lookup
 
 Use a project worktree for repository-owned repairs. Use the saved project or blocked host directly only when a tool, network, credential, permission, or shared-environment repair must affect that environment.
 
-Create one task titled `Unblock <ID>: <blocker>`. Keep exactly one active leaf task: the parent and any ancestor repairs remain paused, not closed, while the newest repair runs.
+Create one task titled `Unblock <ID>: <blocker>` through the route locked in step 3. Keep exactly one active leaf task: the parent and any ancestor repairs remain paused, not closed, while the newest repair runs.
 
 Give the repair task the complete blocker packet, selected integration target, applicable repository instructions, available authority, and these outcome constraints:
 
@@ -88,7 +81,7 @@ Integrate repository-owned fixes into the narrowest correct target: the active f
 
 After the original probe is green:
 
-1. Record root cause, repair evidence, model, effort, changed state, integration result, and reuse scope.
+1. Record root cause, repair evidence, the complete route receipt, changed state, integration result, and reuse scope.
 2. Archive the repair task and confirm archival.
 3. Send the verified result to the paused parent.
 4. Resume the parent at the packet's exact next step in the same controller turn.

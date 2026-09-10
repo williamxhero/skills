@@ -16,6 +16,13 @@ class IssueTreeTests(unittest.TestCase):
             "umbrella_spec": {"id": "S0", "artifact": "github://S0"},
             "specs": [{
                 "id": "S1", "artifact": "github://S1",
+                "difficulty": "hard",
+                "xhigh_evidence": [],
+                "route": {
+                    "recommended": {"model": "gpt-5.6-sol", "thinking": "high"},
+                    "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}],
+                    "rationale": "Public-contract risk needs the strongest model; coupled verification needs high effort.",
+                },
                 "parent_issue": {"parent_id": "S0", "evidence": ["github://S1/parent"]},
                 "tickets": [{"id": "T1", "artifact": "github://T1", "parent_issue": {"parent_id": "S1", "evidence": ["github://T1/parent"]}}],
             }],
@@ -31,6 +38,21 @@ class IssueTreeTests(unittest.TestCase):
         errors = MODULE.validate(record)
         self.assertTrue(any("umbrella Parent issue" in error for error in errors))
         self.assertTrue(any("owning-SPEC Parent issue" in error for error in errors))
+
+    def test_xhigh_requires_extreme_spec_and_same_or_stronger_fallback(self):
+        record = self.record()
+        spec = record["specs"][0]
+        spec["route"]["recommended"]["thinking"] = "xhigh"
+        errors = MODULE.validate(record)
+        self.assertTrue(any("implementation route" in error for error in errors))
+
+        spec["difficulty"] = "extreme"
+        spec["xhigh_evidence"] = ["A fragile cross-repository compatibility proof makes high inadequate."]
+        self.assertEqual([], MODULE.validate(record))
+
+        spec["route"]["fallbacks"] = [{"model": "gpt-5.6-terra", "thinking": "xhigh"}]
+        errors = MODULE.validate(record)
+        self.assertTrue(any("implementation route" in error for error in errors))
 
 
 if __name__ == "__main__":

@@ -96,8 +96,8 @@ Any malformed field, inconsistent aggregate, task-tree mismatch, source-hash mis
           "target": "SPEC-02",
           "task_id": "thread-spec-02",
           "selection": "recommended",
-          "model": "gpt-5.6-terra",
-          "thinking": "xhigh",
+          "model": "gpt-5.6-sol",
+          "thinking": "high",
           "receipt": {
             "schema_version": 1,
             "decision": "allow",
@@ -106,9 +106,9 @@ Any malformed field, inconsistent aggregate, task-tree mismatch, source-hash mis
             "target": "SPEC-02",
             "task_id": "thread-spec-02",
             "selection": "recommended",
-            "applied": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+            "applied": {"model": "gpt-5.6-sol", "thinking": "high"},
             "locked_route": {
-              "recommended": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+              "recommended": {"model": "gpt-5.6-sol", "thinking": "high"},
               "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}]
             },
             "planning_record_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

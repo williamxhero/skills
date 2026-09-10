@@ -19,6 +19,7 @@ Resolve these canonical protocols:
 - Requirement stress-test: `grilling`
 - Domain vocabulary and durable decisions: `domain-modeling`
 - Development blocker orchestration: `unblock-development`
+- Codex task routing and verification: `route-codex-task`
 - Default Grill-to-tickets planning: `grill-2-tickets`
 - Spec authoring: `to-spec`
 - Ticket decomposition: `to-tickets`
@@ -52,17 +53,6 @@ Use `list_projects`, `create_thread`, `wait_threads`, `send_message_to_thread`, 
 
 Resolve the Codex project that owns the repository before dispatch. Run planning against the saved project so it can inspect the repository and publish tracker artifacts while remaining code-read-only. Use a project worktree for repository-scoped code repairs and SPEC implementation; use the saved project directly for host-level, network, credential, or shared-environment repairs. Start each SPEC task from the default-branch state containing every prior merge. Verify and archive planning before the first SPEC. Keep exactly one SPEC child active.
 
-At SPEC entry, use only the Implement Needs policy values: models `gpt-5.6-luna`, `gpt-5.6-terra`, and `gpt-5.6-sol`; reasoning efforts `medium`, `high`, and `xhigh`. Planning uses at least `gpt-5.6-terra` with `xhigh`; for broad cross-repository, migration-heavy, or unusually ambiguous requirements, use exactly the maximum `gpt-5.6-sol` with `xhigh`. Lock only advertised, allow-listed pairs and same-or-stronger fallbacks; if the floor has no supported pair, enter blocker handling before creation.
+At every planning, SPEC, and repair task boundary, invoke `route-codex-task`. Supply only this workflow's context: planning ownership or SPEC difficulty, reliability and failure cost, reasoning complexity, ambiguity, coupling, search space, verification burden, and the existing owner task ID on recovery. That skill is the single source for allowed pairs, ranks, difficulty floors, exceptional `xhigh` evidence, host capability readback, fallback ordering, applied-settings readback, drift rejection, and receipts.
 
-The rank is deterministic and deliberately independent of task wording: fast/economical `gpt-5.6-luna` < balanced `gpt-5.6-terra` < reliable-workhorse `gpt-5.6-sol` by policy capability tier, and `medium` < `high` < `xhigh` by reasoning budget. A fallback must be at least the recommendation's rank on both axes and must be distinct whenever another same-or-stronger allowed pair exists. Only the maximum `gpt-5.6-sol`/`xhigh` route may repeat itself as fallback. Every selection resumes the existing SPEC owner task. Record the complete validator receipt containing the actual selected pair from readback—not merely the requested pair—before dispatch or recovery.
-
-The planning task locks one advertised `model` and `thinking` pair for each SPEC after producing its ticket graph:
-
-| Difficulty | Typical shape | Model | Reasoning effort |
-| --- | --- | --- | --- |
-| Easy | Localized, known-pattern change | `gpt-5.6-luna` | `medium` |
-| Standard | Several modules or an unfamiliar bounded integration | `gpt-5.6-terra` | `high` |
-| Hard | Cross-cutting behavior, migrations, concurrency, security, or performance | `gpt-5.6-terra` | `xhigh` |
-| Extreme | Multi-repository or unusually fragile compatibility/release constraints | `gpt-5.6-sol` | `xhigh` |
-
-Record the exact recommendation, difficulty, rationale, and concrete same-or-stronger fallback pairs in the planning record. The controller does not reclassify it. A material SPEC or ticket-graph change invalidates the recommendation and must be returned to the same planning task; never create a second planner. Let `unblock-development` route actual repair tasks independently.
+The complete planning sequence defaults to `gpt-5.6-sol` + `high`; keep `planning_xhigh_evidence` empty. Upgrade the effort to `xhigh` only when the planner records concrete evidence that `high` is inadequate. For each SPEC, preserve the planner's difficulty and `xhigh_evidence` inputs and let `route-codex-task` validate the predicted route. The controller does not reclassify routes. A material SPEC or ticket-graph change returns to the same planner; every recovery reuses the existing owner task and exact persisted receipt.
