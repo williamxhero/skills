@@ -517,6 +517,7 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
         "requirements",
         "grill_rounds",
         "frontier_empty",
+        "umbrella_spec",
         "specs",
         "release_train",
         "code_read_only",
@@ -654,6 +655,12 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
             )
         )
 
+    umbrella = _object(record_obj.get("umbrella_spec"), "$.umbrella_spec", {"id", "artifact"}, issues)
+    umbrella_id = None
+    if umbrella is not None:
+        umbrella_id = _text(umbrella.get("id"), "$.umbrella_spec.id", issues)
+        _text(umbrella.get("artifact"), "$.umbrella_spec.artifact", issues)
+
     spec_values = _list(record_obj.get("specs"), "$.specs", issues)
     spec_ids: list[str] = []
     spec_blockers: dict[str, list[str]] = {}
@@ -675,6 +682,7 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                 {
                     "id",
                     "artifact",
+                    "parent_issue",
                     "requirements",
                     "blocked_by",
                     "auto_approval",
@@ -692,6 +700,14 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                 continue
             spec_id = _text(spec.get("id"), f"{spec_path}.id", issues)
             _text(spec.get("artifact"), f"{spec_path}.artifact", issues)
+            parent_issue = _object(spec.get("parent_issue"), f"{spec_path}.parent_issue", {"parent_id", "evidence"}, issues)
+            if parent_issue is not None:
+                parent_id = _text(parent_issue.get("parent_id"), f"{spec_path}.parent_issue.parent_id", issues)
+                evidence = _string_list(parent_issue.get("evidence"), f"{spec_path}.parent_issue.evidence", issues)
+                if parent_id and umbrella_id and parent_id != umbrella_id:
+                    issues.append(_issue("parent_issue_mismatch", f"{spec_path}.parent_issue.parent_id", "Every child SPEC must use the umbrella SPEC as its GitHub Parent issue."))
+                if evidence == []:
+                    issues.append(_issue("parent_issue_evidence_missing", f"{spec_path}.parent_issue.evidence", "GitHub Parent issue readback evidence is required."))
             owned = (
                 _string_list(
                     spec.get("requirements"), f"{spec_path}.requirements", issues
@@ -757,13 +773,21 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                     ticket = _object(
                         ticket_value,
                         ticket_path,
-                        {"id", "artifact", "blocked_by", "vertical_slice"},
+                        {"id", "artifact", "parent_issue", "blocked_by", "vertical_slice"},
                         issues,
                     )
                     if ticket is None:
                         continue
                     ticket_id = _text(ticket.get("id"), f"{ticket_path}.id", issues)
                     _text(ticket.get("artifact"), f"{ticket_path}.artifact", issues)
+                    ticket_parent = _object(ticket.get("parent_issue"), f"{ticket_path}.parent_issue", {"parent_id", "evidence"}, issues)
+                    if ticket_parent is not None:
+                        ticket_parent_id = _text(ticket_parent.get("parent_id"), f"{ticket_path}.parent_issue.parent_id", issues)
+                        ticket_parent_evidence = _string_list(ticket_parent.get("evidence"), f"{ticket_path}.parent_issue.evidence", issues)
+                        if ticket_parent_id and spec_id and ticket_parent_id != spec_id:
+                            issues.append(_issue("ticket_parent_issue_mismatch", f"{ticket_path}.parent_issue.parent_id", "Every ticket must use its owning SPEC as its GitHub Parent issue."))
+                        if ticket_parent_evidence == []:
+                            issues.append(_issue("ticket_parent_issue_evidence_missing", f"{ticket_path}.parent_issue.evidence", "GitHub ticket Parent issue readback evidence is required."))
                     _text(
                         ticket.get("vertical_slice"),
                         f"{ticket_path}.vertical_slice",
@@ -847,6 +871,8 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
         issues.append(
             _issue("duplicate_spec_id", "$.specs", "SPEC IDs must be unique.")
         )
+    if umbrella_id and umbrella_id in spec_ids:
+        issues.append(_issue("umbrella_spec_in_implementation_set", "$.specs", "The umbrella SPEC is a container and must not enter the implementation SPEC set."))
     issues.extend(_graph_order_issues(spec_ids, spec_blockers, "$.spec_blockers"))
     for requirement in requirements:
         if requirement_owners[requirement] != 1:

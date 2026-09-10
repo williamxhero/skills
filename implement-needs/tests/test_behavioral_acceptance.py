@@ -201,10 +201,18 @@ class ProtocolFixture:
                 }
             ],
             "frontier_empty": True,
+            "umbrella_spec": {
+                "id": "SPEC-ROOT",
+                "artifact": "https://github.com/example/repo/issues/100",
+            },
             "specs": [
                 {
                     "id": self.spec_id(number),
                     "artifact": f"tracker://spec-{number}",
+                    "parent_issue": {
+                        "parent_id": "SPEC-ROOT",
+                        "evidence": [f"github://spec-{number}/parent-readback"],
+                    },
                     "requirements": [f"R{number}"],
                     "blocked_by": [] if number == 1 else [self.spec_id(number - 1)],
                     "auto_approval": copy.deepcopy(approval),
@@ -212,6 +220,10 @@ class ProtocolFixture:
                         {
                             "id": ticket["id"],
                             "artifact": f"tracker://ticket-{ticket['id']}",
+                            "parent_issue": {
+                                "parent_id": self.spec_id(number),
+                                "evidence": [f"github://ticket-{ticket['id']}/parent-readback"],
+                            },
                             "blocked_by": list(ticket["blocked_by"]),
                             "vertical_slice": (
                                 f"Delivers {self.spec_id(number)} ticket "

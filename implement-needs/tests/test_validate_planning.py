@@ -137,10 +137,12 @@ class PlanningValidatorTests(unittest.TestCase):
                 }
             ],
             "frontier_empty": True,
+            "umbrella_spec": {"id": "SPEC-ROOT", "artifact": "https://github.com/example/repo/issues/100"},
             "specs": [
                 {
                     "id": "SPEC-1",
                     "artifact": "tracker://spec-1",
+                    "parent_issue": {"parent_id": "SPEC-ROOT", "evidence": ["github://issue/1/parent-readback"]},
                     "requirements": ["R1"],
                     "blocked_by": [],
                     "auto_approval": copy.deepcopy(approval),
@@ -148,6 +150,7 @@ class PlanningValidatorTests(unittest.TestCase):
                         {
                             "id": "T1",
                             "artifact": "tracker://ticket-1",
+                            "parent_issue": {"parent_id": "SPEC-1", "evidence": ["github://ticket-1/parent-readback"]},
                             "blocked_by": [],
                             "vertical_slice": "Delivers the first behavior end to end.",
                         }
@@ -165,6 +168,7 @@ class PlanningValidatorTests(unittest.TestCase):
                 {
                     "id": "SPEC-2",
                     "artifact": "tracker://spec-2",
+                    "parent_issue": {"parent_id": "SPEC-ROOT", "evidence": ["github://issue/2/parent-readback"]},
                     "requirements": ["R2"],
                     "blocked_by": ["SPEC-1"],
                     "auto_approval": copy.deepcopy(approval),
@@ -172,6 +176,7 @@ class PlanningValidatorTests(unittest.TestCase):
                         {
                             "id": "T2",
                             "artifact": "tracker://ticket-2",
+                            "parent_issue": {"parent_id": "SPEC-2", "evidence": ["github://ticket-2/parent-readback"]},
                             "blocked_by": [],
                             "vertical_slice": "Delivers the second behavior end to end.",
                         }
@@ -609,6 +614,38 @@ class PlanningValidatorTests(unittest.TestCase):
                     blocked_by=["T-later"]
                 ),
                 "unknown_blocker",
+            ),
+        ]
+        for mutate, expected in mutations:
+            with self.subTest(expected=expected):
+                record = self.record()
+                mutate(record)
+                payload, code = self.handoff(record)
+                self.assertEqual(1, code)
+                self.assertIn(expected, self.codes(payload))
+
+    def test_umbrella_and_github_parent_issue_relationship_are_enforced(self) -> None:
+        mutations = [
+            (lambda record: record.pop("umbrella_spec"), "missing_field"),
+            (
+                lambda record: record["specs"][0]["parent_issue"].update(parent_id="SPEC-OTHER"),
+                "parent_issue_mismatch",
+            ),
+            (
+                lambda record: record["specs"][0]["parent_issue"].update(evidence=[]),
+                "parent_issue_evidence_missing",
+            ),
+            (
+                lambda record: record["specs"][0]["tickets"][0]["parent_issue"].update(parent_id="SPEC-2"),
+                "ticket_parent_issue_mismatch",
+            ),
+            (
+                lambda record: record["specs"][0]["tickets"][0]["parent_issue"].update(evidence=[]),
+                "ticket_parent_issue_evidence_missing",
+            ),
+            (
+                lambda record: record["umbrella_spec"].update(id="SPEC-1"),
+                "umbrella_spec_in_implementation_set",
             ),
         ]
         for mutate, expected in mutations:

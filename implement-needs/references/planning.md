@@ -4,7 +4,7 @@ Read this reference when the controller enters planning. The Controller Kernel r
 
 ## Create the one planning task
 
-The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
+The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. It must invoke `grill-2-tickets` for the Grill-through-tickets portion, then extend that verified handoff with Implement Needs routing and release-train fields. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
 
 Before creation, capture the target host's advertised combinations from the sole allow-list in `model-policy.json`. Create `.scratch/<initiative>/planning-record.json` with that capability evidence and a planning route. Bounded planning requires at least `gpt-5.6-terra` + `xhigh`; broad, cross-repository, migration-heavy, or unusually ambiguous planning requires exactly the maximum `gpt-5.6-sol` + `xhigh` pair. Every route contains one supported recommendation, rationale, and at least one supported fallback that is same-or-stronger on the deterministic policy ranks. A fallback must be distinct whenever another same-or-stronger allowed pair exists; because `gpt-5.6-sol` + `xhigh` has no such alternative, that maximum route may repeat itself as its fallback.
 
@@ -18,7 +18,7 @@ Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. Reta
 
 ## Run the delegated Grill
 
-The full assignment points the planner to the requirement, repository instructions, domain vocabulary and ADRs, tracker and default branch, resolved `grilling`, `to-spec`, `to-tickets`, and `test-release-train` protocols, the default policy, and the supported route matrix. Repository exploration and subagents are read-only. Capture a controller-computed product/test-tree fingerprint before the assignment.
+The full assignment points the planner to the requirement, repository instructions, domain vocabulary and ADRs, tracker and default branch, resolved `grill-2-tickets` and `test-release-train` protocols, the default policy, and the supported route matrix. `grill-2-tickets` resolves and applies `grilling`, `to-spec`, and `to-tickets`; Implement Needs does not duplicate that workflow. Repository exploration and subagents are read-only. Capture a controller-computed product/test-tree fingerprint before the assignment.
 
 The planner returns each complete numbered Grill frontier with a recommended default and rationale for every question, then pauses. For every round, the controller:
 
@@ -30,14 +30,16 @@ The planner alone applies those answers, recomputes the design tree, and returns
 
 ## Publish and route
 
-After Grill, the same planning task must:
+Run the complete `grill-2-tickets` workflow in the same planning task. Validate its issue-tree record with that skill's `validate_issue_tree.py`; then the same planning task must:
 
-1. Partition every requirement into exactly one member of the minimum ordered set of coherent SPECs, with acyclic inter-SPEC blockers.
-2. Invoke `to-spec` for every SPEC with `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`; require `spec_state: auto_approved` and provenance `controller_decision`.
-3. Invoke `to-tickets`, bypass its quiz under the standing authorization, publish tracer-bullet tickets, and self-check granularity, blocking edges, and acyclicity.
-4. Lock one currently supported implementation route and one or more same-or-stronger fallbacks per SPEC from risk and coupling, not ticket count. Tickets inherit their SPEC route; planning never assigns model, effort, or owner per ticket.
-5. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, `checkpoint_size: 10`, and every deterministic L4 checkpoint.
-6. Return the completed planning record and artifact evidence without changing product or test code.
+1. Publish exactly one umbrella SPEC for the complete requirement. It is a tracker container, not an implementation unit: do not create tickets, an implementation task, a route, or a release-train checkpoint for it.
+2. Partition every requirement into exactly one member of the minimum ordered set of coherent child SPECs, with acyclic inter-SPEC blockers.
+3. Set every child SPEC's GitHub **Parent issue** relationship to the umbrella SPEC. Read the relationship back from GitHub and record evidence; labels, body links, task-list links, and dependency edges do not satisfy this requirement.
+4. Invoke `to-spec` for the umbrella and every child SPEC with `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`; require `spec_state: auto_approved` and provenance `controller_decision`.
+5. Invoke `to-tickets` for child SPECs only, bypass its quiz under the standing authorization, publish tracer-bullet tickets, set every ticket's GitHub **Parent issue** to its owning child SPEC, read every relationship back, and self-check granularity, blocking edges, and acyclicity. A body link, task-list link, label, or dependency edge is not a Parent issue.
+6. Lock one currently supported implementation route and one or more same-or-stronger fallbacks per child SPEC from risk and coupling, not ticket count. Tickets inherit their child SPEC route; planning never assigns model, effort, or owner per ticket.
+7. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, `checkpoint_size: 10`, and every deterministic L4 checkpoint over child SPECs only.
+8. Return the completed planning record and artifact evidence without changing product or test code.
 
 Use these exact planning-record shapes; fields not shown are rejected:
 
@@ -48,11 +50,12 @@ planning_record = {
   supported_routes:[{model,thinking:[...]}],
   planning_task:{id,generation,route},
   ownership:{grill,specs,tickets,routing}, requirements:[...],
+  umbrella_spec:{id,artifact},
   grill_rounds:[{round,questions:[{number,question,recommendation,rationale}],
     commentary_evidence:[...],acceptance_source,acceptance_evidence:[...],planner_resume_evidence:[...]}],
   frontier_empty,
-  specs:[{id,artifact,requirements:[...],blocked_by:[...],auto_approval,
-    tickets:[{id,artifact,blocked_by:[...],vertical_slice}],
+  specs:[{id,artifact,parent_issue:{parent_id,evidence:[...]},requirements:[...],blocked_by:[...],auto_approval,
+    tickets:[{id,artifact,parent_issue:{parent_id,evidence:[...]},blocked_by:[...],vertical_slice}],
     ticket_self_check:{granularity,blocking_edges,acyclic,evidence:[...]},
     difficulty,route,checkpoint}],
   release_train:{owners,repositories,acceptance_scopes,public_contract_specs,
@@ -64,7 +67,7 @@ planning_record = {
 }
 ```
 
-Checkpoint policy is fixed, not a planning preference. Use `checkpoint_size: 10`; assign consecutive ordered SPEC groups of ten to `checkpoint-10`, `checkpoint-20`, and so on, followed by one final tail checkpoint named for its ending SPEC index when the total is not divisible by ten. Do not rebalance tails or move boundaries to owner/migration seams.
+The umbrella SPEC is excluded from ticketing, routing, implementation ownership, and release-train counting. Checkpoint policy is fixed, not a planning preference. Use `checkpoint_size: 10`; assign consecutive ordered child SPEC groups of ten to `checkpoint-10`, `checkpoint-20`, and so on, followed by one final tail checkpoint named for its ending child SPEC index when the total is not divisible by ten. Do not rebalance tails or move boundaries to owner/migration seams.
 
 For any planning or SPEC task, record post-create evidence as:
 

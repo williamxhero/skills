@@ -34,7 +34,7 @@ Deliver without interviews or approval checkpoints. Invocation authorizes the Co
 ## Phase router
 
 - **Startup or protocol refresh:** read [protocol resolution and defaults](references/protocols-and-defaults.md) before resolving dependencies, choosing projects, or dispatching children.
-- **Grill, SPECs, or tickets:** read [planning](references/planning.md) when the run enters requirement stress-testing or planning delegation.
+- **Grill, SPECs, or tickets:** resolve and apply `grill-2-tickets`, then read [planning](references/planning.md) for Implement Needs routing and release-train extensions.
 - **SPEC implementation:** read [spec delivery](references/spec-delivery.md) before creating, supervising, verifying, or archiving an implementation task.
 - **Blockers, test checkpoints, or release:** read [release and recovery](references/release-and-recovery.md) when a blocker appears, a test-train gate is due, or all SPECs are merged.
 - **Controller protocol changes:** read [behavioral acceptance](references/behavioral-acceptance.md) before accepting regression or forward-test evidence.

@@ -19,6 +19,7 @@ Resolve these canonical protocols:
 - Requirement stress-test: `grilling`
 - Domain vocabulary and durable decisions: `domain-modeling`
 - Development blocker orchestration: `unblock-development`
+- Default Grill-to-tickets planning: `grill-2-tickets`
 - Spec authoring: `to-spec`
 - Ticket decomposition: `to-tickets`
 - Whole-spec implementation: `implement-spec`
