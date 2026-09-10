@@ -8,6 +8,15 @@ import json
 from pathlib import Path
 
 RELEASE = ("freeze", "build", "package", "deploy", "smoke")
+TICKET_IMPLEMENTATION = {
+    "dispatch_ticket",
+    "ticket_implementation_task",
+    "ticket_implementation_thread",
+    "ticket_implementation_worktree",
+    "ticket_implementation_branch",
+    "ticket_implementation_pr",
+}
+ROLE_LIMITED = {"blocker_repair", "read_only_exploration", "read_only_review"}
 
 
 def evaluate(path: Path):
@@ -23,6 +32,7 @@ def evaluate(path: Path):
     returned = set()
     verified = set()
     archived = set()
+    spec_owner = {}
     release = []
     finals = []
     for i, e in enumerate(events):
@@ -32,12 +42,35 @@ def evaluate(path: Path):
         kind = e.get("kind")
         owner = e.get("owner")
         task = e.get("task")
+        spec = e.get("spec") or e.get("spec_id") or task
         if kind == "dispatch_spec":
             if active:
                 reasons.append(f"event_{i}_overlapping_spec")
             if task in archived:
                 reasons.append(f"event_{i}_duplicate_spec")
+            if spec in spec_owner and spec_owner[spec] != task:
+                reasons.append(f"event_{i}_duplicate_spec_owner")
+            spec_owner[spec] = task
             active.add(task)
+        elif kind == "ticket_evidence":
+            expected_owner = spec_owner.get(spec)
+            if expected_owner is None:
+                reasons.append(f"event_{i}_unknown_ticket_spec")
+            elif owner != expected_owner:
+                reasons.append(f"event_{i}_ticket_owner_mismatch")
+            for field in ("thread", "worktree", "branch", "pr"):
+                if e.get(field):
+                    reasons.append(f"event_{i}_ticket_implementation_artifact")
+                    break
+        elif kind in TICKET_IMPLEMENTATION:
+            reasons.append(f"event_{i}_ticket_implementation_artifact")
+        elif kind == "role_limited_task":
+            if task in spec_owner.values():
+                reasons.append(f"event_{i}_role_limited_owner")
+            if e.get("role") not in ROLE_LIMITED:
+                reasons.append(f"event_{i}_role_limited_role")
+            if e.get("writes_product_code") or e.get("merge_commit"):
+                reasons.append(f"event_{i}_role_limited_mutation")
         elif kind == "child_final":
             if task not in active:
                 reasons.append(f"event_{i}_unknown_final")

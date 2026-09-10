@@ -8,14 +8,21 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_policy import load_policy
+
+MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
 TERMINAL_STATES = {"terminal_success", "terminal_blocked", "user_stopped"}
 GOAL_STATUSES = {"unchanged", "complete", "blocked"}
+CHECKPOINT_SIZE = 10
 
 REPAIR_STATE_ACTION = {
     "kind": "repair_state",
@@ -41,6 +48,167 @@ def _sorted(issues: list[dict[str, str]]) -> list[dict[str, str]]:
 
 def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
+    checkpoints: list[dict[str, Any]] = []
+    for start in range(0, len(spec_ids), CHECKPOINT_SIZE):
+        members = spec_ids[start : start + CHECKPOINT_SIZE]
+        if not members:
+            continue
+        end = start + len(members)
+        checkpoints.append(
+            {
+                "id": f"checkpoint-{end}",
+                "start_spec_index": start + 1,
+                "end_spec_index": end,
+                "specs": members,
+                "final_tail": len(members) < CHECKPOINT_SIZE,
+            }
+        )
+    return checkpoints
+
+
+def _candidate_revision_set(revisions: list[str]) -> frozenset[str]:
+    """Return the order-independent identity of repository candidate revisions."""
+    return frozenset(revisions)
+
+
+def _policy_pair(value: Any) -> dict[str, str] | None:
+    if (
+        MODEL_POLICY is None
+        or not isinstance(value, dict)
+        or set(value) != {"model", "thinking"}
+        or value.get("model") not in MODEL_POLICY["models"]
+        or value.get("thinking") not in MODEL_POLICY["efforts"]
+    ):
+        return None
+    return {"model": value["model"], "thinking": value["thinking"]}
+
+
+def _same_or_stronger(candidate: dict[str, str], baseline: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return (
+        MODEL_POLICY["model_rank"][candidate["model"]]
+        >= MODEL_POLICY["model_rank"][baseline["model"]]
+        and MODEL_POLICY["effort_rank"][candidate["thinking"]]
+        >= MODEL_POLICY["effort_rank"][baseline["thinking"]]
+    )
+
+
+def _distinct_same_or_stronger_allowed(pair: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return any(
+        candidate != pair and _same_or_stronger(candidate, pair)
+        for candidate in (
+            {"model": model, "thinking": thinking}
+            for model in MODEL_POLICY["models"]
+            for thinking in MODEL_POLICY["efforts"]
+        )
+    )
+
+
+def _persisted_route_issues(
+    route: dict[str, Any],
+    *,
+    path: str,
+    run_id: str,
+    spec_id: str,
+    owner_id: str,
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    receipt = route["receipt"]
+    selected_pair = _policy_pair(
+        {"model": route["model"], "thinking": route["thinking"]}
+    )
+    applied = _policy_pair(receipt["applied"])
+    recommended = _policy_pair(receipt["locked_route"]["recommended"])
+    fallbacks = [
+        _policy_pair(fallback) for fallback in receipt["locked_route"]["fallbacks"]
+    ]
+
+    if (
+        selected_pair is None
+        or applied is None
+        or recommended is None
+        or any(fallback is None for fallback in fallbacks)
+    ):
+        issues.append(
+            _issue(
+                "invalid_persisted_model_policy",
+                path,
+                "Persisted SPEC route and receipt pairs must be allowed by the Implement Needs policy.",
+            )
+        )
+        return issues
+
+    parsed_fallbacks = [fallback for fallback in fallbacks if fallback is not None]
+    expected_receipt_fields = (
+        ("run_id", run_id),
+        ("target", spec_id),
+        ("task_id", owner_id),
+        ("selection", route["selection"]),
+        ("applied", selected_pair),
+    )
+    for field, expected in expected_receipt_fields:
+        if receipt[field] != expected:
+            issues.append(
+                _issue(
+                    "persisted_route_receipt_mismatch",
+                    f"{path}.receipt.{field}",
+                    "Route receipt must match the persisted run, owner, selection, and pair.",
+                )
+            )
+
+    receipt_body = dict(receipt)
+    receipt_sha256 = receipt_body.pop("receipt_sha256")
+    if _decision_hash(receipt_body) != receipt_sha256:
+        issues.append(
+            _issue(
+                "persisted_route_receipt_hash_mismatch",
+                f"{path}.receipt.receipt_sha256",
+                "Persisted route receipt identity does not match its canonical content.",
+            )
+        )
+
+    for index, fallback in enumerate(parsed_fallbacks):
+        fallback_path = f"{path}.receipt.locked_route.fallbacks[{index}]"
+        if not _same_or_stronger(fallback, recommended):
+            issues.append(
+                _issue(
+                    "persisted_fallback_weaker",
+                    fallback_path,
+                    "Persisted fallback must be same-or-stronger than the recommendation.",
+                )
+            )
+        if fallback == recommended and _distinct_same_or_stronger_allowed(recommended):
+            issues.append(
+                _issue(
+                    "persisted_fallback_not_distinct",
+                    fallback_path,
+                    "Same-pair fallback is valid only at the maximum allowed route.",
+                )
+            )
+
+    if route["selection"] == "recommended" and selected_pair != recommended:
+        issues.append(
+            _issue(
+                "persisted_route_not_locked",
+                path,
+                "Recommended route must equal the exact locked recommendation.",
+            )
+        )
+    if route["selection"] == "fallback" and selected_pair not in parsed_fallbacks:
+        issues.append(
+            _issue(
+                "persisted_route_not_locked",
+                path,
+                "Fallback route must equal an exact preapproved fallback.",
+            )
+        )
+    return issues
 
 
 def _read_bytes(path: Path, label: str, issues: list[dict[str, str]]) -> bytes | None:
@@ -186,6 +354,14 @@ def _schema_issues(
                 _issue(code, path, "String does not match the required pattern.")
             )
     if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            issues.append(
+                _issue(
+                    "too_few_items",
+                    path,
+                    "Array has fewer entries than the contract permits.",
+                )
+            )
         if schema.get("uniqueItems"):
             encoded = [
                 json.dumps(
@@ -264,6 +440,454 @@ def _terminal_record_issues(
             )
         )
     return issues
+
+
+def _l4_checkpoint_issues(
+    test_state: dict[str, Any],
+    ownership: dict[str, Any],
+    *,
+    require_release_ready: bool,
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    l4 = test_state["l4_checkpoints"]
+    ordered_specs = l4["ordered_specs"]
+    completed_count = l4["completed_spec_count"]
+    if completed_count > len(ordered_specs):
+        issues.append(
+            _issue(
+                "completed_spec_count_invalid",
+                "$.test_state.l4_checkpoints.completed_spec_count",
+                "Completed SPEC count cannot exceed the ordered SPEC count.",
+            )
+        )
+    expected = _checkpoint_plan(ordered_specs)
+    checkpoints = l4["checkpoints"]
+    if len(checkpoints) != len(expected):
+        issues.append(
+            _issue(
+                "checkpoint_mismatch",
+                "$.test_state.l4_checkpoints.checkpoints",
+                "Persisted L4 checkpoints must match the deterministic fixed-size plan.",
+            )
+        )
+    by_id = {checkpoint["id"]: checkpoint for checkpoint in checkpoints}
+    specs_by_id = {
+        spec["spec_id"]: spec
+        for spec in ownership.get("specs", [])
+        if isinstance(spec, dict)
+    }
+    if len(by_id) != len(checkpoints):
+        issues.append(
+            _issue(
+                "duplicate_checkpoint_id",
+                "$.test_state.l4_checkpoints.checkpoints",
+                "Checkpoint IDs must be unique.",
+            )
+        )
+    for index, expected_checkpoint in enumerate(expected):
+        path = f"$.test_state.l4_checkpoints.checkpoints[{index}]"
+        if index >= len(checkpoints):
+            continue
+        checkpoint = checkpoints[index]
+        for field in (
+            "id",
+            "start_spec_index",
+            "end_spec_index",
+            "specs",
+            "final_tail",
+        ):
+            if checkpoint[field] != expected_checkpoint[field]:
+                issues.append(
+                    _issue(
+                        "checkpoint_policy_mismatch",
+                        f"{path}.{field}",
+                        f"Expected {expected_checkpoint[field]!r}.",
+                    )
+                )
+        due = expected_checkpoint["end_spec_index"] <= completed_count
+        if due and checkpoint["status"] != "passed":
+            issues.append(
+                _issue(
+                    "due_checkpoint_not_passed",
+                    path,
+                    "Every due L4 checkpoint must pass before continuing or completing.",
+                )
+            )
+        if checkpoint["status"] == "failed":
+            issues.append(
+                _issue(
+                    "failed_checkpoint_blocks_success",
+                    path,
+                    "A failed L4 checkpoint blocks terminal success until rerun green.",
+                )
+            )
+        if not checkpoint["affected_owners"]:
+            issues.append(
+                _issue(
+                    "checkpoint_owner_scope_missing",
+                    f"{path}.affected_owners",
+                    "Checkpoint affected owners are required.",
+                )
+            )
+        if not checkpoint["affected_repositories"]:
+            issues.append(
+                _issue(
+                    "checkpoint_repository_scope_missing",
+                    f"{path}.affected_repositories",
+                    "Checkpoint affected repositories are required.",
+                )
+            )
+        expected_owners = list(
+            dict.fromkeys(
+                owner
+                for spec_id in expected_checkpoint["specs"]
+                for owner in specs_by_id.get(spec_id, {}).get("owners", [])
+            )
+        )
+        expected_repositories = list(
+            dict.fromkeys(
+                repository
+                for spec_id in expected_checkpoint["specs"]
+                for repository in specs_by_id.get(spec_id, {}).get("repositories", [])
+            )
+        )
+        if checkpoint["affected_owners"] != expected_owners:
+            issues.append(
+                _issue(
+                    "checkpoint_owner_scope_mismatch",
+                    f"{path}.affected_owners",
+                    "Checkpoint owners must be derived from persisted member SPEC ownership.",
+                )
+            )
+        if checkpoint["affected_repositories"] != expected_repositories:
+            issues.append(
+                _issue(
+                    "checkpoint_repository_scope_mismatch",
+                    f"{path}.affected_repositories",
+                    "Checkpoint repositories must be derived from persisted member SPEC ownership.",
+                )
+            )
+        if checkpoint["status"] == "passed":
+            if checkpoint["revision"] is None or not checkpoint["candidate_revisions"]:
+                issues.append(
+                    _issue(
+                        "checkpoint_evidence_incomplete",
+                        path,
+                        "Passed checkpoints require tested revision and candidate revisions.",
+                    )
+                )
+            if not checkpoint["evidence"]:
+                issues.append(
+                    _issue(
+                        "checkpoint_evidence_missing",
+                        f"{path}.evidence",
+                        "Passed checkpoints require evidence.",
+                    )
+                )
+    if not require_release_ready:
+        return issues
+    if completed_count != len(ordered_specs):
+        issues.append(
+            _issue(
+                "terminal_checkpoint_count_incomplete",
+                "$.test_state.l4_checkpoints.completed_spec_count",
+                "Terminal success requires every planned SPEC to be complete.",
+            )
+        )
+    release_l4 = l4["release_l4"]
+    if release_l4 is None:
+        issues.append(
+            _issue(
+                "terminal_l4_release_missing",
+                "$.test_state.l4_checkpoints.release_l4",
+                "Terminal success requires final L4 reuse or rerun evidence.",
+            )
+        )
+        return issues
+    if not release_l4["evidence"]:
+        issues.append(
+            _issue(
+                "terminal_l4_release_evidence_missing",
+                "$.test_state.l4_checkpoints.release_l4.evidence",
+                "Final L4 release evidence is required.",
+            )
+        )
+    latest = checkpoints[-1] if checkpoints else None
+    if test_state["candidate_revision"] not in release_l4["candidate_revisions"]:
+        issues.append(
+            _issue(
+                "release_l4_candidate_mismatch",
+                "$.test_state.l4_checkpoints.release_l4.candidate_revisions",
+                "Final L4 candidate revisions must include the terminal test candidate.",
+            )
+        )
+    if latest is None or latest["status"] != "passed":
+        issues.append(
+            _issue(
+                "final_checkpoint_missing",
+                "$.test_state.l4_checkpoints.checkpoints",
+                "The final checkpoint must pass before terminal success.",
+            )
+        )
+        return issues
+    if release_l4["mode"] == "reused_checkpoint":
+        if release_l4["checkpoint_id"] != latest["id"]:
+            issues.append(
+                _issue(
+                    "final_checkpoint_reuse_mismatch",
+                    "$.test_state.l4_checkpoints.release_l4.checkpoint_id",
+                    "Final L4 reuse must name the last checkpoint.",
+                )
+            )
+        if _candidate_revision_set(
+            release_l4["candidate_revisions"]
+        ) != _candidate_revision_set(latest["candidate_revisions"]):
+            issues.append(
+                _issue(
+                    "stale_final_checkpoint_revisions",
+                    "$.test_state.l4_checkpoints.release_l4.candidate_revisions",
+                    "Final checkpoint L4 can be reused only for exact candidate revisions.",
+                )
+            )
+    else:
+        if release_l4["checkpoint_id"] is not None:
+            issues.append(
+                _issue(
+                    "final_l4_rerun_checkpoint_id",
+                    "$.test_state.l4_checkpoints.release_l4.checkpoint_id",
+                    "A final L4 rerun must not claim checkpoint reuse.",
+                )
+            )
+        if _candidate_revision_set(
+            release_l4["candidate_revisions"]
+        ) == _candidate_revision_set(latest["candidate_revisions"]):
+            issues.append(
+                _issue(
+                    "final_l4_duplicate",
+                    "$.test_state.l4_checkpoints.release_l4",
+                    "Do not repeat final L4 when checkpoint revisions are exact.",
+                )
+            )
+    return issues
+
+
+def _ticket_graph_issues(
+    tickets: list[dict[str, Any]], path: str
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    ticket_ids = [ticket["id"] for ticket in tickets]
+    if len(ticket_ids) != len(set(ticket_ids)):
+        issues.append(
+            _issue("duplicate_ticket_id", path, "Ticket IDs must be unique per SPEC.")
+        )
+    positions = {ticket_id: index for index, ticket_id in enumerate(ticket_ids)}
+    for ticket in tickets:
+        ticket_path = f"{path}[{positions.get(ticket['id'], '?')}]"
+        for dependency in ticket["blocked_by"]:
+            if dependency not in positions:
+                issues.append(
+                    _issue(
+                        "unknown_ticket_blocker",
+                        f"{ticket_path}.blocked_by",
+                        f"Unknown ticket blocker {dependency}.",
+                    )
+                )
+            elif positions[dependency] >= positions[ticket["id"]]:
+                issues.append(
+                    _issue(
+                        "ticket_blocker_not_ordered",
+                        f"{ticket_path}.blocked_by",
+                        "Ticket blockers must precede the blocked ticket.",
+                    )
+                )
+    return issues
+
+
+def _implementation_ownership_issues(
+    state: dict[str, Any], children: dict[str, dict[str, Any]]
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    ownership = state["implementation_ownership"]
+    child_spec_owners: dict[str, str] = {}
+    for child in state["child_tasks"]:
+        if child["kind"] == "spec" and child["spec_id"] is not None:
+            child_spec_owners.setdefault(child["spec_id"], child["id"])
+
+    specs = ownership["specs"]
+    spec_ids = [spec["spec_id"] for spec in specs]
+    if len(spec_ids) != len(set(spec_ids)):
+        issues.append(
+            _issue(
+                "duplicate_spec_ownership",
+                "$.implementation_ownership.specs",
+                "Each SPEC may appear once in the implementation ownership ledger.",
+            )
+        )
+    ledger_by_spec = {spec["spec_id"]: spec for spec in specs}
+    for spec_id in sorted(set(child_spec_owners) - set(ledger_by_spec)):
+        issues.append(
+            _issue(
+                "spec_ownership_missing",
+                "$.implementation_ownership.specs",
+                f"SPEC {spec_id} has no implementation ownership ledger entry.",
+            )
+        )
+
+    implementation_task_ids = {
+        spec["implementation_task_id"]
+        for spec in specs
+        if spec["implementation_task_id"]
+    }
+    ticket_owner_ids: set[str] = set()
+    terminal_success = state["controller_state"] == "terminal_success"
+
+    for spec_index, spec in enumerate(specs):
+        spec_path = f"$.implementation_ownership.specs[{spec_index}]"
+        spec_id = spec["spec_id"]
+        owner_id = spec["implementation_task_id"]
+        owner = children.get(owner_id)
+        if owner is None:
+            issues.append(
+                _issue(
+                    "unknown_spec_owner",
+                    f"{spec_path}.implementation_task_id",
+                    "SPEC owner must name a recorded child task.",
+                )
+            )
+        elif owner["kind"] != "spec" or owner["spec_id"] != spec_id:
+            issues.append(
+                _issue(
+                    "spec_owner_mismatch",
+                    f"{spec_path}.implementation_task_id",
+                    "SPEC owner must be the SPEC child task for the same SPEC.",
+                )
+            )
+        elif child_spec_owners.get(spec_id) != owner_id:
+            issues.append(
+                _issue(
+                    "spec_owner_mismatch",
+                    f"{spec_path}.implementation_task_id",
+                    "Ownership ledger must match the child task ledger.",
+                )
+            )
+
+        route = spec["route"]
+        if route["target"] != spec_id:
+            issues.append(
+                _issue(
+                    "spec_route_target_mismatch",
+                    f"{spec_path}.route.target",
+                    "SPEC route readback must target the owning SPEC.",
+                )
+            )
+        if route["task_id"] != owner_id:
+            issues.append(
+                _issue(
+                    "spec_route_owner_mismatch",
+                    f"{spec_path}.route.task_id",
+                    "Route fallback or recommendation must resume the same SPEC task.",
+                )
+            )
+        issues.extend(
+            _persisted_route_issues(
+                route,
+                path=f"{spec_path}.route",
+                run_id=state["run_id"],
+                spec_id=spec_id,
+                owner_id=owner_id,
+            )
+        )
+
+        tickets = spec["tickets"]
+        if not tickets:
+            issues.append(
+                _issue(
+                    "tickets_missing",
+                    f"{spec_path}.tickets",
+                    "Every SPEC owner must carry its ticket execution ledger.",
+                )
+            )
+        issues.extend(_ticket_graph_issues(tickets, f"{spec_path}.tickets"))
+        for ticket_index, ticket in enumerate(tickets):
+            ticket_path = f"{spec_path}.tickets[{ticket_index}]"
+            ticket_owner_ids.add(ticket["owner_task_id"])
+            if ticket["owner_task_id"] != owner_id:
+                issues.append(
+                    _issue(
+                        "ticket_owner_mismatch",
+                        f"{ticket_path}.owner_task_id",
+                        "Ticket implementation owner must equal the SPEC owner task.",
+                    )
+                )
+            closed = ticket["tracker_state"] == "closed"
+            if terminal_success and not closed:
+                issues.append(
+                    _issue(
+                        "ticket_not_closed",
+                        f"{ticket_path}.tracker_state",
+                        "Terminal success requires every ticket to be closed.",
+                    )
+                )
+            if closed or terminal_success:
+                if not ticket["commits"]:
+                    issues.append(
+                        _issue(
+                            "ticket_commit_evidence_missing",
+                            f"{ticket_path}.commits",
+                            "Closed tickets require retained commit evidence.",
+                        )
+                    )
+                if not ticket["test_evidence"]:
+                    issues.append(
+                        _issue(
+                            "ticket_test_evidence_missing",
+                            f"{ticket_path}.test_evidence",
+                            "Closed tickets require retained test evidence.",
+                        )
+                    )
+
+    artifacts = ownership["ticket_implementation_artifacts"]
+    for field, values in sorted(artifacts.items()):
+        if values:
+            issues.append(
+                _issue(
+                    "ticket_implementation_artifact_present",
+                    f"$.implementation_ownership.ticket_implementation_artifacts.{field}",
+                    "Ticket-level implementation tasks, threads, worktrees, branches, and PRs must be absent.",
+                )
+            )
+
+    role_task_ids = [task["task_id"] for task in ownership["role_limited_tasks"]]
+    if len(role_task_ids) != len(set(role_task_ids)):
+        issues.append(
+            _issue(
+                "duplicate_role_limited_task",
+                "$.implementation_ownership.role_limited_tasks",
+                "Role-limited task IDs must be unique.",
+            )
+        )
+    for index, task in enumerate(ownership["role_limited_tasks"]):
+        path = f"$.implementation_ownership.role_limited_tasks[{index}]"
+        if (
+            task["task_id"] in implementation_task_ids
+            or task["task_id"] in ticket_owner_ids
+        ):
+            issues.append(
+                _issue(
+                    "role_limited_task_is_owner",
+                    f"{path}.task_id",
+                    "Role-limited helper tasks cannot own SPECs or tickets.",
+                )
+            )
+        if task["writes_product_code"] or task["merge_commits"]:
+            issues.append(
+                _issue(
+                    "role_limited_task_mutated_product",
+                    path,
+                    "Blocker repair, exploration, and review exceptions cannot provide product implementation commits.",
+                )
+            )
+    return _sorted(issues)
 
 
 def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
@@ -358,6 +982,14 @@ def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
                     f"SPEC {spec_id} has multiple implementation task owners: {', '.join(sorted(task_ids))}.",
                 )
             )
+    issues.extend(
+        _l4_checkpoint_issues(
+            state["test_state"],
+            state["implementation_ownership"],
+            require_release_ready=state["controller_state"] == "terminal_success",
+        )
+    )
+    issues.extend(_implementation_ownership_issues(state, children))
 
     controller_state = state["controller_state"]
     phase = state["active_phase"]
@@ -572,6 +1204,14 @@ def _task_tree_consistency_issues(
                     "Observed task fields differ from state.",
                 )
             )
+    if task_tree["implementation_ownership"] != state["implementation_ownership"]:
+        issues.append(
+            _issue(
+                "task_tree_ownership_mismatch",
+                "$task_tree.implementation_ownership",
+                "Observed implementation ownership differs from state.",
+            )
+        )
     if tree_ids != sorted(tree_ids):
         issues.append(
             _issue(
@@ -600,6 +1240,14 @@ def evaluate(
 ) -> tuple[dict[str, Any], int]:
     """Return a deterministic decision payload and process exit code."""
     issues: list[dict[str, str]] = []
+    if MODEL_POLICY_ERROR is not None:
+        issues.append(
+            _issue(
+                "model_policy_invalid",
+                "$.model_policy",
+                f"Implement Needs model policy is invalid: {MODEL_POLICY_ERROR}.",
+            )
+        )
     if proposed_state not in TERMINAL_STATES:
         issues.append(
             _issue(
@@ -765,6 +1413,10 @@ def evaluate(
         "delivery_map_sha256": _sha256(delivery_raw),
         "task_tree_sha256": _sha256(task_tree_raw),
         "terminal_evidence": state["terminal"]["evidence"],
+        "l4_checkpoint_count": len(
+            state["test_state"]["l4_checkpoints"]["checkpoints"]
+        ),
+        "release_l4": state["test_state"]["l4_checkpoints"]["release_l4"],
     }
     payload["receipt_sha256"] = _decision_hash(payload)
     return payload, 0

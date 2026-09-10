@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ from pathlib import Path
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_controller_terminal.py"
 SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
+CONTRACT_PATH = SKILL_ROOT / "references" / "controller-state.md"
 SPEC = importlib.util.spec_from_file_location(
     "validate_controller_terminal", SCRIPT_PATH
 )
@@ -36,10 +38,97 @@ class TerminalValidatorTests(unittest.TestCase):
         self.delivery_map.write_text(
             "# Delivery map\n\nAll work verified.\n", encoding="utf-8", newline="\n"
         )
-        self.task_tree.write_text('{"tasks":[]}\n', encoding="utf-8", newline="\n")
+        self.task_tree.write_text(
+            '{"implementation_ownership":{"role_limited_tasks":[],"specs":[],"ticket_implementation_artifacts":{"branches":[],"pull_requests":[],"tasks":[],"threads":[],"worktrees":[]}},"run_id":"run-001","tasks":[]}\n',
+            encoding="utf-8",
+            newline="\n",
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    @staticmethod
+    def route_receipt(
+        spec_id: str,
+        task_id: str,
+        *,
+        selection: str = "recommended",
+        model: str = "gpt-5.6-terra",
+        thinking: str = "xhigh",
+    ) -> dict:
+        payload = {
+            "schema_version": 1,
+            "decision": "allow",
+            "gate": "task_route",
+            "run_id": "run-001",
+            "target": spec_id,
+            "task_id": task_id,
+            "selection": selection,
+            "applied": {"model": model, "thinking": thinking},
+            "locked_route": {
+                "recommended": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+                "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}],
+            },
+            "planning_record_sha256": "a" * 64,
+            "route_readback_sha256": "b" * 64,
+        }
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
+        return payload
+
+    @staticmethod
+    def rehash_receipt(receipt: dict) -> None:
+        payload = dict(receipt)
+        payload.pop("receipt_sha256", None)
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        receipt["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
+
+    @staticmethod
+    def l4_state(
+        *,
+        checkpoint_status: str = "passed",
+        checkpoint_revisions: list[str] | None = None,
+        release_mode: str = "reused_checkpoint",
+        release_revisions: list[str] | None = None,
+    ) -> dict:
+        checkpoint_revisions = checkpoint_revisions or ["abc123"]
+        release_revisions = release_revisions or list(checkpoint_revisions)
+        return {
+            "checkpoint_size": 10,
+            "ordered_specs": ["SPEC-1"],
+            "completed_spec_count": 1,
+            "checkpoints": [
+                {
+                    "id": "checkpoint-1",
+                    "start_spec_index": 1,
+                    "end_spec_index": 1,
+                    "specs": ["SPEC-1"],
+                    "final_tail": True,
+                    "affected_owners": ["owner-a"],
+                    "affected_repositories": ["repo-a"],
+                    "status": checkpoint_status,
+                    "revision": "abc123" if checkpoint_status == "passed" else None,
+                    "candidate_revisions": checkpoint_revisions
+                    if checkpoint_status == "passed"
+                    else [],
+                    "evidence": ["tests/l4-checkpoint.json"]
+                    if checkpoint_status == "passed"
+                    else [],
+                }
+            ],
+            "release_l4": {
+                "mode": release_mode,
+                "checkpoint_id": "checkpoint-1"
+                if release_mode == "reused_checkpoint"
+                else None,
+                "candidate_revisions": release_revisions,
+                "evidence": ["tests/l4-release.json"],
+            },
+        }
 
     def success_state(self, release_status: str = "deployed") -> dict:
         return {
@@ -69,6 +158,52 @@ class TerminalValidatorTests(unittest.TestCase):
                     "lifecycle": "archived",
                 },
             ],
+            "implementation_ownership": {
+                "specs": [
+                    {
+                        "spec_id": "SPEC-1",
+                        "implementation_task_id": "spec-1",
+                        "owners": ["owner-a"],
+                        "repositories": ["repo-a"],
+                        "route": {
+                            "target": "SPEC-1",
+                            "task_id": "spec-1",
+                            "selection": "recommended",
+                            "model": "gpt-5.6-terra",
+                            "thinking": "xhigh",
+                            "receipt": self.route_receipt("SPEC-1", "spec-1"),
+                        },
+                        "tickets": [
+                            {
+                                "id": "T1",
+                                "owner_task_id": "spec-1",
+                                "blocked_by": [],
+                                "commits": ["git://ticket-1"],
+                                "test_evidence": ["test://ticket-1"],
+                                "tracker_state": "closed",
+                            }
+                        ],
+                    }
+                ],
+                "ticket_implementation_artifacts": {
+                    "tasks": [],
+                    "threads": [],
+                    "worktrees": [],
+                    "branches": [],
+                    "pull_requests": [],
+                },
+                "role_limited_tasks": [
+                    {
+                        "task_id": "repair-1",
+                        "spec_id": None,
+                        "parent_task_id": None,
+                        "role": "blocker_repair",
+                        "writes_product_code": False,
+                        "merge_commits": [],
+                        "evidence": ["repair/evidence.json"],
+                    }
+                ],
+            },
             "pending_specs": [],
             "unverified_handoffs": [],
             "unarchived_tasks": [],
@@ -76,6 +211,7 @@ class TerminalValidatorTests(unittest.TestCase):
                 "status": "passed",
                 "candidate_revision": "abc123",
                 "evidence": ["tests/final.json"],
+                "l4_checkpoints": self.l4_state(),
             },
             "release_state": {
                 "status": release_status,
@@ -125,12 +261,74 @@ class TerminalValidatorTests(unittest.TestCase):
                         "lifecycle": "paused",
                     },
                 ],
+                "implementation_ownership": {
+                    "specs": [
+                        {
+                            "spec_id": "SPEC-2",
+                            "implementation_task_id": "spec-2",
+                            "owners": ["owner-a"],
+                            "repositories": ["repo-a"],
+                            "route": {
+                                "target": "SPEC-2",
+                                "task_id": "spec-2",
+                                "selection": "fallback",
+                                "model": "gpt-5.6-sol",
+                                "thinking": "xhigh",
+                                "receipt": self.route_receipt(
+                                    "SPEC-2",
+                                    "spec-2",
+                                    selection="fallback",
+                                    model="gpt-5.6-sol",
+                                ),
+                            },
+                            "tickets": [
+                                {
+                                    "id": "T2",
+                                    "owner_task_id": "spec-2",
+                                    "blocked_by": [],
+                                    "commits": [],
+                                    "test_evidence": [],
+                                    "tracker_state": "active",
+                                }
+                            ],
+                        }
+                    ],
+                    "ticket_implementation_artifacts": {
+                        "tasks": [],
+                        "threads": [],
+                        "worktrees": [],
+                        "branches": [],
+                        "pull_requests": [],
+                    },
+                    "role_limited_tasks": [],
+                },
                 "pending_specs": ["SPEC-2"],
                 "unarchived_tasks": ["spec-2"],
                 "test_state": {
                     "status": "blocked",
                     "candidate_revision": None,
                     "evidence": ["blocker/test.txt"],
+                    "l4_checkpoints": {
+                        "checkpoint_size": 10,
+                        "ordered_specs": ["SPEC-2"],
+                        "completed_spec_count": 0,
+                        "checkpoints": [
+                            {
+                                "id": "checkpoint-1",
+                                "start_spec_index": 1,
+                                "end_spec_index": 1,
+                                "specs": ["SPEC-2"],
+                                "final_tail": True,
+                                "affected_owners": ["owner-a"],
+                                "affected_repositories": ["repo-a"],
+                                "status": "pending",
+                                "revision": None,
+                                "candidate_revisions": [],
+                                "evidence": [],
+                            }
+                        ],
+                        "release_l4": None,
+                    },
                 },
                 "release_state": {
                     "status": "pending",
@@ -178,6 +376,22 @@ class TerminalValidatorTests(unittest.TestCase):
                     key=lambda task: (
                         str(task.get("id", "")) if isinstance(task, dict) else ""
                     ),
+                ),
+                "implementation_ownership": copy.deepcopy(
+                    state.get(
+                        "implementation_ownership",
+                        {
+                            "specs": [],
+                            "ticket_implementation_artifacts": {
+                                "tasks": [],
+                                "threads": [],
+                                "worktrees": [],
+                                "branches": [],
+                                "pull_requests": [],
+                            },
+                            "role_limited_tasks": [],
+                        },
+                    )
                 ),
             }
             self.task_tree.write_text(
@@ -234,6 +448,88 @@ class TerminalValidatorTests(unittest.TestCase):
                 self.assertEqual("allow", payload["decision"])
                 self.assertEqual(proposed, payload["terminal_state"])
                 self.assertRegex(payload["receipt_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_persisted_spec_model_policy_rejects_recovery_drift(self) -> None:
+        state = self.success_state()
+        state["implementation_ownership"]["specs"][0]["route"]["model"] = (
+            "gpt-5.6-unknown"
+        )
+        payload, exit_code = self.evaluate(state, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("invalid_persisted_model_policy", self.codes(payload))
+
+    def test_persisted_route_rejects_unlocked_pair_owner_and_receipt_drift(
+        self,
+    ) -> None:
+        unlocked = self.success_state()
+        route = unlocked["implementation_ownership"]["specs"][0]["route"]
+        route["thinking"] = "high"
+        route["receipt"] = self.route_receipt("SPEC-1", "spec-1", thinking="high")
+        payload, exit_code = self.evaluate(unlocked, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_route_not_locked", self.codes(payload))
+        self.assertEqual("repair_state", payload["next_action"]["kind"])
+
+        wrong_owner = self.success_state()
+        receipt = wrong_owner["implementation_ownership"]["specs"][0]["route"][
+            "receipt"
+        ]
+        receipt["task_id"] = "replacement-task"
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(wrong_owner, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_route_receipt_mismatch", self.codes(payload))
+
+        wrong_hash = self.success_state()
+        wrong_hash["implementation_ownership"]["specs"][0]["route"]["receipt"][
+            "receipt_sha256"
+        ] = "c" * 64
+        payload, exit_code = self.evaluate(wrong_hash, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_route_receipt_hash_mismatch", self.codes(payload))
+
+    def test_persisted_fallback_must_be_same_or_stronger(self) -> None:
+        state = self.success_state()
+        route = state["implementation_ownership"]["specs"][0]["route"]
+        route.update(selection="fallback", model="gpt-5.6-luna", thinking="medium")
+        receipt = route["receipt"]
+        receipt.update(
+            selection="fallback",
+            applied={"model": "gpt-5.6-luna", "thinking": "medium"},
+        )
+        receipt["locked_route"]["fallbacks"] = [
+            {"model": "gpt-5.6-luna", "thinking": "medium"}
+        ]
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(state, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("persisted_fallback_weaker", self.codes(payload))
+
+        missing = self.success_state()
+        missing["implementation_ownership"]["specs"][0]["route"]["receipt"][
+            "locked_route"
+        ]["fallbacks"] = []
+        payload, exit_code = self.evaluate(missing, "terminal_success")
+        self.assertEqual(1, exit_code)
+        self.assertIn("too_few_items", self.codes(payload))
+
+    def test_maximum_route_may_repeat_as_its_fallback(self) -> None:
+        state = self.success_state()
+        route = state["implementation_ownership"]["specs"][0]["route"]
+        route.update(selection="fallback", model="gpt-5.6-sol", thinking="xhigh")
+        receipt = route["receipt"]
+        receipt.update(
+            selection="fallback",
+            applied={"model": "gpt-5.6-sol", "thinking": "xhigh"},
+        )
+        receipt["locked_route"] = {
+            "recommended": {"model": "gpt-5.6-sol", "thinking": "xhigh"},
+            "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}],
+        }
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(state, "terminal_success")
+        self.assertEqual(0, exit_code)
+        self.assertEqual("allow", payload["decision"])
 
     def test_success_allows_explicit_deployment_not_applicable(self) -> None:
         payload, exit_code = self.evaluate(
@@ -366,6 +662,78 @@ class TerminalValidatorTests(unittest.TestCase):
                 self.assertIn(expected, self.codes(payload))
                 self.assertEqual("repair_state", payload["next_action"]["kind"])
 
+    def test_success_rejects_invalid_implementation_ownership(self) -> None:
+        cases = (
+            (
+                "missing_ledger",
+                lambda state: state["implementation_ownership"].update(specs=[]),
+                "spec_ownership_missing",
+            ),
+            (
+                "duplicate_ledger",
+                lambda state: state["implementation_ownership"]["specs"].append(
+                    copy.deepcopy(state["implementation_ownership"]["specs"][0])
+                ),
+                "duplicate_spec_ownership",
+            ),
+            (
+                "route_replacement",
+                lambda state: state["implementation_ownership"]["specs"][0][
+                    "route"
+                ].update(task_id="replacement-task"),
+                "spec_route_owner_mismatch",
+            ),
+            (
+                "ticket_owner",
+                lambda state: state["implementation_ownership"]["specs"][0]["tickets"][
+                    0
+                ].update(owner_task_id="ticket-task"),
+                "ticket_owner_mismatch",
+            ),
+            (
+                "ticket_artifact",
+                lambda state: state["implementation_ownership"][
+                    "ticket_implementation_artifacts"
+                ]["tasks"].append("ticket-task"),
+                "ticket_implementation_artifact_present",
+            ),
+        )
+        for name, mutate, expected in cases:
+            with self.subTest(name=name):
+                state = self.success_state()
+                mutate(state)
+                payload, exit_code = self.evaluate(state, goal="complete")
+                self.assertEqual(1, exit_code)
+                self.assertIn(expected, self.codes(payload))
+                self.assertEqual("repair_state", payload["next_action"]["kind"])
+
+    def test_terminal_success_requires_ticket_commit_test_and_close_evidence(
+        self,
+    ) -> None:
+        state = self.success_state()
+        ticket = state["implementation_ownership"]["specs"][0]["tickets"][0]
+        ticket.update(commits=[], test_evidence=[], tracker_state="active")
+        payload, exit_code = self.evaluate(state, goal="complete")
+        self.assertEqual(1, exit_code)
+        codes = self.codes(payload)
+        self.assertIn("ticket_not_closed", codes)
+        self.assertIn("ticket_commit_evidence_missing", codes)
+        self.assertIn("ticket_test_evidence_missing", codes)
+
+    def test_role_limited_tasks_cannot_own_or_merge(self) -> None:
+        state = self.success_state()
+        helper = state["implementation_ownership"]["role_limited_tasks"][0]
+        helper.update(
+            task_id="spec-1",
+            writes_product_code=True,
+            merge_commits=["merge-review"],
+        )
+        payload, exit_code = self.evaluate(state, goal="complete")
+        self.assertEqual(1, exit_code)
+        codes = self.codes(payload)
+        self.assertIn("role_limited_task_is_owner", codes)
+        self.assertIn("role_limited_task_mutated_product", codes)
+
     def test_each_pending_gate_rejects_success(self) -> None:
         mutations = {
             "pending_spec": lambda state: state["pending_specs"].append("SPEC-2"),
@@ -414,6 +782,7 @@ class TerminalValidatorTests(unittest.TestCase):
                     "status": status,
                     "candidate_revision": None,
                     "evidence": [],
+                    "l4_checkpoints": self.l4_state(),
                 }
                 payload, exit_code = self.evaluate(state)
                 self.assertEqual(1, exit_code)
@@ -431,6 +800,71 @@ class TerminalValidatorTests(unittest.TestCase):
                 payload, exit_code = self.evaluate(state)
                 self.assertEqual(1, exit_code)
                 self.assertIn("terminal_release_incomplete", self.codes(payload))
+
+    def test_due_or_failed_l4_checkpoint_rejects_terminal_success(self) -> None:
+        for status, expected in (
+            ("pending", "due_checkpoint_not_passed"),
+            ("failed", "failed_checkpoint_blocks_success"),
+        ):
+            with self.subTest(status=status):
+                state = self.success_state()
+                state["test_state"]["l4_checkpoints"] = self.l4_state(
+                    checkpoint_status=status
+                )
+                payload, exit_code = self.evaluate(state)
+                self.assertEqual(1, exit_code)
+                self.assertIn(expected, self.codes(payload))
+
+    def test_final_l4_reuse_requires_exact_candidate_revisions(self) -> None:
+        state = self.success_state()
+        state["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123"],
+            release_revisions=["abc123", "repo-b@later"],
+        )
+        payload, exit_code = self.evaluate(state)
+        self.assertEqual(1, exit_code)
+        self.assertIn("stale_final_checkpoint_revisions", self.codes(payload))
+
+    def test_final_l4_reuse_accepts_permuted_candidate_revision_set(self) -> None:
+        state = self.success_state()
+        state["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123", "repo-b@later"],
+            release_revisions=["repo-b@later", "abc123"],
+        )
+        payload, exit_code = self.evaluate(state)
+        self.assertEqual(0, exit_code)
+        self.assertEqual("allow", payload["decision"])
+
+    def test_final_l4_rerun_is_required_after_candidate_changes(self) -> None:
+        state = self.success_state()
+        state["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123"],
+            release_mode="rerun_final",
+            release_revisions=["abc123", "repo-b@later"],
+        )
+        payload, exit_code = self.evaluate(state)
+        self.assertEqual(0, exit_code)
+        self.assertEqual("allow", payload["decision"])
+
+        duplicate = self.success_state()
+        duplicate["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123"],
+            release_mode="rerun_final",
+            release_revisions=["abc123"],
+        )
+        payload, exit_code = self.evaluate(duplicate)
+        self.assertEqual(1, exit_code)
+        self.assertIn("final_l4_duplicate", self.codes(payload))
+
+        permuted_duplicate = self.success_state()
+        permuted_duplicate["test_state"]["l4_checkpoints"] = self.l4_state(
+            checkpoint_revisions=["abc123", "repo-b@later"],
+            release_mode="rerun_final",
+            release_revisions=["repo-b@later", "abc123"],
+        )
+        payload, exit_code = self.evaluate(permuted_duplicate)
+        self.assertEqual(1, exit_code)
+        self.assertIn("final_l4_duplicate", self.codes(payload))
 
     def test_missing_malformed_and_non_object_state_fail_closed(self) -> None:
         cases = (("{", "state_malformed"), ("[]", "invalid_type"))
@@ -488,6 +922,29 @@ class TerminalValidatorTests(unittest.TestCase):
                         lambda state, obj=object_name, key=field: state[obj].pop(key),
                     )
                 )
+        cases.append(
+            (
+                "test_state.l4_checkpoints",
+                self.success_state(),
+                lambda state: state["test_state"].pop("l4_checkpoints"),
+            )
+        )
+        for field in (
+            "checkpoint_size",
+            "ordered_specs",
+            "completed_spec_count",
+            "checkpoints",
+            "release_l4",
+        ):
+            cases.append(
+                (
+                    f"test_state.l4_checkpoints.{field}",
+                    self.success_state(),
+                    lambda state, key=field: state["test_state"]["l4_checkpoints"].pop(
+                        key
+                    ),
+                )
+            )
         for field in ("delivery_map_sha256", "task_tree_sha256"):
             cases.append(
                 (
@@ -576,7 +1033,9 @@ class TerminalValidatorTests(unittest.TestCase):
                     "# Delivery map\n", encoding="utf-8", newline="\n"
                 )
                 self.task_tree.write_text(
-                    '{"tasks":[]}\n', encoding="utf-8", newline="\n"
+                    '{"implementation_ownership":{"role_limited_tasks":[],"specs":[],"ticket_implementation_artifacts":{"branches":[],"pull_requests":[],"tasks":[],"threads":[],"worktrees":[]}},"run_id":"run-001","tasks":[]}\n',
+                    encoding="utf-8",
+                    newline="\n",
                 )
                 self.write_state(self.success_state())
                 suffix = "\n" if source == self.task_tree else "changed\n"
@@ -606,7 +1065,9 @@ class TerminalValidatorTests(unittest.TestCase):
                     "# Delivery map\n", encoding="utf-8", newline="\n"
                 )
                 self.task_tree.write_text(
-                    '{"tasks":[]}\n', encoding="utf-8", newline="\n"
+                    '{"implementation_ownership":{"role_limited_tasks":[],"specs":[],"ticket_implementation_artifacts":{"branches":[],"pull_requests":[],"tasks":[],"threads":[],"worktrees":[]}},"run_id":"run-001","tasks":[]}\n',
+                    encoding="utf-8",
+                    newline="\n",
                 )
                 self.write_state(self.success_state())
                 source.unlink()
@@ -658,6 +1119,31 @@ class TerminalValidatorTests(unittest.TestCase):
         self.assertIn("task_tree_task_mismatch", self.codes(payload))
         self.assertNotIn("stale_task_tree", self.codes(payload))
 
+    def test_task_tree_and_state_ownership_must_match_exactly(self) -> None:
+        state = self.success_state()
+        self.write_state(state)
+        task_tree = json.loads(self.task_tree.read_text(encoding="utf-8"))
+        task_tree["implementation_ownership"]["specs"][0]["tickets"][0][
+            "owner_task_id"
+        ] = "ticket-task"
+        self.task_tree.write_text(
+            json.dumps(task_tree, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        state["freshness"]["task_tree_sha256"] = sha256(self.task_tree)
+        self.write_state_file_only(state)
+        payload, exit_code = validator.evaluate(
+            self.state_path,
+            self.delivery_map,
+            self.task_tree,
+            "run-001",
+            "terminal_success",
+        )
+        self.assertEqual(1, exit_code)
+        self.assertIn("task_tree_ownership_mismatch", self.codes(payload))
+        self.assertNotIn("stale_task_tree", self.codes(payload))
+
     def test_current_task_tree_cannot_omit_a_recorded_child(self) -> None:
         state = self.success_state()
         self.write_state(state)
@@ -698,9 +1184,12 @@ class TerminalValidatorTests(unittest.TestCase):
         self.assertEqual("repair_state", payload["next_action"]["kind"])
 
     def test_wrong_run_id_fails_as_stale(self) -> None:
-        payload, exit_code = self.evaluate(
-            {**self.success_state(), "run_id": "other-run"}
-        )
+        state = self.success_state()
+        state["run_id"] = "other-run"
+        receipt = state["implementation_ownership"]["specs"][0]["route"]["receipt"]
+        receipt["run_id"] = "other-run"
+        self.rehash_receipt(receipt)
+        payload, exit_code = self.evaluate(state)
         self.assertEqual(1, exit_code)
         self.assertIn("run_id_mismatch", self.codes(payload))
         self.assertEqual("refresh_state", payload["next_action"]["kind"])
@@ -785,6 +1274,7 @@ class TerminalValidatorTests(unittest.TestCase):
                 "active_phase",
                 "active_task_stack",
                 "child_tasks",
+                "implementation_ownership",
                 "pending_specs",
                 "unverified_handoffs",
                 "unarchived_tasks",
@@ -799,6 +1289,17 @@ class TerminalValidatorTests(unittest.TestCase):
         )
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(1, schema["properties"]["schema_version"]["const"])
+
+    def test_active_state_contract_example_validates_against_schema(self) -> None:
+        contract = CONTRACT_PATH.read_text(encoding="utf-8")
+        match = re.search(
+            r"## Active-state example\n\n```json\n(.*?)\n```", contract, re.DOTALL
+        )
+        self.assertIsNotNone(match)
+        assert match is not None
+        example = json.loads(match.group(1))
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        self.assertEqual([], validator._schema_issues(example, schema, schema, "$"))
 
 
 if __name__ == "__main__":

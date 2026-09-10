@@ -1,6 +1,6 @@
 ---
 name: test-release-train
-description: 'Orchestrate impact-selected testing across a multi-SPEC, multi-ticket software release train: run fast L0-L2 gates per SPEC, conditional installed-artifact L3 checks for public contracts, owner regressions at 5-8-SPEC checkpoints, and centralized L4-L5 release validation with reusable environments and evidence. Use when several specs are delivered sequentially, when repeated full-repository tests are too costly, or when Implement Needs must plan per-ticket, per-SPEC, checkpoint, and final release gates.'
+description: 'Orchestrate impact-selected testing across a multi-SPEC, multi-ticket software release train: run fast L0-L2 gates per SPEC, conditional installed-artifact L3 checks for public contracts, fixed ten-SPEC owner-regression checkpoints, and centralized L4-L5 release validation with reusable environments and evidence. Use when several specs are delivered sequentially, when repeated full-repository tests are too costly, or when Implement Needs must plan per-ticket, per-SPEC, checkpoint, and final release gates.'
 ---
 
 # Test Release Train
@@ -15,7 +15,7 @@ Persist `.scratch/<initiative>/test-release-train.md` beside the delivery map. K
 
 Record:
 
-- ordered SPECs, tickets, dependencies, owners, and checkpoint membership;
+- ordered SPECs, tickets, dependencies, owners, `checkpoint_size: 10`, and deterministic checkpoint membership;
 - baseline and candidate SHA for every repository;
 - source fingerprint and installed import smoke for every unchanged repository;
 - changed source files and their direct test files;
@@ -35,7 +35,7 @@ Discover existing acceptance-scope files before selecting tests. Make their `sou
 | L1 | Unit tests for changed modules and direct dependencies | 1-3 minutes | Every SPEC |
 | L2 | Integration tests for the affected owner surface | 3-10 minutes | Every SPEC |
 | L3 | Installed wheel/artifact with source unavailable, import smoke, and two deterministic replays | 2-5 minutes | Only when a public distribution contract changes; repeat for the exact final artifact |
-| L4 | Full regression for affected owners or repositories | 30-60 minutes | Once per 5-8-SPEC checkpoint and once at final release |
+| L4 | Full regression for affected owners or repositories | 30-60 minutes | Once per fixed ten-SPEC checkpoint, once for the final tail, and once at final release unless the last checkpoint is exact reusable evidence |
 | L5 | Connected, OCI, MarketHub, and other environment-backed acceptance | Environment-dependent | Only for affected owners/adapters and the final release gate |
 
 Every SPEC must pass L0-L2. A public package, CLI, schema, serialization, plugin, or import contract change also owes L3. L4 and L5 are train gates, not ticket gates.
@@ -66,9 +66,9 @@ Return a per-SPEC evidence packet containing changed owners/files, selected test
 
 ## 5. Run checkpoint regressions
 
-Form checkpoints of 5-8 merged SPECs; use six by default. Plan all boundaries before execution and rebalance a tail smaller than five across earlier checkpoints. For 32 SPECs, prefer `6 + 6 + 6 + 6 + 8` over leaving a two-SPEC tail. Cut earlier at a natural owner, migration, or integration-risk boundary, and never exceed eight merely to reduce test runs.
+Form checkpoints deterministically with `checkpoint_size = 10`. Group ordered SPECs into consecutive fixed groups of ten, followed by at most one final tail group. Do not rebalance the tail, and do not move boundaries to natural owner or migration points. For 32 SPECs the required grouping is `10 + 10 + 10 + 2`, with L4 after SPEC 10, 20, 30, and 32.
 
-At each checkpoint, run L4 once for the owners and repositories changed by that checkpoint. Reuse session environments and fixtures. Record the exact integrated SHA set and checkpoint result before starting the next train segment.
+At each checkpoint, run L4 once for the owners and repositories changed by that checkpoint segment. Reuse session environments and fixtures. Record membership, completed SPEC count, affected owners/repositories, exact integrated candidate revisions, result, and evidence before starting the next train segment. A due or failed checkpoint blocks the next segment and terminal success until it passes.
 
 Do not run every repository merely because it participates in the wider product. Unchanged repositories retain their SHA, fingerprint, and import-smoke evidence.
 
@@ -79,7 +79,7 @@ After all SPECs are integrated, freeze the exact release-candidate revisions and
 1. Re-run release-configured L0-L2 checks required for the final candidate.
 2. Build each release artifact once and reuse that artifact for L3, packaging, deployment, and smoke verification.
 3. Install each artifact once with source unavailable and run the full accumulated public-contract selection plus two deterministic replays in the same isolated environment.
-4. Run L4 once across every changed owner and repository; run the complete multi-repository regression only when the train changed all of them.
+4. Reuse the last checkpoint as final L4 evidence only when its tested candidate revision set exactly equals the release candidate. If any product revision changed after that checkpoint, rerun final L4 for the changed owners/repositories and record that evidence. Run the complete multi-repository regression only when the train changed all of them.
 5. Run L5 for changed connected adapters and release-required OCI, MarketHub, or external-service paths.
 6. Report connected and OCI outcomes independently and truthfully.
 

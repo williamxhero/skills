@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -39,6 +40,37 @@ class LifecycleValidatorTests(unittest.TestCase):
         return {"kind": kind, "target": target, "instruction": instruction}
 
     @staticmethod
+    def route_receipt(
+        spec_id: str,
+        task_id: str,
+        *,
+        selection: str = "recommended",
+        model: str = "gpt-5.6-terra",
+        thinking: str = "xhigh",
+    ) -> dict:
+        payload = {
+            "schema_version": 1,
+            "decision": "allow",
+            "gate": "task_route",
+            "run_id": "run-001",
+            "target": spec_id,
+            "task_id": task_id,
+            "selection": selection,
+            "applied": {"model": model, "thinking": thinking},
+            "locked_route": {
+                "recommended": {"model": "gpt-5.6-terra", "thinking": "xhigh"},
+                "fallbacks": [{"model": "gpt-5.6-sol", "thinking": "xhigh"}],
+            },
+            "planning_record_sha256": "a" * 64,
+            "route_readback_sha256": "b" * 64,
+        }
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        payload["receipt_sha256"] = hashlib.sha256(canonical).hexdigest()
+        return payload
+
+    @staticmethod
     def add(
         events: list[dict], event_type: str, data: dict, actor: str = "controller"
     ) -> None:
@@ -55,18 +87,47 @@ class LifecycleValidatorTests(unittest.TestCase):
             }
         )
 
-    def planning(self, events: list[dict], *, two_specs: bool = False) -> None:
-        specs = [{"id": "SPEC-1", "checkpoint_required": True}]
-        if two_specs:
-            specs.append({"id": "SPEC-2", "checkpoint_required": False})
+    @staticmethod
+    def checkpoint_plan(count: int) -> list[dict]:
+        spec_ids = [f"SPEC-{number}" for number in range(1, count + 1)]
+        checkpoints = []
+        for start in range(0, len(spec_ids), 10):
+            members = spec_ids[start : start + 10]
+            end = start + len(members)
+            checkpoints.append(
+                {
+                    "id": f"checkpoint-{end}",
+                    "start_spec_index": start + 1,
+                    "end_spec_index": end,
+                    "specs": members,
+                    "final_tail": len(members) < 10,
+                    "affected_owners": ["owner-a"],
+                    "affected_repositories": ["repo-a"],
+                }
+            )
+        return checkpoints
+
+    def planning(self, events: list[dict], *, spec_count: int = 1) -> None:
+        specs = [
+            {
+                "id": f"SPEC-{number}",
+                "tickets": [{"id": f"T{number}", "blocked_by": []}],
+                "owners": ["owner-a"],
+                "repositories": ["repo-a"],
+            }
+            for number in range(1, spec_count + 1)
+        ]
         self.add(
             events,
             "planning_archived",
             {
                 "task_id": "plan-1",
                 "specs": specs,
+                "checkpoint_size": 10,
+                "checkpoints": self.checkpoint_plan(spec_count),
                 "default_branch": "main",
                 "default_revision": "base-0",
+                "planning_record_sha256": "a" * 64,
             },
         )
 
@@ -78,14 +139,30 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "task_id": f"task-{number}",
                 "spec_id": f"SPEC-{number}",
                 "base_revision": base,
+                "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "xhigh",
+                "route_receipt": self.route_receipt(f"SPEC-{number}", f"task-{number}"),
             },
         )
 
-    def finish_spec(
-        self, events: list[dict], number: int, revision: str, *, checkpoint: bool
-    ) -> None:
+    def finish_spec(self, events: list[dict], number: int, revision: str) -> None:
         task_id = f"task-{number}"
         spec_id = f"SPEC-{number}"
+        self.add(
+            events,
+            "ticket_evidence",
+            {
+                "spec_id": spec_id,
+                "ticket_id": f"T{number}",
+                "owner_task_id": task_id,
+                "blocked_by": [],
+                "commits": [f"git://{revision}/ticket-{number}"],
+                "test_evidence": [f"test://ticket-{number}"],
+                "tracker_state": "closed",
+            },
+            actor="spec_child",
+        )
         self.add(
             events,
             "child_handoff",
@@ -98,14 +175,23 @@ class LifecycleValidatorTests(unittest.TestCase):
             {"task_id": task_id, "result": "pass", "revision": revision},
         )
         self.add(events, "child_archived", {"task_id": task_id})
-        if checkpoint:
-            self.add(
-                events, "checkpoint_passed", {"spec_id": spec_id, "revision": revision}
-            )
         self.add(
             events,
             "default_branch_verified",
             {"spec_id": spec_id, "revision": revision},
+        )
+
+    def pass_checkpoint(self, events: list[dict], position: int, revision: str) -> None:
+        self.add(
+            events,
+            "checkpoint_passed",
+            {
+                "checkpoint_id": f"checkpoint-{position}",
+                "revision": revision,
+                "candidate_revisions": [revision],
+                "affected_owners": ["owner-a"],
+                "affected_repositories": ["repo-a"],
+            },
         )
 
     def release(
@@ -120,7 +206,12 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.add(
             events,
             "final_tests_passed",
-            {"revision": revision, "artifact_id": "artifact-1"},
+            {
+                "revision": revision,
+                "artifact_id": "artifact-1",
+                "candidate_revisions": [revision],
+                "l4_reused_checkpoint": f"checkpoint-{revision.removeprefix('merge-')}",
+            },
         )
         self.add(
             events,
@@ -174,7 +265,7 @@ class LifecycleValidatorTests(unittest.TestCase):
 
     def complete_events(self, *, deploy: bool = True) -> list[dict]:
         events: list[dict] = []
-        self.planning(events, two_specs=True)
+        self.planning(events, spec_count=2)
         self.dispatch(events, 1, "base-0")
         wait = self.action("wait", "task-1")
         self.add(
@@ -187,9 +278,10 @@ class LifecycleValidatorTests(unittest.TestCase):
             },
         )
         self.add(events, "waited", {"task_id": "task-1"})
-        self.finish_spec(events, 1, "merge-1", checkpoint=True)
+        self.finish_spec(events, 1, "merge-1")
         self.dispatch(events, 2, "merge-1")
-        self.finish_spec(events, 2, "merge-2", checkpoint=False)
+        self.finish_spec(events, 2, "merge-2")
+        self.pass_checkpoint(events, 2, "merge-2")
         self.release(events, deploy=deploy)
         return events
 
@@ -227,6 +319,176 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertTrue(
             all(task["lifecycle"] == "archived" for task in payload["child_tasks"])
         )
+
+    def test_fixed_checkpoint_policy_is_table_driven(self) -> None:
+        cases = {
+            1: [1],
+            7: [7],
+            10: [10],
+            11: [10, 11],
+            20: [10, 20],
+            23: [10, 20, 23],
+            30: [10, 20, 30],
+            32: [10, 20, 30, 32],
+        }
+        for count, expected_positions in cases.items():
+            with self.subTest(count=count):
+                checkpoints = self.checkpoint_plan(count)
+                self.assertEqual(
+                    expected_positions,
+                    [checkpoint["end_spec_index"] for checkpoint in checkpoints],
+                )
+
+    def test_due_checkpoint_blocks_next_segment_dispatch(self) -> None:
+        events: list[dict] = []
+        self.planning(events, spec_count=11)
+        base = "base-0"
+        for number in range(1, 11):
+            revision = f"merge-{number}"
+            self.dispatch(events, number, base)
+            self.finish_spec(events, number, revision)
+            base = revision
+        self.dispatch(events, 11, "merge-10")
+
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("checkpoint_blocks_next_segment", self.codes(payload))
+
+        recovered = events[:-1]
+        self.pass_checkpoint(recovered, 10, "merge-10")
+        self.dispatch(recovered, 11, "merge-10")
+        payload, exit_code = self.evaluate(recovered, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual("wait", payload["next_action"]["kind"])
+
+    def test_failed_checkpoint_blocks_next_segment_until_green(self) -> None:
+        events: list[dict] = []
+        self.planning(events, spec_count=11)
+        base = "base-0"
+        for number in range(1, 11):
+            revision = f"merge-{number}"
+            self.dispatch(events, number, base)
+            self.finish_spec(events, number, revision)
+            base = revision
+        self.add(
+            events,
+            "checkpoint_failed",
+            {
+                "checkpoint_id": "checkpoint-10",
+                "revision": "merge-10",
+                "candidate_revisions": ["merge-10"],
+                "affected_owners": ["owner-a"],
+                "affected_repositories": ["repo-a"],
+                "reason": "Owner regression failed.",
+            },
+        )
+        self.dispatch(events, 11, "merge-10")
+
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("checkpoint_blocks_next_segment", self.codes(payload))
+
+    def test_final_l4_reuse_requires_exact_candidate_revisions(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.finish_spec(events, 1, "merge-1")
+        self.pass_checkpoint(events, 1, "merge-1")
+        events[-1]["data"]["candidate_revisions"] = ["merge-1", "repo-a@locked"]
+        self.add(events, "release_candidate_frozen", {"revision": "merge-1"})
+        self.add(
+            events,
+            "artifact_built",
+            {"revision": "merge-1", "artifact_id": "artifact-1"},
+        )
+        self.add(
+            events,
+            "final_tests_passed",
+            {
+                "revision": "merge-1",
+                "artifact_id": "artifact-1",
+                "candidate_revisions": ["merge-1", "repo-b@later"],
+                "l4_reused_checkpoint": "checkpoint-1",
+            },
+        )
+
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("stale_final_checkpoint_revisions", self.codes(payload))
+
+    def test_final_l4_reuse_accepts_permuted_candidate_revision_set(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.finish_spec(events, 1, "merge-1")
+        self.pass_checkpoint(events, 1, "merge-1")
+        events[-1]["data"]["candidate_revisions"] = ["merge-1", "repo-b@later"]
+        self.add(events, "release_candidate_frozen", {"revision": "merge-1"})
+        self.add(
+            events,
+            "artifact_built",
+            {"revision": "merge-1", "artifact_id": "artifact-1"},
+        )
+        self.add(
+            events,
+            "final_tests_passed",
+            {
+                "revision": "merge-1",
+                "artifact_id": "artifact-1",
+                "candidate_revisions": ["repo-b@later", "merge-1"],
+                "l4_reused_checkpoint": "checkpoint-1",
+            },
+        )
+
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual("package", payload["next_action"]["target"])
+
+    def test_final_l4_rerun_is_required_only_after_candidate_changes(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.finish_spec(events, 1, "merge-1")
+        self.pass_checkpoint(events, 1, "merge-1")
+        events[-1]["data"]["candidate_revisions"] = ["merge-1", "repo-a@locked"]
+        self.add(events, "release_candidate_frozen", {"revision": "merge-1"})
+        self.add(
+            events,
+            "artifact_built",
+            {"revision": "merge-1", "artifact_id": "artifact-1"},
+        )
+        self.add(
+            events,
+            "final_tests_passed",
+            {
+                "revision": "merge-1",
+                "artifact_id": "artifact-1",
+                "candidate_revisions": ["merge-1", "repo-b@later"],
+                "l4_reused_checkpoint": None,
+            },
+        )
+
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual("package", payload["next_action"]["target"])
+
+        duplicate = copy.deepcopy(events)
+        duplicate[-1]["data"]["candidate_revisions"] = [
+            "merge-1",
+            "repo-a@locked",
+        ]
+        payload, exit_code = self.evaluate(duplicate, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("final_l4_duplicate", self.codes(payload))
+
+        permuted_duplicate = copy.deepcopy(events)
+        permuted_duplicate[-1]["data"]["candidate_revisions"] = [
+            "repo-a@locked",
+            "merge-1",
+        ]
+        payload, exit_code = self.evaluate(permuted_duplicate, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("final_l4_duplicate", self.codes(payload))
 
     def test_running_child_heartbeats_continue_waiting_without_terminal(self) -> None:
         events: list[dict] = []
@@ -298,6 +560,20 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.dispatch(events, 1, "base-0")
         self.add(
             events,
+            "ticket_evidence",
+            {
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+                "owner_task_id": "task-1",
+                "blocked_by": [],
+                "commits": ["git://merge-1/ticket-1"],
+                "test_evidence": ["test://ticket-1"],
+                "tracker_state": "closed",
+            },
+            actor="spec_child",
+        )
+        self.add(
+            events,
             "child_handoff",
             {"task_id": "task-1", "boundary": "merged_evidence", "revision": "merge-1"},
             actor="spec_child",
@@ -313,27 +589,115 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("archive_before_verification", self.codes(payload))
 
+    def test_spec_handoff_requires_all_ticket_evidence(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.add(
+            events,
+            "child_handoff",
+            {"task_id": "task-1", "boundary": "merged_evidence", "revision": "merge-1"},
+            actor="spec_child",
+        )
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("ticket_evidence_missing", self.codes(payload))
+
     def test_only_one_spec_runs_and_next_uses_latest_verified_default(self) -> None:
         events: list[dict] = []
-        self.planning(events, two_specs=True)
+        self.planning(events, spec_count=2)
         self.dispatch(events, 1, "base-0")
         self.add(
             events,
             "spec_dispatched",
-            {"task_id": "task-2", "spec_id": "SPEC-2", "base_revision": "base-0"},
+            {
+                "task_id": "task-2",
+                "spec_id": "SPEC-2",
+                "base_revision": "base-0",
+                "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "xhigh",
+                "route_receipt": self.route_receipt("SPEC-2", "task-2"),
+            },
         )
         payload, exit_code = self.evaluate(events, "active")
         self.assertEqual(1, exit_code)
         self.assertIn("overlapping_spec", self.codes(payload))
 
+    def test_dispatch_rejects_non_policy_model_or_effort(self) -> None:
+        for field, value in (("model", "gpt-5.6-unknown"), ("thinking", "max")):
+            with self.subTest(field=field):
+                events: list[dict] = []
+                self.planning(events)
+                self.dispatch(events, 1, "base-0")
+                events[-1]["data"][field] = value
+                payload, exit_code = self.evaluate(events, "active")
+                self.assertEqual(1, exit_code)
+                self.assertIn("invalid_spec_model_policy", self.codes(payload))
+
         sequential: list[dict] = []
-        self.planning(sequential, two_specs=True)
+        self.planning(sequential, spec_count=2)
         self.dispatch(sequential, 1, "base-0")
-        self.finish_spec(sequential, 1, "merge-1", checkpoint=True)
+        self.finish_spec(sequential, 1, "merge-1")
         self.dispatch(sequential, 2, "base-0")
         payload, exit_code = self.evaluate(sequential, "active")
         self.assertEqual(1, exit_code)
         self.assertIn("stale_spec_base", self.codes(payload))
+
+    def test_dispatch_binds_locked_route_owner_and_receipt_identity(self) -> None:
+        valid: list[dict] = []
+        self.planning(valid)
+        self.add(
+            valid,
+            "spec_dispatched",
+            {
+                "task_id": "task-1",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+                "route_selection": "fallback",
+                "model": "gpt-5.6-sol",
+                "thinking": "xhigh",
+                "route_receipt": self.route_receipt(
+                    "SPEC-1",
+                    "task-1",
+                    selection="fallback",
+                    model="gpt-5.6-sol",
+                ),
+            },
+        )
+        payload, exit_code = self.evaluate(valid, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            "fallback",
+            payload["implementation_ownership"]["specs"][0]["route"]["selection"],
+        )
+
+        unlocked: list[dict] = []
+        self.planning(unlocked)
+        self.add(
+            unlocked,
+            "spec_dispatched",
+            {
+                "task_id": "task-1",
+                "spec_id": "SPEC-1",
+                "base_revision": "base-0",
+                "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "high",
+                "route_receipt": self.route_receipt(
+                    "SPEC-1", "task-1", thinking="high"
+                ),
+            },
+        )
+        payload, exit_code = self.evaluate(unlocked, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("route_not_locked_recommendation", self.codes(payload))
+
+        bad_identity = copy.deepcopy(valid)
+        bad_identity[-1]["data"]["route_receipt"]["receipt_sha256"] = "c" * 64
+        payload, exit_code = self.evaluate(bad_identity, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("route_receipt_hash_mismatch", self.codes(payload))
 
     def test_blocker_repair_archives_then_returns_to_exact_breakpoint(self) -> None:
         events: list[dict] = []
@@ -395,6 +759,73 @@ class LifecycleValidatorTests(unittest.TestCase):
         self.assertEqual(1, exit_code)
         self.assertIn("resume_action_mismatch", self.codes(payload))
 
+    def test_ticket_owner_mismatch_and_ticket_artifacts_reject(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.add(
+            events,
+            "ticket_evidence",
+            {
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+                "owner_task_id": "ticket-task-1",
+                "blocked_by": [],
+                "commits": ["git://ticket-1"],
+                "test_evidence": ["test://ticket-1"],
+                "tracker_state": "closed",
+            },
+            actor="spec_child",
+        )
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("ticket_owner_mismatch", self.codes(payload))
+
+        artifact = events[:2]
+        self.add(
+            artifact,
+            "ticket_implementation_artifact",
+            {
+                "artifact_type": "thread",
+                "id": "ticket-thread-1",
+                "spec_id": "SPEC-1",
+                "ticket_id": "T1",
+            },
+        )
+        payload, exit_code = self.evaluate(artifact, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("ticket_implementation_artifact_present", self.codes(payload))
+
+    def test_read_only_review_is_role_limited_and_cannot_merge(self) -> None:
+        events: list[dict] = []
+        self.planning(events)
+        self.dispatch(events, 1, "base-0")
+        self.add(
+            events,
+            "role_limited_task",
+            {
+                "task_id": "review-1",
+                "spec_id": "SPEC-1",
+                "parent_task_id": "task-1",
+                "role": "read_only_review",
+                "writes_product_code": False,
+                "merge_commits": [],
+            },
+        )
+        payload, exit_code = self.evaluate(events, "active")
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            "review-1",
+            payload["implementation_ownership"]["role_limited_tasks"][0]["task_id"],
+        )
+
+        mutated = copy.deepcopy(events)
+        mutated[-1]["data"]["writes_product_code"] = True
+        mutated[-1]["data"]["merge_commits"] = ["merge-review"]
+        payload, exit_code = self.evaluate(mutated, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("role_limited_task_mutated_product", self.codes(payload))
+
     def test_restart_reconnects_recorded_child_without_duplicate_creation(self) -> None:
         events: list[dict] = []
         self.planning(events)
@@ -408,12 +839,33 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "observed_task_ids": ["plan-1", "task-1"],
             },
         )
-        self.add(events, "child_reconnected", {"task_id": "task-1"})
+        self.add(
+            events,
+            "child_reconnected",
+            {
+                "task_id": "task-1",
+                "route_receipt": events[1]["data"]["route_receipt"],
+            },
+        )
         self.add(events, "stored_action_resumed", {"action": stored})
         self.add(events, "waited", {"task_id": "task-1"})
         payload, exit_code = self.evaluate(events, "active")
         self.assertEqual(0, exit_code)
         self.assertEqual(2, len(payload["child_tasks"]))
+
+        route_drift = copy.deepcopy(events)
+        reconnect = next(
+            event for event in route_drift if event["type"] == "child_reconnected"
+        )
+        reconnect["data"]["route_receipt"] = self.route_receipt(
+            "SPEC-1",
+            "task-1",
+            selection="fallback",
+            model="gpt-5.6-sol",
+        )
+        payload, exit_code = self.evaluate(route_drift, "active")
+        self.assertEqual(1, exit_code)
+        self.assertIn("recovery_route_mismatch", self.codes(payload))
 
         duplicate = events[:3]
         self.add(
@@ -423,6 +875,10 @@ class LifecycleValidatorTests(unittest.TestCase):
                 "task_id": "task-duplicate",
                 "spec_id": "SPEC-1",
                 "base_revision": "base-0",
+                "route_selection": "recommended",
+                "model": "gpt-5.6-terra",
+                "thinking": "xhigh",
+                "route_receipt": self.route_receipt("SPEC-1", "task-duplicate"),
             },
         )
         payload, exit_code = self.evaluate(duplicate, "active")

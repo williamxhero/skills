@@ -46,19 +46,21 @@ Use the remote default branch; otherwise use `main`, then `master`, then the rep
 
 ## Controller and child tasks
 
-Use `list_projects`, `create_thread`, `wait_threads`, `send_message_to_thread`, and `set_thread_archived` for planning and SPEC boundaries; present them as Codex tasks. Apply `unblock-development` for repair boundaries. The planning task may use subagents for repository exploration, and `implement-spec` may use them for parallel tickets. If the required task-lifecycle tools are unavailable, enter the hard-blocker protocol instead of substituting the controller context or a subagent.
+Use `list_projects`, `create_thread`, `wait_threads`, `send_message_to_thread`, and `set_thread_archived` for planning and SPEC boundaries; present them as Codex tasks. Apply `unblock-development` for repair boundaries. The planning task may use subagents for repository exploration. Under Implement Needs, `implement-spec` supplies task-graph, PR, review, test, and cleanup semantics, but the local assignment overrides ticket-worker topology: tickets run inside the one SPEC task and never receive implementation tasks, worktrees, branches, or PRs. If the required task-lifecycle tools are unavailable, enter the hard-blocker protocol instead of substituting the controller context or a subagent.
 
 Resolve the Codex project that owns the repository before dispatch. Run planning against the saved project so it can inspect the repository and publish tracker artifacts while remaining code-read-only. Use a project worktree for repository-scoped code repairs and SPEC implementation; use the saved project directly for host-level, network, credential, or shared-environment repairs. Start each SPEC task from the default-branch state containing every prior merge. Verify and archive planning before the first SPEC. Keep exactly one SPEC child active.
 
-Planning uses at least a reliable high-intelligence agentic model with `xhigh` effort. For broad cross-repository, migration-heavy, or unusually ambiguous requirements, use the strongest reliable model with the highest supported effort of `max` or `ultra`. Lock only advertised pairs and same-or-stronger fallbacks; if the floor has no supported pair, enter blocker handling before creation. Record the selection and rationale before creation; never route planning to the fast/economical class.
+At SPEC entry, use only the Implement Needs policy values: models `gpt-5.6-luna`, `gpt-5.6-terra`, and `gpt-5.6-sol`; reasoning efforts `medium`, `high`, and `xhigh`. Planning uses at least `gpt-5.6-terra` with `xhigh`; for broad cross-repository, migration-heavy, or unusually ambiguous requirements, use exactly the maximum `gpt-5.6-sol` with `xhigh`. Lock only advertised, allow-listed pairs and same-or-stronger fallbacks; if the floor has no supported pair, enter blocker handling before creation.
+
+The rank is deterministic and deliberately independent of task wording: fast/economical `gpt-5.6-luna` < balanced `gpt-5.6-terra` < reliable-workhorse `gpt-5.6-sol` by policy capability tier, and `medium` < `high` < `xhigh` by reasoning budget. A fallback must be at least the recommendation's rank on both axes and must be distinct whenever another same-or-stronger allowed pair exists. Only the maximum `gpt-5.6-sol`/`xhigh` route may repeat itself as fallback. Every selection resumes the existing SPEC owner task. Record the complete validator receipt containing the actual selected pair from readback—not merely the requested pair—before dispatch or recovery.
 
 The planning task locks one advertised `model` and `thinking` pair for each SPEC after producing its ticket graph:
 
-| Difficulty | Typical shape | Model class | Reasoning effort |
+| Difficulty | Typical shape | Model | Reasoning effort |
 | --- | --- | --- | --- |
-| Easy | Localized, known-pattern change | Fast, economical coding model | `medium` |
-| Standard | Several modules or an unfamiliar bounded integration | Balanced agentic coding model | `high` |
-| Hard | Cross-cutting behavior, migrations, concurrency, security, or performance | Reliable agentic workhorse | `xhigh` |
-| Extreme | Multi-repository or unusually fragile compatibility/release constraints | Strongest reliable model | Highest supported of `max` or `ultra` |
+| Easy | Localized, known-pattern change | `gpt-5.6-luna` | `medium` |
+| Standard | Several modules or an unfamiliar bounded integration | `gpt-5.6-terra` | `high` |
+| Hard | Cross-cutting behavior, migrations, concurrency, security, or performance | `gpt-5.6-terra` | `xhigh` |
+| Extreme | Multi-repository or unusually fragile compatibility/release constraints | `gpt-5.6-sol` | `xhigh` |
 
 Record the exact recommendation, difficulty, rationale, and concrete same-or-stronger fallback pairs in the planning record. The controller does not reclassify it. A material SPEC or ticket-graph change invalidates the recommendation and must be returned to the same planning task; never create a second planner. Let `unblock-development` route actual repair tasks independently.

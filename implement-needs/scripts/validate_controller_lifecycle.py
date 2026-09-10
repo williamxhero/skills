@@ -8,9 +8,15 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from model_policy import load_policy
+
+MODEL_POLICY, MODEL_POLICY_ERROR = load_policy()
 
 CONTROLLER_STATES = {
     "active",
@@ -42,16 +48,64 @@ DATA_FIELDS = {
     "planning_archived": {
         "task_id",
         "specs",
+        "checkpoint_size",
+        "checkpoints",
         "default_branch",
         "default_revision",
+        "planning_record_sha256",
     },
-    "spec_dispatched": {"task_id", "spec_id", "base_revision"},
+    "spec_dispatched": {
+        "task_id",
+        "spec_id",
+        "base_revision",
+        "route_selection",
+        "model",
+        "thinking",
+        "route_receipt",
+    },
     "commentary": {"category", "text", "next_action"},
     "waited": {"task_id"},
+    "ticket_evidence": {
+        "spec_id",
+        "ticket_id",
+        "owner_task_id",
+        "blocked_by",
+        "commits",
+        "test_evidence",
+        "tracker_state",
+    },
+    "ticket_implementation_artifact": {
+        "artifact_type",
+        "id",
+        "spec_id",
+        "ticket_id",
+    },
+    "role_limited_task": {
+        "task_id",
+        "spec_id",
+        "parent_task_id",
+        "role",
+        "writes_product_code",
+        "merge_commits",
+    },
     "child_handoff": {"task_id", "boundary", "revision"},
     "handoff_verified": {"task_id", "result", "revision"},
     "child_archived": {"task_id"},
-    "checkpoint_passed": {"spec_id", "revision"},
+    "checkpoint_passed": {
+        "checkpoint_id",
+        "revision",
+        "candidate_revisions",
+        "affected_owners",
+        "affected_repositories",
+    },
+    "checkpoint_failed": {
+        "checkpoint_id",
+        "revision",
+        "candidate_revisions",
+        "affected_owners",
+        "affected_repositories",
+        "reason",
+    },
     "default_branch_verified": {"spec_id", "revision"},
     "blocker_opened": {
         "repair_task_id",
@@ -61,11 +115,16 @@ DATA_FIELDS = {
     },
     "blocked_action_resumed": {"repair_task_id", "parent_task_id", "action"},
     "controller_resumed": {"persisted_next_action", "observed_task_ids"},
-    "child_reconnected": {"task_id"},
+    "child_reconnected": {"task_id", "route_receipt"},
     "stored_action_resumed": {"action"},
     "release_candidate_frozen": {"revision"},
     "artifact_built": {"revision", "artifact_id"},
-    "final_tests_passed": {"revision", "artifact_id"},
+    "final_tests_passed": {
+        "revision",
+        "artifact_id",
+        "candidate_revisions",
+        "l4_reused_checkpoint",
+    },
     "package_completed": {"revision", "artifact_id", "package_id"},
     "deployment_completed": {
         "revision",
@@ -97,16 +156,58 @@ DATA_FIELDS = {
 EXPECTED_ACTORS = {
     event_type: "controller"
     for event_type in DATA_FIELDS
-    if event_type != "child_handoff"
+    if event_type not in {"child_handoff", "ticket_evidence"}
 }
 COMMENTARY_CATEGORIES = {"heartbeat", "side_question_answer", "progress"}
+ROUTE_SELECTIONS = {"recommended", "fallback"}
+TICKET_IMPLEMENTATION_ARTIFACTS = {
+    "task": "tasks",
+    "thread": "threads",
+    "worktree": "worktrees",
+    "branch": "branches",
+    "pull_request": "pull_requests",
+}
+ROLE_LIMITED_ROLES = {
+    "blocker_repair",
+    "read_only_exploration",
+    "read_only_review",
+}
 CHINESE_RE = re.compile(r"[\u3400-\u9fff]")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 REPAIR_LOG_ACTION = {
     "kind": "repair_state",
     "target": "lifecycle-log.jsonl",
     "instruction": "Repair the lifecycle log from observed task and delivery evidence, then replay the lifecycle gate.",
 }
+CHECKPOINT_SIZE = 10
+
+
+def _allowed_pair(model: Any, thinking: Any) -> bool:
+    return (
+        MODEL_POLICY is not None
+        and model in MODEL_POLICY["models"]
+        and thinking in MODEL_POLICY["efforts"]
+    )
+
+
+def _checkpoint_plan(spec_ids: list[str]) -> list[dict[str, Any]]:
+    checkpoints: list[dict[str, Any]] = []
+    for start in range(0, len(spec_ids), CHECKPOINT_SIZE):
+        members = spec_ids[start : start + CHECKPOINT_SIZE]
+        if not members:
+            continue
+        end = start + len(members)
+        checkpoints.append(
+            {
+                "id": f"checkpoint-{end}",
+                "start_spec_index": start + 1,
+                "end_spec_index": end,
+                "specs": members,
+                "final_tail": len(members) < CHECKPOINT_SIZE,
+            }
+        )
+    return checkpoints
 
 
 def _issue(code: str, path: str, message: str) -> dict[str, str]:
@@ -130,8 +231,236 @@ def _decision_hash(payload: dict[str, Any]) -> str:
     return _sha256(canonical)
 
 
+def _policy_pair(value: Any) -> dict[str, str] | None:
+    if (
+        MODEL_POLICY is None
+        or not isinstance(value, dict)
+        or set(value) != {"model", "thinking"}
+        or value.get("model") not in MODEL_POLICY["models"]
+        or value.get("thinking") not in MODEL_POLICY["efforts"]
+    ):
+        return None
+    return {"model": value["model"], "thinking": value["thinking"]}
+
+
+def _same_or_stronger(candidate: dict[str, str], baseline: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return (
+        MODEL_POLICY["model_rank"][candidate["model"]]
+        >= MODEL_POLICY["model_rank"][baseline["model"]]
+        and MODEL_POLICY["effort_rank"][candidate["thinking"]]
+        >= MODEL_POLICY["effort_rank"][baseline["thinking"]]
+    )
+
+
+def _distinct_same_or_stronger_allowed(pair: dict[str, str]) -> bool:
+    if MODEL_POLICY is None:
+        return False
+    return any(
+        candidate != pair and _same_or_stronger(candidate, pair)
+        for candidate in (
+            {"model": model, "thinking": thinking}
+            for model in MODEL_POLICY["models"]
+            for thinking in MODEL_POLICY["efforts"]
+        )
+    )
+
+
+def _route_receipt_issues(
+    value: Any,
+    path: str,
+    *,
+    run_id: str,
+    target: str,
+    task_id: str,
+    selection: Any,
+    model: Any,
+    thinking: Any,
+    planning_record_sha256: str | None,
+) -> list[dict[str, str]]:
+    expected_fields = {
+        "schema_version",
+        "decision",
+        "gate",
+        "run_id",
+        "target",
+        "task_id",
+        "selection",
+        "applied",
+        "locked_route",
+        "planning_record_sha256",
+        "route_readback_sha256",
+        "receipt_sha256",
+    }
+    if not isinstance(value, dict) or set(value) != expected_fields:
+        return [
+            _issue(
+                "invalid_route_receipt",
+                path,
+                "Route receipt must be the exact task_route allow receipt.",
+            )
+        ]
+
+    issues: list[dict[str, str]] = []
+    for field, expected in (
+        ("schema_version", 1),
+        ("decision", "allow"),
+        ("gate", "task_route"),
+        ("run_id", run_id),
+        ("target", target),
+        ("task_id", task_id),
+        ("selection", selection),
+    ):
+        if value.get(field) != expected:
+            issues.append(
+                _issue(
+                    f"route_receipt_{field}_mismatch",
+                    f"{path}.{field}",
+                    f"Route receipt {field} must match the dispatch identity.",
+                )
+            )
+
+    applied = _policy_pair(value.get("applied"))
+    event_pair = _policy_pair({"model": model, "thinking": thinking})
+    if applied is None:
+        issues.append(
+            _issue(
+                "invalid_route_receipt_pair",
+                f"{path}.applied",
+                "Route receipt pair must be allowed by the model policy.",
+            )
+        )
+    elif event_pair is None or applied != event_pair:
+        issues.append(
+            _issue(
+                "route_receipt_pair_mismatch",
+                f"{path}.applied",
+                "Route receipt pair must equal the persisted dispatch pair.",
+            )
+        )
+
+    locked = value.get("locked_route")
+    recommended: dict[str, str] | None = None
+    fallbacks: list[dict[str, str]] = []
+    if (
+        not isinstance(locked, dict)
+        or set(locked) != {"recommended", "fallbacks"}
+        or not isinstance(locked.get("fallbacks"), list)
+        or not locked["fallbacks"]
+    ):
+        issues.append(
+            _issue(
+                "invalid_locked_route",
+                f"{path}.locked_route",
+                "Receipt must retain one recommendation and at least one fallback.",
+            )
+        )
+    else:
+        recommended = _policy_pair(locked.get("recommended"))
+        parsed_fallbacks = [_policy_pair(item) for item in locked["fallbacks"]]
+        if recommended is None or any(item is None for item in parsed_fallbacks):
+            issues.append(
+                _issue(
+                    "invalid_locked_route",
+                    f"{path}.locked_route",
+                    "Every locked route pair must be allowed by the model policy.",
+                )
+            )
+        else:
+            fallbacks = [item for item in parsed_fallbacks if item is not None]
+            encoded = [json.dumps(item, sort_keys=True) for item in fallbacks]
+            if len(encoded) != len(set(encoded)):
+                issues.append(
+                    _issue(
+                        "duplicate_locked_fallback",
+                        f"{path}.locked_route.fallbacks",
+                        "Locked fallback pairs must be unique.",
+                    )
+                )
+            for index, fallback in enumerate(fallbacks):
+                fallback_path = f"{path}.locked_route.fallbacks[{index}]"
+                if not _same_or_stronger(fallback, recommended):
+                    issues.append(
+                        _issue(
+                            "locked_fallback_weaker",
+                            fallback_path,
+                            "Locked fallback must be same-or-stronger than the recommendation.",
+                        )
+                    )
+                if fallback == recommended and _distinct_same_or_stronger_allowed(
+                    recommended
+                ):
+                    issues.append(
+                        _issue(
+                            "locked_fallback_not_distinct",
+                            fallback_path,
+                            "Same-pair fallback is valid only at the maximum allowed route.",
+                        )
+                    )
+
+    if applied is not None and recommended is not None:
+        if selection == "recommended" and applied != recommended:
+            issues.append(
+                _issue(
+                    "route_not_locked_recommendation",
+                    f"{path}.applied",
+                    "Recommended dispatch must use the exact locked recommendation.",
+                )
+            )
+        elif selection == "fallback" and applied not in fallbacks:
+            issues.append(
+                _issue(
+                    "route_not_preapproved_fallback",
+                    f"{path}.applied",
+                    "Fallback dispatch must use an exact preapproved fallback.",
+                )
+            )
+
+    for field in (
+        "planning_record_sha256",
+        "route_readback_sha256",
+        "receipt_sha256",
+    ):
+        if (
+            not isinstance(value.get(field), str)
+            or SHA256_RE.fullmatch(value[field]) is None
+        ):
+            issues.append(
+                _issue(
+                    "invalid_route_receipt_hash",
+                    f"{path}.{field}",
+                    "Route receipt hashes must be lowercase SHA-256 values.",
+                )
+            )
+    if value.get("planning_record_sha256") != planning_record_sha256:
+        issues.append(
+            _issue(
+                "route_receipt_planning_mismatch",
+                f"{path}.planning_record_sha256",
+                "Route receipt must bind the archived planning record.",
+            )
+        )
+    receipt_body = dict(value)
+    receipt_sha256 = receipt_body.pop("receipt_sha256")
+    if _decision_hash(receipt_body) != receipt_sha256:
+        issues.append(
+            _issue(
+                "route_receipt_hash_mismatch",
+                f"{path}.receipt_sha256",
+                "Route receipt identity does not match its canonical content.",
+            )
+        )
+    return _sorted(issues)
+
+
 def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _candidate_revision_set(revisions: list[str]) -> frozenset[str]:
+    """Return the order-independent identity of repository candidate revisions."""
+    return frozenset(revisions)
 
 
 def _nullable_text(value: Any) -> bool:
@@ -145,6 +474,16 @@ def _string_list(value: Any, *, nonempty: bool = False) -> bool:
         and all(_text(item) for item in value)
         and len(value) == len(set(value))
     )
+
+
+def _empty_ticket_artifacts() -> dict[str, list[str]]:
+    return {
+        "tasks": [],
+        "threads": [],
+        "worktrees": [],
+        "branches": [],
+        "pull_requests": [],
+    }
 
 
 def _action_issues(value: Any, path: str) -> list[dict[str, str]]:
@@ -322,9 +661,9 @@ def _matches_action(action: dict[str, str], event: dict[str, Any]) -> bool:
         if event_type == "handoff_verified":
             return data.get("task_id") == target
         return (
-            event_type in {"checkpoint_passed", "default_branch_verified"}
-            and data.get("spec_id") == target
-        )
+            event_type in {"checkpoint_passed", "checkpoint_failed"}
+            and data.get("checkpoint_id") == target
+        ) or (event_type == "default_branch_verified" and data.get("spec_id") == target)
     if kind == "archive":
         return event_type == "child_archived" and data.get("task_id") == target
     if kind == "repair":
@@ -340,6 +679,7 @@ def _matches_action(action: dict[str, str], event: dict[str, Any]) -> bool:
     if kind == "advance":
         return event_type in {
             "checkpoint_passed",
+            "checkpoint_failed",
             "default_branch_verified",
             "release_candidate_frozen",
             "artifact_built",
@@ -372,6 +712,10 @@ class _Replay:
         self.pending_specs: list[str] = []
         self.default_branch: str | None = None
         self.default_revision: str | None = None
+        self.planning_record_sha256: str | None = None
+        self.checkpoint_size = CHECKPOINT_SIZE
+        self.checkpoints: list[dict[str, Any]] = []
+        self.checkpoint_state: dict[str, dict[str, Any]] = {}
         self.blocker: dict[str, Any] | None = None
         self.pending_action: dict[str, str] | None = None
         self.pending_action_source: str | None = None
@@ -381,10 +725,13 @@ class _Replay:
         self.candidate_revision: str | None = None
         self.artifact_id: str | None = None
         self.tests_passed = False
+        self.release_l4: dict[str, Any] | None = None
         self.package_id: str | None = None
         self.deployment_status = "pending"
         self.deployment_target: str | None = None
         self.smoke_passed = False
+        self.ticket_implementation_artifacts = _empty_ticket_artifacts()
+        self.role_limited_tasks: list[dict[str, Any]] = []
         self.evidence_count = 0
 
     def add(self, code: str, path: str, message: str) -> None:
@@ -395,6 +742,206 @@ class _Replay:
             self.add("unknown_task", path, "Event names an unknown child task.")
             return None
         return self.tasks[task_id]
+
+    def _load_checkpoints(
+        self, value: Any, expected: list[dict[str, Any]], path: str
+    ) -> None:
+        if not isinstance(value, list) or len(value) != len(expected):
+            self.add(
+                "checkpoint_mismatch",
+                path,
+                "Lifecycle checkpoints must match the deterministic fixed-size plan.",
+            )
+            return
+        parsed: list[dict[str, Any]] = []
+        for index, checkpoint in enumerate(value):
+            checkpoint_path = f"{path}[{index}]"
+            if not isinstance(checkpoint, dict) or set(checkpoint) != {
+                "id",
+                "start_spec_index",
+                "end_spec_index",
+                "specs",
+                "final_tail",
+                "affected_owners",
+                "affected_repositories",
+            }:
+                self.add(
+                    "invalid_checkpoint_plan",
+                    checkpoint_path,
+                    "Checkpoint needs deterministic membership and affected surfaces.",
+                )
+                continue
+            actual_members = checkpoint.get("specs")
+            affected_owners = checkpoint.get("affected_owners")
+            affected_repositories = checkpoint.get("affected_repositories")
+            if not _string_list(actual_members, nonempty=True):
+                self.add(
+                    "invalid_checkpoint_plan",
+                    f"{checkpoint_path}.specs",
+                    "Checkpoint SPEC membership is required.",
+                )
+            if not _string_list(affected_owners, nonempty=True):
+                self.add(
+                    "invalid_checkpoint_surfaces",
+                    f"{checkpoint_path}.affected_owners",
+                    "Checkpoint affected owners are required.",
+                )
+            if not _string_list(affected_repositories, nonempty=True):
+                self.add(
+                    "invalid_checkpoint_surfaces",
+                    f"{checkpoint_path}.affected_repositories",
+                    "Checkpoint affected repositories are required.",
+                )
+            expected_checkpoint = expected[index]
+            for field in (
+                "id",
+                "start_spec_index",
+                "end_spec_index",
+                "specs",
+                "final_tail",
+            ):
+                if checkpoint.get(field) != expected_checkpoint[field]:
+                    self.add(
+                        "checkpoint_policy_mismatch",
+                        f"{checkpoint_path}.{field}",
+                        f"Expected {expected_checkpoint[field]!r}.",
+                    )
+            members = set(expected_checkpoint["specs"])
+            expected_owners = list(
+                dict.fromkeys(
+                    owner
+                    for spec in self.specs
+                    if spec["id"] in members
+                    for owner in spec["owners"]
+                )
+            )
+            expected_repositories = list(
+                dict.fromkeys(
+                    repository
+                    for spec in self.specs
+                    if spec["id"] in members
+                    for repository in spec["repositories"]
+                )
+            )
+            if affected_owners != expected_owners:
+                self.add(
+                    "checkpoint_owner_scope_mismatch",
+                    f"{checkpoint_path}.affected_owners",
+                    "Checkpoint owners must be derived from its member SPEC ownership.",
+                )
+            if affected_repositories != expected_repositories:
+                self.add(
+                    "checkpoint_repository_scope_mismatch",
+                    f"{checkpoint_path}.affected_repositories",
+                    "Checkpoint repositories must be derived from its member SPEC ownership.",
+                )
+            parsed_checkpoint = {
+                "id": checkpoint.get("id"),
+                "start_spec_index": checkpoint.get("start_spec_index"),
+                "end_spec_index": checkpoint.get("end_spec_index"),
+                "specs": checkpoint.get("specs"),
+                "final_tail": checkpoint.get("final_tail"),
+                "affected_owners": checkpoint.get("affected_owners"),
+                "affected_repositories": checkpoint.get("affected_repositories"),
+            }
+            parsed.append(parsed_checkpoint)
+            self.checkpoint_state[parsed_checkpoint["id"]] = {
+                **parsed_checkpoint,
+                "status": "pending",
+                "revision": None,
+                "candidate_revisions": [],
+                "evidence": [],
+            }
+        self.checkpoints = parsed
+
+    def _completed_spec_count(self) -> int:
+        return len(self.specs) - len(self.pending_specs)
+
+    def _due_checkpoint(self) -> dict[str, Any] | None:
+        completed = self._completed_spec_count()
+        for checkpoint in self.checkpoints:
+            state = self.checkpoint_state.get(checkpoint["id"])
+            if (
+                isinstance(checkpoint.get("end_spec_index"), int)
+                and checkpoint["end_spec_index"] <= completed
+                and state is not None
+                and state["status"] != "passed"
+            ):
+                return state
+        return None
+
+    def _last_checkpoint(self) -> dict[str, Any] | None:
+        if not self.checkpoints:
+            return None
+        return self.checkpoint_state.get(self.checkpoints[-1]["id"])
+
+    def _checkpoint_result(
+        self,
+        data: dict[str, Any],
+        path: str,
+        *,
+        status: str,
+    ) -> dict[str, Any] | None:
+        checkpoint_id = data.get("checkpoint_id")
+        if not _text(checkpoint_id) or checkpoint_id not in self.checkpoint_state:
+            self.add(
+                "unknown_checkpoint",
+                f"{path}.data.checkpoint_id",
+                "Unknown checkpoint.",
+            )
+            return None
+        checkpoint = self.checkpoint_state[checkpoint_id]
+        if (
+            isinstance(checkpoint.get("end_spec_index"), int)
+            and checkpoint["end_spec_index"] > self._completed_spec_count()
+        ):
+            self.add(
+                "checkpoint_before_due",
+                path,
+                "Checkpoint L4 is due only after every SPEC in its segment is closed.",
+            )
+        if data.get("revision") != self.default_revision:
+            self.add(
+                "checkpoint_revision_mismatch",
+                path,
+                "Checkpoint must test the current default revision.",
+            )
+        candidate_revisions = data.get("candidate_revisions")
+        affected_owners = data.get("affected_owners")
+        affected_repositories = data.get("affected_repositories")
+        if not _string_list(candidate_revisions, nonempty=True):
+            self.add(
+                "invalid_checkpoint_revisions",
+                f"{path}.data.candidate_revisions",
+                "Checkpoint candidate revisions are required.",
+            )
+            candidate_revisions = []
+        if data.get("revision") not in candidate_revisions:
+            self.add(
+                "checkpoint_candidate_mismatch",
+                path,
+                "Checkpoint candidate revisions must include the tested revision.",
+            )
+        if affected_owners != checkpoint.get("affected_owners"):
+            self.add(
+                "checkpoint_owner_scope_mismatch",
+                f"{path}.data.affected_owners",
+                "Checkpoint must run only the affected owners planned for this segment.",
+            )
+        if affected_repositories != checkpoint.get("affected_repositories"):
+            self.add(
+                "checkpoint_repository_scope_mismatch",
+                f"{path}.data.affected_repositories",
+                "Checkpoint must run only the affected repositories planned for this segment.",
+            )
+        if status == "passed" and checkpoint["status"] == "passed":
+            self.add(
+                "checkpoint_repeated", path, "A passed checkpoint may not be repeated."
+            )
+        checkpoint["status"] = status
+        checkpoint["revision"] = data.get("revision")
+        checkpoint["candidate_revisions"] = sorted(candidate_revisions or [])
+        return checkpoint
 
     def _before_event(self, event: dict[str, Any], path: str) -> None:
         if self.controller_state != "active":
@@ -453,6 +1000,16 @@ class _Replay:
                 "Planning task, branch, and revision are required.",
             )
             return
+        planning_record_sha256 = data.get("planning_record_sha256")
+        if (
+            not isinstance(planning_record_sha256, str)
+            or SHA256_RE.fullmatch(planning_record_sha256) is None
+        ):
+            self.add(
+                "invalid_planning_record_identity",
+                f"{path}.data.planning_record_sha256",
+                "Planning lifecycle must retain the validated planning-record SHA-256.",
+            )
         specs = data.get("specs")
         if not isinstance(specs, list) or not specs:
             self.add(
@@ -466,17 +1023,89 @@ class _Replay:
             spec_path = f"{path}.data.specs[{offset}]"
             if (
                 not isinstance(spec, dict)
-                or set(spec) != {"id", "checkpoint_required"}
+                or set(spec) != {"id", "tickets", "owners", "repositories"}
                 or not _text(spec.get("id"))
-                or not isinstance(spec.get("checkpoint_required"), bool)
             ):
                 self.add(
                     "invalid_spec_plan",
                     spec_path,
-                    "SPEC needs id and checkpoint_required.",
+                    "SPEC needs persisted id, tickets, owners, and repositories.",
                 )
                 continue
-            parsed.append(dict(spec))
+            owners = spec.get("owners")
+            repositories = spec.get("repositories")
+            if not _string_list(owners, nonempty=True) or not _string_list(
+                repositories, nonempty=True
+            ):
+                self.add(
+                    "invalid_spec_ownership",
+                    spec_path,
+                    "Every SPEC must persist non-empty owner and repository ownership.",
+                )
+            ticket_values = spec.get("tickets")
+            if not isinstance(ticket_values, list) or not ticket_values:
+                self.add(
+                    "invalid_ticket_plan",
+                    f"{spec_path}.tickets",
+                    "Every planned SPEC needs at least one ticket.",
+                )
+                continue
+            parsed_tickets: list[dict[str, Any]] = []
+            for ticket_offset, ticket in enumerate(ticket_values):
+                ticket_path = f"{spec_path}.tickets[{ticket_offset}]"
+                if (
+                    not isinstance(ticket, dict)
+                    or set(ticket) != {"id", "blocked_by"}
+                    or not _text(ticket.get("id"))
+                    or not _string_list(ticket.get("blocked_by"))
+                ):
+                    self.add(
+                        "invalid_ticket_plan",
+                        ticket_path,
+                        "Ticket plan entries need id and blocked_by.",
+                    )
+                    continue
+                parsed_tickets.append(
+                    {"id": ticket["id"], "blocked_by": list(ticket["blocked_by"])}
+                )
+            ticket_ids = [ticket["id"] for ticket in parsed_tickets]
+            if len(ticket_ids) != len(set(ticket_ids)) or len(parsed_tickets) != len(
+                ticket_values
+            ):
+                self.add(
+                    "invalid_ticket_plan",
+                    f"{spec_path}.tickets",
+                    "Planned ticket IDs must be unique and valid.",
+                )
+                continue
+            ticket_positions = {
+                ticket_id: ticket_index
+                for ticket_index, ticket_id in enumerate(ticket_ids)
+            }
+            for ticket in parsed_tickets:
+                for dependency in ticket["blocked_by"]:
+                    if dependency not in ticket_positions:
+                        self.add(
+                            "invalid_ticket_plan",
+                            f"{spec_path}.tickets",
+                            f"Unknown ticket blocker {dependency}.",
+                        )
+                    elif ticket_positions[dependency] >= ticket_positions[ticket["id"]]:
+                        self.add(
+                            "invalid_ticket_plan",
+                            f"{spec_path}.tickets",
+                            "Ticket blockers must precede blocked tickets.",
+                        )
+            parsed.append(
+                {
+                    "id": spec["id"],
+                    "tickets": parsed_tickets,
+                    "owners": list(owners) if isinstance(owners, list) else [],
+                    "repositories": list(repositories)
+                    if isinstance(repositories, list)
+                    else [],
+                }
+            )
         ids = [spec["id"] for spec in parsed]
         if len(ids) != len(set(ids)) or len(parsed) != len(specs):
             self.add(
@@ -496,15 +1125,40 @@ class _Replay:
         self.pending_specs = ids
         self.spec_state = {
             spec["id"]: {
-                "checkpoint_required": spec["checkpoint_required"],
                 "task_id": None,
-                "checkpoint_passed": False,
+                "route_selection": None,
+                "model": None,
+                "thinking": None,
+                "route_receipt": None,
+                "owners": list(spec["owners"]),
+                "repositories": list(spec["repositories"]),
+                "ticket_order": [ticket["id"] for ticket in spec["tickets"]],
+                "tickets": {
+                    ticket["id"]: {
+                        "blocked_by": ticket["blocked_by"],
+                        "owner_task_id": None,
+                        "commits": [],
+                        "test_evidence": [],
+                        "tracker_state": "planned",
+                    }
+                    for ticket in spec["tickets"]
+                },
                 "branch_verified": False,
             }
             for spec in parsed
         }
+        if data.get("checkpoint_size") != CHECKPOINT_SIZE:
+            self.add(
+                "checkpoint_size_mismatch",
+                f"{path}.data.checkpoint_size",
+                "Release train checkpoint_size must be the fixed value 10.",
+            )
+        self._load_checkpoints(
+            data.get("checkpoints"), _checkpoint_plan(ids), f"{path}.data.checkpoints"
+        )
         self.default_branch = data["default_branch"]
         self.default_revision = data["default_revision"]
+        self.planning_record_sha256 = planning_record_sha256
 
     def on_spec_dispatched(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -518,6 +1172,31 @@ class _Replay:
                 "Dispatch requires task, SPEC, and base revision.",
             )
             return
+        if data.get("route_selection") not in ROUTE_SELECTIONS:
+            self.add(
+                "invalid_spec_route",
+                path,
+                "Dispatch must record the validated SPEC route selection.",
+            )
+        if not _allowed_pair(data.get("model"), data.get("thinking")):
+            self.add(
+                "invalid_spec_model_policy",
+                path,
+                "Dispatch model and effort must be allowed by the Implement Needs policy.",
+            )
+        self.issues.extend(
+            _route_receipt_issues(
+                data.get("route_receipt"),
+                f"{path}.data.route_receipt",
+                run_id=self.run_id,
+                target=data["spec_id"],
+                task_id=data["task_id"],
+                selection=data.get("route_selection"),
+                model=data.get("model"),
+                thinking=data.get("thinking"),
+                planning_record_sha256=self.planning_record_sha256,
+            )
+        )
         if not self.pending_specs or data["spec_id"] != self.pending_specs[0]:
             self.add(
                 "spec_order",
@@ -529,6 +1208,13 @@ class _Replay:
                 "stale_spec_base",
                 f"{path}.data.base_revision",
                 "SPEC must start from the latest verified default-branch revision.",
+            )
+        due_checkpoint = self._due_checkpoint()
+        if due_checkpoint is not None:
+            self.add(
+                "checkpoint_blocks_next_segment",
+                path,
+                "A due or failed L4 checkpoint must pass before dispatching the next SPEC.",
             )
         active_specs = [
             task
@@ -567,7 +1253,14 @@ class _Replay:
             "spec_id": spec_id,
             "lifecycle": "active",
         }
-        self.spec_state[spec_id]["task_id"] = task_id
+        status = self.spec_state[spec_id]
+        status["task_id"] = task_id
+        status["route_selection"] = data.get("route_selection")
+        status["model"] = data.get("model")
+        status["thinking"] = data.get("thinking")
+        status["route_receipt"] = data.get("route_receipt")
+        for ticket in status["tickets"].values():
+            ticket["owner_task_id"] = task_id
 
     def on_commentary(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -599,6 +1292,160 @@ class _Replay:
         if task is not None and task["lifecycle"] != "active":
             self.add("wait_ineligible", path, "Only an active child may be waited on.")
 
+    def on_ticket_evidence(
+        self, event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        spec_id = data.get("spec_id")
+        ticket_id = data.get("ticket_id")
+        if event["actor"] != "spec_child":
+            self.add(
+                "actor_mismatch",
+                f"{path}.actor",
+                "Ticket evidence must be emitted by the SPEC child.",
+            )
+        task = self._current_spec_task(spec_id, f"{path}.data.spec_id")
+        if task is None:
+            return
+        if task["lifecycle"] != "active":
+            self.add(
+                "ticket_evidence_ineligible",
+                path,
+                "Ticket evidence must belong to the active SPEC task.",
+            )
+        tickets = self.spec_state[spec_id]["tickets"]
+        if not _text(ticket_id) or ticket_id not in tickets:
+            self.add(
+                "unknown_ticket",
+                f"{path}.data.ticket_id",
+                "Ticket evidence names a ticket outside the SPEC graph.",
+            )
+            return
+        ticket = tickets[ticket_id]
+        if data.get("owner_task_id") != task["id"]:
+            self.add(
+                "ticket_owner_mismatch",
+                f"{path}.data.owner_task_id",
+                "Ticket implementation owner must equal the SPEC task.",
+            )
+        if data.get("blocked_by") != ticket["blocked_by"]:
+            self.add(
+                "ticket_blockers_mismatch",
+                f"{path}.data.blocked_by",
+                "Ticket evidence must preserve the planned blocking edge.",
+            )
+        for dependency in ticket["blocked_by"]:
+            dependency_ticket = tickets.get(dependency)
+            if dependency_ticket is None:
+                continue
+            if dependency_ticket["tracker_state"] != "closed":
+                self.add(
+                    "ticket_frontier_not_ready",
+                    path,
+                    "Ticket evidence may be recorded only after blockers close.",
+                )
+        if ticket["tracker_state"] == "closed":
+            self.add(
+                "duplicate_ticket_evidence",
+                path,
+                "Each ticket may close once in the SPEC task.",
+            )
+        if not _string_list(data.get("commits"), nonempty=True):
+            self.add(
+                "ticket_commit_evidence_missing",
+                f"{path}.data.commits",
+                "Ticket evidence requires retained commit pointers.",
+            )
+        if not _string_list(data.get("test_evidence"), nonempty=True):
+            self.add(
+                "ticket_test_evidence_missing",
+                f"{path}.data.test_evidence",
+                "Ticket evidence requires retained test pointers.",
+            )
+        if data.get("tracker_state") != "closed":
+            self.add(
+                "ticket_not_closed",
+                f"{path}.data.tracker_state",
+                "Ticket evidence must close the tracker ticket.",
+            )
+        ticket.update(
+            {
+                "owner_task_id": data.get("owner_task_id"),
+                "commits": list(data.get("commits") or []),
+                "test_evidence": list(data.get("test_evidence") or []),
+                "tracker_state": data.get("tracker_state"),
+            }
+        )
+
+    def on_ticket_implementation_artifact(
+        self, _event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        artifact_type = data.get("artifact_type")
+        if artifact_type not in TICKET_IMPLEMENTATION_ARTIFACTS or not all(
+            _text(data.get(field)) for field in ("id", "spec_id", "ticket_id")
+        ):
+            self.add(
+                "invalid_ticket_implementation_artifact",
+                path,
+                "Forbidden ticket implementation artifacts need type, id, SPEC, and ticket.",
+            )
+            return
+        bucket = TICKET_IMPLEMENTATION_ARTIFACTS[artifact_type]
+        self.ticket_implementation_artifacts[bucket].append(data["id"])
+        self.add(
+            "ticket_implementation_artifact_present",
+            path,
+            "Ticket-level implementation tasks, threads, worktrees, branches, and PRs are forbidden.",
+        )
+
+    def on_role_limited_task(
+        self, event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        if (
+            not _text(data.get("task_id"))
+            or not _nullable_text(data.get("spec_id"))
+            or not _nullable_text(data.get("parent_task_id"))
+            or data.get("role") not in ROLE_LIMITED_ROLES
+        ):
+            self.add(
+                "invalid_role_limited_task",
+                path,
+                "Role-limited tasks need task, optional SPEC/parent, and a supported role.",
+            )
+            return
+        if data["task_id"] in {
+            task["id"] for task in self.tasks.values() if task["kind"] == "spec"
+        }:
+            self.add(
+                "role_limited_task_is_owner",
+                path,
+                "Role-limited tasks cannot be SPEC implementation owners.",
+            )
+        if data.get("writes_product_code") is not False or data.get("merge_commits"):
+            self.add(
+                "role_limited_task_mutated_product",
+                path,
+                "Role-limited helpers cannot write product code or provide merge commits.",
+            )
+        if not isinstance(data.get("merge_commits"), list) or not all(
+            _text(item) for item in data.get("merge_commits", [])
+        ):
+            self.add(
+                "invalid_role_limited_task",
+                f"{path}.data.merge_commits",
+                "Merge commit evidence must be an array of strings.",
+            )
+        self.role_limited_tasks.append(
+            {
+                "task_id": data["task_id"],
+                "spec_id": data.get("spec_id"),
+                "parent_task_id": data.get("parent_task_id"),
+                "role": data["role"],
+                "writes_product_code": data.get("writes_product_code"),
+                "merge_commits": list(data.get("merge_commits") or []),
+                "evidence": list(event["evidence"]),
+            }
+        )
+
     def on_child_handoff(
         self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
@@ -624,6 +1471,19 @@ class _Replay:
                     "spec_boundary",
                     path,
                     "SPEC handoff must stop at merged evidence with a revision.",
+                )
+            status = self.spec_state.get(task["spec_id"], {})
+            tickets = status.get("tickets", {})
+            missing = [
+                ticket_id
+                for ticket_id in status.get("ticket_order", [])
+                if tickets.get(ticket_id, {}).get("tracker_state") != "closed"
+            ]
+            if missing:
+                self.add(
+                    "ticket_evidence_missing",
+                    path,
+                    "SPEC handoff requires closed ticket evidence for every ticket.",
                 )
         elif boundary != "repair_evidence" or not _nullable_text(revision):
             self.add(
@@ -697,23 +1557,24 @@ class _Replay:
         return self.task(task_id, path) if task_id is not None else None
 
     def on_checkpoint_passed(
-        self, _event: dict[str, Any], data: dict[str, Any], path: str
+        self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
-        task = self._current_spec_task(data.get("spec_id"), f"{path}.data.spec_id")
-        if task is not None and task["lifecycle"] != "archived":
+        checkpoint = self._checkpoint_result(data, path, status="passed")
+        if checkpoint is not None:
+            checkpoint["evidence"] = list(event["evidence"])
+
+    def on_checkpoint_failed(
+        self, event: dict[str, Any], data: dict[str, Any], path: str
+    ) -> None:
+        checkpoint = self._checkpoint_result(data, path, status="failed")
+        if checkpoint is not None:
+            checkpoint["evidence"] = list(event["evidence"])
+        if not _text(data.get("reason")):
             self.add(
-                "checkpoint_before_archive",
-                path,
-                "Checkpoint must follow verified task archival.",
+                "invalid_checkpoint_failure_reason",
+                f"{path}.data.reason",
+                "Failed checkpoint needs a reason.",
             )
-        if data.get("revision") != self.default_revision:
-            self.add(
-                "checkpoint_revision_mismatch",
-                path,
-                "Checkpoint must test the current default revision.",
-            )
-        if data.get("spec_id") in self.spec_state:
-            self.spec_state[data["spec_id"]]["checkpoint_passed"] = True
 
     def on_default_branch_verified(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -738,18 +1599,12 @@ class _Replay:
             )
         if spec_id in self.spec_state:
             status = self.spec_state[spec_id]
-            if status["checkpoint_required"] and not status["checkpoint_passed"]:
-                self.add(
-                    "required_checkpoint_missing",
-                    path,
-                    "The due checkpoint must pass before the next SPEC.",
-                )
             status["branch_verified"] = True
         if self.pending_specs and spec_id == self.pending_specs[0]:
             self.pending_specs.pop(0)
 
     def on_blocker_opened(
-        self, _event: dict[str, Any], data: dict[str, Any], path: str
+        self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
         repair_id = data.get("repair_task_id")
         parent_id = data.get("parent_task_id")
@@ -800,6 +1655,17 @@ class _Replay:
             "fingerprint": data.get("fingerprint"),
             "blocked_action": data.get("blocked_action"),
         }
+        self.role_limited_tasks.append(
+            {
+                "task_id": repair_id,
+                "spec_id": spec_id,
+                "parent_task_id": parent_id,
+                "role": "blocker_repair",
+                "writes_product_code": False,
+                "merge_commits": [],
+                "evidence": list(event["evidence"]),
+            }
+        )
 
     def on_blocked_action_resumed(
         self, _event: dict[str, Any], data: dict[str, Any], path: str
@@ -878,6 +1744,35 @@ class _Replay:
                 "Reconnect must name one recorded unarchived child exactly once.",
             )
             return
+        task = self.tasks[task_id]
+        route_receipt = data.get("route_receipt")
+        if task["kind"] == "spec":
+            status = self.spec_state[task["spec_id"]]
+            if route_receipt != status["route_receipt"]:
+                self.add(
+                    "recovery_route_mismatch",
+                    f"{path}.data.route_receipt",
+                    "Recovery must retain the exact persisted SPEC route receipt.",
+                )
+            self.issues.extend(
+                _route_receipt_issues(
+                    route_receipt,
+                    f"{path}.data.route_receipt",
+                    run_id=self.run_id,
+                    target=task["spec_id"],
+                    task_id=task_id,
+                    selection=status["route_selection"],
+                    model=status["model"],
+                    thinking=status["thinking"],
+                    planning_record_sha256=self.planning_record_sha256,
+                )
+            )
+        elif route_receipt is not None:
+            self.add(
+                "unexpected_recovery_route",
+                f"{path}.data.route_receipt",
+                "Only SPEC children may carry a persisted route receipt.",
+            )
         self.recovery["remaining"].remove(task_id)
 
     def on_stored_action_resumed(
@@ -947,6 +1842,13 @@ class _Replay:
                 path,
                 "Release starts only after every SPEC and child is complete.",
             )
+        due_checkpoint = self._due_checkpoint()
+        if due_checkpoint is not None:
+            self.add(
+                "release_before_checkpoint",
+                path,
+                "Release starts only after every due L4 checkpoint is green.",
+            )
         if data.get("revision") != self.default_revision or not _text(
             data.get("revision")
         ):
@@ -987,7 +1889,7 @@ class _Replay:
         self.artifact_id = data.get("artifact_id")
 
     def on_final_tests_passed(
-        self, _event: dict[str, Any], data: dict[str, Any], path: str
+        self, event: dict[str, Any], data: dict[str, Any], path: str
     ) -> None:
         if self.artifact_id is None:
             self.add(
@@ -1002,6 +1904,64 @@ class _Replay:
                 path,
                 "Final release train may be recorded once.",
             )
+        candidate_revisions = data.get("candidate_revisions")
+        if not _string_list(candidate_revisions, nonempty=True):
+            self.add(
+                "invalid_final_candidate_revisions",
+                f"{path}.data.candidate_revisions",
+                "Final L4 candidate revisions are required.",
+            )
+            candidate_revisions = []
+        if data.get("revision") not in candidate_revisions:
+            self.add(
+                "final_candidate_revision_mismatch",
+                path,
+                "Final candidate revisions must include the tested revision.",
+            )
+        last_checkpoint = self._last_checkpoint()
+        reused_checkpoint = data.get("l4_reused_checkpoint")
+        if last_checkpoint is None or last_checkpoint["status"] != "passed":
+            self.add(
+                "final_checkpoint_missing",
+                path,
+                "The final checkpoint must pass before final tests can reuse or rerun L4.",
+            )
+        elif reused_checkpoint is None:
+            if _candidate_revision_set(candidate_revisions) == _candidate_revision_set(
+                last_checkpoint["candidate_revisions"]
+            ):
+                self.add(
+                    "final_l4_duplicate",
+                    path,
+                    "Do not repeat final L4 when the final checkpoint candidate revisions are exact.",
+                )
+            self.release_l4 = {
+                "mode": "rerun_final",
+                "checkpoint_id": None,
+                "candidate_revisions": sorted(candidate_revisions or []),
+                "evidence": list(event["evidence"]),
+            }
+        elif reused_checkpoint != last_checkpoint["id"]:
+            self.add(
+                "final_checkpoint_reuse_mismatch",
+                f"{path}.data.l4_reused_checkpoint",
+                "Final L4 reuse must name the last checkpoint.",
+            )
+        elif _candidate_revision_set(candidate_revisions) != _candidate_revision_set(
+            last_checkpoint["candidate_revisions"]
+        ):
+            self.add(
+                "stale_final_checkpoint_revisions",
+                f"{path}.data.candidate_revisions",
+                "Final checkpoint L4 can be reused only for the exact same candidate revisions.",
+            )
+        else:
+            self.release_l4 = {
+                "mode": "reused_checkpoint",
+                "checkpoint_id": reused_checkpoint,
+                "candidate_revisions": sorted(candidate_revisions or []),
+                "evidence": list(event["evidence"]),
+            }
         self.tests_passed = True
 
     def on_package_completed(
@@ -1180,6 +2140,18 @@ class _Replay:
                 path,
                 "Final tests and package evidence are required.",
             )
+        if self._due_checkpoint() is not None:
+            self.add(
+                "terminal_checkpoint_incomplete",
+                path,
+                "Terminal success requires every due L4 checkpoint to pass.",
+            )
+        if self.release_l4 is None:
+            self.add(
+                "terminal_l4_release_missing",
+                path,
+                "Terminal success requires final L4 reuse or rerun evidence.",
+            )
         if self.deployment_status == "deployed" and not self.smoke_passed:
             self.add(
                 "terminal_smoke_missing",
@@ -1250,17 +2222,18 @@ class _Replay:
             }
             kind, instruction = actions[task["lifecycle"]]
             return {"kind": kind, "target": task["id"], "instruction": instruction}
+        due_checkpoint = self._due_checkpoint()
+        if due_checkpoint is not None:
+            return {
+                "kind": "verify",
+                "target": due_checkpoint["id"],
+                "instruction": "Run the due release-train L4 checkpoint.",
+            }
         if self.pending_specs:
             spec_id = self.pending_specs[0]
             status = self.spec_state[spec_id]
             task_id = status["task_id"]
             if task_id is not None:
-                if status["checkpoint_required"] and not status["checkpoint_passed"]:
-                    return {
-                        "kind": "verify",
-                        "target": spec_id,
-                        "instruction": "Run the due release-train checkpoint.",
-                    }
                 return {
                     "kind": "verify",
                     "target": spec_id,
@@ -1333,6 +2306,53 @@ class _Replay:
             for task in sorted(self.tasks.values(), key=lambda item: item["id"])
         ]
 
+    def implementation_ownership(self) -> dict[str, Any]:
+        specs: list[dict[str, Any]] = []
+        for spec in self.specs:
+            spec_id = spec["id"]
+            status = self.spec_state[spec_id]
+            task_id = status["task_id"]
+            if task_id is None:
+                continue
+            tickets = []
+            for ticket_id in status["ticket_order"]:
+                ticket = status["tickets"][ticket_id]
+                tickets.append(
+                    {
+                        "id": ticket_id,
+                        "owner_task_id": ticket["owner_task_id"] or task_id,
+                        "blocked_by": list(ticket["blocked_by"]),
+                        "commits": list(ticket["commits"]),
+                        "test_evidence": list(ticket["test_evidence"]),
+                        "tracker_state": ticket["tracker_state"],
+                    }
+                )
+            specs.append(
+                {
+                    "spec_id": spec_id,
+                    "implementation_task_id": task_id,
+                    "owners": list(status["owners"]),
+                    "repositories": list(status["repositories"]),
+                    "route": {
+                        "target": spec_id,
+                        "task_id": task_id,
+                        "selection": status["route_selection"] or "recommended",
+                        "model": status["model"],
+                        "thinking": status["thinking"],
+                        "receipt": status["route_receipt"],
+                    },
+                    "tickets": tickets,
+                }
+            )
+        return {
+            "specs": specs,
+            "ticket_implementation_artifacts": {
+                key: list(values)
+                for key, values in self.ticket_implementation_artifacts.items()
+            },
+            "role_limited_tasks": list(self.role_limited_tasks),
+        }
+
     def release_status(self) -> str:
         if self.deployment_status in {"deployed", "not_applicable", "packaged"}:
             return self.deployment_status
@@ -1346,6 +2366,14 @@ def evaluate(
 ) -> tuple[dict[str, Any], int]:
     """Return a deterministic replay receipt and process exit code."""
     events, raw, issues = _read_log(log_path)
+    if MODEL_POLICY_ERROR is not None:
+        issues.append(
+            _issue(
+                "model_policy_invalid",
+                "$.model_policy",
+                f"Implement Needs model policy is invalid: {MODEL_POLICY_ERROR}.",
+            )
+        )
     if expected_state not in CONTROLLER_STATES:
         issues.append(
             _issue(
@@ -1398,9 +2426,17 @@ def evaluate(
         "next_action": next_action,
         "resume_action": replay.resume_action,
         "child_tasks": replay.child_tasks(),
+        "implementation_ownership": replay.implementation_ownership(),
         "pending_specs": replay.pending_specs,
         "candidate_revision": replay.candidate_revision,
         "test_status": "passed" if replay.tests_passed else "pending",
+        "l4_checkpoints": {
+            "checkpoint_size": replay.checkpoint_size,
+            "ordered_specs": [spec["id"] for spec in replay.specs],
+            "completed_spec_count": replay._completed_spec_count(),
+            "checkpoints": list(replay.checkpoint_state.values()),
+            "release_l4": replay.release_l4,
+        },
         "release_status": replay.release_status(),
         "lifecycle_log_sha256": _sha256(raw),
         "evidence_count": replay.evidence_count,
