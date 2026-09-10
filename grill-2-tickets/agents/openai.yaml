@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grill 2 Tickets"
+  short_description: "默认 Grill 后发布总 SPEC、子 SPEC 与 tickets"
+  default_prompt: "使用默认值 Grill 当前需求，将需求拆成总 SPEC、子 SPEC 和 tickets，自动发布并设置 GitHub Parent issue 关系。"
