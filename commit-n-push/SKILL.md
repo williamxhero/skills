@@ -1,11 +1,11 @@
 ---
 name: commit-n-push
-description: Commit every current change in a Git project and every project-owned nested Git repository, then push each repository that has a remote. Use when the user asks to commit and push a whole project, all subrepositories, all current work including changes from other threads, or says commit n push.
+description: Commit every current change in a Git project and every project-owned nested Git repository, synchronize each branch by fetching and normally merging its upstream, then push and verify local/remote equality. Use when the user asks to commit and push a whole project, pull-merge-push, synchronize all subrepositories, include changes from other threads, or says commit n push.
 ---
 
-# Commit and push the whole project
+# Commit, synchronize, and push the whole project
 
-Treat the requested project tree as the scope. Commit all current changes in every selected repository, regardless of which thread or author created them. Push only repositories with remotes.
+Treat the requested project tree as the scope. Commit all current changes in every selected repository, regardless of which task or author created them. Synchronize and push every repository with an unambiguous remote.
 
 ## 1. Discover repositories
 
@@ -44,33 +44,42 @@ For each selected repository with changes:
 
 Repositories with no changes require no empty commit.
 
-## 4. Push repositories with remotes
+## 4. Fetch and merge upstream
 
 For every selected repository that has at least one remote:
 
-1. Prefer the current branch's configured upstream and run a normal push.
-2. If no upstream exists and exactly one suitable remote exists, push the current branch with upstream tracking.
-3. If multiple remotes make the destination ambiguous, stop that repository and ask which remote to use.
-4. If push is rejected, fetch read-only state and report whether the branch is behind, diverged, protected, or unauthorized. Do not merge, rebase, force-push, or change credentials unless separately authorized.
+1. Resolve the current branch's configured upstream. If none exists and exactly one suitable remote exists, select its same-named branch when present; otherwise establish the upstream on the first push. Stop when multiple destinations remain ambiguous.
+2. Fetch the selected remote and inspect the local/upstream merge bases. If an upstream branch exists, merge it into the committed local branch with a normal non-rebase merge. A fast-forward is valid; divergence creates a merge commit.
+3. On conflicts, preserve both sides and apply `resolving-merge-conflicts` when available. Resolve only when repository intent is discoverable and tests can verify the result; otherwise stop that repository with the conflict state intact for recovery.
+4. Run the relevant validation after a content-bearing merge. Account for hook or merge-generated changes and commit them before push.
+
+Never use rebase, force push, history rewriting, or a strategy that discards either side. Fetch failure, unresolved conflict, failed validation, or ambiguous upstream blocks that repository.
+
+## 5. Push synchronized repositories
+
+1. Push the current branch normally to its resolved upstream. If the upstream did not exist, use the one unambiguous remote and establish tracking.
+2. If push is rejected because the remote advanced, fetch and perform the same normal merge loop again, then revalidate and retry once. Route persistent network, permission, protection, or conflict failures as blockers.
+3. Fetch once more after push and resolve the remote-tracking ref. Record the local `HEAD`, remote-tracking SHA, merge base, and evidence.
+4. Require local `HEAD` and the remote-tracking SHA to be identical. “Push command exited zero” without this equality check is not synchronized success.
 
 For repositories without remotes, keep the local commit and report `committed, not pushed: no remote`.
 
-## 5. Verify completion
+## 6. Verify completion
 
 After all attempts, re-read every selected repository:
 
 - `git status --short --branch` shows no unaccounted changes; repository-approved ignored files do not count;
 - each created commit is visible at `HEAD`;
-- each pushed branch is no longer ahead of its upstream;
+- each repository with a remote has identical local and remote-tracking HEADs after the final fetch;
 - repositories without remotes retain their new local commits;
 - excluded candidates and blocked repositories are listed with reasons.
 
-Report per repository: path, branch, commit SHA/message or `no changes`, remote, push result, and residual status. Emit product Git commit/push directives only for actions that actually succeeded.
+Report per repository: path, branch, commit SHA/message or `no changes`, upstream, merge result, local HEAD, remote-tracking HEAD, push result, and residual status. Emit product Git commit/push directives only for actions that actually succeeded.
 
 ## Safety boundaries
 
 - Commit all changes means all changes inside each selected project repository; it does not convert dependency caches or temporary clones into project repositories.
 - Preserve repository policy even when it requires exact-path staging or forbids particular generated or sensitive paths.
 - Never expose or commit detected credentials. Stop the affected repository and identify the path without printing the secret.
-- Never use destructive cleanup, reset, checkout discard, branch deletion, recursive deletion, force push, or history rewriting.
+- Never use destructive cleanup, reset, checkout discard, branch deletion, recursive deletion, rebase, force push, or history rewriting.
 - Do not claim whole-project success while any selected repository has uncommitted changes, an unpushed commit despite having an unambiguous remote, or an unresolved blocker.

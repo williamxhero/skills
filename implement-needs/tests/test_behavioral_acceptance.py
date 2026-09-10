@@ -196,6 +196,7 @@ class ProtocolFixture:
                     ],
                     "commentary_evidence": ["chat://round-1"],
                     "acceptance_source": "implement-needs-standing-authorization",
+                    "acceptance_command": "全部采用推荐选项/答案",
                     "acceptance_evidence": ["controller://accepted-round-1"],
                     "planner_resume_evidence": ["thread://plan-1/round-1"],
                 }
@@ -714,6 +715,11 @@ class ProtocolFixture:
                 "status": lifecycle_receipt["release_status"],
                 "candidate_revision": lifecycle_receipt["candidate_revision"],
                 "evidence": ["receipt://lifecycle/release"],
+            },
+            "repository_sync": {
+                "status": "synchronized",
+                "repositories": [{"path": "repo-1", "branch": "main", "upstream": "origin/main", "local_head": lifecycle_receipt["candidate_revision"], "remote_head": lifecycle_receipt["candidate_revision"], "evidence": ["receipt://git/sync"]}],
+                "evidence": ["receipt://git/sync"],
             },
             "next_action": None,
             "resume_action": None,

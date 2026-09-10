@@ -18,6 +18,7 @@
     "unarchived_tasks",
     "test_state",
     "release_state",
+    "repository_sync",
     "next_action",
     "resume_action",
     "freshness",
@@ -44,6 +45,7 @@
     "unarchived_tasks": {"$ref": "#/$defs/uniqueStrings"},
     "test_state": {"$ref": "#/$defs/testState"},
     "release_state": {"$ref": "#/$defs/releaseState"},
+    "repository_sync": {"$ref": "#/$defs/repositorySync"},
     "next_action": {
       "oneOf": [{"type": "null"}, {"$ref": "#/$defs/action"}]
     },
@@ -184,6 +186,31 @@
       "properties": {
         "status": {"enum": ["pending", "building", "packaged", "deployed", "not_applicable", "blocked"]},
         "candidate_revision": {"$ref": "#/$defs/nullableRevision"},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "repositorySync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "repositories", "evidence"],
+      "properties": {
+        "status": {"enum": ["pending", "synchronized", "blocked"]},
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "branch", "upstream", "local_head", "remote_head", "evidence"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "branch": {"type": "string", "minLength": 1},
+              "upstream": {"type": "string", "minLength": 1},
+              "local_head": {"type": "string", "minLength": 1},
+              "remote_head": {"type": "string", "minLength": 1},
+              "evidence": {"$ref": "#/$defs/evidence"}
+            }
+          }
+        },
         "evidence": {"$ref": "#/$defs/evidence"}
       }
     },

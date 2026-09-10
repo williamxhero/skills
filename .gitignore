@@ -1,3 +1,7 @@
 .system/
 **/__pycache__/
 *.py[cod]
+/imagegen
+/develop-web-game
+/frontend-skill
+/docs

@@ -571,6 +571,7 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                     "questions",
                     "commentary_evidence",
                     "acceptance_source",
+                    "acceptance_command",
                     "acceptance_evidence",
                     "planner_resume_evidence",
                 },
@@ -603,6 +604,8 @@ def _record_issues(record: Any, expected_run_id: str) -> list[dict[str, str]]:
                         "Grill defaults must be accepted by standing authorization.",
                     )
                 )
+            if round_obj.get("acceptance_command") != "全部采用推荐选项/答案":
+                issues.append(_issue("verbose_grill_acceptance", f"{round_path}.acceptance_command", "The controller must accept a Grill frontier with only the compact canonical command."))
             questions = _list(
                 round_obj.get("questions"), f"{round_path}.questions", issues
             )

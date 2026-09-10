@@ -5,6 +5,12 @@ description: 'Autonomously orchestrate a broad software requirement end to end: 
 
 # Implement Needs
 
+## Turn-exit interlock
+
+Treat `final` as a privileged state transition, never as a progress-message channel. While `controller_state` is `active`, emit progress only as Chinese commentary and execute the persisted `next_action` in the same turn. After every state write and every child observation, run `scripts/validate_controller_active.py`; only exit code `0` permits the next wait, verification, archival, repair, dispatch, or phase action. A failed active-state gate is itself the next repair action.
+
+Before emitting any `final`, the immediately preceding tool result must be a fresh `validate_controller_terminal.py` receipt with `decision: allow` for the exact terminal state and current artifact hashes. No receipt means continue supervision. Elapsed time, many Grill rounds, a child final, an idle child, a progress summary, or token pressure never authorizes turn exit.
+
 ## Controller Kernel (authoritative)
 
 The invoking task is the **controller**. This kernel is the single authority for controller state, message phase, supervision, recovery, child handoffs, and terminal completion. Phase references may specialize delivery work but may not redefine these rules.
@@ -21,6 +27,8 @@ Run this supervision loop while state is `active`:
 2. Execute the one recorded `next_action`: wait on active children, verify a handoff, archive a verified child, route a blocker, dispatch the eligible child, or advance the phase.
 3. Reconcile every child and pending gate into state, choose one next action, persist it, and repeat.
 
+Do not leave a child frontier parked. When a Grill child returns questions, reply in the controller only with `全部采用推荐选项/答案`, send that same compact command to the child without repeating its frontier, persist acceptance and `next_action: wait`, run the active-state gate, and call the task wait operation in that same controller turn.
+
 Before any proposed controller `final_answer`, refresh both fingerprinted source artifacts and run the deterministic gate:
 
 ```text
@@ -36,7 +44,7 @@ Deliver without interviews or approval checkpoints. Invocation authorizes the Co
 - **Startup or protocol refresh:** read [protocol resolution and defaults](references/protocols-and-defaults.md) before resolving dependencies, choosing projects, or dispatching children.
 - **Grill, SPECs, or tickets:** resolve and apply `grill-2-tickets`, then read [planning](references/planning.md) for Implement Needs routing and release-train extensions.
 - **SPEC implementation:** read [spec delivery](references/spec-delivery.md) before creating, supervising, verifying, or archiving an implementation task.
-- **Blockers, test checkpoints, or release:** read [release and recovery](references/release-and-recovery.md) when a blocker appears, a test-train gate is due, or all SPECs are merged.
+- **Blockers, test checkpoints, or release:** read [release and recovery](references/release-and-recovery.md) when a blocker appears, a test-train gate is due, or all SPECs are merged. After deployment and smoke verification, apply `commit-n-push` as the mandatory final synchronization phase before terminal success.
 - **Controller protocol changes:** read [behavioral acceptance](references/behavioral-acceptance.md) before accepting regression or forward-test evidence.
 
 Preserve unrelated user changes. Work from isolated branches or worktrees when the current tree is dirty. Never fold pre-existing changes into the delivery.

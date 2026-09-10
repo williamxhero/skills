@@ -218,6 +218,11 @@ class TerminalValidatorTests(unittest.TestCase):
                 "candidate_revision": "abc123",
                 "evidence": ["release/evidence.json"],
             },
+            "repository_sync": {
+                "status": "synchronized",
+                "repositories": [{"path": "repo-a", "branch": "main", "upstream": "origin/main", "local_head": "abc123", "remote_head": "abc123", "evidence": ["git/sync.json"]}],
+                "evidence": ["git/sync.json"],
+            },
             "next_action": None,
             "resume_action": None,
             "freshness": {
@@ -335,6 +340,7 @@ class TerminalValidatorTests(unittest.TestCase):
                     "candidate_revision": None,
                     "evidence": [],
                 },
+                "repository_sync": {"status": "pending", "repositories": [], "evidence": []},
                 "resume_action": self.action(),
                 "terminal": {
                     "reason": "Required external authority is unavailable.",
@@ -800,6 +806,19 @@ class TerminalValidatorTests(unittest.TestCase):
                 payload, exit_code = self.evaluate(state)
                 self.assertEqual(1, exit_code)
                 self.assertIn("terminal_release_incomplete", self.codes(payload))
+
+    def test_terminal_success_requires_commit_n_push_head_equality(self) -> None:
+        pending = self.success_state()
+        pending["repository_sync"] = {"status": "pending", "repositories": [], "evidence": []}
+        payload, exit_code = self.evaluate(pending)
+        self.assertEqual(1, exit_code)
+        self.assertIn("terminal_repository_sync_incomplete", self.codes(payload))
+
+        diverged = self.success_state()
+        diverged["repository_sync"]["repositories"][0]["remote_head"] = "remote-newer"
+        payload, exit_code = self.evaluate(diverged)
+        self.assertEqual(1, exit_code)
+        self.assertIn("repository_head_mismatch", self.codes(payload))
 
     def test_due_or_failed_l4_checkpoint_rejects_terminal_success(self) -> None:
         for status, expected in (
@@ -1280,6 +1299,7 @@ class TerminalValidatorTests(unittest.TestCase):
                 "unarchived_tasks",
                 "test_state",
                 "release_state",
+                "repository_sync",
                 "next_action",
                 "resume_action",
                 "freshness",

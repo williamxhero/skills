@@ -4,4 +4,6 @@ Run `python -m unittest discover -s implement-needs/tests -p 'test_*.py'` after 
 
 The `audit failure trace` reproduces the defining failure from thread `01a08424-a284-72c0-a48d-3b964e177fb8`: release work begins under a SPEC child while that child remains active and the controller proceeds toward completion. Acceptance requires deterministic rejection with both ownership and active-child reasons.
 
+The `premature turn-exit trace` reproduces thread `01a089fe-ba5f-7de0-9ca2-e1d037c5eefc`: the controller persists an active Grill wait (including a malformed state variant), reports partial rounds as a final answer, and stops supervising an idle child that has already returned the next frontier. Acceptance requires the active-state gate to reject malformed state, return the exact persisted wait for valid state, and leave terminal final unauthorized.
+
 For a substantial protocol change, also run an independent forward evaluation in a temporary workspace. Give the evaluator the skill and a realistic broad implementation request, but not the expected trace or suspected failure. Retain its emitted lifecycle trace and validator receipt as review evidence; generated evaluation artifacts stay outside the repository.

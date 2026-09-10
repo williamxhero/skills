@@ -16,6 +16,7 @@ from unittest import mock
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_planning.py"
 TERMINAL_SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_controller_terminal.py"
+ACTIVE_SCRIPT_PATH = SKILL_ROOT / "scripts" / "validate_controller_active.py"
 SCHEMA_PATH = SKILL_ROOT / "references" / "controller-state.schema.json"
 SPEC = importlib.util.spec_from_file_location("validate_planning", SCRIPT_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -27,6 +28,11 @@ TERMINAL_SPEC = importlib.util.spec_from_file_location(
 assert TERMINAL_SPEC is not None and TERMINAL_SPEC.loader is not None
 terminal_validator = importlib.util.module_from_spec(TERMINAL_SPEC)
 TERMINAL_SPEC.loader.exec_module(terminal_validator)
+sys.modules["validate_controller_terminal"] = terminal_validator
+ACTIVE_SPEC = importlib.util.spec_from_file_location("validate_controller_active_for_planning_tests", ACTIVE_SCRIPT_PATH)
+assert ACTIVE_SPEC is not None and ACTIVE_SPEC.loader is not None
+active_validator = importlib.util.module_from_spec(ACTIVE_SPEC)
+ACTIVE_SPEC.loader.exec_module(active_validator)
 
 
 class PlanningValidatorTests(unittest.TestCase):
@@ -132,6 +138,7 @@ class PlanningValidatorTests(unittest.TestCase):
                     ],
                     "commentary_evidence": ["chat://round-1"],
                     "acceptance_source": "implement-needs-standing-authorization",
+                    "acceptance_command": "全部采用推荐选项/答案",
                     "acceptance_evidence": ["controller://accepted-round-1"],
                     "planner_resume_evidence": ["thread://plan-1/round-1"],
                 }
@@ -341,6 +348,7 @@ class PlanningValidatorTests(unittest.TestCase):
                 "candidate_revision": None,
                 "evidence": [],
             },
+            "repository_sync": {"status": "pending", "repositories": [], "evidence": []},
             "next_action": action,
             "resume_action": None,
             "freshness": {
@@ -367,6 +375,17 @@ class PlanningValidatorTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertEqual(action, payload["next_action"])
         self.assertEqual({"proposed_state_mismatch"}, self.codes(payload))
+        active_payload, active_code = active_validator.evaluate(state_path, delivery_map, task_tree, "run-001")
+        self.assertEqual(0, active_code)
+        self.assertEqual("continue", active_payload["decision"])
+        self.assertEqual(action, active_payload["next_action"])
+
+        malformed = json.loads(state_path.read_text(encoding="utf-8"))
+        malformed["test_state"]["candidate_revisions"] = malformed["test_state"].pop("candidate_revision")
+        state_path.write_text(json.dumps(malformed), encoding="utf-8")
+        malformed_payload, malformed_code = active_validator.evaluate(state_path, delivery_map, task_tree, "run-001")
+        self.assertEqual(1, malformed_code)
+        self.assertEqual("repair", malformed_payload["decision"])
 
     def handoff(
         self, record: dict, state: dict | None = None, readback: dict | None = None
@@ -581,6 +600,12 @@ class PlanningValidatorTests(unittest.TestCase):
                     planner_resume_evidence=[]
                 ),
                 "empty_list",
+            ),
+            (
+                lambda record: record["grill_rounds"][0].update(
+                    acceptance_command="Q1 采用推荐答案，因为……"
+                ),
+                "verbose_grill_acceptance",
             ),
         ]
         for mutate, expected in mutations:

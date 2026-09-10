@@ -20,11 +20,11 @@ Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. Reta
 
 The full assignment points the planner to the requirement, repository instructions, domain vocabulary and ADRs, tracker and default branch, resolved `grill-2-tickets` and `test-release-train` protocols, the default policy, and the supported route matrix. `grill-2-tickets` resolves and applies `grilling`, `to-spec`, and `to-tickets`; Implement Needs does not duplicate that workflow. Repository exploration and subagents are read-only. Capture a controller-computed product/test-tree fingerprint before the assignment.
 
-The planner returns each complete numbered Grill frontier with a recommended default and rationale for every question, then pauses. For every round, the controller:
+The planner returns each complete numbered Grill frontier with a recommended default and rationale for every question in the visible planning task, then pauses. For every round, the controller:
 
-1. faithfully relays every question number, question, recommendation, and rationale in Chinese commentary, splitting only for readability;
-2. records Chat evidence and acceptance as `implement-needs-standing-authorization`;
-3. sends all recommended answers to the same planning task immediately, without requesting or waiting for user confirmation.
+1. posts only `全部采用推荐选项/答案` in Chinese commentary; the user can inspect the full frontier in the separate visible planning task;
+2. records that exact compact text as `acceptance_command` and acceptance source `implement-needs-standing-authorization`;
+3. sends only `全部采用推荐选项/答案` to the same planning task immediately, without reproducing questions, answers, or rationales and without waiting for user confirmation.
 
 The planner alone applies those answers, recomputes the design tree, and returns the next frontier. Continue until it reports an empty frontier. The controller may translate or ask the planner to repair an incomplete round; it does not add, omit, merge, or answer a planning question independently.
 
@@ -52,7 +52,7 @@ planning_record = {
   ownership:{grill,specs,tickets,routing}, requirements:[...],
   umbrella_spec:{id,artifact},
   grill_rounds:[{round,questions:[{number,question,recommendation,rationale}],
-    commentary_evidence:[...],acceptance_source,acceptance_evidence:[...],planner_resume_evidence:[...]}],
+    commentary_evidence:[...],acceptance_source,acceptance_command,acceptance_evidence:[...],planner_resume_evidence:[...]}],
   frontier_empty,
   specs:[{id,artifact,parent_issue:{parent_id,evidence:[...]},requirements:[...],blocked_by:[...],auto_approval,
     tickets:[{id,artifact,parent_issue:{parent_id,evidence:[...]},blocked_by:[...],vertical_slice}],

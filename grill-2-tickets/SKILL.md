@@ -10,7 +10,7 @@ Turn a requirement into an approved, published, hierarchy-verified GitHub issue 
 ## Workflow
 
 1. Resolve and read the installed `grilling`, `to-spec`, and `to-tickets` protocols. Treat invocation as standing authorization to accept recommended defaults and publication confirmations.
-2. Run Grill to an empty question frontier. Show every numbered question, recommended answer, and rationale to the user in commentary, then immediately send the recommendation without waiting. Preserve visible rounds as evidence.
+2. Run Grill to an empty question frontier. In a standalone invocation, show every numbered question, recommended answer, and rationale once, then accept them without waiting. Under a visible planning task owned by an orchestrator, keep the full frontier in that planning task; require the controller to reply and resume with only `全部采用推荐选项/答案`. Preserve visible rounds as evidence without duplicating their text across tasks.
 3. Publish exactly one umbrella SPEC for the complete requirement. Use it only as a hierarchy container.
 4. Partition requirements into the minimum coherent ordered child SPECs. Publish every child SPEC and set its GitHub **Parent issue** to the umbrella SPEC.
 5. Run `to-tickets` for every child SPEC. Publish vertical-slice tickets and set every ticket's GitHub **Parent issue** to its owning child SPEC.

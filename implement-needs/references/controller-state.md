@@ -13,6 +13,8 @@ Keep these files together under `.scratch/<initiative>/`:
 
 Generate `run_id` once and retain it across resumptions. Increment `state_revision` after each observed or performed controller action. After updating the delivery map and task-tree snapshot, hash their exact bytes with SHA-256 and store both lowercase digests in `freshness`. Write controller state last so a changed source makes the previous state deterministically stale.
 
+Immediately validate every active-state write with `scripts/validate_controller_active.py` and retain its receipt. Execute the returned `next_action` only after `decision: continue`. This catches malformed or stale state during supervision rather than deferring detection until terminal completion.
+
 The lifecycle log begins with `planning_archived.data.planning_record_sha256`. Every `spec_dispatched` event carries the complete `route_receipt` emitted by the SPEC route gate, and every recovery `child_reconnected` event repeats that exact receipt for a SPEC child (`null` for non-SPEC children). Lifecycle replay validates the receipt's self-hash, planning-record identity, target, owner task, selection, applied pair, locked recommendation, and fallback rank before dispatch or recovery can continue.
 
 Normalize the task snapshot to exactly `run_id`, `tasks`, and `implementation_ownership`. Each `tasks` entry uses the same `id`, `kind`, `spec_id`, and `lifecycle` fields as `child_tasks`:
@@ -40,6 +42,7 @@ Retain archived tasks. The validator requires the task-tree IDs and fields to ma
 | `unarchived_tasks` | Exact set of child IDs whose lifecycle is not `archived`. |
 | `test_state` | Test-train status, exact candidate revision set, L4 checkpoint state, and evidence pointers. |
 | `release_state` | Release status, exact candidate revision set, and evidence pointers. |
+| `repository_sync` | Final `commit-n-push` status plus per-repository upstream and equal local/remote HEAD evidence. |
 | `next_action` | The one action executable now; required only while `active`. |
 | `resume_action` | Exact continuation after an accepted blocker or user stop; otherwise `null`. |
 | `freshness` | SHA-256 of the current delivery map and task-tree snapshot. |
@@ -164,6 +167,7 @@ Any malformed field, inconsistent aggregate, task-tree mismatch, source-hash mis
     }
   },
   "release_state": {"status": "pending", "candidate_revision": null, "evidence": []},
+  "repository_sync": {"status": "pending", "repositories": [], "evidence": []},
   "next_action": {"kind": "wait", "target": "thread-spec-02", "instruction": "Wait for the current SPEC task snapshot."},
   "resume_action": null,
   "freshness": {

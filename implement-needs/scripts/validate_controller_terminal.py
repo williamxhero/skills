@@ -1121,6 +1121,12 @@ def _state_consistency_issues(state: dict[str, Any]) -> list[dict[str, str]]:
                     "Test and release revisions must match.",
                 )
             )
+        repository_sync = state["repository_sync"]
+        if repository_sync["status"] != "synchronized" or not repository_sync["repositories"] or not repository_sync["evidence"]:
+            issues.append(_issue("terminal_repository_sync_incomplete", "$.repository_sync", "Terminal success requires commit-n-push synchronization evidence."))
+        for index, repository in enumerate(repository_sync["repositories"]):
+            if repository["local_head"] != repository["remote_head"] or not repository["evidence"]:
+                issues.append(_issue("repository_head_mismatch", f"$.repository_sync.repositories[{index}]", "Local HEAD and remote-tracking HEAD must be identical with evidence."))
         issues.extend(_terminal_record_issues(state["terminal"], False, False))
         return _sorted(issues)
 

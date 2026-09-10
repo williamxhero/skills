@@ -25,6 +25,7 @@ Resolve these canonical protocols:
 - Whole-spec implementation: `implement-spec`
 - Multi-SPEC test orchestration: `test-release-train`
 - Final review: `code-review`
+- Final repository synchronization: `commit-n-push`
 
 Only after all lookup steps fail, or a resolved file fails its name/readability check, treat a protocol as unavailable. Apply `unblock-development` unless that is the missing protocol; for a missing `unblock-development`, preserve the evidence and enter the hard-blocker protocol. Never silently skip a protocol.
 
