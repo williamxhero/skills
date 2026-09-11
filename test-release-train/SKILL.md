@@ -5,6 +5,11 @@ description: 'Orchestrate impact-selected testing across a multi-SPEC, multi-tic
 
 # Test Release Train
 
+Treat this as an evidence protocol, not permission to skip implementation gates. It
+cannot declare a SPEC complete, replace a SPEC implementation task, or authorize a
+release when the required merge, task archival, or route evidence is absent. A test
+result is valid only for the exact recorded candidate revision and artifact.
+
 Concentrate expensive proof at release-train boundaries while preserving incremental evidence for every ticket and SPEC. Select tests from changed sources, owners, contracts, and adapters; repeated full-repository testing is not the default proof of safety.
 
 Treat L0-L5 as six executable levels. Derive exact commands and markers from repository configuration, CI, and existing acceptance-scope manifests. Apply `unblock-development` when test infrastructure, tooling, network, environment, or service failures prevent a gate from running.

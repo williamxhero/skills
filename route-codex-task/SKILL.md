@@ -5,6 +5,14 @@ description: Select, create, and verify Codex task model/effort routes with host
 
 # Route Codex Task
 
+## Hard boundary
+
+Routing is a prerequisite, not task completion. Do not send the implementation or repair
+assignment, perform repository mutation, or claim the child is ready until the exact
+created task has a fresh applied-settings readback and a validator receipt with
+`decision: allow`. A creation response, requested model, or prose confirmation is not
+readback evidence. If the gate fails, keep the task at bootstrap and repair the route.
+
 Own the complete routing boundary for a Codex task. Keep the caller's task-specific classification inputs and defaults; apply this skill's policy, fallback, readback, and receipt contract unchanged.
 
 ## 1. Build the route context
@@ -51,4 +59,3 @@ Send the task assignment only after receipt persistence succeeds. On recovery, r
 ## Completion gate
 
 Finish routing only when host capability readback, an allowed locked route, fresh applied-state readback, and the deterministic allow receipt all agree on the same host, task, and exact model/effort pair.
-

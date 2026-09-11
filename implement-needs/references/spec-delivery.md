@@ -1,5 +1,11 @@
 # SPEC delivery
 
+The SPEC task boundary is mandatory. Do not implement a SPEC in the controller, in the
+planning task, or in a ticket task. The controller creates exactly one fresh task for
+the SPEC, validates its applied model/effort, then waits on that task until it returns a
+handoff. If task creation, route readback, or the wait operation is unavailable, use
+`unblock-development`; never fall back to same-thread implementation.
+
 Read this reference before creating or supervising a SPEC implementation task. Process SPECs sequentially; begin the next only after the current merge, verification, archival, due checkpoint, and default-branch health check.
 
 For each SPEC:
@@ -23,6 +29,13 @@ SPEC {spec_id} 当前由任务 {task_id} 执行；实际模型：{model}；推�
 Persist each observation before acting. A `running` snapshot records another `wait`; a side question records the Chinese answer and then the unchanged prior action; a child final moves only to `handoff_received`. Ticket progress records each ticket's SPEC owner task ID, blockers, commits, tests, and tracker state in `implementation_ownership`; `ticket_implementation_artifacts` stays empty. Verification, archival, and next-SPEC dispatch are separate recorded transitions. Never infer archival from a final message.
 
 On recovery, reconcile the saved child IDs with the fresh task tree before dispatch. If the recorded child still exists, reconnect it with the exact persisted route receipt and resume its exact action. Revalidate that the receipt still names the same SPEC owner and exact locked recommendation or same-or-stronger preapproved fallback. A missing recorded child or changed receipt is state repair or blocker work, never permission to create a duplicate. The next SPEC must be based on the integration revision that contains the independently verified predecessor merge.
+
+Every wait is an active supervision step, not a pause for user input. On each snapshot,
+record child status, last progress timestamp, current phase, and next action. If the child
+is idle without a verified handoff, send a focused continuation in the same task; if it
+reports a blocker, route it immediately; if it is complete, verify before archive. Do not
+emit a controller final or leave the controller turn after merely reporting that the
+child is running.
 
 One child owns one SPEC through merge and evidence handoff. Do not reuse it for another SPEC or overlap it with another implementation child, and do not create ticket implementation tasks, threads, worktrees, branches, or PRs. Repair tasks and read-only exploration or review tasks are role-limited helpers only; after they return, resume the recorded SPEC task. The controller retains release context while archived implementation context disappears.
 

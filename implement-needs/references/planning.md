@@ -4,6 +4,13 @@ Read this reference when the controller enters planning. The Controller Kernel r
 
 ## Create the one planning task
 
+The planning task is the only task allowed to perform planning publication. The
+controller must not create a substitute SPEC or ticket, answer a missing Grill question
+itself, or start implementation because the planner is slow or returned a summary. Keep
+the planner active until the complete machine-checkable handoff exists. A handoff that
+does not contain every required planning-record field is incomplete and must be repaired
+in the same planning task.
+
 The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. It must invoke `grill-2-tickets` for the Grill-through-tickets portion, then extend that verified handoff with Implement Needs routing and release-train fields. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
 
 Invoke `route-codex-task` before creation and store its target-host capability evidence and locked route in `.scratch/<initiative>/planning-record.json`. Supply the complete requirement-understanding, SPEC decomposition, per-SPEC implementation-route prediction, and ticket decomposition sequence as the planning profile. Its caller default is `gpt-5.6-sol` + `high` for every scope; keep `planning_xhigh_evidence` empty unless concrete complexity evidence proves `high` inadequate. Let `route-codex-task` own every allow-list, rank, fallback, `xhigh`, readback, drift, and receipt decision.
@@ -91,3 +98,8 @@ python <implement-needs>/scripts/validate_planning.py handoff --record .scratch/
 ```
 
 Only `decision: allow` permits the first implementation task. Rejection returns a canonical `repair` next action, unarchives and resumes the same planner; no second planning task is created. A material later change also reuses that one task with an incremented `generation`, while every implementation task remains archived.
+
+Before dispatching the first SPEC, perform a negative check: the controller and planning
+task must not have made product or test changes during planning. If such changes exist,
+preserve them and route them for review/recovery; they are not evidence that planning
+completed and they must not be silently included in the first SPEC.

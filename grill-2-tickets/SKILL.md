@@ -5,6 +5,14 @@ description: Autonomously turn a software requirement into published GitHub plan
 
 # Grill 2 Tickets
 
+## Hard boundary
+
+This skill has exactly one terminal condition: a validated planning handoff. It must
+never edit product or test code, create implementation tasks, merge branches, build
+artifacts, or deploy. In an orchestrated run, its final is a handoff to the parent, not
+a user-facing workflow completion. The parent independently validates the issue tree
+before dispatching implementation.
+
 Turn a requirement into an approved, published, hierarchy-verified GitHub issue tree. Stop after tickets and the planning handoff; do not implement, merge, package, or deploy.
 
 ## Workflow
@@ -20,6 +28,13 @@ Turn a requirement into an approved, published, hierarchy-verified GitHub issue 
 
 Apply viable defaults throughout. Ask only for objectively unavailable credentials or authority. A tracker that cannot represent GitHub Parent issue relationships is a blocker, not permission to simulate the hierarchy.
 
+After every external operation, persist the issue-tree record and re-check the current
+phase. Do not report Grill completion from a summary alone: require an empty frontier
+and recorded acceptance evidence. Do not report SPEC/ticket completion until every
+GitHub Parent issue relationship has been read back and the validator passes. If GitHub,
+the tracker, or a required protocol is unavailable, return a blocker packet and use
+`unblock-development`; do not simulate missing issues locally.
+
 ## Completion gate
 
-Finish only when Grill has an empty frontier, all artifacts are published, every child SPEC has a justified implementation route, every child SPEC points to the umbrella SPEC, every ticket points to its owning SPEC, and validation succeeds. Under `implement-needs` or another parent orchestrator, return this verified handoff to the parent instead of producing a workflow-terminal user answer.
+Finish only when Grill has an empty frontier, all artifacts are published, every child SPEC has a justified implementation route, every child SPEC points to the umbrella SPEC, every ticket points to its owning SPEC, and validation succeeds. Under `implement-needs` or another parent orchestrator, return this verified handoff to the parent instead of producing a workflow-terminal user answer. Never continue into implementation in the same task after this gate.

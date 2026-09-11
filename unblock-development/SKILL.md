@@ -5,6 +5,14 @@ description: 'Keep software delivery moving by isolating any persistent developm
 
 # Unblock Development
 
+## Hard boundary
+
+Keep the parent active and paused at an exact resume point while the repair task runs.
+Never fix the parent's original feature in the parent to avoid creating a repair task,
+and never treat a repair task's final as completion of the parent. Keep exactly one
+active leaf, supervise it with bounded snapshots, independently rerun the failed probe,
+archive the repair task, and resume the parent in the same controller loop.
+
 Keep the parent development task in control while a fresh repair task removes each blocker. The repair task owns only the blocker; the parent owns the original outcome and resumes immediately after independent verification.
 
 Invocation authorizes creating and archiving dedicated Codex repair tasks within the parent task's existing scope. It does not authorize unrelated product work, new credentials, bypassed access controls, weakened TLS or checks, destructive recovery, or broader infrastructure changes.
