@@ -50,6 +50,27 @@ Retain archived tasks. The validator requires the task-tree IDs and fields to ma
 
 Child lifecycle is one of `queued`, `active`, `paused`, `handoff_received`, `verified`, or `archived`. Move a returned child to `handoff_received`, then `verified` only after independent verification, then `archived` only after archival succeeds.
 
+For every child task, retain the task-tool archive result and fresh readback in the
+sibling `task-census.json`; do not add undeclared fields to `child_tasks`. A child being
+`completed`, `idle`, or `notLoaded` is not an archived lifecycle. Immediately before
+terminal validation, validate a host task census whose discovered controller-owned task
+IDs exactly equal the recorded IDs; an omitted orphan is a state-repair failure.
+Run the census against both `controller-state.json` and `task-tree.json`. The task tree
+is an independent persisted projection and must contain the same child IDs and archived
+lifecycle. A controller cannot make an unarchived host task disappear by editing either
+local file. The final census must include the fresh host enumeration source, the archive
+operation result, and the post-archive host readback for every child.
+Every census entry must contain `lifecycle: "archived"`; omission is invalid. The
+controller writes that value only after the host readback proves archival. The terminal
+receipt must reference the resulting census allow receipt and final host enumeration.
+
+The lifecycle transition is a required sequence, not a reporting convention:
+`active/paused -> handoff_received -> verified -> archived`. Never jump from
+`active` to `archived`, and never let `handoff_received` coexist with a controller
+final or next-SPEC dispatch. A returned child with no complete handoff remains
+`active`/`paused`; an idle snapshot alone does not authorize either verification or
+archival.
+
 An action has exactly `kind`, `target`, and `instruction`. `kind` is one of `wait`, `verify`, `archive`, `repair`, `dispatch`, `advance`, `resume`, `refresh_state`, or `repair_state`. Gate-specific failures still persist through this canonical vocabulary: route drift, planning handoff repair, and receipt-write repair use `repair` with the task, gate, or artifact named in `target`. `instruction` is directly executable rather than a status description.
 
 Test status is `pending`, `running`, `passed`, or `blocked`. `test_state.l4_checkpoints` records `checkpoint_size: 10`, ordered SPECs, completed count, deterministic checkpoint objects, pass/fail evidence, and repository candidate revision sets. `candidate_revisions` is a unique collection whose order has no meaning; final L4 reuse or rerun evidence is compared against that set. Release status is `pending`, `building`, `packaged`, `deployed`, `not_applicable`, or `blocked`.

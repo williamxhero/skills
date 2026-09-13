@@ -5,13 +5,34 @@ description: 'Autonomously orchestrate a broad software requirement end to end: 
 
 # Implement Needs
 
+## Task/thread backend selection
+
+Resolve the child-task backend at bootstrap and persist the result in the controller
+state. Use this order: Host Task API, configured MCP/task connector, then the local
+`codex app-server --stdio`. The absence of a Task API is not a blocker. If the local
+app-server exists and passes its capability probe, it is mandatory to use it for child
+creation, supervision, readback, and lifecycle evidence. Only after all three backends
+fail may the controller invoke `unblock-development`.
+
+Never implement product code in the controller because a task API is missing, and never
+invent task, route, turn, or archive evidence. Read [the app-server protocol](references/app-server.md)
+and run `scripts/probe_codex_app_server.ps1` before selecting the fallback. Record the
+selected backend with `scripts/select_task_backend.py`; a repair selection is the only
+valid outcome when all probes fail.
+
+The backend is an implementation detail; all children use the same route receipt,
+controller-state, task-tree, task-census, handoff, and archive-readback contracts. An
+app-server thread without a native archive operation is archived only when its completed
+turn, independent verification, final thread readback, and persisted controller archive
+record all exist. Do not label a completed turn as a Host Task API archive.
+
 ## Non-negotiable execution contract
 
 This skill is a controller protocol, not a suggestion list. Execute phases in this order
 and fail closed at every boundary:
 
 ```text
-bootstrap -> planning-child -> Grill -> umbrella-SPEC -> child-SPECs -> tickets
+bootstrap -> Grill-child -> archive -> planning-child -> umbrella-SPEC -> child-SPECs -> tickets
           -> SPEC-thread-1 -> verify/merge/archive -> ...
           -> checkpoint-L4 -> final-gate -> build/package/deploy -> commit-n-push
 ```
@@ -23,7 +44,8 @@ controller-owned final release steps. If a required child or artifact is missing
 not compensate by doing the work in the controller; repair or resume the missing phase.
 
 Before the first product/test mutation, require observable evidence of: a completed
-Grill with `frontier_empty: true`; one umbrella SPEC; ordered child SPECs; every child
+dedicated Grill child with `frontier_empty: true` and archive readback; a separate
+planning child handoff; one umbrella SPEC; ordered child SPECs; every child
 SPEC's GitHub Parent issue read back to the umbrella; every child ticket's Parent issue
 read back to its child SPEC; one validated route receipt per child SPEC; and a validated
 release-train record. Missing, inferred, or prose-only evidence fails the gate.
@@ -35,10 +57,123 @@ ticket-level implementation task/thread/worktree/branch/PR may be created. Keep 
 one SPEC implementation child active; archive it only after independent verification
 and merge, then create the next child from the resulting default branch.
 
-The controller has exactly one active leaf. A child final is never a user-facing final:
+The controller has exactly one active leaf. Grill and SPEC/ticket planning are separate
+children with separate route receipts and archive readbacks. A child final is never a user-facing final:
 move it to `handoff_received`, verify it, archive it, update state, and continue the
 recorded action. A progress summary, idle child, failed tool, token pressure, or “继续”
 is not evidence that a phase is complete.
+
+For the planning segment, `grill-2-tickets` is authoritative and Implement Needs is a
+thin orchestration wrapper. Do not duplicate its Grill questions, synthesize a missing
+issue tree, or forward the planning assignment through a second monitor task. The
+controller supplies the standing default acceptance, supervises the exact executor,
+verifies fresh run-scoped artifacts and GitHub readbacks, archives the executor, and
+then advances. If the executor stalls or a tracker operation fails, use the recorded
+resume/blocker path; never convert an unchanged status paragraph into a handoff.
+
+### Mandatory child-handoff closure
+
+When any planning, SPEC, or repair child returns a final/handoff, the controller's next
+operation is always the closure sequence below. Do not send a prose summary or `final`
+between these operations:
+
+1. Persist the child as `handoff_received` and persist the exact next action.
+2. Run the active-state validator.
+3. Independently verify the handoff's claimed artifacts, tests, tracker state, route
+   receipt, and repository state from the controller environment.
+4. If and only if verification passes, archive the child through the task tool and read
+   back archival.
+5. Persist the child as `archived`, refresh the task tree and hashes, run the active-state
+   validator again, and execute the next action.
+
+For a SPEC child, “commit created”, “tests passed”, or “child says complete” never closes
+the SPEC. The mandatory remaining sequence is: verify every ticket -> verify required
+tests -> verify merge reachable from the default branch -> archive child -> update train
+-> run due L4/checkpoint -> dispatch the next SPEC. If any item is missing, the state
+remains `active` and the only valid output is Chinese commentary followed by the next
+wait, verify, repair, archive, or dispatch operation.
+
+Treat a controller final immediately after a child final, before this closure sequence
+and a terminal validator receipt, as a protocol violation. Before every natural-language
+final, inspect the persisted state: if it is `active`, use commentary and perform its
+recorded action; never convert the handoff into a final merely because the child became
+idle or the current turn has accumulated a long history.
+
+### Codex task census and archival gate
+
+GitHub Issue closure and Codex task archival are separate facts. Before terminal release
+or terminal success, enumerate the task tree from the host task API, filter every task
+whose delegation provenance names this controller run, and compare that inventory with
+`child_tasks` and `role_limited_tasks`. Missing task IDs, unexplained extra tasks, or a
+status other than archived fails closed.
+
+For every discovered child, record an explicit archival operation result and a fresh
+post-archive readback. Do not infer archival from `completed`, `idle`, `notLoaded`, a
+closed GitHub Issue, a clean worktree, or a child message saying “已归档”. The terminal
+evidence must contain one successful archive readback per planning, SPEC, and repair
+task, including tasks that failed to start or were replaced after a blocker. A task
+created during this run but absent from controller state is an immediate state-repair
+blocker, not an ignorable orphan.
+
+The final census must satisfy:
+
+```text
+discovered_controller_tasks == recorded_child_tasks
+recorded_child_tasks[*].lifecycle == archived
+task_census[*].archive_readback_evidence is non-empty
+unverified_handoffs == []
+unarchived_tasks == []
+```
+
+### Mandatory external closeout protocol
+
+Use this exact closeout sequence for every planning, SPEC, and repair child:
+
+```text
+receive handoff
+-> independently verify
+-> call archive for the exact task ID
+-> read that task ID back from the host
+-> require archived=true or the backend's documented equivalent
+-> record operation and readback in task-census
+-> refresh task-tree from the host
+-> update controller-state and unarchived_tasks
+-> run validate_task_census.py with state + task-tree + census
+-> only after allow dispatch the next child or run terminal validation
+```
+
+Never write `lifecycle: archived` before the host readback proves archival. Child final,
+turn completion, idle status, GitHub issue closure, clean worktree, commit, test result,
+or an archive call without readback is not archival evidence. A failed archive call,
+missing readback, stale task-tree, or census mismatch keeps the controller `active` and
+sets the next action to archive or repair.
+
+The final host enumeration must contain the run ID, task ID, task kind, host ID, observed
+status, archive result, post-archive readback, and observation timestamp. Compare its
+child set with both persisted projections. Extra tasks are orphan repairs; missing tasks
+are census repairs. The controller task is excluded only when explicitly identified as
+the controller and is never recorded as a child.
+
+Before any final, require fresh task-census `allow`, terminal-validator `allow`, and a
+final host task readback in the same turn. The terminal command must pass
+`--task-census-receipt`; omitting it is a workflow error even if compatibility code
+accepts the older validator interface.
+
+Persist the census as `.scratch/<initiative>/task-census.json` and run
+`scripts/validate_task_census.py` against both the current controller state and the
+current task tree, for example with `--state ... --task-tree ... --census ...`. The
+census must be built from a fresh host task enumeration, not copied from controller
+state. Only an allow receipt permits the controller to close remaining tracker
+containers and run the terminal validator. If the host cannot expose archival state or read it back,
+invoke `unblock-development`; never claim completion from the GitHub issue graph.
+
+The controller task itself is not a child and must remain outside `child_tasks`; every
+task created by this run must be tagged with the run id and appear exactly once in the
+host enumeration. Before terminal success, compare host-discovered child IDs,
+task-tree IDs, and controller-state IDs. A matching self-written lifecycle field is not
+external proof. If any child remains visible as idle, completed, notLoaded, active, or
+unarchived after the archive call, terminal success is forbidden and the next action is
+archive/readback repair.
 
 If any phase appears skipped, reconstruct missing evidence from the same task where
 possible. Otherwise return to the last verified boundary and resume or repair that
@@ -91,7 +226,7 @@ Do not leave a child frontier parked. When a Grill child returns questions, repl
 Before any proposed controller `final_answer`, refresh both fingerprinted source artifacts and run the deterministic gate:
 
 ```text
-python <implement-needs>/scripts/validate_controller_terminal.py --state .scratch/<initiative>/controller-state.json --delivery-map .scratch/<initiative>/delivery-map.md --task-tree .scratch/<initiative>/task-tree.json --expected-run-id <run-id> --proposed-state <terminal_success|terminal_blocked|user_stopped> --goal-status <unchanged|complete|blocked> --receipt .scratch/<initiative>/terminal-receipt.json
+python <implement-needs>/scripts/validate_controller_terminal.py --state .scratch/<initiative>/controller-state.json --delivery-map .scratch/<initiative>/delivery-map.md --task-tree .scratch/<initiative>/task-tree.json --task-census-receipt .scratch/<initiative>/task-census-receipt.json --expected-run-id <run-id> --proposed-state <terminal_success|terminal_blocked|user_stopped> --goal-status <unchanged|complete|blocked> --receipt .scratch/<initiative>/terminal-receipt.json
 ```
 
 Only exit code `0` with `decision: allow` authorizes that exact terminal state. Cite the receipt and terminal evidence in the Chinese final. A rejection fails closed: keep or restore `controller_state: active`, emit commentary, execute the returned `next_action`, and rerun the gate only after state changes. Use the same receipt to set a goal `complete` only for `terminal_success` and `blocked` only for `terminal_blocked`; `user_stopped` leaves goal status unchanged.

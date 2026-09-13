@@ -12,7 +12,7 @@ class IssueTreeTests(unittest.TestCase):
     def record(self):
         return {
             "schema_version": 1,
-            "grill": {"frontier_empty": True, "round_evidence": ["chat://round-1"]},
+            "grill": {"frontier_empty": True, "round_evidence": [{"round": 1, "questions": [{"number": 1, "question": "scope", "recommendation": "bounded", "rationale": "clear"}], "acceptance_command": "全部采用推荐选项/答案", "acceptance_evidence": ["chat://accept"], "resume_evidence": ["chat://resume"], "frontier_empty": True, "frontier_empty_evidence": ["chat://empty"]}]},
             "umbrella_spec": {"id": "S0", "artifact": "github://S0"},
             "specs": [{
                 "id": "S1", "artifact": "github://S1",

@@ -53,8 +53,25 @@ def validate(data):
     if data.get("schema_version") != 1:
         errors.append("schema_version must be 1")
     grill = data.get("grill")
-    if not isinstance(grill, dict) or grill.get("frontier_empty") is not True or not grill.get("round_evidence"):
+    rounds = grill.get("round_evidence") if isinstance(grill, dict) else None
+    if not isinstance(grill, dict) or grill.get("frontier_empty") is not True or not isinstance(rounds, list) or not rounds:
         errors.append("Grill must have an empty frontier and round evidence")
+    else:
+        for ri, entry in enumerate(rounds):
+            required = {"round", "questions", "acceptance_command", "acceptance_evidence", "resume_evidence"}
+            if not isinstance(entry, dict) or not required.issubset(entry) or entry.get("acceptance_command") != "全部采用推荐选项/答案":
+                errors.append(f"grill round {ri + 1} lacks structured acceptance evidence")
+                continue
+            questions = entry.get("questions")
+            if not isinstance(questions, list) or not questions:
+                errors.append(f"grill round {ri + 1} requires questions")
+            for qi, question in enumerate(questions or []):
+                if not isinstance(question, dict) or not all(nonempty(question.get(k)) for k in ("question", "recommendation", "rationale")) or not isinstance(question.get("number"), int):
+                    errors.append(f"grill round {ri + 1} question {qi + 1} is incomplete")
+            if not isinstance(entry.get("acceptance_evidence"), list) or not entry["acceptance_evidence"] or not isinstance(entry.get("resume_evidence"), list) or not entry["resume_evidence"]:
+                errors.append(f"grill round {ri + 1} lacks resume evidence")
+        if isinstance(rounds[-1], dict) and (not rounds[-1].get("frontier_empty") or not rounds[-1].get("frontier_empty_evidence")):
+            errors.append("final Grill round must prove frontier_empty=true")
     umbrella = data.get("umbrella_spec")
     umbrella_id = umbrella.get("id") if isinstance(umbrella, dict) else None
     if not isinstance(umbrella, dict) or set(umbrella) != {"id", "artifact"} or not all(nonempty(umbrella.get(k)) for k in ("id", "artifact")):

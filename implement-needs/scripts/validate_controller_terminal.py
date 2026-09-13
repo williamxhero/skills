@@ -1102,9 +1102,17 @@ def evaluate(
     expected_run_id: str,
     proposed_state: str,
     goal_status: str = "unchanged",
+    task_census_receipt_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Return a deterministic decision payload and process exit code."""
     issues: list[dict[str, str]] = []
+    if task_census_receipt_path is not None:
+        try:
+            census_receipt = json.loads(task_census_receipt_path.read_text(encoding="utf-8"))
+            if census_receipt.get("decision") != "allow":
+                issues.append(_issue("task_census_not_allowed", str(task_census_receipt_path), "Terminal success requires an allow task-census receipt."))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            issues.append(_issue("task_census_receipt_unreadable", str(task_census_receipt_path), f"Cannot read task-census receipt: {exc.__class__.__name__}."))
     if MODEL_POLICY_ERROR is not None:
         issues.append(
             _issue(
@@ -1354,6 +1362,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional path for the atomic JSON decision receipt",
     )
+    parser.add_argument(
+        "--task-census-receipt",
+        type=Path,
+        help="Required by Implement Needs terminal workflow: allow receipt from validate_task_census.py",
+    )
     return parser
 
 
@@ -1366,6 +1379,7 @@ def main(argv: list[str] | None = None) -> int:
         args.expected_run_id,
         args.proposed_state,
         args.goal_status,
+        args.task_census_receipt,
     )
     serialized = _serialize(payload)
     if args.receipt is not None:

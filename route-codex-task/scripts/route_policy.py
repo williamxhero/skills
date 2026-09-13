@@ -506,4 +506,3 @@ def persisted_route_issues(
     if route["selection"] == "fallback" and selected_pair not in parsed_fallbacks:
         issues.append(issue("persisted_route_not_locked", path, "Fallback route must equal an exact preapproved fallback."))
     return issues
-

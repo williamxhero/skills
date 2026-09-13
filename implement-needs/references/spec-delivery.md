@@ -26,6 +26,13 @@ SPEC {spec_id} 当前由任务 {task_id} 执行；实际模型：{model}；推�
 5. Treat its final as a claim. Independently verify ticket completion, selected per-SPEC layers and public-contract L3 obligations, integration, and reachability of the merge commit from the default branch. Validate its evidence packet with `test-release-train`; return any failure to the same child and wait again.
 6. Close the SPEC and tickets, record merge/test evidence, archive the child, record archival, and update the train. Run any due affected-owner checkpoint before the next SPEC.
 
+The child final is an event, not a completion state. The controller must immediately
+perform steps 5 and 6. In particular, a child commit is not a merged commit, and an
+idle child is not an archived child. Do not emit a controller final after receiving the
+child final; only the terminal validator may authorize that. If the child stopped before
+its handoff, send a focused continuation to the same child or route its blocker, then
+wait again.
+
 Persist each observation before acting. A `running` snapshot records another `wait`; a side question records the Chinese answer and then the unchanged prior action; a child final moves only to `handoff_received`. Ticket progress records each ticket's SPEC owner task ID, blockers, commits, tests, and tracker state in `implementation_ownership`; `ticket_implementation_artifacts` stays empty. Verification, archival, and next-SPEC dispatch are separate recorded transitions. Never infer archival from a final message.
 
 On recovery, reconcile the saved child IDs with the fresh task tree before dispatch. If the recorded child still exists, reconnect it with the exact persisted route receipt and resume its exact action. Revalidate that the receipt still names the same SPEC owner and exact locked recommendation or same-or-stronger preapproved fallback. A missing recorded child or changed receipt is state repair or blocker work, never permission to create a duplicate. The next SPEC must be based on the integration revision that contains the independently verified predecessor merge.
@@ -36,6 +43,12 @@ is idle without a verified handoff, send a focused continuation in the same task
 reports a blocker, route it immediately; if it is complete, verify before archive. Do not
 emit a controller final or leave the controller turn after merely reporting that the
 child is running.
+
+Before declaring the SPEC complete, perform a task-tool archival readback for its
+implementation task and store it beside the merge and test evidence. Closing the SPEC
+or tickets in GitHub does not close the Codex task; both states require independent
+verification. Treat a child visible as `idle` or `notLoaded` as unarchived until the
+archive operation and post-operation readback succeed.
 
 One child owns one SPEC through merge and evidence handoff. Do not reuse it for another SPEC or overlap it with another implementation child, and do not create ticket implementation tasks, threads, worktrees, branches, or PRs. Repair tasks and read-only exploration or review tasks are role-limited helpers only; after they return, resume the recorded SPEC task. The controller retains release context while archived implementation context disappears.
 

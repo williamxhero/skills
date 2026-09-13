@@ -2,7 +2,7 @@
 
 Read this reference when the controller enters planning. The Controller Kernel remains authoritative for state and message phase.
 
-## Create the one planning task
+## Create the planning tasks
 
 The planning task is the only task allowed to perform planning publication. The
 controller must not create a substitute SPEC or ticket, answer a missing Grill question
@@ -11,7 +11,16 @@ the planner active until the complete machine-checkable handoff exists. A handof
 does not contain every required planning-record field is incomplete and must be repaired
 in the same planning task.
 
-The planning task owns the complete **Grill → SPECs → tickets → implementation routing** sequence. It must invoke `grill-2-tickets` for the Grill-through-tickets portion, then extend that verified handoff with Implement Needs routing and release-train fields. The controller relays, auto-accepts, validates, and schedules; it does not author or recompute planning decisions.
+Create two fresh planning children. The dedicated Grill child owns only the visible Grill
+frontier and its answers. After `frontier_empty: true`, independently verify and archive
+that child. A separate planning child then consumes the verified Grill handoff and owns
+SPECs, tickets, implementation-route prediction, and release-train fields. The
+controller relays, auto-accepts, validates, and schedules; it never performs Grill,
+SPEC, or ticket design in the controller.
+
+The Grill child must use `route-codex-task` with `gpt-5.6-sol` + `high` by default, and
+must have its own fresh applied-settings readback and route receipt. Do not reuse the
+SPEC/ticket planning child for Grill.
 
 Invoke `route-codex-task` before creation and store its target-host capability evidence and locked route in `.scratch/<initiative>/planning-record.json`. Supply the complete requirement-understanding, SPEC decomposition, per-SPEC implementation-route prediction, and ticket decomposition sequence as the planning profile. Its caller default is `gpt-5.6-sol` + `high` for every scope; keep `planning_xhigh_evidence` empty unless concrete complexity evidence proves `high` inadequate. Let `route-codex-task` own every allow-list, rank, fallback, `xhigh`, readback, drift, and receipt decision.
 
@@ -25,19 +34,38 @@ Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. Reta
 
 ## Run the delegated Grill
 
+`grill-2-tickets` is the planning executor and owns the content of every Grill round,
+the issue tree, publication retries, duplicate convergence, and tracker readbacks.
+Implement Needs is only the thin controller wrapper for dispatch, standing default
+answers, supervision, independent verification, archival, and phase transition. It
+must never replace a missing Grill round with a summary, forward planning to another
+monitor, create a substitute issue tree, or treat an idle/forwarded task as a valid
+handoff. The planning assignment must include a fresh run id, source fingerprint,
+baseline issue census, and a unique evidence namespace; stale records from an earlier
+run are not reusable.
+
 The full assignment points the planner to the requirement, repository instructions, domain vocabulary and ADRs, tracker and default branch, resolved `grill-2-tickets` and `test-release-train` protocols, the default policy, and the supported route matrix. `grill-2-tickets` resolves and applies `grilling`, `to-spec`, and `to-tickets`; Implement Needs does not duplicate that workflow. Repository exploration and subagents are read-only. Capture a controller-computed product/test-tree fingerprint before the assignment.
 
-The planner returns each complete numbered Grill frontier with a recommended default and rationale for every question in the visible planning task, then pauses. For every round, the controller:
+The dedicated Grill child returns each complete numbered Grill frontier with a recommended default and rationale in its visible task, then pauses. For every round, the controller:
 
 1. posts only `全部采用推荐选项/答案` in Chinese commentary; the user can inspect the full frontier in the separate visible planning task;
 2. records that exact compact text as `acceptance_command` and acceptance source `implement-needs-standing-authorization`;
 3. sends only `全部采用推荐选项/答案` to the same planning task immediately, without reproducing questions, answers, or rationales and without waiting for user confirmation.
 
-The planner alone applies those answers, recomputes the design tree, and returns the next frontier. Continue until it reports an empty frontier. The controller may translate or ask the planner to repair an incomplete round; it does not add, omit, merge, or answer a planning question independently.
+The Grill child alone applies those answers, recomputes the design tree, and returns the next frontier. Continue until it reports an empty frontier, then independently verify and archive it before dispatching the separate planning child. The controller may ask the Grill child to repair an incomplete round; it does not add, omit, merge, or answer a Grill question independently.
+
+During supervision, two bounded observations without a new tool marker or external
+state change are a suspected stall. Resume the same child once; if it remains stalled,
+route the exact failed probe through `unblock-development`, archive the repair task
+after verification, and resume the recorded planning action. A task final is a claim
+until the controller verifies the fresh issue census, structured Grill evidence,
+Parent readbacks, and `validate_issue_tree.py` result.
 
 ## Publish and route
 
-Run the complete `grill-2-tickets` workflow in the same planning task. Validate its issue-tree record with that skill's `validate_issue_tree.py`; then the same planning task must:
+Run the complete `grill-2-tickets` workflow across the two planning children. Validate the
+Grill handoff first, then the separate planning child must validate its issue-tree record
+with `validate_issue_tree.py` and must:
 
 1. Publish exactly one umbrella SPEC for the complete requirement. It is a tracker container, not an implementation unit: do not create tickets, an implementation task, a route, or a release-train checkpoint for it.
 2. Partition every requirement into exactly one member of the minimum ordered set of coherent child SPECs, with acyclic inter-SPEC blockers.
