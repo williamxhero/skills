@@ -5,6 +5,10 @@ description: Select, create, and verify Codex task model/effort routes with host
 
 # Route Codex Task
 
+When called by `implement-needs`, return a machine-readable route result containing
+`task_id`, `selection`, `applied`, `receipt`, and `decision`; the controller records it
+as an SQLite observation before dispatching work. A prose route summary is insufficient.
+
 ## Hard boundary
 
 Routing is a prerequisite, not task completion. Do not send the implementation or repair

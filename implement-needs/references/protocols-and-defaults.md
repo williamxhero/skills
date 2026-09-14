@@ -30,7 +30,17 @@ Resolve these canonical protocols:
 
 Only after all lookup steps fail, or a resolved file fails its name/readability check, treat a protocol as unavailable. Apply `unblock-development` unless that is the missing protocol; for a missing `unblock-development`, preserve the evidence and enter the hard-blocker protocol. Never silently skip a protocol.
 
-This controller overrides the protocols' human checkpoints: auto-accept every Grill recommendation, infer testing seams, auto-approve each published SPEC, self-approve ticket granularity and blocking edges, fix review findings, and continue without asking the user to choose among viable options.
+After invocation, this controller owns every viable workflow decision that would
+otherwise require user judgment. Apply the AI recommendation or the documented default
+for Grill answers, SPEC approval, ticket granularity and blocking edges, route choices,
+test scope, review fixes, merge/release strategy, and thread recovery/archival. Record
+each result as `decision: controller_approved` with the chosen value, recommendation or
+default, evidence, and tie-break rationale. This is controller provenance, never a
+fabricated user message. Propagate the same policy to delegated children and resume
+their stored action after answering a viable question.
+
+Pause only for missing authority or an irreversible action outside the standing
+authorization. Ordinary failures go through `unblock-development`.
 
 For every `to-spec` call, supply `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`. Record “同意” as a controller decision derived from the user's standing authorization, never as a fabricated user-authored message. This override crosses only the post-publication confirmation gate; `to-spec` remains forbidden from ticketing or implementation.
 

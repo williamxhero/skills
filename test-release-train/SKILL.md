@@ -5,6 +5,10 @@ description: 'Orchestrate impact-selected testing across a multi-SPEC, multi-tic
 
 # Test Release Train
 
+When called by `implement-needs`, return structured gate results keyed by run, SPEC,
+revision, and artifact. The controller stores the result in SQLite; a prose “passed”
+message does not advance a SPEC or release action.
+
 Treat this as an evidence protocol, not permission to skip implementation gates. It
 cannot declare a SPEC complete, replace a SPEC implementation task, or authorize a
 release when the required merge, task archival, or route evidence is absent. A test

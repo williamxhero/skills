@@ -1,13 +1,18 @@
 # Thread registry
 
-`thread-registry.json` is the operational index for every thread created by one
+The `threads` table in `.scratch/<initiative>/implement-needs.db` is the operational
+index for every thread created by one
 `implement-needs` run. Controller state answers “what action is next”; the registry
 answers “which threads exist and what must happen to each one.”
 
-Each entry records `thread_id`, `kind`, optional `spec_id`, `owner`, `lifecycle`,
-`last_observed_at`, `next_action`, `archive_operation_evidence`, and
-`archive_readback_evidence`. Lifecycle values are `queued`, `active`, `paused`,
-`handoff_received`, `verified`, `archived`, or `orphan`.
+The old `thread-registry.json` name refers only to a read-only export. Each database
+entry records `thread_id`, `kind`, optional `spec_id`, `owner`, `lifecycle`,
+`outcome`, `last_observed_at`, `next_action`, `archive_operation_evidence`, and
+`archive_readback_evidence`. Registry `outcome` may be `completed`,
+`cancelled_before_start`, `abandoned_after_bootstrap`, `repaired`, or `unknown`.
+Controller task lifecycle remains `queued`, `active`, `paused`, `handoff_received`,
+`verified`, or `archived`; cancellation is represented by `outcome` plus the final
+`archived` lifecycle, so the controller schema stays compatible.
 
 ## Reconciliation gate
 
@@ -24,6 +29,17 @@ terminal validation:
    be recoverable.
 7. Dispatch only when no entry is `handoff_received`, `verified`, or `orphan`, and the
    one-active-SPEC rule remains true.
+
+## Bootstrap barrier
+
+Every newly created planning, SPEC, or repair thread must cross its bootstrap barrier
+in the same controller turn: record it in the registry, read back its applied route,
+and send `ROUTE_VERIFIED` (or the task-specific equivalent) before waiting or creating
+another thread. A bootstrap-only thread that cannot cross this barrier is not useful
+work. Record `outcome: cancelled_before_start` when route approval is unavailable, or
+`outcome: abandoned_after_bootstrap` when the parent fails to continue it, then archive
+the exact thread and read back archival state. Never leave such a thread idle, queued,
+or waiting for an implicit future message.
 
 An `active` or `paused` thread is retained and resumed or waited on according to its
 `next_action`. `idle`, `completed`, or `notLoaded` is an observation, not an archive

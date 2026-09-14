@@ -5,6 +5,11 @@ description: 'Keep software delivery moving by isolating any persistent developm
 
 # Unblock Development
 
+When called by `implement-needs`, return a structured repair result containing the
+blocked action, repair thread, verification evidence, and exact resume action. The
+controller records it before resuming the parent action and archives any bootstrap-only
+repair thread immediately.
+
 ## Hard boundary
 
 Keep the parent active and paused at an exact resume point while the repair task runs.

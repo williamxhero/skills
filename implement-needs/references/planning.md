@@ -30,11 +30,21 @@ Create exactly one fresh saved-project task titled `Implement Needs Plan: <initi
 python <implement-needs>/scripts/validate_planning.py route --record .scratch/<initiative>/planning-record.json --readback .scratch/<initiative>/planning-route-readback.json --expected-run-id <run-id> --target planning --expected-task-id <created-task-id> --receipt .scratch/<initiative>/planning-route-receipt.json
 ```
 
-Send `ROUTE_VERIFIED` and the full assignment only after `decision: allow`. Retain the complete route receipt: it binds the exact locked recommendation and fallbacks, selected pair, task owner, planning-record hash, readback hash, and canonical receipt identity. A rejection returns a canonical `repair` next action and keeps the same task at bootstrap. Select only a fallback already locked in the record, state why it replaced the recommendation, and capture a fresh readback; an applied pair different from the explicit request is silent drift and cannot begin planning. Unavailable readback is a blocker, not evidence of the requested route.
+Send `ROUTE_VERIFIED` and the full assignment in the same controller turn after
+`decision: allow`. Retain the complete route receipt: it binds the exact locked
+recommendation and fallbacks, selected pair, task owner, planning-record hash, readback
+hash, and canonical receipt identity. A rejection returns a canonical `repair` next
+action and keeps the same task at bootstrap; if that task cannot be resumed in the same
+turn, mark it `cancelled_before_start`, archive it, and read back archival state before
+dispatching anything else. Select only a fallback already locked in the record, state
+why it replaced the recommendation, and capture a fresh readback; an applied pair
+different from the explicit request is silent drift and cannot begin planning.
+Unavailable readback is a blocker, not evidence of the requested route.
 
 ## Run the delegated Grill
 
-`grill-2-tickets` is the planning executor and owns the content of every Grill round,
+The outer controller invokes `grilling` and `to-spec` directly; this planning reference
+owns only their sequencing and evidence,
 the issue tree, publication retries, duplicate convergence, and tracker readbacks.
 Implement Needs is only the thin controller wrapper for dispatch, standing default
 answers, supervision, independent verification, archival, and phase transition. It
@@ -44,7 +54,7 @@ handoff. The planning assignment must include a fresh run id, source fingerprint
 baseline issue census, and a unique evidence namespace; stale records from an earlier
 run are not reusable.
 
-The full assignment points the planner to the requirement, repository instructions, domain vocabulary and ADRs, tracker and default branch, resolved `grill-2-tickets` and `test-release-train` protocols, the default policy, and the supported route matrix. `grill-2-tickets` resolves and applies `grilling`, `to-spec`, and `to-tickets`; Implement Needs does not duplicate that workflow. Repository exploration and subagents are read-only. Capture a controller-computed product/test-tree fingerprint before the assignment.
+The assignment points the planner to the requirement, repository instructions, domain vocabulary and ADRs, tracker and default branch, `test-release-train`, the default policy, and the supported route matrix. Repository exploration and subagents are read-only. Capture a controller-computed SPEC fingerprint before publication.
 
 The dedicated Grill child returns each complete numbered Grill frontier with a recommended default and rationale in its visible task, then pauses. For every round, the controller:
 
@@ -63,7 +73,7 @@ Parent readbacks, and `validate_issue_tree.py` result.
 
 ## Publish and route
 
-Run the complete `grill-2-tickets` workflow across the two planning children. Validate the
+Run Grill and SPEC publication as the planning phase. Validate the
 Grill handoff first, then the separate planning child must validate its issue-tree record
 with `validate_issue_tree.py` and must:
 
@@ -71,7 +81,7 @@ with `validate_issue_tree.py` and must:
 2. Partition every requirement into exactly one member of the minimum ordered set of coherent child SPECs, with acyclic inter-SPEC blockers.
 3. Set every child SPEC's GitHub **Parent issue** relationship to the umbrella SPEC. Read the relationship back from GitHub and record evidence; labels, body links, task-list links, and dependency edges do not satisfy this requirement.
 4. Invoke `to-spec` for the umbrella and every child SPEC with `confirmation_mode: auto_approve`, `approval_source: implement-needs`, and `approval_text: 同意`; require `spec_state: auto_approved` and provenance `controller_decision`.
-5. Invoke `to-tickets` for child SPECs only, bypass its quiz under the standing authorization, publish tracer-bullet tickets, set every ticket's GitHub **Parent issue** to its owning child SPEC, read every relationship back, and self-check granularity, blocking edges, and acyclicity. A body link, task-list link, label, or dependency edge is not a Parent issue.
+5. Invoke `to-tickets` only when its SPEC becomes active, bypass its quiz under the standing authorization, publish tracer-bullet tickets, set every ticket's GitHub **Parent issue** to its owning child SPEC, read every relationship back, and self-check granularity, blocking edges, and acyclicity. A body link, task-list link, label, or dependency edge is not a Parent issue.
 6. Invoke `route-codex-task` once per child SPEC prediction using whole-SPEC difficulty and risk evidence, not ticket count. Record its route and any `xhigh_evidence`; tickets inherit their child SPEC route and never receive a separate model, effort, or owner.
 7. Initialize release-train owners, repositories, acceptance scopes, public-contract/environment flags, baselines, `checkpoint_size: 10`, and every deterministic L4 checkpoint over child SPECs only.
 8. Return the completed planning record and artifact evidence without changing product or test code.

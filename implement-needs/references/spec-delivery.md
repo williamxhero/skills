@@ -10,6 +10,12 @@ Read this reference before creating or supervising a SPEC implementation task. P
 
 For each SPEC:
 
+Before creating the SPEC task, pass the thread-registry reconciliation gate. After
+creation, complete route readback and send the implementation assignment in the same
+controller turn. If the task stops at bootstrap or the parent misses that handoff,
+record `abandoned_after_bootstrap`, archive the task, and read back archival state
+before any next-SPEC or repair dispatch.
+
 1. Refresh from the default branch, mark the SPEC active, and verify its published SPEC and ticket graph against the locked planning artifacts. A material scope change must return to, verify, and rearchive the same planning task.
 2. Invoke `route-codex-task` with the locked whole-SPEC prediction and current target host, then create a fresh project task titled `Implement Needs <NN>: <spec title>` from the latest default branch with a bootstrap-only prompt. Capture the applied settings from a fresh task readback and run `validate_planning.py route --expected-task-id <created-task-id>` for this SPEC. Send the implementation assignment only after `decision: allow`; persist the complete allow receipt in the lifecycle event and ownership ledger. Repair every rejected route on the same task boundary.
 

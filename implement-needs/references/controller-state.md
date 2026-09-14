@@ -1,4 +1,8 @@
-# Controller-state contract
+# Controller-state contract (legacy export)
+
+The SQLite database at `.scratch/<initiative>/implement-needs.db` is now the runtime
+source of truth. The JSON state described below is retained only as a compatibility
+export for older validators and audit readers; it must never drive execution.
 
 Read this contract at startup, recovery, and immediately before terminal validation. The [JSON Schema](controller-state.schema.json) is the structural authority; [`validate_controller_terminal.py`](../scripts/validate_controller_terminal.py) is the semantic and terminal authority.
 

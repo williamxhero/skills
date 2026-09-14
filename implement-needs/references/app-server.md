@@ -44,7 +44,8 @@ include `turn_completed`, `independent_verification_passed`, `final_thread_readb
 and `controller_archive_record_persisted`. These are recorded in task-census entries
 alongside `backend: codex-app-server-jsonrpc` and the transcript hash.
 
-On restart, reload controller-state, task-tree, and task-census first. Reconnect to an
-existing child by id and continue its recorded next action. Do not create a replacement
+On restart, reload `implement-needs.db` first and recover its oldest pending action.
+Reconcile external state, reconnect to an existing child by id, and continue its
+recorded next action. Do not create a replacement
 until a readback proves the original cannot be recovered; record the original failure
 and archive/readback evidence before replacing it.

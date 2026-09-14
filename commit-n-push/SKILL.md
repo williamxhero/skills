@@ -5,6 +5,10 @@ description: Commit every current change in a Git project and every project-owne
 
 # Commit, synchronize, and push the whole project
 
+When called by `implement-needs`, return structured repository results containing the
+selected repository, preflight, fetch, merge, push, post-push readback, and local/remote
+equality evidence. The controller records these observations before completing release.
+
 Treat the requested project tree as the scope. Commit all current changes in every selected repository, regardless of which task or author created them. Synchronize and push every repository with an unambiguous remote.
 
 ## 1. Discover repositories
