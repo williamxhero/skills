@@ -1,5 +1,5 @@
 ---
-name: grill-2-tickets
+name: "IN: Grill 2 Tickets"
 description: Autonomously turn a software requirement into published GitHub planning artifacts by visibly executing and recording Grill rounds, creating one umbrella SPEC, partitioning child SPECs, creating tickets, and verifying Parent issue relationships. Use for “Grill 2 Tickets”, default planning through tickets, or an orchestrator's no-confirmation planning phase.
 ---
 

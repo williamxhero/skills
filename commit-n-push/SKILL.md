@@ -1,5 +1,5 @@
 ---
-name: commit-n-push
+name: "IN: Commit n Push"
 description: Commit every current change in a Git project and every project-owned nested Git repository, synchronize each branch by fetching and normally merging its upstream, then push and verify local/remote equality. Use when the user asks to commit and push a whole project, pull-merge-push, synchronize all subrepositories, include changes from other threads, or says commit n push.
 ---
 

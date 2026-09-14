@@ -8,6 +8,7 @@ Keep these files together under `.scratch/<initiative>/`:
 
 - `delivery-map.md`: human-readable decisions and evidence.
 - `task-tree.json`: the latest normalized JSON snapshot of every planning, SPEC, and repair task, sorted by task ID, plus the implementation ownership ledger.
+- `thread-registry.json`: the complete run-owned thread inventory, latest lifecycle and observation, next action, and archive operation/readback evidence. Reconcile it before every new thread creation.
 - `controller-state.json`: the machine-readable controller record described below.
 - `terminal-receipt.json`: the most recent validator decision.
 

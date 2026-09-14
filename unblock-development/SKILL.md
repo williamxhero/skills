@@ -1,5 +1,5 @@
 ---
-name: unblock-development
+name: "IN: Unblock Development"
 description: 'Keep software delivery moving by isolating any persistent development blocker in a dedicated Codex repair task, routing model and reasoning effort by difficulty, verifying the original failure is fixed, archiving the repair task, and resuming the parent task at the exact blocked step. Use when the user or an authorized parent workflow requests automatic repair tasks during implementation, testing, Git/GitHub, CI, merge, build, release, deployment, tooling, network, permissions, credentials, or environment work.'
 ---
 
