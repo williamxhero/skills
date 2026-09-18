@@ -72,3 +72,13 @@ def render_cli_help(name=None):
     validate_contracts()
     selected = [contract_for(name)] if name is not None else [ACTION_CONTRACTS[key] for key in sorted(ACTION_CONTRACTS)]
     return {"generated": True, "source": "action_contracts.py", "actions": [item.public() for item in selected]}
+
+
+def validate_action_surface(action_names):
+    if not isinstance(action_names, list) or any(not isinstance(name, str) or not name.strip() for name in action_names):
+        raise ActionContractError("action_surface_invalid")
+    unknown = sorted(set(action_names) - set(ACTION_CONTRACTS))
+    if unknown:
+        raise ActionContractError("action_surface_unknown", {"actions": unknown})
+    validate_contracts()
+    return {"decision": "allow", "action_count": len(set(action_names)), "source": "action_contracts.py"}

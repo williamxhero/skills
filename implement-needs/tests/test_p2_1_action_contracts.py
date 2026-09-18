@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from action_contracts import ACTION_CONTRACTS, ActionContract, ActionContractError, contract_for, render_cli_help, render_derived_checklist, validate_contracts
+from action_contracts import ACTION_CONTRACTS, ActionContract, ActionContractError, contract_for, render_cli_help, render_derived_checklist, validate_action_surface, validate_contracts
 from control_db import ControlDB
 
 
@@ -48,6 +48,12 @@ class ActionContractTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(controller), "--db", str(path), "action-contract", "--action", "not-registered"], capture_output=True, text=True, check=False)
             self.assertNotEqual(0, result.returncode)
             self.assertEqual("action_contract_unknown", json.loads(result.stdout)["error"])
+
+    def test_action_surface_check_rejects_undeclared_side_effect_entry(self):
+        self.assertEqual("allow", validate_action_surface(["run_preflight", "dispatch_spec"])["decision"])
+        with self.assertRaises(ActionContractError) as raised:
+            validate_action_surface(["run_preflight", "new_unregistered_action"])
+        self.assertEqual("action_surface_unknown", raised.exception.code)
 
 
 if __name__ == "__main__": unittest.main()
