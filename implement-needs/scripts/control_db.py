@@ -288,19 +288,19 @@ class ControlDB:
         digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         key = idempotency_key or f"{run_id}:{operation}:{target}:{generation}:{digest}"
         request_id = "in-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
-        existing = self.conn.execute(
-            "SELECT * FROM operation_intents WHERE idempotency_key=?", (key,)
-        ).fetchone()
-        if existing:
-            if any((existing[field] != expected) for field, expected in {
-                "run_id": run_id, "operation": operation, "target": target,
-                "generation": generation, "input_digest": digest,
-                "normalized_parameters": normalized,
-            }.items()):
-                raise ValueError("idempotency key already exists with different intent")
-            return {"intent": dict(existing), "created": False}
         stamp = now()
         with transaction(self.conn):
+            existing = self.conn.execute(
+                "SELECT * FROM operation_intents WHERE idempotency_key=?", (key,)
+            ).fetchone()
+            if existing:
+                if any((existing[field] != expected) for field, expected in {
+                    "run_id": run_id, "operation": operation, "target": target,
+                    "generation": generation, "input_digest": digest,
+                    "normalized_parameters": normalized,
+                }.items()):
+                    raise ValueError("idempotency key already exists with different intent")
+                return {"intent": dict(existing), "created": False}
             cursor = self.conn.execute(
                 "INSERT INTO operation_intents(run_id,operation,target,generation,input_digest,normalized_parameters,idempotency_key,external_request_id,status,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -312,8 +312,8 @@ class ControlDB:
                 "input_digest": digest, "idempotency_key": key,
                 "external_request_id": request_id,
             })
-        row = self.conn.execute("SELECT * FROM operation_intents WHERE intent_id=?", (cursor.lastrowid,)).fetchone()
-        return {"intent": dict(row), "created": True}
+            row = self.conn.execute("SELECT * FROM operation_intents WHERE intent_id=?", (cursor.lastrowid,)).fetchone()
+            return {"intent": dict(row), "created": True}
     def start_operation_intent(self, intent_id, executor_id):
         if not isinstance(executor_id, str) or not executor_id.strip():
             raise ValueError("executor_id is required")

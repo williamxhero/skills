@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -26,6 +27,34 @@ class OperationIntentTests(unittest.TestCase):
             reopened = ControlDB(path)
             self.assertEqual("prepared", reopened.conn.execute("SELECT status FROM operation_intents").fetchone()[0])
             reopened.close()
+
+    def test_concurrent_creators_converge_on_one_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "run.db"
+            setup = ControlDB(path)
+            setup.create_run("run-1", "demo", "req")
+            setup.close()
+            barrier = threading.Barrier(2)
+            results = []
+            errors = []
+
+            def create():
+                db = ControlDB(path)
+                try:
+                    barrier.wait()
+                    results.append(db.create_operation_intent("run-1", "create", "task-1", {"branch": "feature"}))
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    db.close()
+
+            workers = [threading.Thread(target=create) for _ in range(2)]
+            for worker in workers: worker.start()
+            for worker in workers: worker.join()
+            self.assertEqual([], errors)
+            self.assertEqual(2, len(results))
+            self.assertEqual(results[0]["intent"]["intent_id"], results[1]["intent"]["intent_id"])
+            self.assertEqual(1, sum(item["created"] for item in results))
 
     def test_changed_generation_or_input_is_new_work_and_explicit_key_rejects_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
