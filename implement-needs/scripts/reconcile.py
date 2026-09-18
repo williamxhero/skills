@@ -11,6 +11,8 @@ def audit(db, run_id):
     if db.conn.execute("SELECT COUNT(*) FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=? AND t.status='closed' AND (t.commits='[]' OR t.tests='[]')",(run_id,)).fetchone()[0]: errors.append("closed_ticket_missing_evidence")
     if db.conn.execute("SELECT COUNT(*) FROM threads WHERE run_id=? AND lifecycle='created' AND next_action IS NULL",(run_id,)).fetchone()[0]: errors.append("unassigned_created_thread")
     if db.conn.execute("SELECT COUNT(*) FROM actions WHERE run_id=? AND status IN ('pending','running')",(run_id,)).fetchone()[0] > 1: errors.append("multiple_pending_actions")
+    from dependencies import validation_errors
+    errors.extend(f"dependency_{item['code']}:{item['dependent']}:{item['blocker']}" for item in validation_errors(db, run_id))
     return errors
 
 def main():

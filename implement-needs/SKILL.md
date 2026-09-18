@@ -58,5 +58,8 @@ primitives are in `scripts/control_db.py` and legal transitions are in
 `scripts/transitions.py`. Runtime phase observations use the same controller entry
 with an observation key and are projected into deterministic metrics by
 `controller.py metrics`; see [runtime observability](references/runtime-observability.md).
-Use `scripts/export_status.py` only for read-only snapshots; the database remains the
-runtime source of truth.
+External side effects use operation intents, reconciliation, action claims and
+shared-resource coordination; dependency readiness and bounded recovery are defined
+in [side-effect and recovery safety](references/side-effect-recovery.md).
+Use `scripts/export_status.py` only for read-only snapshots; the database remains
+the runtime source of truth.

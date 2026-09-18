@@ -18,6 +18,19 @@ def main() -> int:
     observation=sub.add_parser("record-observation"); observation.add_argument("--run-id",required=True); observation.add_argument("--entity-type",required=True); observation.add_argument("--entity-id",required=True); observation.add_argument("--operation",required=True); observation.add_argument("--status",required=True); observation.add_argument("--evidence",default="[]"); observation.add_argument("--observation-key"); observation.add_argument("--phase"); observation.add_argument("--scope",default="run"); observation.add_argument("--unit"); observation.add_argument("--started-at"); observation.add_argument("--ended-at"); observation.add_argument("--duration-ms",type=float); observation.add_argument("--source",default="controller"); observation.add_argument("--usage",default="{}"); observation.add_argument("--metadata",default="{}")
     action=sub.add_parser("action"); action.add_argument("--run-id",required=True); action.add_argument("--kind",required=True); action.add_argument("--target",required=True)
     finish=sub.add_parser("finish-action"); finish.add_argument("--action-id",type=int,required=True); finish.add_argument("--status",choices=("succeeded","failed","blocked","cancelled"),required=True); finish.add_argument("--result")
+    intent=sub.add_parser("operation-intent"); intent.add_argument("--run-id",required=True); intent.add_argument("--operation",required=True); intent.add_argument("--target",required=True); intent.add_argument("--parameters",default="{}"); intent.add_argument("--generation",type=int,default=0); intent.add_argument("--idempotency-key")
+    start_intent=sub.add_parser("start-operation-intent"); start_intent.add_argument("--intent-id",type=int,required=True); start_intent.add_argument("--executor-id",required=True)
+    unknown_intent=sub.add_parser("operation-outcome-unknown"); unknown_intent.add_argument("--intent-id",type=int,required=True); unknown_intent.add_argument("--reason",required=True); unknown_intent.add_argument("--evidence",required=True)
+    reconcile_intent=sub.add_parser("reconcile-operation-intent"); reconcile_intent.add_argument("--intent-id",type=int,required=True); reconcile_intent.add_argument("--outcome",choices=("not_found","succeeded","failed"),required=True); reconcile_intent.add_argument("--evidence",required=True); reconcile_intent.add_argument("--result",default="{}")
+    claim=sub.add_parser("claim-action"); claim.add_argument("--action-id",type=int,required=True); claim.add_argument("--owner-id",required=True); claim.add_argument("--lease-seconds",type=int,default=60); claim.add_argument("--supports-fencing",action="store_true"); claim.add_argument("--outcome-reconciled",action="store_true")
+    effect=sub.add_parser("assert-action-effect"); effect.add_argument("--action-id",type=int,required=True); effect.add_argument("--owner-id",required=True)
+    resource=sub.add_parser("claim-resource"); resource.add_argument("--coordination-db",type=Path,required=True); resource.add_argument("--resource-key",required=True); resource.add_argument("--owner-id",required=True); resource.add_argument("--run-id",required=True); resource.add_argument("--lease-seconds",type=int,default=60); resource.add_argument("--supports-fencing",action="store_true"); resource.add_argument("--outcome-reconciled",action="store_true")
+    release_resource=sub.add_parser("release-resource"); release_resource.add_argument("--coordination-db",type=Path,required=True); release_resource.add_argument("--resource-key",required=True); release_resource.add_argument("--owner-id",required=True)
+    proof=sub.add_parser("record-delivery-proof"); proof.add_argument("--entity-type",choices=("spec","ticket"),required=True); proof.add_argument("--entity-id",required=True); proof.add_argument("--artifact-type",default="delivery"); proof.add_argument("--artifact-ref",required=True); proof.add_argument("--evidence",required=True)
+    waiver=sub.add_parser("waive-dependency"); waiver.add_argument("--dependent-type",choices=("spec","ticket"),required=True); waiver.add_argument("--dependent-id",required=True); waiver.add_argument("--blocker-type",choices=("spec","ticket"),required=True); waiver.add_argument("--blocker-id",required=True); waiver.add_argument("--reason",required=True); waiver.add_argument("--authorization-source",required=True); waiver.add_argument("--scope",required=True); waiver.add_argument("--evidence",required=True)
+    dependencies=sub.add_parser("validate-dependencies"); dependencies.add_argument("--run-id",required=True)
+    failure=sub.add_parser("record-recovery-failure"); failure.add_argument("--run-id",required=True); failure.add_argument("--action-id",type=int,required=True); failure.add_argument("--category",required=True); failure.add_argument("--error-fingerprint",required=True); failure.add_argument("--code-digest",required=True); failure.add_argument("--environment-digest",required=True); failure.add_argument("--strategy-digest",required=True); failure.add_argument("--progress-marker",required=True); failure.add_argument("--retry-owner",required=True); failure.add_argument("--evidence",required=True); failure.add_argument("--max-attempts",type=int,default=3); failure.add_argument("--budget-seconds",type=int,default=3600); failure.add_argument("--budget-version",default="recovery-v1")
+    resume=sub.add_parser("resume-recovery"); resume.add_argument("--recovery-id",type=int,required=True); resume.add_argument("--old-attempt-archived",action="store_true"); resume.add_argument("--strategy-digest",required=True); resume.add_argument("--progress-marker",required=True); resume.add_argument("--evidence",required=True)
     snap=sub.add_parser("snapshot"); snap.add_argument("--run-id",required=True)
     metrics=sub.add_parser("metrics"); metrics.add_argument("--run-id",required=True); metrics.add_argument("--baseline-version",default="runtime-observations-v1")
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
@@ -41,6 +54,33 @@ def main() -> int:
                 db.add_observation(args.run_id,args.entity_type,args.entity_id,{"operation":args.operation,"status":args.status,"evidence":json.loads(args.evidence)}); result={"entity_id":args.entity_id,"status":args.status}
         elif args.command=="action": result={"action_id":db.set_action(args.run_id,args.kind,args.target)}
         elif args.command=="finish-action": db.finish_action(args.action_id,args.status,json.loads(args.result) if args.result else None); result={"action_id":args.action_id,"status":args.status}
+        elif args.command=="operation-intent": result=db.create_operation_intent(args.run_id,args.operation,args.target,json.loads(args.parameters),args.generation,args.idempotency_key)
+        elif args.command=="start-operation-intent": result=db.start_operation_intent(args.intent_id,args.executor_id)
+        elif args.command=="operation-outcome-unknown": db.mark_operation_unknown(args.intent_id,args.reason,json.loads(args.evidence)); result={"intent_id":args.intent_id,"status":"outcome_unknown"}
+        elif args.command=="reconcile-operation-intent": result=db.reconcile_operation_intent(args.intent_id,args.outcome,json.loads(args.evidence),json.loads(args.result))
+        elif args.command=="claim-action": result=db.claim_action(args.action_id,args.owner_id,args.lease_seconds,args.supports_fencing,args.outcome_reconciled)
+        elif args.command=="assert-action-effect": result=db.assert_action_effect_permitted(args.action_id,args.owner_id)
+        elif args.command=="claim-resource":
+            from resource_coordinator import ResourceCoordinator
+            coordinator=ResourceCoordinator(args.coordination_db)
+            try: result=coordinator.acquire(args.resource_key,args.owner_id,args.run_id,args.lease_seconds,args.supports_fencing,args.outcome_reconciled)
+            finally: coordinator.close()
+        elif args.command=="release-resource":
+            from resource_coordinator import ResourceCoordinator
+            coordinator=ResourceCoordinator(args.coordination_db)
+            try: result=coordinator.release(args.resource_key,args.owner_id)
+            finally: coordinator.close()
+        elif args.command=="record-delivery-proof": result=db.record_delivery_proof(args.entity_type,args.entity_id,args.artifact_type,args.artifact_ref,json.loads(args.evidence))
+        elif args.command=="waive-dependency": result=db.waive_dependency(args.dependent_type,args.dependent_id,args.blocker_type,args.blocker_id,args.reason,args.authorization_source,args.scope,json.loads(args.evidence))
+        elif args.command=="validate-dependencies":
+            from dependencies import validation_errors
+            errors=validation_errors(db,args.run_id); result={"run_id":args.run_id,"decision":"allow" if not errors else "repair","errors":errors}
+        elif args.command=="record-recovery-failure":
+            from recovery import record_failure
+            result=record_failure(db,args.run_id,args.action_id,args.category,args.error_fingerprint,args.code_digest,args.environment_digest,args.strategy_digest,args.progress_marker,args.retry_owner,json.loads(args.evidence),args.max_attempts,args.budget_seconds,args.budget_version)
+        elif args.command=="resume-recovery":
+            from recovery import resume_recovery
+            result=resume_recovery(db,args.recovery_id,args.old_attempt_archived,args.strategy_digest,args.progress_marker,json.loads(args.evidence))
         elif args.command=="next-action":
             from next_action import next_action
             result=next_action(db,args.run_id)
