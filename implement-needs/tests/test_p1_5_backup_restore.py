@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+import json
+import subprocess
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from control_db import ControlDB, RestoreValidationError, SCHEMA_VERSION
@@ -47,6 +49,32 @@ class BackupRestoreTests(unittest.TestCase):
         self.assertEqual("ready", ready["status"])
         row = self.db.conn.execute("SELECT status,reconciliation_status FROM restore_records WHERE restore_id=?", (restore["restore_id"],)).fetchone()
         self.assertEqual(("ready", "complete"), tuple(row))
+
+    def test_cli_returns_structured_fail_closed_result_and_restart_rebuilds_restore_state(self):
+        manifest = self.db.create_backup_manifest("run", {"run.db": "sha-db"}, "sha-db", self.db.business_version("run"))
+        self.db.close()
+        controller = Path(__file__).parents[1] / "scripts" / "controller.py"
+        rejected = subprocess.run(
+            [sys.executable, str(controller), "--db", str(self.db.path), "validate-backup-manifest", "--run-id", "run", "--manifest-id", str(manifest["manifest_id"]), "--database-digest", "wrong"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(0, rejected.returncode)
+        packet = json.loads(rejected.stdout)
+        self.assertEqual({"decision", "error", "details"}, set(packet))
+        self.assertEqual("reject", packet["decision"])
+        self.assertEqual("restore_blocked", packet["error"])
+
+        reopened = ControlDB.open_existing(self.db.path)
+        self.addCleanup(reopened.close)
+        started = reopened.begin_restore("run", manifest["manifest_id"], reopened.business_version("run"))
+        self.assertEqual("pending_reconciliation", started["status"])
+        reopened.close()
+        restarted = ControlDB.open_existing(self.db.path)
+        self.addCleanup(restarted.close)
+        saved_policy = restarted.policy("run")
+        saved_restore = restarted.conn.execute("SELECT status,reconciliation_status FROM restore_records WHERE restore_id=?", (started["restore_id"],)).fetchone()
+        self.assertEqual("impl-a", saved_policy["implementation_digest"])
+        self.assertEqual(("pending_reconciliation", "pending"), tuple(saved_restore))
 
 
 if __name__ == "__main__":

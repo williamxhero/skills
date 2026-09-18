@@ -6,7 +6,7 @@ import json
 import shlex
 from pathlib import Path
 
-from control_db import ActionConflict, ControlDB, DecisionError, RestoreValidationError, StaleState
+from control_db import ActionConflict, ControlDB, DecisionError, PolicyError, RestoreValidationError, StaleState
 from authorization import AuthorizationError
 from evidence_gate import EvidenceGateError
 from run_state import PHASES, RUN_RESULTS, RunStateError
@@ -291,6 +291,9 @@ def main() -> int:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     except RestoreValidationError as exc:
+        result={"decision":"reject","error":exc.code,"details":exc.details}
+        print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
+    except PolicyError as exc:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     finally: db.close()

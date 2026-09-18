@@ -143,6 +143,15 @@ class RestoreValidationError(ValueError):
         super().__init__(f"{code}: {self.details}")
 
 
+class PolicyError(ValueError):
+    """A policy identity operation failed closed with a stable error code."""
+
+    def __init__(self, code, details=None):
+        self.code = code
+        self.details = details or {}
+        super().__init__(code)
+
+
 _EVIDENCE_URI = re.compile(r"^[a-z][a-z0-9+.-]*:(?:/{0,2})\S+$", re.IGNORECASE)
 _COMMIT_SCHEMES = frozenset(("commit", "git", "https", "pr", "sha"))
 _TEST_SCHEMES = frozenset(("check", "ci", "https", "pytest", "test"))
@@ -1161,12 +1170,12 @@ class ControlDB:
     def policy(self, run_id):
         row = self.conn.execute("SELECT canonical_payload,policy_digest,implementation_digest,status FROM run_policies WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
-            raise ValueError("policy_missing")
+            raise PolicyError("policy_missing", {"run_id": run_id})
         return {"payload": json.loads(row[0]), "policy_digest": row[1], "implementation_digest": row[2], "status": row[3]}
 
     def pin_policy(self, run_id, payload, implementation_digest, expected_version=None, migration=None):
         if not isinstance(payload, dict) or not payload or not isinstance(implementation_digest, str) or not implementation_digest.strip():
-            raise ValueError("policy payload and implementation digest are required")
+            raise PolicyError("policy_identity_invalid")
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         with self.transaction():
@@ -1177,7 +1186,7 @@ class ControlDB:
             if existing is not None:
                 required = {"compatibility", "authorization", "rollback"}
                 if not isinstance(migration, dict) or not required.issubset(migration) or any(not migration[key] for key in required):
-                    raise ValueError("policy_migration_evidence_required")
+                    raise PolicyError("policy_migration_evidence_required", {"required": sorted(required)})
             stamp = now()
             self.conn.execute("INSERT INTO run_policies(run_id,canonical_payload,policy_digest,implementation_digest,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET canonical_payload=excluded.canonical_payload,policy_digest=excluded.policy_digest,implementation_digest=excluded.implementation_digest,status=excluded.status,updated_at=excluded.updated_at", (run_id, canonical, digest, implementation_digest, "pinned", stamp, stamp))
             version = self._business_event(run_id, "policy", run_id, "policy_pinned" if existing is None else "policy_migrated", {"policy_digest": digest, "implementation_digest": implementation_digest, "migration": migration})
@@ -1188,7 +1197,7 @@ class ControlDB:
         canonical = json.dumps(loaded_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if isinstance(loaded_payload, dict) else ""
         digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest() if canonical else None
         if digest != record["policy_digest"] or loaded_implementation_digest != record["implementation_digest"]:
-            raise ValueError("policy_digest_mismatch")
+            raise PolicyError("policy_digest_mismatch", {"expected_policy_digest": record["policy_digest"], "loaded_policy_digest": digest, "expected_implementation_digest": record["implementation_digest"], "loaded_implementation_digest": loaded_implementation_digest})
         return {"decision": "allow", "policy_digest": digest, "implementation_digest": loaded_implementation_digest}
 
     @staticmethod
