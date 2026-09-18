@@ -22,6 +22,8 @@ def next_action(db: ControlDB, run_id: str) -> dict:
                 return {"kind":"repair_dependency","target":spec["spec_id"],"blocker":blocker,"reason":"forward_dependency"}
             delivery=dependency_status(db,"spec",spec["spec_id"],"spec",blocker)
             if not delivery["satisfied"]:
+                if delivery.get("status") in {"cancelled", "failed", "abandoned"}:
+                    return {"kind":"repair_dependency","target":spec["spec_id"],"blocker":blocker,"reason":delivery["code"],"status":delivery["status"]}
                 return {"kind":"wait_spec_dependency","target":spec["spec_id"],"blocker":blocker,"reason":delivery["code"]}
         status=spec["status"]
         if status=="planned": return {"kind":"advance_spec","target":spec["spec_id"],"next_status":"ready"}

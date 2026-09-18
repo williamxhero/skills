@@ -25,6 +25,7 @@ class DependencyTests(unittest.TestCase):
             status = dependency_status(db, "spec", "S2", "spec", "S1")
             self.assertFalse(status["satisfied"])
             self.assertEqual("blocker_not_delivered", status["code"])
+            self.assertEqual("repair_dependency", next_action(db, "run-1")["kind"])
             waiver = db.waive_dependency("spec", "S2", "spec", "S1", "delivery replaced", "controller-approved", "SPEC S2 only", ["decision://s2"])
             self.assertTrue(waiver["created"])
             self.assertTrue(dependency_status(db, "spec", "S2", "spec", "S1")["satisfied"])

@@ -98,6 +98,8 @@ def resume_recovery(db, recovery_id, old_attempt_archived, strategy_digest, prog
             raise ValueError("unknown recovery state")
         if row["status"] not in {"retry", "escalated", "paused"}:
             raise ValueError(f"recovery cannot resume from {row['status']}")
+        if row["status"] == "paused" and _expired(row["deadline_at"]):
+            raise ValueError("recovery time budget is exhausted; record an explicit new budget")
         new_strategy = _digest(strategy_digest)
         new_progress = _digest(progress_marker)
         if row["status"] in {"escalated", "paused"} and new_strategy == row["last_strategy_digest"] and new_progress == row["last_progress_marker"]:

@@ -193,9 +193,14 @@ class ControlDB:
         with self.conn:
             cur=self.conn.execute("INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(run_id,kind,target,status,key,stamp,stamp)); self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?",(f"{kind}:{target}",stamp,run_id)); return cur.lastrowid
     def finish_action(self,action_id,status,result=None,error=None):
-            with self.conn:
-                self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
+            with transaction(self.conn):
+                row = self.conn.execute("SELECT run_id FROM actions WHERE action_id=?", (action_id,)).fetchone()
+                if not row:
+                    raise ValueError("unknown action")
+                stamp = now()
+                self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,stamp,action_id))
                 self.conn.execute("DELETE FROM action_claims WHERE action_id=?", (action_id,))
+                self.event(row["run_id"], "action", str(action_id), "action_finished", {"status": status, "error": error})
     def add_spec(self,run_id,spec_id,title,position,blocked_by=None,acceptance=None):
         with self.conn:
             self.conn.execute("INSERT INTO specs(spec_id,run_id,title,status,position,blocked_by,acceptance) VALUES(?,?,?,?,?,?,?)",(spec_id,run_id,title,"planned",position,json.dumps(blocked_by or []),json.dumps(acceptance or []))); self.event(run_id,"spec",spec_id,"spec_created",{"title":title})
