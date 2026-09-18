@@ -21,7 +21,7 @@ class SQLiteControllerTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual("wal", db.conn.execute("PRAGMA journal_mode").fetchone()[0])
             self.assertEqual(1, db.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0])
-            self.assertEqual(1, db.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
+            self.assertEqual(2, db.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
             db.close()
 
     def test_decision_is_audited(self):

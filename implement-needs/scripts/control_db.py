@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -42,12 +43,14 @@ TICKET_QUEUE_COLUMNS = (
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'whole-spec', controller_task_id TEXT, queue_definition TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'whole-spec', controller_task_id TEXT, queue_definition TEXT NOT NULL DEFAULT '[]', business_version INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), title TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', generation INTEGER NOT NULL DEFAULT 0, UNIQUE(run_id,position));
 CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', issue_url TEXT, queue_position INTEGER, UNIQUE(spec_id,title));
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL, business_version INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
 """
@@ -68,6 +71,20 @@ class ActionConflict(RuntimeError):
     """A second executable action would violate the run's single-action gate."""
 
 
+class StaleState(RuntimeError):
+    """The caller attempted to write using an obsolete business version."""
+
+    code = "stale_state"
+
+    def __init__(self, run_id: str, expected: int, actual: int):
+        self.run_id, self.expected, self.actual = run_id, expected, actual
+        super().__init__(f"stale_state: run {run_id} expected version {expected}, current version {actual}")
+
+
+class DatabaseModeError(ValueError):
+    """The requested database mode is incompatible with the path or schema."""
+
+
 _EVIDENCE_URI = re.compile(r"^[a-z][a-z0-9+.-]*:(?:/{0,2})\S+$", re.IGNORECASE)
 _COMMIT_SCHEMES = frozenset(("commit", "git", "https", "pr", "sha"))
 _TEST_SCHEMES = frozenset(("check", "ci", "https", "pytest", "test"))
@@ -86,18 +103,108 @@ def _valid_evidence(value: object, schemes: frozenset[str]) -> bool:
     return True
 
 class ControlDB:
-    def __init__(self, path: str | Path):
-        self.path=Path(path); self.path.parent.mkdir(parents=True,exist_ok=True)
-        self.conn=sqlite3.connect(self.path,timeout=30,isolation_level=None); self.conn.row_factory=sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL"); self.conn.execute("PRAGMA foreign_keys=ON"); self.conn.executescript(SCHEMA)
+    MODES = frozenset(("create", "open-existing", "read-only"))
+
+    def __init__(self, path: str | Path, mode: str = "create"):
+        if mode not in self.MODES:
+            raise DatabaseModeError(f"unsupported database mode: {mode}")
+        self.path=Path(path); self.mode=mode
+        if mode == "create":
+            self.path.parent.mkdir(parents=True,exist_ok=True)
+            self.conn=sqlite3.connect(self.path,timeout=30,isolation_level=None)
+        else:
+            if not self.path.exists():
+                raise FileNotFoundError(self.path)
+            if not self.path.is_file():
+                raise DatabaseModeError(f"database path is not a file: {self.path}")
+            if mode == "read-only":
+                # immutable=1 prevents SQLite from creating WAL/SHM sidecars for
+                # a diagnostic reader.  The controller only uses this mode for a
+                # closed, local database snapshot, never for a live writer.
+                uri = self.path.resolve().as_uri() + "?mode=ro&immutable=1"
+                self.conn=sqlite3.connect(uri,uri=True,timeout=30,isolation_level=None)
+            else:
+                self.conn=sqlite3.connect(self.path,timeout=30,isolation_level=None)
+        self.conn.row_factory=sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        if mode == "create":
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.executescript(SCHEMA)
+        else:
+            self._require_existing_schema()
         try:
-            self.migrate()
+            if mode != "read-only":
+                self.migrate()
+            self._validate_schema_integrity(read_only=(mode == "read-only"))
         except Exception:
             # Release the handle before propagating: a rejected database must not
             # stay locked, and callers never receive the object to close.
             self.conn.close()
             raise
     def close(self): self.conn.close()
+
+    @classmethod
+    def open_existing(cls, path: str | Path) -> "ControlDB":
+        return cls(path, mode="open-existing")
+
+    @classmethod
+    def read_only(cls, path: str | Path) -> "ControlDB":
+        return cls(path, mode="read-only")
+
+    @contextmanager
+    def transaction(self):
+        """Run a business mutation in an explicit SQLite transaction.
+
+        SQLite connections in this module are autocommit connections.  Relying on
+        ``with conn`` therefore does not provide a rollback boundary for a later
+        write.  Nested callers share the outer transaction and only the owner
+        commits or rolls back.
+        """
+        if self.mode == "read-only":
+            raise sqlite3.OperationalError("read-only database")
+        owner = not self.conn.in_transaction
+        if owner:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield self
+        except BaseException:
+            if owner and self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+        else:
+            if owner and self.conn.in_transaction:
+                self.conn.commit()
+
+    def _require_existing_schema(self) -> None:
+        # These are the legacy tables required before an additive migration can
+        # run.  New tables are checked after migration by _validate_schema_integrity.
+        required = {"runs", "specs", "tickets", "threads", "actions", "events", "decisions", "schema_meta"}
+        found = {row[0] for row in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        missing = sorted(required - found)
+        if missing:
+            self.conn.close()
+            raise DatabaseModeError("existing database schema is incomplete: " + ", ".join(missing))
+
+    def _validate_schema_integrity(self, *, read_only: bool) -> None:
+        row = self.conn.execute("SELECT version FROM schema_meta ORDER BY rowid DESC LIMIT 1").fetchone()
+        if row is None or row[0] != SCHEMA_VERSION:
+            raise DatabaseModeError(f"database schema must be version {SCHEMA_VERSION}")
+        run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
+        event_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(events)")}
+        if "business_version" not in run_columns or "business_version" not in event_columns:
+            raise DatabaseModeError("database schema lacks business-version columns")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='observations'").fetchone():
+            raise DatabaseModeError("database schema lacks observations table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='evidence_refs'").fetchone():
+            raise DatabaseModeError("database schema lacks evidence_refs table")
+        for run in self.conn.execute("SELECT run_id,business_version FROM runs"):
+            latest = self.conn.execute("SELECT COALESCE(MAX(business_version),0) FROM events WHERE run_id=?", (run[0],)).fetchone()[0]
+            if int(run[1]) != int(latest):
+                raise DatabaseModeError(f"business event continuity failed for run {run[0]}")
+        if read_only:
+            # The read-only branch must never repair a malformed store.  The
+            # caller gets a deterministic error instead of a hidden migration.
+            return
     def migrate(self):
         """Add identity columns in place and record the schema version.
 
@@ -112,7 +219,7 @@ class ControlDB:
             raise ValueError(f"database schema {current[0]} is newer than {SCHEMA_VERSION}")
         if current is not None and current[0] >= SCHEMA_VERSION:
             return
-        with self.conn:
+        with self.transaction():
             for name,declaration in THREAD_IDENTITY_COLUMNS:
                 if name not in existing:
                     self.conn.execute(f"ALTER TABLE threads ADD COLUMN {name} {declaration}")
@@ -127,9 +234,40 @@ class ControlDB:
             for name,declaration in TICKET_QUEUE_COLUMNS:
                 if name not in ticket_columns:
                     self.conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {declaration}")
+            run_columns={row[1] for row in self.conn.execute("PRAGMA table_info(runs)")}
+            if "business_version" not in run_columns:
+                self.conn.execute("ALTER TABLE runs ADD COLUMN business_version INTEGER NOT NULL DEFAULT 0")
+            event_columns={row[1] for row in self.conn.execute("PRAGMA table_info(events)")}
+            if "business_version" not in event_columns:
+                self.conn.execute("ALTER TABLE events ADD COLUMN business_version INTEGER NOT NULL DEFAULT 0")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("INSERT INTO schema_meta(version,migrated_at) VALUES(?,?)",(SCHEMA_VERSION,now()))
-    def event(self,run_id,entity_type,entity_id,event_type,payload):
-        self.conn.execute("INSERT INTO events(run_id,entity_type,entity_id,event_type,payload,observed_at) VALUES(?,?,?,?,?,?)",(run_id,entity_type,entity_id,event_type,json.dumps(payload,ensure_ascii=False,sort_keys=True),now()))
+    def business_version(self, run_id: str) -> int:
+        row = self.conn.execute("SELECT business_version FROM runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            raise ValueError("run not found")
+        return int(row[0])
+
+    def _check_version(self, run_id: str, expected_version: int | None) -> int:
+        actual = self.business_version(run_id)
+        if expected_version is not None and expected_version != actual:
+            raise StaleState(run_id, expected_version, actual)
+        return actual
+
+    def _business_event(self,run_id,entity_type,entity_id,event_type,payload):
+        """Append an event and advance the run version inside the caller's tx."""
+        current = self.business_version(run_id)
+        next_version = current + 1
+        self.conn.execute("UPDATE runs SET business_version=?,updated_at=? WHERE run_id=?",(next_version,now(),run_id))
+        self.conn.execute("INSERT INTO events(run_id,entity_type,entity_id,event_type,payload,observed_at,business_version) VALUES(?,?,?,?,?,?,?)",(run_id,entity_type,entity_id,event_type,json.dumps(payload,ensure_ascii=False,sort_keys=True),now(),next_version))
+        return next_version
+
+    def event(self,run_id,entity_type,entity_id,event_type,payload,expected_version=None):
+        """Public compatibility wrapper for one atomic business event."""
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            return self._business_event(run_id,entity_type,entity_id,event_type,payload)
     def create_run(self,run_id,initiative,requirement,execution_mode="whole-spec",controller_task_id=None,queue_definition=None):
         if execution_mode not in {"whole-spec", "single-ticket-line"}:
             raise ValueError("unsupported execution mode")
@@ -138,9 +276,10 @@ class ControlDB:
         if (str(initiative).strip() in {"#444", "444"} or "#444" in str(requirement)) and execution_mode == "single-ticket-line" and controller_task_id != "codex://threads/01a09a58-dfcd-72b0-a5d7-c359eefce9a2":
             raise ValueError("issue #444 has one designated controller task")
         stamp=now()
-        with self.conn:
-            self.conn.execute("INSERT INTO runs(run_id,initiative,requirement,status,current_action,created_at,updated_at,execution_mode,controller_task_id,queue_definition) VALUES(?,?,?,?,?,?,?,?,?,?)",(run_id,initiative,requirement,"active",None,stamp,stamp,execution_mode,controller_task_id,json.dumps(queue_definition or [],ensure_ascii=False))); self.event(run_id,"run",run_id,"run_created",{"execution_mode":execution_mode,"controller_task_id":controller_task_id})
-    def migrate_run_to_single_ticket_line(self, run_id, queue_definition):
+        with self.transaction():
+            self.conn.execute("INSERT INTO runs(run_id,initiative,requirement,status,current_action,created_at,updated_at,execution_mode,controller_task_id,queue_definition,business_version) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(run_id,initiative,requirement,"active",None,stamp,stamp,execution_mode,controller_task_id,json.dumps(queue_definition or [],ensure_ascii=False),0))
+            self._business_event(run_id,"run",run_id,"run_created",{"execution_mode":execution_mode,"controller_task_id":controller_task_id})
+    def migrate_run_to_single_ticket_line(self, run_id, queue_definition, expected_version=None):
         """Convert an existing run without inventing controller identity.
 
         This is an additive recovery operation for runs created before the global
@@ -154,7 +293,8 @@ class ControlDB:
             raise ValueError("single-ticket-line queue entries must be non-empty strings")
         if len(set(queue_definition)) != len(queue_definition):
             raise ValueError("single-ticket-line queue entries must be unique")
-        with self.conn:
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             row = self.conn.execute(
                 "SELECT execution_mode,controller_task_id,queue_definition,current_action "
                 "FROM runs WHERE run_id=?",
@@ -191,7 +331,7 @@ class ControlDB:
                 "queue_definition=?,current_action=?,updated_at=? WHERE run_id=?",
                 (json.dumps(queue_definition, ensure_ascii=False), f"repair_queue:{run_id}", stamp, run_id),
             )
-            self.event(run_id, "run", run_id, "run_mode_migrated", {
+            self._business_event(run_id, "run", run_id, "run_mode_migrated", {
                 "from": row[0], "to": "single-ticket-line", "controller_task_id": None,
                 "queue_definition": queue_definition, "previous_current_action": row[3],
                 "reason": "single-line recovery requires verified controller identity",
@@ -199,30 +339,43 @@ class ControlDB:
             return {"run_id": run_id, "changed": True, "execution_mode": "single-ticket-line",
                     "controller_task_id": None, "queue_definition": queue_definition,
                     "next_action": "repair_queue"}
-    def set_action(self,run_id,kind,target,status="pending"):
-        key=f"{run_id}:{kind}:{target}"; row=self.conn.execute("SELECT action_id FROM actions WHERE idempotency_key=?",(key,)).fetchone()
-        if row: return row[0]
-        active=self.conn.execute("SELECT action_id,kind,target FROM actions WHERE run_id=? AND status IN ('pending','running') ORDER BY action_id LIMIT 1",(run_id,)).fetchone()
-        if active:
-            raise ActionConflict(f"action {active[0]} already owns run {run_id}: {active[1]}:{active[2]}")
-        stamp=now()
-        with self.conn:
-            cur=self.conn.execute("INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(run_id,kind,target,status,key,stamp,stamp)); self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?",(f"{kind}:{target}",stamp,run_id)); return cur.lastrowid
-    def finish_action(self,action_id,status,result=None,error=None):
-            with self.conn: self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
-    def add_spec(self,run_id,spec_id,title,position,blocked_by=None,acceptance=None):
-        with self.conn:
-            self.conn.execute("INSERT INTO specs(spec_id,run_id,title,status,position,blocked_by,acceptance) VALUES(?,?,?,?,?,?,?)",(spec_id,run_id,title,"planned",position,json.dumps(blocked_by or []),json.dumps(acceptance or []))); self.event(run_id,"spec",spec_id,"spec_created",{"title":title})
-    def add_ticket(self,spec_id,ticket_id,title,blocked_by=None,issue_url=None,queue_position=None):
+    def set_action(self,run_id,kind,target,status="pending",expected_version=None):
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            key=f"{run_id}:{kind}:{target}"; row=self.conn.execute("SELECT action_id FROM actions WHERE idempotency_key=?",(key,)).fetchone()
+            if row: return row[0]
+            active=self.conn.execute("SELECT action_id,kind,target FROM actions WHERE run_id=? AND status IN ('pending','running') ORDER BY action_id LIMIT 1",(run_id,)).fetchone()
+            if active:
+                raise ActionConflict(f"action {active[0]} already owns run {run_id}: {active[1]}:{active[2]}")
+            stamp=now()
+            cur=self.conn.execute("INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(run_id,kind,target,status,key,stamp,stamp))
+            self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?",(f"{kind}:{target}",stamp,run_id))
+            self._business_event(run_id,"action",str(cur.lastrowid),"action_created",{"kind":kind,"target":target,"status":status})
+            return cur.lastrowid
+    def finish_action(self,action_id,status,result=None,error=None,expected_version=None):
+        with self.transaction():
+            row=self.conn.execute("SELECT run_id FROM actions WHERE action_id=?",(action_id,)).fetchone()
+            if row is None: raise ValueError("unknown action")
+            run_id=row[0]; self._check_version(run_id, expected_version)
+            self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
+            self._business_event(run_id,"action",str(action_id),"action_finished",{"status":status,"result":result,"error":error})
+    def add_spec(self,run_id,spec_id,title,position,blocked_by=None,acceptance=None,expected_version=None):
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            self.conn.execute("INSERT INTO specs(spec_id,run_id,title,status,position,blocked_by,acceptance) VALUES(?,?,?,?,?,?,?)",(spec_id,run_id,title,"planned",position,json.dumps(blocked_by or []),json.dumps(acceptance or [])))
+            self._business_event(run_id,"spec",spec_id,"spec_created",{"title":title})
+    def add_ticket(self,spec_id,ticket_id,title,blocked_by=None,issue_url=None,queue_position=None,expected_version=None):
         run_id=self.conn.execute("SELECT run_id FROM specs WHERE spec_id=?",(spec_id,)).fetchone()[0]
-        if queue_position is None:
-            row=self.conn.execute("SELECT COALESCE(MAX(queue_position),0)+1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)).fetchone()
-            queue_position=row[0]
-        if self.conn.execute("SELECT 1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=? AND t.queue_position=?",(run_id,queue_position)).fetchone():
-            raise ValueError(f"queue_position already used in run: {queue_position}")
-        with self.conn:
-            self.conn.execute("INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,issue_url,queue_position) VALUES(?,?,?,?,?,?,?)",(ticket_id,spec_id,title,"planned",json.dumps(blocked_by or []),issue_url,queue_position)); self.event(run_id,"ticket",ticket_id,"ticket_created",{"spec_id":spec_id,"queue_position":queue_position})
-    def import_ticket_ledger(self, run_id, entries):
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            if queue_position is None:
+                row=self.conn.execute("SELECT COALESCE(MAX(queue_position),0)+1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)).fetchone()
+                queue_position=row[0]
+            if self.conn.execute("SELECT 1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=? AND t.queue_position=?",(run_id,queue_position)).fetchone():
+                raise ValueError(f"queue_position already used in run: {queue_position}")
+            self.conn.execute("INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,issue_url,queue_position) VALUES(?,?,?,?,?,?,?)",(ticket_id,spec_id,title,"planned",json.dumps(blocked_by or []),issue_url,queue_position))
+            self._business_event(run_id,"ticket",ticket_id,"ticket_created",{"spec_id":spec_id,"queue_position":queue_position})
+    def import_ticket_ledger(self, run_id, entries, expected_version=None):
         """Import an externally read-back ticket ledger without creating issues.
 
         The import is intentionally strict: it must cover the declared global
@@ -248,7 +401,8 @@ class ControlDB:
             raise ValueError("ticket ledger must contain a non-empty tickets list")
         if len(entries) != expected_count:
             raise ValueError("ticket ledger count does not match expected_ticket_count")
-        with self.conn:
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             run = self.conn.execute(
                 "SELECT execution_mode,queue_definition FROM runs WHERE run_id=?", (run_id,)
             ).fetchone()
@@ -347,7 +501,7 @@ class ControlDB:
                      json.dumps(acceptance, ensure_ascii=False),
                      issue_url, position),
                 )
-            self.event(run_id, "ticket-ledger", run_id, "ticket_ledger_imported", {
+            self._business_event(run_id, "ticket-ledger", run_id, "ticket_ledger_imported", {
                 "ticket_count": len(canonical), "source": source, "github_mutation": False,
             })
             return {"run_id": run_id, "changed": True, "ticket_count": len(canonical)}
@@ -415,7 +569,7 @@ class ControlDB:
         if self._is_issue_444_run(run_id) and len(queue) != 33:
             errors.append("issue_444_ticket_count_not_33")
         return {"allow": not errors, "errors": sorted(set(errors)), "ticket_count": len(queue) if isinstance(queue, list) else 0}
-    def add_thread(self,run_id,thread_id,kind,spec_id=None,identity=None,client_thread_id=None,host_id=None,owner_id=None,cwd=None,project_id=None,title_token=None,formal_thread_id=None):
+    def add_thread(self,run_id,thread_id,kind,spec_id=None,identity=None,client_thread_id=None,host_id=None,owner_id=None,cwd=None,project_id=None,title_token=None,formal_thread_id=None,expected_version=None):
         """Register a task attempt, returning True only when a row was inserted.
 
         A repeat call for the same run, task, and attempt is refused by the unique
@@ -433,15 +587,16 @@ class ControlDB:
             known=self.conn.execute("SELECT 1 FROM runs WHERE run_id=?",(identity_run,)).fetchone()
             if known:
                 run_id=identity_run
-        with self.conn:
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             cur=self.conn.execute(
                 "INSERT OR IGNORE INTO threads(thread_id,run_id,kind,spec_id,lifecycle,last_observed_at,task_id,attempt_id,nonce,client_thread_id,formal_thread_id,host_id,owner_id,cwd,project_id,title_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (thread_id,run_id,kind,spec_id,"created",now(),fields["task_id"],fields["attempt_id"],fields["nonce"],client_thread_id,formal_thread_id,host_id,owner_id,cwd,project_id,title_token))
             inserted=cur.rowcount==1
             if inserted:
-                self.event(run_id,"thread",thread_id,"thread_registered",{"kind":kind,"spec_id":spec_id,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
+                self._business_event(run_id,"thread",thread_id,"thread_registered",{"kind":kind,"spec_id":spec_id,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
             else:
-                self.event(run_id,"thread",thread_id,"thread_registration_refused",{"kind":kind,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
+                self._business_event(run_id,"thread",thread_id,"thread_registration_refused",{"kind":kind,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
         return inserted
     def threads_by_identity(self,run_id,task_id,attempt_id=None):
         """Return registered rows for a task identity, optionally one attempt."""
@@ -476,29 +631,32 @@ class ControlDB:
     def untracked_threads(self,run_id):
         """Rows retained for audit that carry no task identity."""
         return [dict(row) for row in self.conn.execute("SELECT * FROM threads WHERE run_id=? AND task_id IS NULL",(run_id,))]
-    def bind_identity(self,run_id,thread_id,formal_thread_id,host_id,identity_readback=None):
+    def bind_identity(self,run_id,thread_id,formal_thread_id,host_id,identity_readback=None,expected_version=None):
         """Record the formal backend identity and its readback evidence."""
-        with self.conn:
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             cur=self.conn.execute("UPDATE threads SET formal_thread_id=?,host_id=?,identity_readback=?,last_observed_at=? WHERE thread_id=? AND run_id=?",(formal_thread_id,host_id,identity_readback,now(),thread_id,run_id))
             if cur.rowcount!=1: raise ValueError("unknown thread")
-            self.event(run_id,"thread",thread_id,"thread_identity_bound",{"formal_thread_id":formal_thread_id,"host_id":host_id})
-    def observe_thread(self,run_id,thread_id,lifecycle=None,outcome=None,next_action=None,readback=None):
+            self._business_event(run_id,"thread",thread_id,"thread_identity_bound",{"formal_thread_id":formal_thread_id,"host_id":host_id})
+    def observe_thread(self,run_id,thread_id,lifecycle=None,outcome=None,next_action=None,readback=None,expected_version=None):
         """Persist a backend observation without inventing a state transition."""
-        with self.conn:
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()
             if not row: raise ValueError("unknown thread")
             self.conn.execute(
                 "UPDATE threads SET lifecycle=COALESCE(?,lifecycle),outcome=COALESCE(?,outcome),next_action=COALESCE(?,next_action),identity_readback=COALESCE(?,identity_readback),last_observed_at=? WHERE thread_id=? AND run_id=?",
                 (lifecycle,outcome,next_action,readback,now(),thread_id,run_id),
             )
-            self.event(run_id,"thread",thread_id,"backend_reconciled",{"lifecycle":lifecycle,"outcome":outcome,"next_action":next_action})
-    def set_route_evidence(self,run_id,thread_id,route_readback=None,route_receipt=None):
+            self._business_event(run_id,"thread",thread_id,"backend_reconciled",{"lifecycle":lifecycle,"outcome":outcome,"next_action":next_action})
+    def set_route_evidence(self,run_id,thread_id,route_readback=None,route_receipt=None,expected_version=None):
         """Persist post-create route readback and its receipt for this attempt."""
-        with self.conn:
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             cur=self.conn.execute("UPDATE threads SET route_readback=COALESCE(?,route_readback),route_receipt=COALESCE(?,route_receipt),last_observed_at=? WHERE thread_id=? AND run_id=?",(route_readback,route_receipt,now(),thread_id,run_id))
             if cur.rowcount!=1: raise ValueError("unknown thread")
-            self.event(run_id,"thread",thread_id,"thread_route_evidence_recorded",{"route_readback":route_readback,"route_receipt":route_receipt})
-    def persist_controller_recovery(self, run_id, thread_id, identity, route_readback, next_action):
+            self._business_event(run_id,"thread",thread_id,"thread_route_evidence_recorded",{"route_readback":route_readback,"route_receipt":route_receipt})
+    def persist_controller_recovery(self, run_id, thread_id, identity, route_readback, next_action, expected_version=None):
         """Atomically cross the controller recovery barrier.
 
         The caller must already have independently validated the backend record.
@@ -522,7 +680,8 @@ class ControlDB:
             raise ValueError("controller recovery ledger gate failed: " + ", ".join(ledger["errors"]))
         identity_json = json.dumps(identity, ensure_ascii=False, sort_keys=True)
         route_json = json.dumps(route_readback, ensure_ascii=False, sort_keys=True)
-        with self.conn:
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             row = self.conn.execute(
                 "SELECT task_id,run_id,attempt_id,owner_id,cwd,project_id FROM threads "
                 "WHERE thread_id=? AND run_id=?", (thread_id, run_id)
@@ -543,22 +702,44 @@ class ControlDB:
                 (identity["formal_thread_id"], identity["host_id"], identity_json,
                  route_json, now(), thread_id, run_id),
             )
-            self.event(run_id, "thread", thread_id, "controller_recovery_committed", {
+            self._business_event(run_id, "thread", thread_id, "controller_recovery_committed", {
                 "identity": identity, "route": route_readback, "next_action": next_action,
                 "gates": ["ticket_ledger", "formal_identity", "applied_route"],
             })
-            self.event(run_id, "run", run_id, "controller_next_action_recomputed", next_action)
+            self._business_event(run_id, "run", run_id, "controller_next_action_recomputed", next_action)
     def add_observation(self,run_id,entity_type,entity_id,observation):
-        with self.conn:
-            self.event(run_id,entity_type,entity_id,"external_observation",observation)
-    def update_spec(self,spec_id,status):
+        """Record telemetry on a separate cursor that cannot satisfy a gate."""
+        if not isinstance(observation, dict):
+            raise TypeError("observation must be an object")
+        forbidden = {"receipt", "delivery_proof", "dependency_waiver", "business_evidence"}
+        if forbidden & set(observation):
+            raise ValueError("business evidence must use a business evidence API")
+        with self.transaction():
+            self.conn.execute("INSERT INTO observations(run_id,entity_type,entity_id,payload,observed_at) VALUES(?,?,?,?,?)",(run_id,entity_type,entity_id,json.dumps(observation,ensure_ascii=False,sort_keys=True),now()))
+    def _record_evidence(self, run_id, entity_type, entity_id, evidence_kind, evidence, expected_version=None):
+        if evidence_kind not in {"receipt", "delivery_proof", "dependency_waiver"}:
+            raise ValueError("unsupported business evidence kind")
+        if evidence is None or evidence == {} or evidence == [] or evidence == "":
+            raise ValueError("business evidence must not be empty")
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            self.conn.execute("INSERT INTO evidence_refs(run_id,entity_type,entity_id,evidence_kind,payload,created_at) VALUES(?,?,?,?,?,?)",(run_id,entity_type,entity_id,evidence_kind,json.dumps(evidence,ensure_ascii=False,sort_keys=True),now()))
+            return self._business_event(run_id,entity_type,entity_id,f"{evidence_kind}_recorded",{"evidence_kind":evidence_kind,"evidence":evidence})
+    def record_receipt(self, run_id, entity_type, entity_id, receipt, expected_version=None):
+        return self._record_evidence(run_id, entity_type, entity_id, "receipt", receipt, expected_version)
+    def record_delivery_proof(self, run_id, entity_type, entity_id, proof, expected_version=None):
+        return self._record_evidence(run_id, entity_type, entity_id, "delivery_proof", proof, expected_version)
+    def record_dependency_waiver(self, run_id, entity_type, entity_id, waiver, expected_version=None):
+        return self._record_evidence(run_id, entity_type, entity_id, "dependency_waiver", waiver, expected_version)
+    def update_spec(self,spec_id,status,expected_version=None):
         from transitions import SPEC_TRANSITIONS, transition
         row=self.conn.execute("SELECT run_id,status FROM specs WHERE spec_id=?",(spec_id,)).fetchone()
         if not row: raise ValueError("unknown spec")
         transition(SPEC_TRANSITIONS,row[1],status)
-        with self.conn:
-            self.conn.execute("UPDATE specs SET status=? WHERE spec_id=?",(status,spec_id)); self.event(row[0],"spec",spec_id,"spec_state_changed",{"status":status})
-    def update_ticket(self,ticket_id,status,commits=None,tests=None,acceptance=None):
+        with self.transaction():
+            self._check_version(row[0], expected_version)
+            self.conn.execute("UPDATE specs SET status=? WHERE spec_id=?",(status,spec_id)); self._business_event(row[0],"spec",spec_id,"spec_state_changed",{"status":status})
+    def update_ticket(self,ticket_id,status,commits=None,tests=None,acceptance=None,expected_version=None):
         row=self.conn.execute("SELECT t.status,t.commits,t.tests,t.acceptance,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?",(ticket_id,)).fetchone()
         if not row: raise ValueError("unknown ticket")
         allowed={"planned":{"ready","blocked"},"ready":{"implementing","blocked"},"implementing":{"verified","blocked"},"verified":{"merged","blocked"},"merged":{"closed"},"blocked":{"ready","implementing","cancelled"},"closed":set(),"cancelled":set()}
@@ -585,10 +766,12 @@ class ControlDB:
                 raise ValueError("ticket closure requires structured test evidence")
             if not _valid_evidence(resulting_acceptance, _ACCEPTANCE_SCHEMES):
                 raise ValueError("ticket closure requires structured acceptance evidence")
-        with self.conn:
-            self.conn.execute("UPDATE tickets SET status=?,commits=COALESCE(?,commits),tests=COALESCE(?,tests),acceptance=COALESCE(?,acceptance) WHERE ticket_id=?",(status,json.dumps(commits) if commits is not None else None,json.dumps(tests) if tests is not None else None,json.dumps(acceptance) if acceptance is not None else None,ticket_id)); self.event(row[4],"ticket",ticket_id,"ticket_state_changed",{"status":status,"commits":commits,"tests":tests,"acceptance":acceptance})
-    def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None):
-        with self.conn:
+        with self.transaction():
+            self._check_version(row[4], expected_version)
+            self.conn.execute("UPDATE tickets SET status=?,commits=COALESCE(?,commits),tests=COALESCE(?,tests),acceptance=COALESCE(?,acceptance) WHERE ticket_id=?",(status,json.dumps(commits) if commits is not None else None,json.dumps(tests) if tests is not None else None,json.dumps(acceptance) if acceptance is not None else None,ticket_id)); self._business_event(row[4],"ticket",ticket_id,"ticket_state_changed",{"status":status,"commits":commits,"tests":tests,"acceptance":acceptance})
+    def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None,expected_version=None):
+        with self.transaction():
+            self._check_version(run_id, expected_version)
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()
             if not row: raise ValueError("unknown thread")
             from transitions import THREAD_TRANSITIONS, transition
@@ -597,11 +780,12 @@ class ControlDB:
             operations=json.loads(current[0]); readbacks=json.loads(current[1])
             if operation: operations.append(operation)
             if readback: readbacks.append(readback)
-            self.conn.execute("UPDATE threads SET lifecycle=?,outcome=?,next_action=?,last_observed_at=?,archive_operation_evidence=?,archive_readback_evidence=? WHERE thread_id=? AND run_id=?",(lifecycle,outcome,next_action,now(),json.dumps(operations),json.dumps(readbacks),thread_id,run_id)); self.event(run_id,"thread",thread_id,"thread_state_changed",{"lifecycle":lifecycle,"outcome":outcome})
-    def decide(self,run_id,subject,selected,recommendation,evidence,rationale):
-        with self.conn:
-            self.conn.execute("INSERT INTO decisions(run_id,subject,selected,recommendation,evidence,rationale,created_at) VALUES(?,?,?,?,?,?,?)",(run_id,subject,json.dumps(selected,ensure_ascii=False),json.dumps(recommendation,ensure_ascii=False),json.dumps(evidence,ensure_ascii=False),rationale,now())); self.event(run_id,"decision",subject,"controller_approved",{"selected":selected,"recommendation":recommendation,"evidence":evidence,"rationale":rationale})
+            self.conn.execute("UPDATE threads SET lifecycle=?,outcome=?,next_action=?,last_observed_at=?,archive_operation_evidence=?,archive_readback_evidence=? WHERE thread_id=? AND run_id=?",(lifecycle,outcome,next_action,now(),json.dumps(operations),json.dumps(readbacks),thread_id,run_id)); self._business_event(run_id,"thread",thread_id,"thread_state_changed",{"lifecycle":lifecycle,"outcome":outcome})
+    def decide(self,run_id,subject,selected,recommendation,evidence,rationale,expected_version=None):
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            self.conn.execute("INSERT INTO decisions(run_id,subject,selected,recommendation,evidence,rationale,created_at) VALUES(?,?,?,?,?,?,?)",(run_id,subject,json.dumps(selected,ensure_ascii=False),json.dumps(recommendation,ensure_ascii=False),json.dumps(evidence,ensure_ascii=False),rationale,now())); self._business_event(run_id,"decision",subject,"controller_approved",{"selected":selected,"recommendation":recommendation,"evidence":evidence,"rationale":rationale})
     def snapshot(self,run_id):
         row=lambda q,p: [dict(x) for x in self.conn.execute(q,p)]
         run=self.conn.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
-        return {"run":dict(run) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,))}
+        return {"run":dict(run) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
