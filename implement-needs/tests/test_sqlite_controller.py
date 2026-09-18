@@ -54,7 +54,20 @@ class SQLiteControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db = ControlDB(Path(d) / "run.db")
             db.create_run("run-1", "demo", "requirement")
-            db.decide("run-1", "merge_strategy", "merge", "merge", ["repo-rule"], "repository default")
+            authorization = {
+                "schema_version": 1,
+                "repository": {"id": "repo://skills", "branch": "master"},
+                "target_ref": "master",
+                "allowed_paths": ["implement-needs/*"],
+                "allowed_tasks": ["run"],
+                "allowed_actions": ["decide"],
+                "deployment_target": "staging",
+                "full_project_submission": False,
+            }
+            db.configure_authorization("run-1", authorization, db.business_version("run-1"))
+            approved = db.authorize("run-1", action="decide")
+            result = db.decide("run-1", "merge_strategy", "merge", "merge", ["repo-rule"], "repository default", "controller", {"action": "decide"}, "repository-default", approved, db.business_version("run-1"))
+            self.assertEqual(1, result["decision_id"])
             row = db.conn.execute("SELECT event_type FROM events WHERE entity_type='decision'").fetchone()
             self.assertEqual("controller_approved", row[0])
             db.close()

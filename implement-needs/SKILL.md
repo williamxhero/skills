@@ -14,6 +14,10 @@ archive-state readback. The adapter contract is in `references/task-backend.md`.
 Backend selection requires a live capability response. A command-line flag is not
 capability evidence.
 
+Read `references/startup-and-scope.md` before creating or resuming a run. Record and
+verify the startup contract before phase work; do not replace a missing or mismatched
+dependency with a same-looking Skill or an unverified host.
+
 ## Fixed flow
 
 1. Open or resume `.scratch/<initiative>/implement-needs.db`.
