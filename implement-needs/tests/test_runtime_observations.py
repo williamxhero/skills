@@ -62,10 +62,12 @@ class RuntimeObservationTests(unittest.TestCase):
                 "--entity-id", "a1", "--operation", "verify", "--status", "completed",
                 "--observation-key", "run-1:a1", "--phase", "verification",
                 "--duration-ms", "12.5", "--usage", '{"input_tokens":"unknown"}',
+                "--metadata", '{"evidence":["cli://a1"]}',
             ], check=True, capture_output=True, text=True)
             self.assertTrue(json.loads(result.stdout)["created"])
             db = ControlDB(path)
             self.assertEqual("verification", db.conn.execute("SELECT phase FROM runtime_observations").fetchone()[0])
+            self.assertEqual(["cli://a1"], json.loads(db.conn.execute("SELECT metadata FROM runtime_observations").fetchone()[0])["evidence"])
             db.close()
 
 

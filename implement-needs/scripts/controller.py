@@ -19,6 +19,7 @@ def main() -> int:
     action=sub.add_parser("action"); action.add_argument("--run-id",required=True); action.add_argument("--kind",required=True); action.add_argument("--target",required=True)
     finish=sub.add_parser("finish-action"); finish.add_argument("--action-id",type=int,required=True); finish.add_argument("--status",choices=("succeeded","failed","blocked","cancelled"),required=True); finish.add_argument("--result")
     snap=sub.add_parser("snapshot"); snap.add_argument("--run-id",required=True)
+    metrics=sub.add_parser("metrics"); metrics.add_argument("--run-id",required=True); metrics.add_argument("--baseline-version",default="runtime-observations-v1")
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
     args=parser.parse_args(); db=ControlDB(args.db)
     try:
@@ -31,7 +32,11 @@ def main() -> int:
         elif args.command=="ticket-state": db.update_ticket(args.ticket_id,args.status,json.loads(args.commits) if args.commits else None,json.loads(args.tests) if args.tests else None); result={"ticket_id":args.ticket_id,"status":args.status}
         elif args.command=="record-observation":
             if args.observation_key or args.phase:
-                result=db.record_runtime_observation(args.run_id,args.observation_key or f"{args.run_id}:{args.entity_type}:{args.entity_id}:{args.operation}",args.entity_type,args.entity_id,args.phase or args.operation,args.status,args.scope,args.unit,args.started_at,args.ended_at,args.duration_ms,args.source,json.loads(args.usage),{**json.loads(args.metadata),"operation":args.operation,"evidence":json.loads(args.evidence)})
+                metadata=json.loads(args.metadata)
+                if args.evidence != "[]":
+                    metadata["evidence"]=json.loads(args.evidence)
+                metadata.setdefault("operation",args.operation)
+                result=db.record_runtime_observation(args.run_id,args.observation_key or f"{args.run_id}:{args.entity_type}:{args.entity_id}:{args.operation}",args.entity_type,args.entity_id,args.phase or args.operation,args.status,args.scope,args.unit,args.started_at,args.ended_at,args.duration_ms,args.source,json.loads(args.usage),metadata)
             else:
                 db.add_observation(args.run_id,args.entity_type,args.entity_id,{"operation":args.operation,"status":args.status,"evidence":json.loads(args.evidence)}); result={"entity_id":args.entity_id,"status":args.status}
         elif args.command=="action": result={"action_id":db.set_action(args.run_id,args.kind,args.target)}
@@ -39,6 +44,9 @@ def main() -> int:
         elif args.command=="next-action":
             from next_action import next_action
             result=next_action(db,args.run_id)
+        elif args.command=="metrics":
+            from runtime_metrics import build_metrics
+            result=build_metrics(db,args.run_id,args.baseline_version)
         else: result=db.snapshot(args.run_id)
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 0
     finally: db.close()

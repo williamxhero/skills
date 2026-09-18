@@ -55,5 +55,8 @@ Use Matt Pocock skills `grilling`, `to-spec`, `to-tickets`, `implement-spec`, an
 External skill/tool results must follow [the receipt contract](references/external-actions.md)
 and be recorded with `controller.py record-observation` before state advances. SQLite
 primitives are in `scripts/control_db.py` and legal transitions are in
-`scripts/transitions.py`. Use `scripts/export_status.py` only for read-only snapshots;
-the database remains the runtime source of truth.
+`scripts/transitions.py`. Runtime phase observations use the same controller entry
+with an observation key and are projected into deterministic metrics by
+`controller.py metrics`; see [runtime observability](references/runtime-observability.md).
+Use `scripts/export_status.py` only for read-only snapshots; the database remains the
+runtime source of truth.
