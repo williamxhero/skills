@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -77,6 +77,8 @@ CREATE TABLE IF NOT EXISTS thread_bootstraps(thread_id TEXT PRIMARY KEY REFERENC
 CREATE TABLE IF NOT EXISTS test_train_obligations(obligation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), spec_id TEXT NOT NULL REFERENCES specs(spec_id), level TEXT NOT NULL, required INTEGER NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,spec_id,level));
 CREATE TABLE IF NOT EXISTS test_train_checkpoints(checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), sequence INTEGER NOT NULL, start_position INTEGER NOT NULL, end_position INTEGER NOT NULL, members TEXT NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,sequence));
 CREATE TABLE IF NOT EXISTS run_policies(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), canonical_payload TEXT NOT NULL, policy_digest TEXT NOT NULL, implementation_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS backup_manifests(manifest_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), payload TEXT NOT NULL, manifest_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS restore_records(restore_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), manifest_id INTEGER NOT NULL REFERENCES backup_manifests(manifest_id), status TEXT NOT NULL, reconciliation_status TEXT NOT NULL, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -125,6 +127,15 @@ class DatabaseModeError(ValueError):
 
 class DecisionError(ValueError):
     """A public decision request does not satisfy the decision contract."""
+
+    def __init__(self, code, details=None):
+        self.code = code
+        self.details = details or {}
+        super().__init__(f"{code}: {self.details}")
+
+
+class RestoreValidationError(ValueError):
+    """A backup/restore validation failed closed with machine-readable details."""
 
     def __init__(self, code, details=None):
         self.code = code
@@ -266,6 +277,9 @@ class ControlDB:
                 raise DatabaseModeError(f"database schema lacks {table} table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_policies'").fetchone():
             raise DatabaseModeError("database schema lacks run_policies table")
+        for table in ("backup_manifests", "restore_records"):
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                raise DatabaseModeError(f"database schema lacks {table} table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -333,6 +347,8 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS test_train_obligations(obligation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), spec_id TEXT NOT NULL REFERENCES specs(spec_id), level TEXT NOT NULL, required INTEGER NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,spec_id,level))")
             self.conn.execute("CREATE TABLE IF NOT EXISTS test_train_checkpoints(checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), sequence INTEGER NOT NULL, start_position INTEGER NOT NULL, end_position INTEGER NOT NULL, members TEXT NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,sequence))")
             self.conn.execute("CREATE TABLE IF NOT EXISTS run_policies(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), canonical_payload TEXT NOT NULL, policy_digest TEXT NOT NULL, implementation_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS backup_manifests(manifest_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), payload TEXT NOT NULL, manifest_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS restore_records(restore_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), manifest_id INTEGER NOT NULL REFERENCES backup_manifests(manifest_id), status TEXT NOT NULL, reconciliation_status TEXT NOT NULL, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS recovery_records(intent_id INTEGER PRIMARY KEY REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, classification TEXT NOT NULL, budget INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, last_evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute(
@@ -1174,6 +1190,210 @@ class ControlDB:
         if digest != record["policy_digest"] or loaded_implementation_digest != record["implementation_digest"]:
             raise ValueError("policy_digest_mismatch")
         return {"decision": "allow", "policy_digest": digest, "implementation_digest": loaded_implementation_digest}
+
+    @staticmethod
+    def _canonical_json(value):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _digest_json(cls, value):
+        return hashlib.sha256(cls._canonical_json(value).encode("utf-8")).hexdigest()
+
+    def _evidence_snapshot(self, run_id):
+        rows = self.conn.execute(
+            "SELECT evidence_id,entity_type,entity_id,evidence_kind,payload "
+            "FROM evidence_refs WHERE run_id=? ORDER BY evidence_id", (run_id,)
+        ).fetchall()
+        return [
+            {
+                "evidence_id": int(row[0]),
+                "entity_type": row[1],
+                "entity_id": row[2],
+                "evidence_kind": row[3],
+                "payload_digest": self._digest_json(json.loads(row[4])),
+            }
+            for row in rows
+        ]
+
+    def create_backup_manifest(
+        self,
+        run_id,
+        file_digests=None,
+        database_digest=None,
+        expected_version=None,
+    ):
+        """Persist a tamper-evident description of the local recovery point.
+
+        ``file_digests`` is deliberately metadata, not a file-copy operation:
+        callers must hash the exact files they intend to back up and provide
+        those hashes.  The manifest never claims that an external system was
+        rolled back.
+        """
+        if file_digests is None:
+            file_digests = {}
+        if not isinstance(file_digests, dict) or any(
+            not isinstance(key, str) or not key.strip() or not isinstance(value, str) or not value.strip()
+            for key, value in file_digests.items()
+        ):
+            raise ValueError("file_digests must be a path-to-digest object")
+        if database_digest is not None and (not isinstance(database_digest, str) or not database_digest.strip()):
+            raise ValueError("database_digest must be a non-empty string")
+        policy_row = self.conn.execute(
+            "SELECT policy_digest,implementation_digest FROM run_policies WHERE run_id=?", (run_id,)
+        ).fetchone()
+        evidence = self._evidence_snapshot(run_id)
+        payload = {
+            "manifest_version": 1,
+            "schema_version": SCHEMA_VERSION,
+            "database_digest": database_digest,
+            "file_digests": dict(sorted(file_digests.items())),
+            "policy_identity": {
+                "policy_digest": policy_row[0] if policy_row else None,
+                "implementation_digest": policy_row[1] if policy_row else None,
+            },
+            "evidence_refs": evidence,
+            "external_rollback": False,
+        }
+        manifest_digest = self._digest_json(payload)
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            stamp = now()
+            cur = self.conn.execute(
+                "INSERT INTO backup_manifests(run_id,payload,manifest_digest,status,created_at) VALUES(?,?,?,?,?)",
+                (run_id, self._canonical_json(payload), manifest_digest, "valid", stamp),
+            )
+            version = self._business_event(run_id, "backup-manifest", str(cur.lastrowid), "backup_manifest_created", {
+                "manifest_digest": manifest_digest,
+                "schema_version": SCHEMA_VERSION,
+                "evidence_count": len(evidence),
+                "external_rollback": False,
+            })
+            return {
+                "manifest_id": cur.lastrowid,
+                "manifest_digest": manifest_digest,
+                "status": "valid",
+                "business_version": version,
+                "database_digest": database_digest,
+                "evidence_count": len(evidence),
+                "policy_digest": payload["policy_identity"]["policy_digest"],
+            }
+
+    def _manifest_row(self, manifest_id):
+        row = self.conn.execute(
+            "SELECT manifest_id,run_id,payload,manifest_digest,status FROM backup_manifests WHERE manifest_id=?",
+            (manifest_id,),
+        ).fetchone()
+        if row is None:
+            raise RestoreValidationError("manifest_missing", {"manifest_id": manifest_id})
+        try:
+            payload = json.loads(row[2])
+        except (TypeError, json.JSONDecodeError):
+            raise RestoreValidationError("manifest_payload_invalid", {"manifest_id": manifest_id}) from None
+        return row, payload
+
+    def validate_backup_manifest(
+        self,
+        run_id,
+        manifest_id,
+        file_digests=None,
+        database_digest=None,
+    ):
+        row, payload = self._manifest_row(manifest_id)
+        errors = []
+        if row[1] != run_id:
+            errors.append("manifest_run_mismatch")
+        if row[4] != "valid":
+            errors.append("manifest_not_valid")
+        if self._digest_json(payload) != row[3]:
+            errors.append("manifest_digest_mismatch")
+        if payload.get("schema_version") != SCHEMA_VERSION:
+            errors.append("schema_incompatible")
+        if database_digest is not None and payload.get("database_digest") != database_digest:
+            errors.append("database_digest_mismatch")
+        if file_digests is not None and payload.get("file_digests") != dict(sorted(file_digests.items())):
+            errors.append("file_digest_mismatch")
+        policy = self.conn.execute(
+            "SELECT policy_digest,implementation_digest FROM run_policies WHERE run_id=?", (run_id,)
+        ).fetchone()
+        identity = payload.get("policy_identity")
+        if not isinstance(identity, dict):
+            errors.append("policy_identity_missing")
+        elif (
+            (policy[0] if policy else None) != identity.get("policy_digest")
+            or (policy[1] if policy else None) != identity.get("implementation_digest")
+        ):
+            errors.append("policy_identity_mismatch")
+        expected_refs = payload.get("evidence_refs")
+        actual_refs = self._evidence_snapshot(run_id)
+        if not isinstance(expected_refs, list):
+            errors.append("evidence_refs_invalid")
+        else:
+            actual_by_id = {item["evidence_id"]: item for item in actual_refs}
+            for item in expected_refs:
+                if not isinstance(item, dict) or not isinstance(item.get("evidence_id"), int):
+                    errors.append("evidence_reference_invalid")
+                    continue
+                actual = actual_by_id.get(item["evidence_id"])
+                if actual is None:
+                    errors.append("evidence_unreachable")
+                elif actual != item:
+                    errors.append("evidence_changed")
+        if errors:
+            raise RestoreValidationError("restore_blocked", {"manifest_id": manifest_id, "errors": sorted(set(errors))})
+        return {
+            "decision": "allow",
+            "manifest_id": manifest_id,
+            "manifest_digest": row[3],
+            "schema_version": payload["schema_version"],
+            "policy_digest": identity.get("policy_digest"),
+            "evidence_count": len(expected_refs),
+            "external_rollback": False,
+        }
+
+    def begin_restore(self, run_id, manifest_id, expected_version=None):
+        """Create a local restore record; readiness always starts pending reconciliation."""
+        self.validate_backup_manifest(run_id, manifest_id)
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            unknown = [
+                int(row[0]) for row in self.conn.execute(
+                    "SELECT intent_id FROM operation_intents WHERE run_id=? AND status='outcome_unknown' ORDER BY intent_id",
+                    (run_id,),
+                )
+            ]
+            stamp = now()
+            evidence = {"unknown_intents": unknown, "external_rollback": False, "local_restore": True}
+            cur = self.conn.execute(
+                "INSERT INTO restore_records(run_id,manifest_id,status,reconciliation_status,evidence,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                (run_id, manifest_id, "pending_reconciliation", "pending", self._canonical_json(evidence), stamp, stamp),
+            )
+            version = self._business_event(run_id, "restore", str(cur.lastrowid), "restore_started", evidence)
+            return {"restore_id": cur.lastrowid, "status": "pending_reconciliation", "reconciliation_status": "pending", "unknown_intents": unknown, "business_version": version}
+
+    def record_restore_reconciliation(self, restore_id, reconciliation_status, evidence, expected_version=None):
+        if reconciliation_status not in {"pending", "complete", "blocked"}:
+            raise ValueError("unsupported reconciliation status")
+        if not isinstance(evidence, dict):
+            raise ValueError("reconciliation evidence must be an object")
+        row = self.conn.execute("SELECT run_id,status,reconciliation_status FROM restore_records WHERE restore_id=?", (restore_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown restore")
+        if row[1] not in {"pending_reconciliation", "blocked", "ready"}:
+            raise ValueError("restore is not reconcilable")
+        unknown = self.conn.execute("SELECT COUNT(*) FROM operation_intents WHERE run_id=? AND status='outcome_unknown'", (row[0],)).fetchone()[0]
+        if reconciliation_status == "complete" and unknown:
+            raise RestoreValidationError("reconciliation_incomplete", {"unknown_intents": unknown})
+        if reconciliation_status == "complete" and not evidence.get("verified"):
+            raise RestoreValidationError("reconciliation_evidence_missing", {"required": "verified"})
+        with self.transaction():
+            current = self._check_version(row[0], expected_version)
+            status = "ready" if reconciliation_status == "complete" else ("blocked" if reconciliation_status == "blocked" else "pending_reconciliation")
+            self.conn.execute(
+                "UPDATE restore_records SET status=?,reconciliation_status=?,evidence=?,updated_at=? WHERE restore_id=?",
+                (status, reconciliation_status, self._canonical_json(evidence), now(), restore_id),
+            )
+            version = self._business_event(row[0], "restore", str(restore_id), "restore_reconciliation_recorded", {"status": status, "reconciliation_status": reconciliation_status, "evidence": evidence, "external_rollback": False})
+            return {"restore_id": restore_id, "status": status, "reconciliation_status": reconciliation_status, "business_version": version}
 
     def test_train_status(self, run_id):
         obligations = [dict(row) for row in self.conn.execute("SELECT * FROM test_train_obligations WHERE run_id=? ORDER BY obligation_id", (run_id,))]

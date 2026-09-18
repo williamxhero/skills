@@ -6,7 +6,7 @@ import json
 import shlex
 from pathlib import Path
 
-from control_db import ActionConflict, ControlDB, DecisionError, StaleState
+from control_db import ActionConflict, ControlDB, DecisionError, RestoreValidationError, StaleState
 from authorization import AuthorizationError
 from evidence_gate import EvidenceGateError
 from run_state import PHASES, RUN_RESULTS, RunStateError
@@ -68,6 +68,10 @@ def main() -> int:
     train_status=sub.add_parser("test-train-status"); train_status.add_argument("--run-id",required=True)
     pin_policy=sub.add_parser("pin-policy"); pin_policy.add_argument("--run-id",required=True); pin_policy.add_argument("--policy",required=True); pin_policy.add_argument("--implementation-digest",required=True); pin_policy.add_argument("--migration")
     verify_policy=sub.add_parser("verify-policy"); verify_policy.add_argument("--run-id",required=True); verify_policy.add_argument("--policy",required=True); verify_policy.add_argument("--implementation-digest",required=True)
+    backup_manifest=sub.add_parser("backup-manifest"); backup_manifest.add_argument("--run-id",required=True); backup_manifest.add_argument("--file-digests",default="{}"); backup_manifest.add_argument("--database-digest")
+    validate_manifest=sub.add_parser("validate-backup-manifest"); validate_manifest.add_argument("--run-id",required=True); validate_manifest.add_argument("--manifest-id",type=int,required=True); validate_manifest.add_argument("--file-digests"); validate_manifest.add_argument("--database-digest")
+    begin_restore=sub.add_parser("begin-restore"); begin_restore.add_argument("--run-id",required=True); begin_restore.add_argument("--manifest-id",type=int,required=True)
+    restore_reconcile=sub.add_parser("restore-reconciliation"); restore_reconcile.add_argument("--restore-id",type=int,required=True); restore_reconcile.add_argument("--status",choices=("pending","complete","blocked"),required=True); restore_reconcile.add_argument("--evidence",required=True)
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -79,10 +83,10 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy):
+    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy"} else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest"} else "open-existing"))
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
@@ -157,6 +161,14 @@ def main() -> int:
             result=db.pin_policy(args.run_id, json.loads(args.policy), args.implementation_digest, args.expected_version, json.loads(args.migration) if args.migration else None)
         elif args.command=="verify-policy":
             result=db.verify_policy(args.run_id, json.loads(args.policy), args.implementation_digest)
+        elif args.command=="backup-manifest":
+            result=db.create_backup_manifest(args.run_id, json.loads(args.file_digests), args.database_digest, args.expected_version)
+        elif args.command=="validate-backup-manifest":
+            result=db.validate_backup_manifest(args.run_id, args.manifest_id, json.loads(args.file_digests) if args.file_digests else None, args.database_digest)
+        elif args.command=="begin-restore":
+            result=db.begin_restore(args.run_id, args.manifest_id, args.expected_version)
+        elif args.command=="restore-reconciliation":
+            result=db.record_restore_reconciliation(args.restore_id, args.status, json.loads(args.evidence), args.expected_version)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":
@@ -276,6 +288,9 @@ def main() -> int:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     except DecisionError as exc:
+        result={"decision":"reject","error":exc.code,"details":exc.details}
+        print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
+    except RestoreValidationError as exc:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     finally: db.close()
