@@ -61,6 +61,7 @@ def main() -> int:
     reconcile_intent=sub.add_parser("reconcile-intent"); reconcile_intent.add_argument("--intent-id",type=int,required=True); reconcile_intent.add_argument("--readback",required=True)
     claim_intent=sub.add_parser("claim-intent"); claim_intent.add_argument("--intent-id",type=int,required=True); claim_intent.add_argument("--owner",required=True); claim_intent.add_argument("--lease-until",required=True); claim_intent.add_argument("--fencing-supported",action="store_true"); claim_intent.add_argument("--fencing-receipt")
     recovery=sub.add_parser("record-recovery"); recovery.add_argument("--intent-id",type=int,required=True); recovery.add_argument("--owner",required=True); recovery.add_argument("--classification",required=True); recovery.add_argument("--budget",type=int,required=True); recovery.add_argument("--evidence")
+    bootstrap_state=sub.add_parser("bootstrap-state"); bootstrap_state.add_argument("--run-id",required=True); bootstrap_state.add_argument("--thread-id",required=True); bootstrap_state.add_argument("--state",choices=("route_verifying","assigned","cancelled"),required=True); bootstrap_state.add_argument("--receipt")
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -72,7 +73,7 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery):
+    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
     db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness"} else "open-existing"))
@@ -136,6 +137,8 @@ def main() -> int:
             result=db.claim_intent(args.intent_id, args.owner, args.lease_until, args.fencing_supported, json.loads(args.fencing_receipt) if args.fencing_receipt else None, args.expected_version)
         elif args.command=="record-recovery":
             result=db.record_recovery(args.intent_id, args.owner, args.classification, args.budget, json.loads(args.evidence) if args.evidence else None, args.expected_version)
+        elif args.command=="bootstrap-state":
+            result=db.advance_bootstrap(args.run_id, args.thread_id, args.state, json.loads(args.receipt) if args.receipt else None, args.expected_version)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":

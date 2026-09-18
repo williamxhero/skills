@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), title TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', generation INTEGER NOT NULL DEFAULT 0, UNIQUE(run_id,position));
 CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', issue_url TEXT, queue_position INTEGER, UNIQUE(spec_id,title));
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
+CREATE TABLE IF NOT EXISTS thread_bootstraps(thread_id TEXT PRIMARY KEY REFERENCES threads(thread_id), run_id TEXT NOT NULL REFERENCES runs(run_id), state TEXT NOT NULL, budget INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, route_receipt TEXT, assignment_receipt TEXT, cancellation_receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -255,6 +256,8 @@ class ControlDB:
         for table in ("intent_claims", "recovery_records"):
             if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                 raise DatabaseModeError(f"database schema lacks {table} table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_bootstraps'").fetchone():
+            raise DatabaseModeError("database schema lacks thread_bootstraps table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -317,6 +320,8 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS startup_contracts(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, status TEXT NOT NULL, contract_digest TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS thread_bootstraps(thread_id TEXT PRIMARY KEY REFERENCES threads(thread_id), run_id TEXT NOT NULL REFERENCES runs(run_id), state TEXT NOT NULL, budget INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, route_receipt TEXT, assignment_receipt TEXT, cancellation_receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("INSERT OR IGNORE INTO thread_bootstraps(thread_id,run_id,state,budget,created_at,updated_at) SELECT thread_id,run_id,'bootstrap',3,last_observed_at,last_observed_at FROM threads")
             self.conn.execute("CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS recovery_records(intent_id INTEGER PRIMARY KEY REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, classification TEXT NOT NULL, budget INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, last_evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute(
@@ -1098,10 +1103,42 @@ class ControlDB:
                 (thread_id,run_id,kind,spec_id,"created",now(),fields["task_id"],fields["attempt_id"],fields["nonce"],client_thread_id,formal_thread_id,host_id,owner_id,cwd,project_id,title_token))
             inserted=cur.rowcount==1
             if inserted:
+                self.conn.execute("INSERT INTO thread_bootstraps(thread_id,run_id,state,budget,created_at,updated_at) VALUES(?,?,?,?,?,?)", (thread_id, run_id, "bootstrap", 3, now(), now()))
                 self._business_event(run_id,"thread",thread_id,"thread_registered",{"kind":kind,"spec_id":spec_id,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
             else:
                 self._business_event(run_id,"thread",thread_id,"thread_registration_refused",{"kind":kind,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
         return inserted
+    def bootstrap(self, run_id, thread_id):
+        row = self.conn.execute("SELECT * FROM thread_bootstraps WHERE run_id=? AND thread_id=?", (run_id, thread_id)).fetchone()
+        if row is None:
+            raise ValueError("unknown thread bootstrap")
+        result = dict(row)
+        for field in ("route_receipt", "assignment_receipt", "cancellation_receipt"):
+            if result[field] is not None:
+                result[field] = json.loads(result[field])
+        return result
+
+    def advance_bootstrap(self, run_id, thread_id, state, receipt=None, expected_version=None):
+        allowed = {"bootstrap": {"route_verifying", "cancelled"}, "route_verifying": {"assigned", "bootstrap", "cancelled"}, "assigned": {"cancelled"}, "cancelled": set()}
+        if state not in allowed:
+            raise ValueError("unsupported bootstrap state")
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            row = self.conn.execute("SELECT state,budget,attempts,route_receipt FROM thread_bootstraps WHERE run_id=? AND thread_id=?", (run_id, thread_id)).fetchone()
+            if row is None:
+                raise ValueError("unknown thread bootstrap")
+            if state not in allowed.get(row[0], set()):
+                raise ValueError(f"illegal bootstrap transition: {row[0]} -> {state}")
+            if state == "route_verifying" and (not isinstance(receipt, dict) or receipt.get("status") != "verified"):
+                raise ValueError("route verification requires verified receipt")
+            if state == "assigned" and (row[3] is None or not isinstance(receipt, dict) or receipt.get("status") != "verified" or not receipt.get("assignment_id")):
+                raise ValueError("assignment requires verified route and assignment receipt")
+            if state == "route_verifying" and row[2] >= row[1]:
+                raise ValueError("bootstrap repair budget exhausted")
+            column = "route_receipt" if state == "route_verifying" else "assignment_receipt" if state == "assigned" else "cancellation_receipt"
+            self.conn.execute(f"UPDATE thread_bootstraps SET state=?,attempts=attempts+?,{column}=?,updated_at=? WHERE thread_id=? AND run_id=?", (state, 1 if state == "route_verifying" else 0, json.dumps(receipt, ensure_ascii=False, sort_keys=True) if receipt is not None else None, now(), thread_id, run_id))
+            version = self._business_event(run_id, "thread", thread_id, "thread_bootstrap_state_changed", {"from_state": row[0], "to_state": state, "receipt": receipt, "budget": row[1], "attempts": row[2] + (1 if state == "route_verifying" else 0)})
+            return {"thread_id": thread_id, "state": state, "business_version": version}
     def threads_by_identity(self,run_id,task_id,attempt_id=None):
         """Return registered rows for a task identity, optionally one attempt."""
         sql="SELECT * FROM threads WHERE run_id=? AND task_id=?"
@@ -1338,4 +1375,4 @@ class ControlDB:
             except StartupContractError as exc:
                 if exc.code != "startup_contract_missing":
                     raise
-        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"startup_contract":startup,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"intents":row("SELECT * FROM operation_intents WHERE run_id=? ORDER BY intent_id",(run_id,)),"claims":row("SELECT c.* FROM intent_claims c JOIN operation_intents i ON i.intent_id=c.intent_id WHERE i.run_id=? ORDER BY claim_id",(run_id,)),"recovery":row("SELECT r.* FROM recovery_records r JOIN operation_intents i ON i.intent_id=r.intent_id WHERE i.run_id=? ORDER BY intent_id",(run_id,)),"decisions":row("SELECT * FROM decisions WHERE run_id=? ORDER BY decision_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
+        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"startup_contract":startup,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"bootstraps":row("SELECT * FROM thread_bootstraps WHERE run_id=? ORDER BY thread_id",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"intents":row("SELECT * FROM operation_intents WHERE run_id=? ORDER BY intent_id",(run_id,)),"claims":row("SELECT c.* FROM intent_claims c JOIN operation_intents i ON i.intent_id=c.intent_id WHERE i.run_id=? ORDER BY claim_id",(run_id,)),"recovery":row("SELECT r.* FROM recovery_records r JOIN operation_intents i ON i.intent_id=r.intent_id WHERE i.run_id=? ORDER BY intent_id",(run_id,)),"decisions":row("SELECT * FROM decisions WHERE run_id=? ORDER BY decision_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
