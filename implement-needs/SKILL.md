@@ -64,6 +64,10 @@ in [side-effect and recovery safety](references/side-effect-recovery.md).
 Use `scripts/export_status.py` only for read-only snapshots; the database remains
 the runtime source of truth.
 
+When checking delivery evidence, load [delivery-evidence.md](references/delivery-evidence.md)
+and use the versioned receipt commands. Keep worker claims separate from
+controller-read CI receipts; reuse requires an exact applicability-key match.
+
 For deterministic local work, use `controller.py advance`. It may cross multiple
 SQLite-determined transitions, but it must stop at `needs_llm`, `waiting_external`,
 `blocked`, or `completed`. A waiting result carries a stable external request ID,
