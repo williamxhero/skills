@@ -19,7 +19,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOI
 CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS phase_receipts(receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), from_phase TEXT NOT NULL, to_phase TEXT NOT NULL, result TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_authorizations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, authorization_digest TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS candidate_freezes(freeze_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), candidate_sha TEXT NOT NULL, merge_sha TEXT, authorization_digest TEXT NOT NULL, status TEXT NOT NULL, invalidation_reason TEXT, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT);
+CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
 """
@@ -219,6 +221,10 @@ class ControlDB:
             raise DatabaseModeError("database schema lacks phase_receipts table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_authorizations'").fetchone():
             raise DatabaseModeError("database schema lacks run_authorizations table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_freezes'").fetchone():
+            raise DatabaseModeError("database schema lacks candidate_freezes table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_evidence'").fetchone():
+            raise DatabaseModeError("database schema lacks candidate_evidence table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -273,6 +279,8 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS phase_receipts(receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), from_phase TEXT NOT NULL, to_phase TEXT NOT NULL, result TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS run_authorizations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, authorization_digest TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_freezes(freeze_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), candidate_sha TEXT NOT NULL, merge_sha TEXT, authorization_digest TEXT NOT NULL, status TEXT NOT NULL, invalidation_reason TEXT, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute(
                 "INSERT OR IGNORE INTO run_authorizations(run_id,payload,authorization_digest,status,created_at,updated_at) "
                 "SELECT run_id, ?, NULL, 'unconfigured', created_at, updated_at FROM runs",
@@ -358,6 +366,93 @@ class ControlDB:
         if decision["authorization_digest"] != record["authorization_digest"]:
             raise AuthorizationError("authorization_digest_mismatch", {"run_id": run_id})
         return decision
+
+    def _candidate_active(self, run_id):
+        row = self.conn.execute(
+            "SELECT * FROM candidate_freezes WHERE run_id=? AND status='active' ORDER BY freeze_id DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("no active candidate freeze")
+        return row
+
+    @staticmethod
+    def _validate_candidate_payload(payload, candidate_sha, authorization_digest, expected_version):
+        if not isinstance(payload, dict):
+            raise ValueError("candidate evidence must be an object")
+        required = {"status", "candidate_sha", "authorization_digest", "business_version", "evidence"}
+        missing = sorted(required - set(payload))
+        if missing:
+            raise ValueError("candidate evidence incomplete: " + ", ".join(missing))
+        if payload["status"] != "verified":
+            raise ValueError("candidate evidence is not verified")
+        if payload["candidate_sha"] != candidate_sha:
+            raise ValueError("candidate evidence candidate mismatch")
+        if payload["authorization_digest"] != authorization_digest:
+            raise ValueError("candidate evidence authorization mismatch")
+        if payload["business_version"] != expected_version:
+            raise StaleState("candidate", payload["business_version"], expected_version)
+        if not isinstance(payload["evidence"], list) or not payload["evidence"]:
+            raise ValueError("candidate evidence references are required")
+
+    def freeze_candidate(self, run_id, candidate_sha, evidence, merge_sha=None, expected_version=None):
+        if not isinstance(candidate_sha, str) or not candidate_sha.strip():
+            raise ValueError("candidate SHA is required")
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            decision = self.authorize(run_id, action="freeze-candidate")
+            self._validate_candidate_payload(evidence, candidate_sha, decision["authorization_digest"], current)
+            active = self.conn.execute(
+                "SELECT freeze_id,candidate_sha,authorization_digest FROM candidate_freezes WHERE run_id=? AND status='active' LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if active is not None:
+                if active[1] == candidate_sha and active[2] == decision["authorization_digest"]:
+                    return {"run_id": run_id, "changed": False, "freeze_id": active[0], "candidate_sha": candidate_sha}
+                raise ValueError("candidate freeze already active; invalidate it before freezing a new candidate")
+            stamp = now()
+            cur = self.conn.execute(
+                "INSERT INTO candidate_freezes(run_id,candidate_sha,merge_sha,authorization_digest,status,payload,business_version,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (run_id, candidate_sha, merge_sha, decision["authorization_digest"], "active", json.dumps(evidence, ensure_ascii=False, sort_keys=True), current, stamp),
+            )
+            version = self._business_event(run_id, "candidate", candidate_sha, "candidate_frozen", {"candidate_sha": candidate_sha, "merge_sha": merge_sha, "authorization_digest": decision["authorization_digest"]})
+            self.conn.execute("UPDATE candidate_freezes SET business_version=? WHERE freeze_id=?", (version, cur.lastrowid))
+            return {"run_id": run_id, "changed": True, "freeze_id": cur.lastrowid, "candidate_sha": candidate_sha, "business_version": version}
+
+    def record_candidate_evidence(self, run_id, evidence_kind, payload, expected_version=None):
+        if evidence_kind not in {"test", "package", "deployment", "synchronization", "final-readback"}:
+            raise ValueError("unsupported candidate evidence kind")
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            active = self._candidate_active(run_id)
+            self._validate_candidate_payload(payload, active["candidate_sha"], active["authorization_digest"], current)
+            cur = self.conn.execute(
+                "INSERT INTO candidate_evidence(run_id,freeze_id,evidence_kind,candidate_sha,authorization_digest,payload,business_version,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (run_id, active["freeze_id"], evidence_kind, active["candidate_sha"], active["authorization_digest"], json.dumps(payload, ensure_ascii=False, sort_keys=True), current, now()),
+            )
+            version = self._business_event(run_id, "candidate", active["candidate_sha"], "candidate_evidence_recorded", {"evidence_kind": evidence_kind, "evidence_id": cur.lastrowid, "candidate_sha": active["candidate_sha"]})
+            self.conn.execute("UPDATE candidate_evidence SET business_version=? WHERE evidence_id=?", (version, cur.lastrowid))
+            return {"run_id": run_id, "evidence_id": cur.lastrowid, "candidate_sha": active["candidate_sha"], "business_version": version}
+
+    def invalidate_candidate(self, run_id, reason, observed_candidate_sha=None, expected_version=None):
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("candidate invalidation reason is required")
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            self.authorize(run_id, action="invalidate-candidate")
+            active = self._candidate_active(run_id)
+            self.conn.execute(
+                "UPDATE candidate_freezes SET status='invalidated',invalidation_reason=?,invalidated_at=? WHERE freeze_id=?",
+                (reason, now(), active["freeze_id"]),
+            )
+            version = self._business_event(run_id, "candidate", active["candidate_sha"], "candidate_invalidated", {"candidate_sha": active["candidate_sha"], "observed_candidate_sha": observed_candidate_sha, "reason": reason})
+            return {"run_id": run_id, "candidate_sha": active["candidate_sha"], "observed_candidate_sha": observed_candidate_sha, "business_version": version}
+
+    def candidate_snapshot(self, run_id):
+        return {
+            "freeze": [dict(row) for row in self.conn.execute("SELECT * FROM candidate_freezes WHERE run_id=? ORDER BY freeze_id", (run_id,))],
+            "evidence": [dict(row) for row in self.conn.execute("SELECT * FROM candidate_evidence WHERE run_id=? ORDER BY evidence_id", (run_id,))],
+        }
 
     def advance_run_phase(self, run_id, target_phase, receipt, expected_version=None):
         """Advance exactly one run phase after a bound phase readback."""
@@ -992,4 +1087,4 @@ class ControlDB:
     def snapshot(self,run_id):
         row=lambda q,p: [dict(x) for x in self.conn.execute(q,p)]
         run=self.conn.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
-        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
+        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}

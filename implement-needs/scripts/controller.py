@@ -43,6 +43,9 @@ def main() -> int:
     resume=sub.add_parser("resume-run"); resume.add_argument("--run-id",required=True)
     configure_auth=sub.add_parser("configure-auth"); configure_auth.add_argument("--run-id",required=True); configure_auth.add_argument("--authorization",required=True)
     auth_check=sub.add_parser("auth-check"); auth_check.add_argument("--run-id",required=True); auth_check.add_argument("--action",required=True); auth_check.add_argument("--path"); auth_check.add_argument("--target-ref"); auth_check.add_argument("--environment"); auth_check.add_argument("--full-project",action="store_true")
+    freeze=sub.add_parser("freeze-candidate"); freeze.add_argument("--run-id",required=True); freeze.add_argument("--candidate-sha",required=True); freeze.add_argument("--merge-sha"); freeze.add_argument("--evidence",required=True)
+    candidate_evidence=sub.add_parser("candidate-evidence"); candidate_evidence.add_argument("--run-id",required=True); candidate_evidence.add_argument("--kind",choices=("test","package","deployment","synchronization","final-readback"),required=True); candidate_evidence.add_argument("--evidence",required=True)
+    invalidate=sub.add_parser("invalidate-candidate"); invalidate.add_argument("--run-id",required=True); invalidate.add_argument("--reason",required=True); invalidate.add_argument("--observed-candidate-sha")
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -54,7 +57,7 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth):
+    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
     db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check"} else "open-existing"))
@@ -86,6 +89,12 @@ def main() -> int:
             result=db.configure_authorization(args.run_id,json.loads(args.authorization),args.expected_version)
         elif args.command=="auth-check":
             result=db.authorize(args.run_id, action=args.action, path=args.path, target_ref=args.target_ref, environment=args.environment, full_project=args.full_project)
+        elif args.command=="freeze-candidate":
+            result=db.freeze_candidate(args.run_id,args.candidate_sha,json.loads(args.evidence),args.merge_sha,args.expected_version)
+        elif args.command=="candidate-evidence":
+            result=db.record_candidate_evidence(args.run_id,args.kind,json.loads(args.evidence),args.expected_version)
+        elif args.command=="invalidate-candidate":
+            result=db.invalidate_candidate(args.run_id,args.reason,args.observed_candidate_sha,args.expected_version)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":
