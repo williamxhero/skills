@@ -64,6 +64,11 @@ in [side-effect and recovery safety](references/side-effect-recovery.md).
 Use `scripts/export_status.py` only for read-only snapshots; the database remains
 the runtime source of truth.
 
+Pin policy and recovery behavior through the public `pin-policy`, `shadow`, and
+`backup` commands; load [policy-recovery.md](references/policy-recovery.md) only for
+those phases. Keep backup manifests and evidence together and treat shadow output as
+a decision receipt, never as an external execution receipt.
+
 When checking delivery evidence, load [delivery-evidence.md](references/delivery-evidence.md)
 and use the versioned receipt commands. Keep worker claims separate from
 controller-read CI receipts; reuse requires an exact applicability-key match.
