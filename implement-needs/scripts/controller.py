@@ -11,6 +11,7 @@ from authorization import AuthorizationError
 from evidence_gate import EvidenceGateError
 from run_state import PHASES, RUN_RESULTS, RunStateError
 from sync_scope import SyncScopeError, build_sync_plan
+from startup_contract import StartupContractError
 from task_backend import (
     MCP_CONNECTOR,
     BackendError,
@@ -49,6 +50,8 @@ def main() -> int:
     invalidate=sub.add_parser("invalidate-candidate"); invalidate.add_argument("--run-id",required=True); invalidate.add_argument("--reason",required=True); invalidate.add_argument("--observed-candidate-sha")
     sync_plan=sub.add_parser("sync-plan"); sync_plan.add_argument("--run-id",required=True); sync_plan.add_argument("--changed-paths",required=True); sync_plan.add_argument("--requested-paths"); sync_plan.add_argument("--full-project",action="store_true")
     record_sync=sub.add_parser("record-sync"); record_sync.add_argument("--run-id",required=True); record_sync.add_argument("--readback",required=True)
+    startup_contract=sub.add_parser("startup-contract"); startup_contract.add_argument("--run-id",required=True); startup_contract.add_argument("--contract",required=True); startup_contract.add_argument("--available-dependencies",default=None)
+    startup_check=sub.add_parser("startup-check"); startup_check.add_argument("--run-id",required=True)
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -60,10 +63,10 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync):
+    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan"} else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check"} else "open-existing"))
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
@@ -103,6 +106,11 @@ def main() -> int:
             result=build_sync_plan(record["payload"],json.loads(args.changed_paths),requested_paths=json.loads(args.requested_paths) if args.requested_paths else None,full_project=args.full_project)
         elif args.command=="record-sync":
             result=db.record_synchronization(args.run_id,json.loads(args.readback),args.expected_version)
+        elif args.command=="startup-contract":
+            available = json.loads(args.available_dependencies) if args.available_dependencies else None
+            result=db.record_startup_contract(args.run_id,json.loads(args.contract),available,args.expected_version)
+        elif args.command=="startup-check":
+            result=db.startup_contract(args.run_id)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":
@@ -216,6 +224,9 @@ def main() -> int:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     except SyncScopeError as exc:
+        result={"decision":"reject","error":exc.code,"details":exc.details}
+        print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
+    except StartupContractError as exc:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     finally: db.close()

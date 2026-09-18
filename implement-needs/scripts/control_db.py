@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from pathlib import Path
 from evidence_gate import EvidenceGateError, verify_terminal_contract
 from authorization import AuthorizationError, authorization_digest, check_scope, validate_authorization
 from sync_scope import validate_sync_readback
+from startup_contract import StartupContractError, validate_startup_contract
 from run_state import (
     PHASE_TRANSITIONS,
     RunStateError,
@@ -20,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -72,6 +74,7 @@ CREATE TABLE IF NOT EXISTS phase_receipts(receipt_id INTEGER PRIMARY KEY AUTOINC
 CREATE TABLE IF NOT EXISTS run_authorizations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, authorization_digest TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS candidate_freezes(freeze_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), candidate_sha TEXT NOT NULL, merge_sha TEXT, authorization_digest TEXT NOT NULL, status TEXT NOT NULL, invalidation_reason TEXT, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT);
 CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS startup_contracts(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, status TEXT NOT NULL, contract_digest TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
 """
@@ -226,6 +229,8 @@ class ControlDB:
             raise DatabaseModeError("database schema lacks candidate_freezes table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_evidence'").fetchone():
             raise DatabaseModeError("database schema lacks candidate_evidence table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='startup_contracts'").fetchone():
+            raise DatabaseModeError("database schema lacks startup_contracts table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -282,6 +287,7 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS run_authorizations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, authorization_digest TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_freezes(freeze_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), candidate_sha TEXT NOT NULL, merge_sha TEXT, authorization_digest TEXT NOT NULL, status TEXT NOT NULL, invalidation_reason TEXT, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS startup_contracts(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, status TEXT NOT NULL, contract_digest TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute(
                 "INSERT OR IGNORE INTO run_authorizations(run_id,payload,authorization_digest,status,created_at,updated_at) "
                 "SELECT run_id, ?, NULL, 'unconfigured', created_at, updated_at FROM runs",
@@ -367,6 +373,64 @@ class ControlDB:
         if decision["authorization_digest"] != record["authorization_digest"]:
             raise AuthorizationError("authorization_digest_mismatch", {"run_id": run_id})
         return decision
+
+    def startup_contract(self, run_id):
+        row = self.conn.execute(
+            "SELECT payload,status,contract_digest FROM startup_contracts WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise StartupContractError("startup_contract_missing", {"run_id": run_id})
+        return {
+            "payload": json.loads(row[0]),
+            "status": row[1],
+            "contract_digest": row[2],
+        }
+
+    def record_startup_contract(self, run_id, contract, available_dependencies=None, expected_version=None):
+        validated = validate_startup_contract(
+            contract,
+            run_id=run_id,
+            available_dependencies=available_dependencies,
+        )
+        canonical = json.dumps(validated, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            row = self.conn.execute(
+                "SELECT status,contract_digest FROM startup_contracts WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if row is not None and row[0] == "verified":
+                if row[1] == digest:
+                    return {
+                        "run_id": run_id,
+                        "changed": False,
+                        "status": "verified",
+                        "contract_digest": digest,
+                        "business_version": current,
+                    }
+                raise StartupContractError("startup_contract_immutable", {"run_id": run_id})
+            stamp = now()
+            self.conn.execute(
+                "INSERT INTO startup_contracts(run_id,payload,status,contract_digest,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload,status=excluded.status,contract_digest=excluded.contract_digest,updated_at=excluded.updated_at",
+                (run_id, canonical, "verified", digest, stamp, stamp),
+            )
+            version = self._business_event(
+                run_id,
+                "run",
+                run_id,
+                "startup_contract_recorded",
+                {"contract_digest": digest, "status": "verified"},
+            )
+            return {
+                "run_id": run_id,
+                "changed": True,
+                "status": "verified",
+                "contract_digest": digest,
+                "business_version": version,
+            }
 
     def _candidate_active(self, run_id):
         row = self.conn.execute(
@@ -1109,4 +1173,11 @@ class ControlDB:
     def snapshot(self,run_id):
         row=lambda q,p: [dict(x) for x in self.conn.execute(q,p)]
         run=self.conn.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
-        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
+        startup = None
+        if run:
+            try:
+                startup = self.startup_contract(run_id)
+            except StartupContractError as exc:
+                if exc.code != "startup_contract_missing":
+                    raise
+        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"startup_contract":startup,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
