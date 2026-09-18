@@ -534,6 +534,58 @@ class ControlDB:
                     "INSERT OR IGNORE INTO delivery_proofs(entity_type,entity_id,artifact_type,artifact_ref,evidence,observed_at) VALUES(?,?,?,?,?,?)",
                     ("ticket", ticket_id, "delivery", f"ticket:{ticket_id}:closed", json.dumps(delivery_evidence, ensure_ascii=False), now()),
                 )
+
+    def advance_local_action(self, run_id, kind, target, next_status):
+        """Commit a uniquely determined local transition and its receipt together."""
+        if kind not in {"advance_spec", "advance_ticket"}:
+            raise ValueError("unsupported local action")
+        key = f"{run_id}:{kind}:{target}"
+        with transaction(self.conn):
+            action = self.conn.execute("SELECT * FROM actions WHERE idempotency_key=?", (key,)).fetchone()
+            if kind == "advance_spec":
+                entity = self.conn.execute("SELECT run_id,status FROM specs WHERE spec_id=?", (target,)).fetchone()
+                if not entity or entity["run_id"] != run_id:
+                    raise ValueError("unknown spec")
+                from transitions import SPEC_TRANSITIONS, transition
+                transitions = SPEC_TRANSITIONS
+            else:
+                entity = self.conn.execute(
+                    "SELECT s.run_id,t.status FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?", (target,)
+                ).fetchone()
+                if not entity or entity["run_id"] != run_id:
+                    raise ValueError("unknown ticket")
+                transitions = {"planned":{"ready","blocked"},"ready":{"implementing","blocked"},"implementing":{"verified","blocked"},"verified":{"merged","blocked"},"merged":{"closed"},"blocked":{"ready","implementing","cancelled"},"closed":set(),"cancelled":set()}
+            if action and action["status"] == "succeeded":
+                return int(action["action_id"])
+            if action and entity["status"] == next_status:
+                action_id = int(action["action_id"])
+                self.conn.execute("UPDATE actions SET status='succeeded',result=?,error=NULL,attempts=attempts+1,updated_at=? WHERE action_id=?", (json.dumps({"next_status": next_status}, ensure_ascii=False), now(), action_id))
+                self.event(run_id, "action", str(action_id), "action_reconciled", {"status": "succeeded", "next_status": next_status})
+                return action_id
+            if action and action["status"] not in {"pending", "running"}:
+                raise ValueError(f"local action cannot resume from {action['status']}")
+            if action:
+                action_id = int(action["action_id"])
+            else:
+                stamp = now()
+                cursor = self.conn.execute(
+                    "INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                    (run_id, kind, target, "pending", key, stamp, stamp),
+                )
+                action_id = int(cursor.lastrowid)
+                self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?", (f"{kind}:{target}", stamp, run_id))
+            if kind == "advance_spec":
+                transition(transitions, entity["status"], next_status)
+                self.conn.execute("UPDATE specs SET status=? WHERE spec_id=?", (next_status, target))
+                self.event(run_id, "spec", target, "spec_state_changed", {"status": next_status})
+            else:
+                if next_status not in transitions.get(entity["status"], set()):
+                    raise ValueError(f"illegal ticket transition: {entity['status']} -> {next_status}")
+                self.conn.execute("UPDATE tickets SET status=? WHERE ticket_id=?", (next_status, target))
+                self.event(run_id, "ticket", target, "ticket_state_changed", {"status": next_status, "commits": None, "tests": None})
+            self.conn.execute("UPDATE actions SET status='succeeded',result=?,attempts=attempts+1,updated_at=? WHERE action_id=?", (json.dumps({"next_status": next_status}, ensure_ascii=False), now(), action_id))
+            self.event(run_id, "action", str(action_id), "action_finished", {"status": "succeeded", "error": None})
+            return action_id
     def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None):
         with self.conn:
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()

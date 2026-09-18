@@ -64,6 +64,19 @@ class AdvanceRuntimeTests(unittest.TestCase):
             self.assertEqual("advance_budget_exhausted", result["reason"])
             db.close()
 
+    def test_reconciles_a_legacy_pending_local_action_without_repeating_transition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = ControlDB(Path(directory) / "run.db")
+            db.create_run("run-1", "demo", "req")
+            db.add_spec("run-1", "S1", "first", 1)
+            action_id = db.set_action("run-1", "advance_spec", "S1")
+            db.update_spec("S1", "ready")
+            result = advance(db, "run-1")
+            self.assertEqual("needs_llm", result["boundary"])
+            self.assertEqual(action_id, result["processed_actions"][0]["action_id"])
+            self.assertEqual("succeeded", db.conn.execute("SELECT status FROM actions WHERE action_id=?", (action_id,)).fetchone()[0])
+            db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

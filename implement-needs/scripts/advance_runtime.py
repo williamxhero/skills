@@ -9,6 +9,7 @@ from next_action import next_action
 
 
 BOUNDARIES = frozenset({"needs_llm", "waiting_external", "blocked", "completed"})
+TICKET_ADVANCE = {"planned": "ready", "ready": "implementing", "implementing": "verified", "verified": "merged", "merged": "closed"}
 
 
 def _cursor(db, run_id):
@@ -51,25 +52,26 @@ def _waiting_result(db, run_id, action, reason, processed):
 
 def _deterministic_action(db, run_id, action):
     kind = action["kind"]
-    if kind == "advance_spec":
-        action_id = db.set_action(run_id, kind, action["target"])
+    if kind in {"advance_spec", "advance_ticket"}:
         try:
-            db.update_spec(action["target"], action["next_status"])
+            action_id = db.advance_local_action(run_id, kind, action["target"], action["next_status"])
         except Exception as exc:
+            action_id = db.set_action(run_id, kind, action["target"])
             db.finish_action(action_id, "blocked", error=str(exc))
             return None, _result(db, run_id, "blocked", action, "state_transition_rejected")
-        db.finish_action(action_id, "succeeded", {"next_status": action["next_status"]})
-        return {"action_id": action_id, "kind": kind, "target": action["target"]}, None
-    if kind == "advance_ticket":
-        action_id = db.set_action(run_id, kind, action["target"])
-        try:
-            db.update_ticket(action["target"], action["next_status"])
-        except Exception as exc:
-            db.finish_action(action_id, "blocked", error=str(exc))
-            return None, _result(db, run_id, "blocked", action, "state_transition_rejected")
-        db.finish_action(action_id, "succeeded", {"next_status": action["next_status"]})
         return {"action_id": action_id, "kind": kind, "target": action["target"]}, None
     return None, None
+
+
+def _pending_local_action(db, action):
+    action = dict(action)
+    if action["kind"] == "advance_spec":
+        action["next_status"] = "ready"
+    elif action["kind"] == "advance_ticket":
+        row = db.conn.execute("SELECT status FROM tickets WHERE ticket_id=?", (action["target"],)).fetchone()
+        if row and row["status"] in TICKET_ADVANCE:
+            action["next_status"] = TICKET_ADVANCE[row["status"]]
+    return action
 
 
 def advance(db: ControlDB, run_id: str, max_actions=32):
@@ -83,6 +85,16 @@ def advance(db: ControlDB, run_id: str, max_actions=32):
             "SELECT status FROM actions WHERE action_id=?", (action.get("action_id"),)
         ).fetchone() if action.get("action_id") else None
         if pending and pending["status"] in {"pending", "running"}:
+            if action["kind"] in {"advance_spec", "advance_ticket"}:
+                action = _pending_local_action(db, action)
+                if "next_status" not in action:
+                    return _result(db, run_id, "blocked", action, "local_action_reconciliation_required", processed)
+                item, boundary = _deterministic_action(db, run_id, action)
+                if boundary is not None:
+                    boundary["processed_actions"] = processed
+                    return boundary
+                processed.append(item)
+                continue
             return _waiting_result(db, run_id, action, "action_in_flight", processed)
         item, boundary = _deterministic_action(db, run_id, action)
         if boundary is not None:
