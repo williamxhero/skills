@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -60,6 +60,13 @@ TICKET_QUEUE_COLUMNS = (
     ("acceptance", "TEXT NOT NULL DEFAULT '[]'"),
 )
 
+DECISION_COLUMNS = (
+    ("actor", "TEXT NOT NULL DEFAULT ''"),
+    ("scope", "TEXT NOT NULL DEFAULT '{}'"),
+    ("source", "TEXT NOT NULL DEFAULT ''"),
+    ("authorization_digest", "TEXT NOT NULL DEFAULT ''"),
+)
+
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'whole-spec', controller_task_id TEXT, queue_definition TEXT NOT NULL DEFAULT '[]', business_version INTEGER NOT NULL DEFAULT 0, run_phase TEXT NOT NULL DEFAULT 'initialized', terminal_result TEXT, stop_reason TEXT, recovery_action TEXT);
@@ -75,7 +82,7 @@ CREATE TABLE IF NOT EXISTS run_authorizations(run_id TEXT PRIMARY KEY REFERENCES
 CREATE TABLE IF NOT EXISTS candidate_freezes(freeze_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), candidate_sha TEXT NOT NULL, merge_sha TEXT, authorization_digest TEXT NOT NULL, status TEXT NOT NULL, invalidation_reason TEXT, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT);
 CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS startup_contracts(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, status TEXT NOT NULL, contract_digest TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, actor TEXT NOT NULL, scope TEXT NOT NULL, source TEXT NOT NULL, authorization_digest TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
 """
 
@@ -107,6 +114,15 @@ class StaleState(RuntimeError):
 
 class DatabaseModeError(ValueError):
     """The requested database mode is incompatible with the path or schema."""
+
+
+class DecisionError(ValueError):
+    """A public decision request does not satisfy the decision contract."""
+
+    def __init__(self, code, details=None):
+        self.code = code
+        self.details = details or {}
+        super().__init__(f"{code}: {self.details}")
 
 
 _EVIDENCE_URI = re.compile(r"^[a-z][a-z0-9+.-]*:(?:/{0,2})\S+$", re.IGNORECASE)
@@ -275,6 +291,10 @@ class ControlDB:
             for name,declaration in TICKET_QUEUE_COLUMNS:
                 if name not in ticket_columns:
                     self.conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {declaration}")
+            decision_columns={row[1] for row in self.conn.execute("PRAGMA table_info(decisions)")}
+            for name,declaration in DECISION_COLUMNS:
+                if name not in decision_columns:
+                    self.conn.execute(f"ALTER TABLE decisions ADD COLUMN {name} {declaration}")
             run_columns={row[1] for row in self.conn.execute("PRAGMA table_info(runs)")}
             if "business_version" not in run_columns:
                 self.conn.execute("ALTER TABLE runs ADD COLUMN business_version INTEGER NOT NULL DEFAULT 0")
@@ -1166,10 +1186,30 @@ class ControlDB:
                 verify_terminal_contract(gate, entity_type="thread", run_id=run_id, target_id=thread_id, expected_version=self.business_version(run_id))
                 self._record_verified_gate(run_id, "thread", thread_id, gate)
             self.conn.execute("UPDATE threads SET lifecycle=?,outcome=?,next_action=?,last_observed_at=?,archive_operation_evidence=?,archive_readback_evidence=? WHERE thread_id=? AND run_id=?",(lifecycle,outcome,next_action,now(),json.dumps(operations),json.dumps(readbacks),thread_id,run_id)); self._business_event(run_id,"thread",thread_id,"thread_state_changed",{"lifecycle":lifecycle,"outcome":outcome})
-    def decide(self,run_id,subject,selected,recommendation,evidence,rationale,expected_version=None):
+    def decide(self,run_id,subject,selected,recommendation,evidence,rationale,actor,scope,source,authorization,expected_version=None):
+        for value, field in ((subject, "subject"), (actor, "actor"), (source, "source"), (rationale, "rationale")):
+            if not isinstance(value, str) or not value.strip():
+                raise DecisionError("decision_field_missing", {"field": field})
+        if not isinstance(scope, (dict, list, str)) or scope == {} or scope == [] or scope == "":
+            raise DecisionError("decision_scope_missing")
+        if not isinstance(evidence, list) or not evidence:
+            raise DecisionError("decision_evidence_missing")
+        if not isinstance(authorization, dict) or authorization.get("decision") != "allow":
+            raise DecisionError("decision_authorization_required")
+        authorization_digest_value = authorization.get("authorization_digest")
+        if not isinstance(authorization_digest_value, str) or not authorization_digest_value.strip():
+            raise DecisionError("decision_authorization_digest_missing")
+        record = self.authorization(run_id)
+        if record["status"] != "configured" or record["authorization_digest"] != authorization_digest_value:
+            raise DecisionError("decision_authorization_mismatch", {"run_id": run_id})
         with self.transaction():
             self._check_version(run_id, expected_version)
-            self.conn.execute("INSERT INTO decisions(run_id,subject,selected,recommendation,evidence,rationale,created_at) VALUES(?,?,?,?,?,?,?)",(run_id,subject,json.dumps(selected,ensure_ascii=False),json.dumps(recommendation,ensure_ascii=False),json.dumps(evidence,ensure_ascii=False),rationale,now())); self._business_event(run_id,"decision",subject,"controller_approved",{"selected":selected,"recommendation":recommendation,"evidence":evidence,"rationale":rationale})
+            cur = self.conn.execute(
+                "INSERT INTO decisions(run_id,subject,selected,recommendation,evidence,rationale,actor,scope,source,authorization_digest,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, subject, json.dumps(selected, ensure_ascii=False), json.dumps(recommendation, ensure_ascii=False), json.dumps(evidence, ensure_ascii=False), rationale, actor, json.dumps(scope, ensure_ascii=False, sort_keys=True), source, authorization_digest_value, now()),
+            )
+            version = self._business_event(run_id, "decision", subject, "controller_approved", {"selected": selected, "recommendation": recommendation, "evidence": evidence, "rationale": rationale, "actor": actor, "scope": scope, "source": source, "authorization_digest": authorization_digest_value})
+            return {"decision_id": cur.lastrowid, "business_version": version}
     def snapshot(self,run_id):
         row=lambda q,p: [dict(x) for x in self.conn.execute(q,p)]
         run=self.conn.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
@@ -1180,4 +1220,4 @@ class ControlDB:
             except StartupContractError as exc:
                 if exc.code != "startup_contract_missing":
                     raise
-        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"startup_contract":startup,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
+        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"startup_contract":startup,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"decisions":row("SELECT * FROM decisions WHERE run_id=? ORDER BY decision_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
