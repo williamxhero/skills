@@ -13,9 +13,48 @@ CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT N
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS runtime_observations(
+    observation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    observation_key TEXT NOT NULL UNIQUE,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    status TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    started_at TEXT,
+    ended_at TEXT,
+    duration_ms REAL,
+    source TEXT NOT NULL,
+    usage TEXT NOT NULL DEFAULT '{}',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS runtime_observations_run_phase ON runtime_observations(run_id, phase, observed_at);
 """
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
+
+
+def _json_object(value, name):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be a JSON object")
+    return value
+
+
+def _timestamp(value, name):
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty ISO-8601 string")
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be ISO-8601") from exc
+    return value
 
 class ControlDB:
     def __init__(self, path: str | Path):
@@ -50,6 +89,60 @@ class ControlDB:
     def add_observation(self,run_id,entity_type,entity_id,observation):
         with self.conn:
             self.event(run_id,entity_type,entity_id,"external_observation",observation)
+    def record_runtime_observation(
+        self, run_id, observation_key, entity_type, entity_id, phase, status,
+        scope="run", unit="count", started_at=None, ended_at=None,
+        duration_ms=None, source="controller", usage=None, metadata=None,
+    ):
+        """Persist one idempotent runtime observation and its audit event."""
+        if not observation_key or not isinstance(observation_key, str):
+            raise ValueError("observation_key is required")
+        if not phase or not isinstance(phase, str):
+            raise ValueError("phase is required")
+        if not scope or not unit or not source:
+            raise ValueError("scope, unit, and source are required")
+        started_at = _timestamp(started_at, "started_at")
+        ended_at = _timestamp(ended_at, "ended_at")
+        if duration_ms is not None:
+            duration_ms = float(duration_ms)
+            if duration_ms < 0:
+                raise ValueError("duration_ms must be non-negative")
+        usage = _json_object(usage, "usage")
+        metadata = _json_object(metadata, "metadata")
+        payload = {
+            "observation_key": observation_key, "phase": phase, "status": status,
+            "scope": scope, "unit": unit, "started_at": started_at,
+            "ended_at": ended_at, "duration_ms": duration_ms, "source": source,
+            "usage": usage, "metadata": metadata,
+        }
+        existing = self.conn.execute(
+            "SELECT observation_id,run_id,entity_type,entity_id,phase,status,scope,unit,started_at,ended_at,duration_ms,source,usage,metadata "
+            "FROM runtime_observations WHERE observation_key=?", (observation_key,)
+        ).fetchone()
+        if existing:
+            existing_payload = dict(existing)
+            existing_payload["usage"] = json.loads(existing_payload["usage"])
+            existing_payload["metadata"] = json.loads(existing_payload["metadata"])
+            expected = {key: existing_payload[key] for key in (
+                "phase", "status", "scope", "unit", "started_at", "ended_at",
+                "duration_ms", "source", "usage", "metadata",
+            )}
+            actual = {key: payload[key] for key in expected}
+            if existing["run_id"] != run_id or existing["entity_type"] != entity_type or existing["entity_id"] != entity_id or expected != actual:
+                raise ValueError("observation_key already exists with different data")
+            return {"observation_id": existing["observation_id"], "created": False, **payload}
+        stamp = now()
+        with self.conn:
+            cursor = self.conn.execute(
+                "INSERT INTO runtime_observations(run_id,observation_key,entity_type,entity_id,phase,status,scope,unit,started_at,ended_at,duration_ms,source,usage,metadata,observed_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, observation_key, entity_type, entity_id, phase, status,
+                 scope, unit, started_at, ended_at, duration_ms, source,
+                 json.dumps(usage, ensure_ascii=False, sort_keys=True),
+                 json.dumps(metadata, ensure_ascii=False, sort_keys=True), stamp),
+            )
+            self.event(run_id, entity_type, entity_id, "runtime_observation_recorded", payload)
+        return {"observation_id": cursor.lastrowid, "created": True, **payload}
     def update_spec(self,spec_id,status):
         from transitions import SPEC_TRANSITIONS, transition
         row=self.conn.execute("SELECT run_id,status FROM specs WHERE spec_id=?",(spec_id,)).fetchone()
