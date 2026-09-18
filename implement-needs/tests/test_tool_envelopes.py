@@ -36,8 +36,10 @@ class ToolEnvelopeTests(unittest.TestCase):
     def test_host_operation_requires_explicit_capability(self):
         denied = host_operation("deploy", {"revision": "r1"}, "deploy", [])
         self.assertEqual("capability_required", denied["status"])
-        allowed = host_operation("deploy", {"revision": "r1"}, "deploy", ["deploy"])
-        self.assertEqual("authorized", allowed["status"])
+        unproved = host_operation("deploy", {"revision": "r1"}, "deploy", ["deploy"])
+        self.assertEqual("capability_evidence_required", unproved["status"])
+        allowed = host_operation("deploy", {"revision": "r1"}, "deploy", ["deploy"], ["backend://capabilities/deploy"])
+        self.assertEqual("capability_confirmed", allowed["status"])
 
 
 if __name__ == "__main__":

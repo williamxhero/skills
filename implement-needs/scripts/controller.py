@@ -41,7 +41,8 @@ def main() -> int:
     tool_success=sub.add_parser("tool-success"); tool_success.add_argument("--result",required=True); tool_success.add_argument("--identifiers",required=True); tool_success.add_argument("--version",type=int,required=True); tool_success.add_argument("--evidence-uri",required=True)
     tool_failure=sub.add_parser("tool-failure"); tool_failure.add_argument("--category",required=True); tool_failure.add_argument("--error-fragment",required=True); tool_failure.add_argument("--log-uri",required=True); tool_failure.add_argument("--version",type=int)
     tool_wait=sub.add_parser("tool-waiting-external"); tool_wait.add_argument("--external-request-id",required=True); tool_wait.add_argument("--event-cursor",type=int,required=True); tool_wait.add_argument("--wake-condition",required=True); tool_wait.add_argument("--next-safe-check-at",required=True)
-    host=sub.add_parser("host-operation"); host.add_argument("--operation",required=True); host.add_argument("--arguments",default="{}"); host.add_argument("--required-capability",required=True); host.add_argument("--capabilities",default="[]")
+    host=sub.add_parser("host-operation"); host.add_argument("--operation",required=True); host.add_argument("--arguments",default="{}"); host.add_argument("--required-capability",required=True); host.add_argument("--capabilities",default="[]"); host.add_argument("--capability-evidence",default="[]")
+    terminal=sub.add_parser("record-terminal-validation"); terminal.add_argument("--run-id",required=True); terminal.add_argument("--decision",required=True); terminal.add_argument("--evidence",required=True)
     metrics=sub.add_parser("metrics"); metrics.add_argument("--run-id",required=True); metrics.add_argument("--baseline-version",default="runtime-observations-v1")
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
     advance=sub.add_parser("advance"); advance.add_argument("--run-id",required=True); advance.add_argument("--max-actions",type=int,default=32)
@@ -125,7 +126,9 @@ def main() -> int:
             result=waiting_external(args.external_request_id,args.event_cursor,args.wake_condition,args.next_safe_check_at)
         elif args.command=="host-operation":
             from tool_envelopes import host_operation
-            result=host_operation(args.operation,json.loads(args.arguments),args.required_capability,json.loads(args.capabilities))
+            result=host_operation(args.operation,json.loads(args.arguments),args.required_capability,json.loads(args.capabilities),json.loads(args.capability_evidence))
+        elif args.command=="record-terminal-validation":
+            result=db.record_terminal_validation(args.run_id,args.decision,json.loads(args.evidence))
         else: result=db.snapshot(args.run_id)
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 0
     finally: db.close()

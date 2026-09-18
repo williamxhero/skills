@@ -11,8 +11,8 @@ from next_action import next_action
 BOUNDARIES = frozenset({"needs_llm", "waiting_external", "blocked", "completed"})
 
 
-def _cursor(db):
-    row = db.conn.execute("SELECT COALESCE(MAX(event_id), 0) FROM events").fetchone()
+def _cursor(db, run_id):
+    row = db.conn.execute("SELECT COALESCE(MAX(event_id), 0) FROM events WHERE run_id=?", (run_id,)).fetchone()
     return int(row[0])
 
 
@@ -25,9 +25,9 @@ def _result(db, run_id, boundary, action=None, reason=None, processed=None):
         "reason": reason or boundary,
         "action": action,
         "processed_actions": processed or [],
-        "state_version": _cursor(db),
-        "event_cursor": _cursor(db),
-        "evidence": [f"sqlite://events/{_cursor(db)}"],
+        "state_version": _cursor(db, run_id),
+        "event_cursor": _cursor(db, run_id),
+        "evidence": [f"sqlite://events/{_cursor(db, run_id)}"],
     }
 
 
@@ -99,8 +99,8 @@ def advance(db: ControlDB, run_id: str, max_actions=32):
             return _result(db, run_id, "blocked", action, action.get("reason", kind), processed)
         if kind == "final_release":
             specs = db.conn.execute("SELECT status FROM specs WHERE run_id=?", (run_id,)).fetchall()
-            if all(row["status"] == "closed" for row in specs):
+            if all(row["status"] == "closed" for row in specs) and db.terminal_validation_satisfied(run_id):
                 return _result(db, run_id, "completed", action, "terminal_frontier_empty", processed)
-            return _result(db, run_id, "blocked", action, "terminal_evidence_required", processed)
+            return _result(db, run_id, "needs_llm", action, "terminal_validation_required", processed)
         return _result(db, run_id, "needs_llm", action, "semantic_or_external_operation", processed)
     return _result(db, run_id, "needs_llm", next_action(db, run_id), "advance_budget_exhausted", processed)

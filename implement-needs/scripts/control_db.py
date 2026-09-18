@@ -141,6 +141,13 @@ CREATE TABLE IF NOT EXISTS external_waits(
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS terminal_validations(
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    state_version INTEGER NOT NULL,
+    decision TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    validated_at TEXT NOT NULL
+);
 """
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
@@ -660,3 +667,25 @@ class ControlDB:
             if changed:
                 self.event(row["run_id"], "external_wait", external_request_id, "external_wait_changed", {"evidence": evidence or [], "result_digest": digest})
             return {"external_request_id": external_request_id, "changed": bool(changed), "semantic_round": bool(changed), "status": status, "result_digest": digest, "evidence": evidence or []}
+
+    def record_terminal_validation(self, run_id, decision, evidence):
+        if decision != "allow":
+            raise ValueError("terminal validation decision must be allow")
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError("terminal validation evidence is required")
+        with transaction(self.conn):
+            cursor = self.event_cursor(run_id)
+            self.conn.execute(
+                "INSERT INTO terminal_validations(run_id,state_version,decision,evidence,validated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET state_version=excluded.state_version,decision=excluded.decision, "
+                "evidence=excluded.evidence,validated_at=excluded.validated_at",
+                (run_id, cursor, decision, _canonical_json(evidence, "evidence"), now()),
+            )
+            self.event(run_id, "run", run_id, "terminal_validation_recorded", {"decision": decision, "evidence": evidence})
+            cursor = self.event_cursor(run_id)
+            self.conn.execute("UPDATE terminal_validations SET state_version=? WHERE run_id=?", (cursor, run_id))
+            return {"run_id": run_id, "decision": decision, "state_version": cursor, "evidence": evidence}
+
+    def terminal_validation_satisfied(self, run_id):
+        row = self.conn.execute("SELECT * FROM terminal_validations WHERE run_id=?", (run_id,)).fetchone()
+        return bool(row and row["decision"] == "allow" and row["state_version"] == self.event_cursor(run_id))

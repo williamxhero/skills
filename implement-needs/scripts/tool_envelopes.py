@@ -43,10 +43,12 @@ def waiting_external(external_request_id: str, event_cursor: int, wake_condition
     }
 
 
-def host_operation(operation: str, arguments: dict[str, Any], required_capability: str, capabilities: set[str] | list[str]) -> dict[str, Any]:
+def host_operation(operation: str, arguments: dict[str, Any], required_capability: str, capabilities: set[str] | list[str], capability_evidence: list[str] | None = None) -> dict[str, Any]:
     if required_capability not in set(capabilities):
         return {"ok": False, "status": "capability_required", "operation": operation, "required_capability": required_capability, "arguments": arguments}
-    return {"ok": True, "status": "authorized", "operation": operation, "required_capability": required_capability, "arguments": arguments}
+    if not isinstance(capability_evidence, list) or not capability_evidence:
+        return {"ok": False, "status": "capability_evidence_required", "operation": operation, "required_capability": required_capability, "arguments": arguments}
+    return {"ok": True, "status": "capability_confirmed", "operation": operation, "required_capability": required_capability, "arguments": arguments, "capability_evidence": capability_evidence}
 
 
 def result_digest(result: Any) -> str:

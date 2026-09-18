@@ -13,6 +13,10 @@ event or the stored snapshot has been replaced, the write fails with a stale cur
 version error; refresh the context before retrying. This prevents an old summary from
 authorizing a new mutation.
 
+`completed` requires a current `record-terminal-validation --decision allow` receipt
+with evidence. Any subsequent run event invalidates that receipt until validation is
+recorded again.
+
 Tool calls use one of the compact envelopes:
 
 - `tool-success`: result, key identifiers, state version, and a URI for complete evidence.
@@ -20,9 +24,11 @@ Tool calls use one of the compact envelopes:
 - `tool-waiting-external`: stable request ID, event cursor, wake condition, and next safe check time.
 
 Host-only operations use `host-operation`. The envelope is `capability_required`
-until the requested capability is present in the live capability set. An envelope is
-an operation request or receipt; it is not authorization and cannot bypass the task
-backend, identity, route, or receipt gates.
+until the requested capability is present, then remains
+`capability_evidence_required` until it carries the corresponding live-readback
+evidence. A capability-confirmed envelope is an operation request or receipt; it is
+not authorization and cannot bypass the task backend, identity, route, or receipt
+gates.
 
 When a host wait is unavailable, persist an `external_waits` row and poll with a
 bounded schedule. An unchanged poll returns `semantic_round: false` and does not

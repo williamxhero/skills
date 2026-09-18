@@ -41,6 +41,10 @@ class AdvanceRuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             db = ControlDB(Path(directory) / "run.db")
             db.create_run("run-1", "demo", "req")
+            pending_validation = advance(db, "run-1")
+            self.assertEqual("needs_llm", pending_validation["boundary"])
+            self.assertEqual("terminal_validation_required", pending_validation["reason"])
+            db.record_terminal_validation("run-1", "allow", ["terminal://run-1"])
             completed = advance(db, "run-1")
             self.assertEqual("completed", completed["boundary"])
             db.add_spec("run-1", "S1", "first", 1)

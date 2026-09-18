@@ -20,6 +20,23 @@ def build_snapshot(db: ControlDB, run_id: str) -> dict[str, Any]:
         raise ValueError("unknown run")
     specs = state["specs"]
     tickets = state["tickets"]
+    proofs = [dict(row) for row in db.conn.execute(
+        "SELECT * FROM delivery_proofs WHERE entity_id IN (SELECT spec_id FROM specs WHERE run_id=?) "
+        "OR entity_id IN (SELECT ticket_id FROM tickets WHERE spec_id IN (SELECT spec_id FROM specs WHERE run_id=?)) "
+        "ORDER BY proof_id", (run_id, run_id)
+    )]
+    specs_by_id = {spec["spec_id"]: spec for spec in specs}
+    dependencies = []
+    for spec in specs:
+        for blocker in _decode(spec["blocked_by"], []):
+            upstream = specs_by_id.get(blocker)
+            dependencies.append({
+                "dependent_spec_id": spec["spec_id"],
+                "upstream_spec_id": blocker,
+                "upstream_status": upstream["status"] if upstream else "unknown",
+                "upstream_acceptance": _decode(upstream["acceptance"], []) if upstream else [],
+                "delivery_proofs": [proof for proof in proofs if proof["entity_id"] == blocker],
+            })
     return {
         "run": state["run"],
         "specs": specs,
@@ -27,17 +44,9 @@ def build_snapshot(db: ControlDB, run_id: str) -> dict[str, Any]:
         "threads": state["threads"],
         "actions": state["actions"],
         "acceptance": [item for spec in specs for item in _decode(spec["acceptance"], [])],
-        "direct_dependencies": [
-            {"spec_id": spec["spec_id"], "blocked_by": _decode(spec["blocked_by"], [])}
-            for spec in specs
-            if _decode(spec["blocked_by"], [])
-        ],
+        "direct_dependencies": dependencies,
         "decisions": [dict(row) for row in db.conn.execute("SELECT * FROM decisions WHERE run_id=? ORDER BY decision_id", (run_id,))],
-        "evidence": [dict(row) for row in db.conn.execute(
-            "SELECT * FROM delivery_proofs WHERE entity_id IN (SELECT spec_id FROM specs WHERE run_id=?) "
-            "OR entity_id IN (SELECT ticket_id FROM tickets WHERE spec_id IN (SELECT spec_id FROM specs WHERE run_id=?)) "
-            "ORDER BY proof_id", (run_id, run_id)
-        )],
+        "evidence": proofs,
     }
 
 
