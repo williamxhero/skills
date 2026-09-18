@@ -34,6 +34,7 @@ def main() -> int:
     snap=sub.add_parser("snapshot"); snap.add_argument("--run-id",required=True)
     metrics=sub.add_parser("metrics"); metrics.add_argument("--run-id",required=True); metrics.add_argument("--baseline-version",default="runtime-observations-v1")
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
+    advance=sub.add_parser("advance"); advance.add_argument("--run-id",required=True); advance.add_argument("--max-actions",type=int,default=32)
     args=parser.parse_args(); db=ControlDB(args.db)
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement); result={"run_id":args.run_id,"status":"active"}
@@ -87,6 +88,9 @@ def main() -> int:
         elif args.command=="metrics":
             from runtime_metrics import build_metrics
             result=build_metrics(db,args.run_id,args.baseline_version)
+        elif args.command=="advance":
+            from advance_runtime import advance
+            result=advance(db,args.run_id,args.max_actions)
         else: result=db.snapshot(args.run_id)
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 0
     finally: db.close()
