@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL 
 CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', issue_url TEXT, queue_position INTEGER, UNIQUE(spec_id,title));
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL, business_version INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -247,6 +248,8 @@ class ControlDB:
             raise DatabaseModeError("database schema lacks candidate_evidence table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='startup_contracts'").fetchone():
             raise DatabaseModeError("database schema lacks startup_contracts table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_intents'").fetchone():
+            raise DatabaseModeError("database schema lacks operation_intents table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -308,6 +311,7 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_freezes(freeze_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), candidate_sha TEXT NOT NULL, merge_sha TEXT, authorization_digest TEXT NOT NULL, status TEXT NOT NULL, invalidation_reason TEXT, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, invalidated_at TEXT)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS startup_contracts(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, status TEXT NOT NULL, contract_digest TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute(
                 "INSERT OR IGNORE INTO run_authorizations(run_id,payload,authorization_digest,status,created_at,updated_at) "
                 "SELECT run_id, ?, NULL, 'unconfigured', created_at, updated_at FROM runs",
@@ -722,6 +726,66 @@ class ControlDB:
             return {"run_id": run_id, "changed": True, "execution_mode": "single-ticket-line",
                     "controller_task_id": None, "queue_definition": queue_definition,
                     "next_action": "repair_queue"}
+    def prepare_intent(self, run_id, logical_action, target, target_state, expected_version=None):
+        values = (logical_action, target, target_state)
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise ValueError("intent identity fields are required")
+        key = ":".join((run_id, logical_action, target, target_state))
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            existing = self.conn.execute("SELECT intent_id,status,idempotency_key FROM operation_intents WHERE idempotency_key=?", (key,)).fetchone()
+            if existing is not None:
+                return {"intent_id": existing[0], "status": existing[1], "idempotency_key": existing[2], "changed": False}
+            stamp = now()
+            cur = self.conn.execute(
+                "INSERT INTO operation_intents(run_id,logical_action,target,target_state,idempotency_key,status,business_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (run_id, logical_action, target, target_state, key, "prepared", current, stamp, stamp),
+            )
+            version = self._business_event(run_id, "intent", str(cur.lastrowid), "intent_prepared", {"logical_action": logical_action, "target": target, "target_state": target_state, "idempotency_key": key})
+            self.conn.execute("UPDATE operation_intents SET business_version=? WHERE intent_id=?", (version, cur.lastrowid))
+            return {"intent_id": cur.lastrowid, "status": "prepared", "idempotency_key": key, "changed": True, "business_version": version}
+
+    def intent(self, intent_id):
+        row = self.conn.execute("SELECT * FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown intent")
+        result = dict(row)
+        for field in ("result",):
+            if result[field] is not None:
+                result[field] = json.loads(result[field])
+        return result
+
+    def record_intent_outcome(self, intent_id, status, response, readback=None, expected_version=None, reconciled=False):
+        if status not in {"succeeded", "failed", "outcome_unknown"}:
+            raise ValueError("unsupported intent outcome")
+        row = self.conn.execute("SELECT run_id,status,target FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown intent")
+        if status == "succeeded" and (not isinstance(response, dict) or response.get("status") != "verified" or not isinstance(readback, dict) or readback.get("status") != "verified"):
+            raise ValueError("intent success requires verified response and authoritative readback")
+        with self.transaction():
+            current = self._check_version(row[0], expected_version)
+            if row[1] == "succeeded" and status == "succeeded":
+                return {"intent_id": intent_id, "changed": False, "status": "succeeded"}
+            if row[1] == "outcome_unknown" and status == "succeeded" and not reconciled:
+                raise ValueError("unknown intent requires reconciliation")
+            payload = {"response": response, "readback": readback}
+            error = response.get("error") if isinstance(response, dict) else None
+            self.conn.execute("UPDATE operation_intents SET status=?,result=?,error=?,business_version=?,updated_at=? WHERE intent_id=?", (status, json.dumps(payload, ensure_ascii=False, sort_keys=True), error, current, now(), intent_id))
+            version = self._business_event(row[0], "intent", str(intent_id), "intent_outcome_recorded", {"status": status, "target": row[2]})
+            self.conn.execute("UPDATE operation_intents SET business_version=? WHERE intent_id=?", (version, intent_id))
+            return {"intent_id": intent_id, "status": status, "business_version": version}
+
+    def reconcile_intent(self, intent_id, readback, expected_version=None):
+        row = self.conn.execute("SELECT run_id,status,target FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown intent")
+        if row[1] != "outcome_unknown":
+            raise ValueError("intent is not awaiting reconciliation")
+        if not isinstance(readback, dict) or readback.get("status") != "verified":
+            raise ValueError("reconciliation requires verified authoritative readback")
+        return self.record_intent_outcome(intent_id, "succeeded", {"status": "verified", "source": "reconciliation"}, readback, expected_version, reconciled=True)
+
     def set_action(self,run_id,kind,target,status="pending",expected_version=None):
         with self.transaction():
             self._check_version(run_id, expected_version)
