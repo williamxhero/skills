@@ -22,6 +22,21 @@ def verified_gate(db, run_id, target_id, candidate="abc", environment="test", sc
     }
 
 
+def enter_implementation(db, run_id):
+    for from_phase, to_phase in (
+        ("initialized", "preflight_passed"),
+        ("preflight_passed", "grilling"),
+        ("grilling", "planning"),
+        ("planning", "implementing"),
+    ):
+        receipt = {
+            "run_id": run_id, "from_phase": from_phase, "to_phase": to_phase,
+            "status": "verified", "business_version": db.business_version(run_id),
+            "evidence": [f"phase://{to_phase}/verified"],
+        }
+        db.advance_run_phase(run_id, to_phase, receipt, db.business_version(run_id))
+
+
 class SQLiteControllerTests(unittest.TestCase):
     def test_initializes_wal_and_persists_idempotent_action(self):
         with tempfile.TemporaryDirectory() as d:
@@ -61,6 +76,7 @@ class SQLiteControllerTests(unittest.TestCase):
             db.add_spec("run-line", "SPEC-02", "second", 2)
             db.add_ticket("SPEC-02", "T-02", "second ticket", queue_position=2)
             db.add_ticket("SPEC-01", "T-01", "first ticket", queue_position=1)
+            enter_implementation(db, "run-line")
             self.assertEqual("T-01", next_action(db, "run-line")["target"])
             db.update_ticket("T-01", "ready")
             self.assertEqual("dispatch_ticket", next_action(db, "run-line")["kind"])
@@ -74,6 +90,7 @@ class SQLiteControllerTests(unittest.TestCase):
             db.add_spec("run-line", "SPEC-02", "second", 2)
             db.add_ticket("SPEC-01", "T-01", "first ticket", blocked_by=["MISSING"], queue_position=1)
             db.add_ticket("SPEC-02", "T-02", "second ticket", queue_position=2)
+            enter_implementation(db, "run-line")
             self.assertEqual("T-01", next_action(db, "run-line")["target"])
             self.assertEqual("wait_ticket_blocker", next_action(db, "run-line")["kind"])
             db.close()
@@ -92,6 +109,7 @@ class SQLiteControllerTests(unittest.TestCase):
                 "SPEC", "T-02", "second", blocked_by=["T-01", "T-03"],
                 queue_position=2,
             )
+            enter_implementation(db, "run-line")
             db.add_ticket("SPEC", "T-03", "third", queue_position=3)
             for status in ("ready", "implementing", "verified", "merged"):
                 db.update_ticket("T-01", status)
@@ -199,6 +217,7 @@ class SQLiteControllerTests(unittest.TestCase):
             self.assertTrue(result["changed"])
             self.assertEqual(2, result["ticket_count"])
             self.assertFalse(db.import_ticket_ledger("run-line", ledger)["changed"])
+            enter_implementation(db, "run-line")
             self.assertEqual("#434", next_action(db, "run-line")["target"])
             db.close()
 
@@ -260,6 +279,7 @@ class SQLiteControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db=ControlDB(Path(d)/"run.db"); db.create_run("r","i","req")
             db.add_spec("r","S1","first",1); db.add_spec("r","S2","second",2,["S1"])
+            enter_implementation(db, "r")
             self.assertEqual({"kind":"advance_spec","target":"S1","next_status":"ready"},next_action(db,"r"))
             db.update_spec("S1","ready")
             self.assertEqual("ticket_current_spec",next_action(db,"r")["kind"])

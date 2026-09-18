@@ -9,7 +9,16 @@ from control_db import ControlDB
 from next_action import next_action
 
 INSTRUCTIONS={
-    "run_grill":"Invoke Matt's grilling skill, auto-accept viable recommendations, and record the structured Grill receipt.",
+    "run_preflight":"Run preflight, persist its verified phase receipt, then advance exactly one run phase.",
+    "run_grill":"Invoke grilling, persist its verified phase receipt, then advance exactly one run phase.",
+    "run_planning":"Invoke to-spec/to-tickets planning, persist the verified planning phase receipt, and distinguish no-change from unfinished planning.",
+    "confirm_no_change":"Verify the explicit no-change reason and evidence, then record no_change; do not release.",
+    "enter_implementation":"Persist the verified implementation-start phase receipt, then execute the ordered SPEC scheduler.",
+    "final_verification":"Run independent final verification and persist its phase receipt before release.",
+    "advance_release":"Persist the verified release phase receipt after final verification.",
+    "advance_synchronization":"Persist the verified synchronization phase receipt after release.",
+    "complete_run":"Persist the verified completed phase receipt only after synchronization readback.",
+    "terminal":"Report the persisted terminal result and evidence boundary; never reinterpret it as success.",
     "publish_spec":"Invoke Matt's to-spec skill for the selected SPEC; record published IDs, acceptance criteria, and Parent readbacks.",
     "ticket_current_spec":"Invoke Matt's to-tickets skill for this SPEC only; record the ticket graph and Parent readbacks.",
     "dispatch_spec":"Invoke Matt's implement-spec skill for this whole SPEC; select a backend, reconcile inventory, register one managed task, and record formal identity and route readbacks before assignment.",

@@ -322,6 +322,20 @@ class ControlDB:
                 raise RunStateError("run_terminal", {"result": row[1], "run_phase": row[0]})
             if target_phase not in PHASE_TRANSITIONS.get(row[0], set()):
                 raise RunStateError("illegal_run_phase_transition", {"from_phase": row[0], "to_phase": target_phase})
+            if target_phase == "implementing":
+                spec_count = self.conn.execute("SELECT COUNT(*) FROM specs WHERE run_id=?", (run_id,)).fetchone()[0]
+                if spec_count == 0:
+                    raise RunStateError("implementation_requires_specs", {"run_id": run_id})
+            if target_phase == "final_verification":
+                spec_count = self.conn.execute("SELECT COUNT(*) FROM specs WHERE run_id=?", (run_id,)).fetchone()[0]
+                open_specs = self.conn.execute(
+                    "SELECT COUNT(*) FROM specs WHERE run_id=? AND status NOT IN ('closed','cancelled')", (run_id,)
+                ).fetchone()[0]
+                if spec_count == 0 or open_specs:
+                    raise RunStateError(
+                        "final_verification_requires_complete_specs",
+                        {"spec_count": spec_count, "open_spec_count": open_specs},
+                    )
             validate_phase_receipt(
                 receipt, run_id=run_id, from_phase=row[0], to_phase=target_phase,
                 expected_version=current_version,

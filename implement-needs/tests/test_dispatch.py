@@ -13,7 +13,7 @@ class DispatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             db=ControlDB(Path(d)/"run.db"); db.create_run("r","i","q")
             result=render(db,"r")
-            self.assertEqual("final_release",result["action"]["kind"])
+            self.assertEqual("run_preflight",result["action"]["kind"])
             self.assertTrue(result["receipt_required"])
             db.close()
 

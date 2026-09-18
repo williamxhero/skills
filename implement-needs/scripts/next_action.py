@@ -36,11 +36,32 @@ def _effective_ticket_blockers(ticket, positions):
             effective.append(predecessor)
     return effective
 
+
+def _phase_action(db: ControlDB, run_id: str, run) -> dict | None:
+    actions = {
+        "initialized": "run_preflight",
+        "preflight_passed": "run_grill",
+        "grilling": "run_planning",
+        "final_verification": "advance_release",
+        "release": "advance_synchronization",
+        "synchronization": "complete_run",
+    }
+    if run[3] in actions:
+        return {"kind": actions[run[3]], "target": run_id, "phase": run[3]}
+    if run[3] == "planning":
+        spec_count = db.conn.execute("SELECT COUNT(*) FROM specs WHERE run_id=?", (run_id,)).fetchone()[0]
+        if spec_count == 0:
+            return {"kind": "confirm_no_change", "target": run_id, "phase": "planning"}
+        return {"kind": "enter_implementation", "target": run_id, "phase": "planning"}
+    return None
+
 def next_action(db: ControlDB, run_id: str) -> dict:
     pending=db.conn.execute("SELECT kind,target,action_id FROM actions WHERE run_id=? AND status IN ('pending','running') ORDER BY action_id LIMIT 1",(run_id,)).fetchone()
     if pending: return {"kind":pending[0],"target":pending[1],"action_id":pending[2]}
-    run=db.conn.execute("SELECT execution_mode,controller_task_id,queue_definition FROM runs WHERE run_id=?",(run_id,)).fetchone()
+    run=db.conn.execute("SELECT execution_mode,controller_task_id,queue_definition,run_phase,terminal_result FROM runs WHERE run_id=?",(run_id,)).fetchone()
     if run is None: return {"kind":"repair_run","target":run_id,"reason":"run_not_found"}
+    if run[4] is not None:
+        return {"kind":"terminal","target":run_id,"result":run[4],"phase":run[3]}
     if run[0] == "single-ticket-line":
         if not run[1]:
             return {"kind":"repair_queue","target":run_id,"reason":"controller_task_id_missing"}
@@ -62,6 +83,9 @@ def next_action(db: ControlDB, run_id: str) -> dict:
             if len(ticket_ids) != len(queue_definition) or set(ticket_ids) != set(queue_definition):
                 return {"kind":"repair_queue","target":run_id,"reason":"ticket_ledger_incomplete",
                         "expected_ticket_count":len(queue_definition),"actual_ticket_count":len(ticket_ids)}
+        phase_action = _phase_action(db, run_id, run)
+        if phase_action is not None:
+            return phase_action
         terminal={"closed","cancelled"}
         positions = {
             ticket["ticket_id"]: ticket["queue_position"]
@@ -88,7 +112,10 @@ def next_action(db: ControlDB, run_id: str) -> dict:
             if status == "verified": return {"kind":"merge_ticket","target":target,"controller_task_id":run[1]}
             if status == "merged": return {"kind":"close_ticket","target":target,"controller_task_id":run[1]}
             if status == "blocked": return {"kind":"repair_ticket","target":target,"controller_task_id":run[1]}
-        return {"kind":"final_release","target":run_id,"controller_task_id":run[1]}
+        return {"kind":"final_verification","target":run_id,"controller_task_id":run[1]}
+    phase_action = _phase_action(db, run_id, run)
+    if phase_action is not None:
+        return phase_action
     specs=db.conn.execute("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)).fetchall()
     for spec in specs:
         if spec["status"] in TERMINAL_SPEC: continue
@@ -104,7 +131,7 @@ def next_action(db: ControlDB, run_id: str) -> dict:
         if status=="ready_to_merge": return {"kind":"merge_spec","target":spec["spec_id"]}
         if status=="merged": return {"kind":"close_spec","target":spec["spec_id"]}
         if status=="blocked": return {"kind":"repair_spec","target":spec["spec_id"]}
-    return {"kind":"final_release","target":run_id}
+    return {"kind":"final_verification","target":run_id}
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--db',type=Path,required=True); p.add_argument('--run-id',required=True); a=p.parse_args(); db=ControlDB.read_only(a.db)

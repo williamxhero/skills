@@ -6,6 +6,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from control_db import ControlDB
+from next_action import next_action
 from run_state import RunStateError
 
 
@@ -101,6 +102,31 @@ class RuntimeStateTests(unittest.TestCase):
         self.assertEqual("blocked", self.db.snapshot("run")["run"]["terminal_result"])
         self.db.resume_run("run", self.db.business_version("run"))
         self.assertEqual("preflight_passed", self.db.snapshot("run")["run"]["run_phase"])
+
+    def test_scheduler_uses_phase_and_requires_complete_specs_before_release(self):
+        self.assertEqual("run_preflight", next_action(self.db, "run")["kind"])
+        self.advance("initialized", "preflight_passed")
+        self.assertEqual("run_grill", next_action(self.db, "run")["kind"])
+        self.advance("preflight_passed", "grilling")
+        self.assertEqual("run_planning", next_action(self.db, "run")["kind"])
+        self.advance("grilling", "planning")
+        self.assertEqual("confirm_no_change", next_action(self.db, "run")["kind"])
+        with self.assertRaises(RunStateError) as raised:
+            self.db.advance_run_phase("run", "implementing", phase_receipt(self.db, "run", "planning", "implementing"))
+        self.assertEqual("implementation_requires_specs", raised.exception.code)
+
+        self.db.add_spec("run", "S", "spec", 1, expected_version=self.db.business_version("run"))
+        self.assertEqual("enter_implementation", next_action(self.db, "run")["kind"])
+        self.advance("planning", "implementing")
+        self.assertEqual("advance_spec", next_action(self.db, "run")["kind"])
+        self.db.update_spec("S", "cancelled", expected_version=self.db.business_version("run"))
+        self.assertEqual("final_verification", next_action(self.db, "run")["kind"])
+        self.advance("implementing", "final_verification")
+        self.assertEqual("advance_release", next_action(self.db, "run")["kind"])
+        self.advance("final_verification", "release")
+        self.assertEqual("advance_synchronization", next_action(self.db, "run")["kind"])
+        self.advance("release", "synchronization")
+        self.assertEqual("complete_run", next_action(self.db, "run")["kind"])
 
 
 if __name__ == "__main__":
