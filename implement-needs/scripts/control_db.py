@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT 
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS recovery_records(intent_id INTEGER PRIMARY KEY REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, classification TEXT NOT NULL, budget INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, last_evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL, business_version INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -250,6 +252,9 @@ class ControlDB:
             raise DatabaseModeError("database schema lacks startup_contracts table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_intents'").fetchone():
             raise DatabaseModeError("database schema lacks operation_intents table")
+        for table in ("intent_claims", "recovery_records"):
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                raise DatabaseModeError(f"database schema lacks {table} table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -312,6 +317,8 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS candidate_evidence(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), freeze_id INTEGER NOT NULL REFERENCES candidate_freezes(freeze_id), evidence_kind TEXT NOT NULL, candidate_sha TEXT NOT NULL, authorization_digest TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS startup_contracts(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, status TEXT NOT NULL, contract_digest TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS recovery_records(intent_id INTEGER PRIMARY KEY REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, classification TEXT NOT NULL, budget INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, last_evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute(
                 "INSERT OR IGNORE INTO run_authorizations(run_id,payload,authorization_digest,status,created_at,updated_at) "
                 "SELECT run_id, ?, NULL, 'unconfigured', created_at, updated_at FROM runs",
@@ -785,6 +792,53 @@ class ControlDB:
         if not isinstance(readback, dict) or readback.get("status") != "verified":
             raise ValueError("reconciliation requires verified authoritative readback")
         return self.record_intent_outcome(intent_id, "succeeded", {"status": "verified", "source": "reconciliation"}, readback, expected_version, reconciled=True)
+
+    def claim_intent(self, intent_id, owner, lease_until, fencing_supported=False, fencing_receipt=None, expected_version=None):
+        if not isinstance(owner, str) or not owner.strip() or not isinstance(lease_until, str) or not lease_until.strip():
+            raise ValueError("claim owner and lease are required")
+        row = self.conn.execute("SELECT run_id,status FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown intent")
+        with self.transaction():
+            current = self._check_version(row[0], expected_version)
+            active = self.conn.execute("SELECT claim_id,owner,lease_until FROM intent_claims WHERE intent_id=? AND status='active' ORDER BY claim_id DESC LIMIT 1", (intent_id,)).fetchone()
+            if active is not None:
+                if active[1] == owner and active[2] == lease_until:
+                    return {"claim_id": active[0], "changed": False, "owner": owner}
+                if active[2] > now():
+                    raise ActionConflict("intent lease is still active")
+                if not fencing_supported or not isinstance(fencing_receipt, dict) or fencing_receipt.get("status") != "verified":
+                    raise ValueError("expired claim requires verified fencing capability and receipt")
+                self.conn.execute("UPDATE intent_claims SET status='superseded',updated_at=? WHERE claim_id=?", (now(), active[0]))
+            stamp = now()
+            cur = self.conn.execute("INSERT INTO intent_claims(intent_id,owner,lease_until,fencing_supported,fencing_receipt,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (intent_id, owner, lease_until, int(bool(fencing_supported)), json.dumps(fencing_receipt, ensure_ascii=False, sort_keys=True) if fencing_receipt is not None else None, "active", stamp, stamp))
+            version = self._business_event(row[0], "intent", str(intent_id), "intent_claimed", {"owner": owner, "lease_until": lease_until, "fencing_supported": bool(fencing_supported)})
+            return {"claim_id": cur.lastrowid, "changed": True, "business_version": version}
+
+    def record_recovery(self, intent_id, owner, classification, budget, evidence=None, expected_version=None):
+        if not isinstance(owner, str) or not owner.strip() or not isinstance(classification, str) or not classification.strip() or not isinstance(budget, int) or budget < 0:
+            raise ValueError("recovery owner, classification and non-negative budget are required")
+        row = self.conn.execute("SELECT run_id FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown intent")
+        with self.transaction():
+            current = self._check_version(row[0], expected_version)
+            existing = self.conn.execute("SELECT owner,classification,budget,consumed,status FROM recovery_records WHERE intent_id=?", (intent_id,)).fetchone()
+            if existing is not None and existing[0] != owner:
+                raise ValueError("recovery owner mismatch")
+            if existing is None:
+                self.conn.execute("INSERT INTO recovery_records(intent_id,owner,classification,budget,status,last_evidence,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (intent_id, owner, classification, budget, "active", json.dumps(evidence, ensure_ascii=False, sort_keys=True) if evidence is not None else None, now(), now()))
+                consumed = 0
+            else:
+                consumed = existing[3]
+            if consumed >= budget:
+                self.conn.execute("UPDATE recovery_records SET status='paused',updated_at=? WHERE intent_id=?", (now(), intent_id))
+                self.conn.execute("UPDATE operation_intents SET status='paused',updated_at=? WHERE intent_id=?", (now(), intent_id))
+                version = self._business_event(row[0], "intent", str(intent_id), "recovery_paused_budget_exhausted", {"owner": owner, "budget": budget, "consumed": consumed})
+                return {"intent_id": intent_id, "status": "paused", "remaining": 0, "business_version": version}
+            self.conn.execute("UPDATE recovery_records SET consumed=consumed+1,last_evidence=?,updated_at=? WHERE intent_id=?", (json.dumps(evidence, ensure_ascii=False, sort_keys=True) if evidence is not None else None, now(), intent_id))
+            version = self._business_event(row[0], "intent", str(intent_id), "recovery_attempt_recorded", {"classification": classification, "owner": owner, "remaining": budget - consumed - 1})
+            return {"intent_id": intent_id, "status": "active", "remaining": budget - consumed - 1, "business_version": version}
 
     def set_action(self,run_id,kind,target,status="pending",expected_version=None):
         with self.transaction():
