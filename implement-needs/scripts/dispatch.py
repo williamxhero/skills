@@ -35,7 +35,7 @@ def render(db: ControlDB, run_id: str) -> dict:
     return {"run_id":run_id,"action":action,"instruction":INSTRUCTIONS.get(kind,"Record the external result and readback for this action."),"receipt_required":True}
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--db',type=Path,required=True); p.add_argument('--run-id',required=True); a=p.parse_args(); db=ControlDB(a.db)
+    p=argparse.ArgumentParser(); p.add_argument('--db',type=Path,required=True); p.add_argument('--run-id',required=True); a=p.parse_args(); db=ControlDB.read_only(a.db)
     try: print(json.dumps(render(db,a.run_id),ensure_ascii=False,sort_keys=True)); return 0
     finally: db.close()
 if __name__=='__main__': raise SystemExit(main())

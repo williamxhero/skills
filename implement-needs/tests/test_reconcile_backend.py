@@ -101,8 +101,8 @@ class ReconcileBackendTests(unittest.TestCase):
         capability = probe_and_record(self.db, "R1", Connector())
         self.assertIn("probe:read_applied_route", capability["capability_evidence"])
         row = self.db.conn.execute(
-            "SELECT payload FROM events WHERE run_id='R1' AND entity_type='backend' "
-            "AND entity_id='task-backend' AND event_type='external_observation'"
+            "SELECT payload FROM observations WHERE run_id='R1' AND entity_type='backend' "
+            "AND entity_id='task-backend'"
         ).fetchone()
         self.assertIsNotNone(row)
         self.assertIn("formal-probe", row[0])

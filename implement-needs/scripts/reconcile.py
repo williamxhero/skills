@@ -228,8 +228,9 @@ def reconcile_backend(db, run_id, backend, *, page_limit=100):
 
 
 def adopt_controller(db, run_id, backend, *, thread_id: str, formal_thread_id: str,
-                     host_id: str, task_id: str, attempt_id: str, owner_id: str,
-                     cwd: str, project_id: str, identity_evidence: list[str] | None = None):
+                      host_id: str, task_id: str, attempt_id: str, owner_id: str,
+                      cwd: str, project_id: str, identity_evidence: list[str] | None = None,
+                      expected_version: int | None = None):
     """Enroll an existing native thread, then cross the normal recovery barrier.
 
     The backend owns the native read and metadata write. SQLite receives the
@@ -274,7 +275,7 @@ def adopt_controller(db, run_id, backend, *, thread_id: str, formal_thread_id: s
     action = next_action(db, run_id)
     if action.get("kind") in {"repair_queue", "final_release"}:
         raise BackendError("adoption cannot cross an unavailable queue gate")
-    db.persist_controller_recovery(run_id, thread_id, readback, route, action)
+    db.persist_controller_recovery(run_id, thread_id, readback, route, action, expected_version)
     return {"decision": "allow", "status": "complete", "thread_id": thread_id,
             "adoption": adopted, "identity": readback, "route": route,
             "next_action": action}
@@ -289,7 +290,7 @@ def audit(db, run_id):
     return errors
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--db',type=Path,required=True); p.add_argument('--run-id',required=True); p.add_argument('--inventory',type=Path); p.add_argument('--backend-command'); a=p.parse_args(); db=ControlDB(a.db)
+    p=argparse.ArgumentParser(); p.add_argument('--db',type=Path,required=True); p.add_argument('--run-id',required=True); p.add_argument('--inventory',type=Path); p.add_argument('--backend-command'); a=p.parse_args(); db=ControlDB.open_existing(a.db)
     try:
         if a.backend_command:
             from task_backend import MCP_CONNECTOR, JsonLineTransport, TaskBackend
