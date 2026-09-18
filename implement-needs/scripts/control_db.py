@@ -106,6 +106,48 @@ CREATE TABLE IF NOT EXISTS recovery_states(
     UNIQUE(action_id,fingerprint)
 );
 CREATE INDEX IF NOT EXISTS recovery_states_action ON recovery_states(action_id,status,updated_at);
+CREATE TABLE IF NOT EXISTS runtime_snapshots(
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    state_version INTEGER NOT NULL,
+    event_cursor INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS unresolved_exceptions(
+    exception_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    fingerprint TEXT NOT NULL,
+    category TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    log_uri TEXT,
+    details TEXT NOT NULL DEFAULT '{}',
+    resolved INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    UNIQUE(run_id,fingerprint)
+);
+CREATE INDEX IF NOT EXISTS unresolved_exceptions_run ON unresolved_exceptions(run_id,resolved,last_seen);
+CREATE TABLE IF NOT EXISTS external_waits(
+    external_request_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    action_id INTEGER,
+    event_cursor INTEGER NOT NULL,
+    wake_condition TEXT NOT NULL,
+    next_safe_check_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_result_digest TEXT,
+    poll_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS terminal_validations(
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    state_version INTEGER NOT NULL,
+    decision TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    validated_at TEXT NOT NULL
+);
 """
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
@@ -492,6 +534,58 @@ class ControlDB:
                     "INSERT OR IGNORE INTO delivery_proofs(entity_type,entity_id,artifact_type,artifact_ref,evidence,observed_at) VALUES(?,?,?,?,?,?)",
                     ("ticket", ticket_id, "delivery", f"ticket:{ticket_id}:closed", json.dumps(delivery_evidence, ensure_ascii=False), now()),
                 )
+
+    def advance_local_action(self, run_id, kind, target, next_status):
+        """Commit a uniquely determined local transition and its receipt together."""
+        if kind not in {"advance_spec", "advance_ticket"}:
+            raise ValueError("unsupported local action")
+        key = f"{run_id}:{kind}:{target}"
+        with transaction(self.conn):
+            action = self.conn.execute("SELECT * FROM actions WHERE idempotency_key=?", (key,)).fetchone()
+            if kind == "advance_spec":
+                entity = self.conn.execute("SELECT run_id,status FROM specs WHERE spec_id=?", (target,)).fetchone()
+                if not entity or entity["run_id"] != run_id:
+                    raise ValueError("unknown spec")
+                from transitions import SPEC_TRANSITIONS, transition
+                transitions = SPEC_TRANSITIONS
+            else:
+                entity = self.conn.execute(
+                    "SELECT s.run_id,t.status FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?", (target,)
+                ).fetchone()
+                if not entity or entity["run_id"] != run_id:
+                    raise ValueError("unknown ticket")
+                transitions = {"planned":{"ready","blocked"},"ready":{"implementing","blocked"},"implementing":{"verified","blocked"},"verified":{"merged","blocked"},"merged":{"closed"},"blocked":{"ready","implementing","cancelled"},"closed":set(),"cancelled":set()}
+            if action and action["status"] == "succeeded":
+                return int(action["action_id"])
+            if action and entity["status"] == next_status:
+                action_id = int(action["action_id"])
+                self.conn.execute("UPDATE actions SET status='succeeded',result=?,error=NULL,attempts=attempts+1,updated_at=? WHERE action_id=?", (json.dumps({"next_status": next_status}, ensure_ascii=False), now(), action_id))
+                self.event(run_id, "action", str(action_id), "action_reconciled", {"status": "succeeded", "next_status": next_status})
+                return action_id
+            if action and action["status"] not in {"pending", "running"}:
+                raise ValueError(f"local action cannot resume from {action['status']}")
+            if action:
+                action_id = int(action["action_id"])
+            else:
+                stamp = now()
+                cursor = self.conn.execute(
+                    "INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                    (run_id, kind, target, "pending", key, stamp, stamp),
+                )
+                action_id = int(cursor.lastrowid)
+                self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?", (f"{kind}:{target}", stamp, run_id))
+            if kind == "advance_spec":
+                transition(transitions, entity["status"], next_status)
+                self.conn.execute("UPDATE specs SET status=? WHERE spec_id=?", (next_status, target))
+                self.event(run_id, "spec", target, "spec_state_changed", {"status": next_status})
+            else:
+                if next_status not in transitions.get(entity["status"], set()):
+                    raise ValueError(f"illegal ticket transition: {entity['status']} -> {next_status}")
+                self.conn.execute("UPDATE tickets SET status=? WHERE ticket_id=?", (next_status, target))
+                self.event(run_id, "ticket", target, "ticket_state_changed", {"status": next_status, "commits": None, "tests": None})
+            self.conn.execute("UPDATE actions SET status='succeeded',result=?,attempts=attempts+1,updated_at=? WHERE action_id=?", (json.dumps({"next_status": next_status}, ensure_ascii=False), now(), action_id))
+            self.event(run_id, "action", str(action_id), "action_finished", {"status": "succeeded", "error": None})
+            return action_id
     def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None):
         with self.conn:
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()
@@ -510,3 +604,140 @@ class ControlDB:
         row=lambda q,p: [dict(x) for x in self.conn.execute(q,p)]
         run=self.conn.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
         return {"run":dict(run) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,))}
+
+    def event_cursor(self, run_id):
+        row = self.conn.execute("SELECT COALESCE(MAX(event_id),0) FROM events WHERE run_id=?", (run_id,)).fetchone()
+        return int(row[0])
+
+    def events_since(self, run_id, event_cursor=0):
+        if not isinstance(event_cursor, int) or isinstance(event_cursor, bool) or event_cursor < 0:
+            raise ValueError("event_cursor must be a non-negative integer")
+        rows = self.conn.execute(
+            "SELECT * FROM events WHERE run_id=? AND event_id>? ORDER BY event_id", (run_id, event_cursor)
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item["payload"])
+            result.append(item)
+        return result
+
+    def save_snapshot(self, run_id, payload, expected_event_cursor=None, expected_state_version=None):
+        """Save a compact state snapshot only if the caller read the current cursor."""
+        if not isinstance(payload, dict):
+            raise ValueError("snapshot payload must be a JSON object")
+        if expected_event_cursor is not None and (
+            not isinstance(expected_event_cursor, int) or isinstance(expected_event_cursor, bool)
+        ):
+            raise ValueError("expected_event_cursor must be an integer")
+        if expected_state_version is not None and (
+            not isinstance(expected_state_version, int) or isinstance(expected_state_version, bool)
+        ):
+            raise ValueError("expected_state_version must be an integer")
+        with transaction(self.conn):
+            cursor = self.event_cursor(run_id)
+            if expected_event_cursor is not None and expected_event_cursor != cursor:
+                raise ValueError(f"stale snapshot cursor: expected {expected_event_cursor}, current {cursor}")
+            if expected_state_version is not None and expected_state_version != cursor:
+                raise ValueError(f"stale snapshot version: expected {expected_state_version}, current {cursor}")
+            stamp = now()
+            encoded = _canonical_json(payload, "snapshot")
+            self.conn.execute(
+                "INSERT INTO runtime_snapshots(run_id,state_version,event_cursor,payload,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET state_version=excluded.state_version, "
+                "event_cursor=excluded.event_cursor,payload=excluded.payload,updated_at=excluded.updated_at",
+                (run_id, cursor, cursor, encoded, stamp, stamp),
+            )
+            self.event(run_id, "run", run_id, "runtime_snapshot_saved", {"state_version": cursor, "event_cursor": cursor})
+            # The snapshot event is intentionally outside the captured cursor. Return the new cursor.
+            cursor = self.event_cursor(run_id)
+            self.conn.execute(
+                "UPDATE runtime_snapshots SET state_version=?,event_cursor=? WHERE run_id=?",
+                (cursor, cursor, run_id),
+            )
+            return {"run_id": run_id, "state_version": cursor, "event_cursor": cursor, "payload": payload}
+
+    def read_snapshot(self, run_id):
+        row = self.conn.execute("SELECT * FROM runtime_snapshots WHERE run_id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["payload"] = json.loads(result["payload"])
+        return result
+
+    def record_exception(self, run_id, fingerprint, category, summary, log_uri=None, details=None):
+        if not all(isinstance(value, str) and value.strip() for value in (fingerprint, category, summary)):
+            raise ValueError("fingerprint, category and summary are required")
+        stamp = now()
+        with transaction(self.conn):
+            self.conn.execute(
+                "INSERT INTO unresolved_exceptions(run_id,fingerprint,category,summary,log_uri,details,first_seen,last_seen) "
+                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(run_id,fingerprint) DO UPDATE SET category=excluded.category, "
+                "summary=excluded.summary,log_uri=excluded.log_uri,details=excluded.details,resolved=0,last_seen=excluded.last_seen",
+                (run_id, fingerprint, category, summary, log_uri, _canonical_json(details or {}, "details"), stamp, stamp),
+            )
+            row = self.conn.execute("SELECT * FROM unresolved_exceptions WHERE run_id=? AND fingerprint=?", (run_id, fingerprint)).fetchone()
+            self.event(run_id, "exception", str(row["exception_id"]), "exception_unresolved", {"fingerprint": fingerprint, "category": category})
+            return dict(row)
+
+    def resolve_exception(self, run_id, fingerprint, evidence):
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError("resolution evidence is required")
+        with transaction(self.conn):
+            row = self.conn.execute("SELECT * FROM unresolved_exceptions WHERE run_id=? AND fingerprint=?", (run_id, fingerprint)).fetchone()
+            if not row:
+                raise ValueError("unknown exception")
+            self.conn.execute("UPDATE unresolved_exceptions SET resolved=1,last_seen=?,details=? WHERE exception_id=?", (now(), _canonical_json({"resolution_evidence": evidence}, "details"), row["exception_id"]))
+            self.event(run_id, "exception", str(row["exception_id"]), "exception_resolved", {"fingerprint": fingerprint, "evidence": evidence})
+            return dict(self.conn.execute("SELECT * FROM unresolved_exceptions WHERE exception_id=?", (row["exception_id"],)).fetchone())
+
+    def unresolved_exceptions(self, run_id):
+        rows = self.conn.execute("SELECT * FROM unresolved_exceptions WHERE run_id=? AND resolved=0 ORDER BY exception_id", (run_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_external_wait(self, external_request_id, run_id, event_cursor, wake_condition, next_safe_check_at, action_id=None):
+        if not external_request_id or not wake_condition or not next_safe_check_at:
+            raise ValueError("external wait requires request id, wake condition and next safe check time")
+        with transaction(self.conn):
+            self.conn.execute(
+                "INSERT INTO external_waits(external_request_id,run_id,action_id,event_cursor,wake_condition,next_safe_check_at,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?, 'waiting',?,?) ON CONFLICT(external_request_id) DO UPDATE SET event_cursor=excluded.event_cursor, "
+                "wake_condition=excluded.wake_condition,next_safe_check_at=excluded.next_safe_check_at,status='waiting',updated_at=excluded.updated_at",
+                (external_request_id, run_id, action_id, event_cursor, wake_condition, next_safe_check_at, now(), now()),
+            )
+            return dict(self.conn.execute("SELECT * FROM external_waits WHERE external_request_id=?", (external_request_id,)).fetchone())
+
+    def poll_external_wait(self, external_request_id, result, changed, evidence=None):
+        with transaction(self.conn):
+            row = self.conn.execute("SELECT * FROM external_waits WHERE external_request_id=?", (external_request_id,)).fetchone()
+            if not row:
+                raise ValueError("unknown external request")
+            digest = hashlib.sha256(_canonical_json(result, "poll result").encode()).hexdigest()
+            changed = bool(changed) and digest != row["last_result_digest"] and row["status"] == "waiting"
+            status = "ready" if changed else row["status"]
+            self.conn.execute("UPDATE external_waits SET status=?,last_result_digest=?,poll_count=poll_count+1,updated_at=? WHERE external_request_id=?", (status, digest, now(), external_request_id))
+            if changed:
+                self.event(row["run_id"], "external_wait", external_request_id, "external_wait_changed", {"evidence": evidence or [], "result_digest": digest})
+            return {"external_request_id": external_request_id, "changed": bool(changed), "semantic_round": bool(changed), "status": status, "result_digest": digest, "evidence": evidence or []}
+
+    def record_terminal_validation(self, run_id, decision, evidence):
+        if decision != "allow":
+            raise ValueError("terminal validation decision must be allow")
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError("terminal validation evidence is required")
+        with transaction(self.conn):
+            cursor = self.event_cursor(run_id)
+            self.conn.execute(
+                "INSERT INTO terminal_validations(run_id,state_version,decision,evidence,validated_at) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(run_id) DO UPDATE SET state_version=excluded.state_version,decision=excluded.decision, "
+                "evidence=excluded.evidence,validated_at=excluded.validated_at",
+                (run_id, cursor, decision, _canonical_json(evidence, "evidence"), now()),
+            )
+            self.event(run_id, "run", run_id, "terminal_validation_recorded", {"decision": decision, "evidence": evidence})
+            cursor = self.event_cursor(run_id)
+            self.conn.execute("UPDATE terminal_validations SET state_version=? WHERE run_id=?", (cursor, run_id))
+            return {"run_id": run_id, "decision": decision, "state_version": cursor, "evidence": evidence}
+
+    def terminal_validation_satisfied(self, run_id):
+        row = self.conn.execute("SELECT * FROM terminal_validations WHERE run_id=?", (run_id,)).fetchone()
+        return bool(row and row["decision"] == "allow" and row["state_version"] == self.event_cursor(run_id))
