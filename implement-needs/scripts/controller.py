@@ -45,6 +45,9 @@ def main() -> int:
     terminal=sub.add_parser("record-terminal-validation"); terminal.add_argument("--run-id",required=True); terminal.add_argument("--decision",required=True); terminal.add_argument("--evidence",required=True)
     receipt=sub.add_parser("record-delivery-receipt"); receipt.add_argument("--run-id",required=True); receipt.add_argument("--entity-type",choices=("spec","ticket","run"),required=True); receipt.add_argument("--entity-id",required=True); receipt.add_argument("--receipt",required=True)
     receipt_check=sub.add_parser("validate-delivery-receipt"); receipt_check.add_argument("--run-id",required=True); receipt_check.add_argument("--entity-type",choices=("spec","ticket","run"),required=True); receipt_check.add_argument("--entity-id",required=True); receipt_check.add_argument("--expected",required=True)
+    policy=sub.add_parser("pin-policy"); policy.add_argument("--run-id",required=True); policy.add_argument("--policy",required=True)
+    shadow=sub.add_parser("shadow"); shadow.add_argument("--run-id",required=True); shadow.add_argument("--phase",required=True)
+    backup_cmd=sub.add_parser("backup"); backup_cmd.add_argument("--run-id",required=True); backup_cmd.add_argument("--destination",type=Path,required=True); backup_cmd.add_argument("--evidence-uri",required=True)
     metrics=sub.add_parser("metrics"); metrics.add_argument("--run-id",required=True); metrics.add_argument("--baseline-version",default="runtime-observations-v1")
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
     advance=sub.add_parser("advance"); advance.add_argument("--run-id",required=True); advance.add_argument("--max-actions",type=int,default=32)
@@ -137,6 +140,17 @@ def main() -> int:
         elif args.command=="validate-delivery-receipt":
             from delivery_receipts import project
             result=project(db,args.run_id,args.entity_type,args.entity_id,json.loads(args.expected))
+        elif args.command=="pin-policy":
+            from recovery_validation import validate_policy
+            policy=json.loads(args.policy); validation=validate_policy(policy)
+            if validation["decision"] != "allow": raise ValueError(validation["reason"])
+            result=db.pin_policy(args.run_id,policy); result["validation"]=validation
+        elif args.command=="shadow":
+            from recovery_validation import shadow_decision
+            result=shadow_decision(db,args.run_id,args.phase)
+        elif args.command=="backup":
+            from recovery_validation import backup
+            result=backup(db,args.destination,args.evidence_uri)
         else: result=db.snapshot(args.run_id)
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 0
     finally: db.close()

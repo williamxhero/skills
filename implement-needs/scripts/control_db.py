@@ -172,6 +172,17 @@ CREATE TABLE IF NOT EXISTS delivery_receipts(
     UNIQUE(run_id,entity_type,entity_id,repository,target_sha,test_plan,test_selection,environment_fingerprint,acceptance_version,validator_version,source_uri)
 );
 CREATE INDEX IF NOT EXISTS delivery_receipts_lookup ON delivery_receipts(run_id,entity_type,entity_id,target_sha,result);
+CREATE TABLE IF NOT EXISTS run_policies(
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id), workflow_version TEXT NOT NULL, skill_bundle_digest TEXT NOT NULL,
+    backend_protocol_version TEXT NOT NULL, schema_version TEXT NOT NULL, rules_version TEXT NOT NULL,
+    profile_id TEXT NOT NULL, profile_digest TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS policy_migrations(
+    migration_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id),
+    from_digest TEXT NOT NULL, to_digest TEXT NOT NULL, compatibility_evidence TEXT NOT NULL,
+    authorization_source TEXT NOT NULL, rollback_plan TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL
+);
 """
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
@@ -765,3 +776,15 @@ class ControlDB:
     def terminal_validation_satisfied(self, run_id):
         row = self.conn.execute("SELECT * FROM terminal_validations WHERE run_id=?", (run_id,)).fetchone()
         return bool(row and row["decision"] == "allow" and row["state_version"] == self.event_cursor(run_id))
+
+    def pin_policy(self, run_id, policy):
+        required = ("workflow_version", "skill_bundle_digest", "backend_protocol_version", "schema_version", "rules_version", "profile_id", "profile_digest")
+        if any(not isinstance(policy.get(key), str) or not policy[key].strip() for key in required):
+            raise ValueError("policy pin is incomplete")
+        if not isinstance(policy.get("payload", {}), dict):
+            raise ValueError("policy payload must be an object")
+        with transaction(self.conn):
+            stamp = now()
+            self.conn.execute("INSERT INTO run_policies(run_id,workflow_version,skill_bundle_digest,backend_protocol_version,schema_version,rules_version,profile_id,profile_digest,status,payload,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET workflow_version=excluded.workflow_version,skill_bundle_digest=excluded.skill_bundle_digest,backend_protocol_version=excluded.backend_protocol_version,schema_version=excluded.schema_version,rules_version=excluded.rules_version,profile_id=excluded.profile_id,profile_digest=excluded.profile_digest,status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at", (run_id, *[policy[key] for key in required], policy.get("status", "validated"), json.dumps(policy.get("payload", {}), ensure_ascii=False, sort_keys=True), stamp, stamp))
+            self.event(run_id, "run_policy", run_id, "policy_pinned", {key: policy[key] for key in required})
+            return dict(self.conn.execute("SELECT * FROM run_policies WHERE run_id=?", (run_id,)).fetchone())
