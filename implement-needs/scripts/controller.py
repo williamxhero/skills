@@ -32,6 +32,16 @@ def main() -> int:
     failure=sub.add_parser("record-recovery-failure"); failure.add_argument("--run-id",required=True); failure.add_argument("--action-id",type=int,required=True); failure.add_argument("--category",required=True); failure.add_argument("--error-fingerprint",required=True); failure.add_argument("--code-digest",required=True); failure.add_argument("--environment-digest",required=True); failure.add_argument("--strategy-digest",required=True); failure.add_argument("--progress-marker",required=True); failure.add_argument("--retry-owner",required=True); failure.add_argument("--evidence",required=True); failure.add_argument("--max-attempts",type=int,default=3); failure.add_argument("--budget-seconds",type=int,default=3600); failure.add_argument("--budget-version",default="recovery-v1")
     resume=sub.add_parser("resume-recovery"); resume.add_argument("--recovery-id",type=int,required=True); resume.add_argument("--old-attempt-archived",action="store_true"); resume.add_argument("--strategy-digest",required=True); resume.add_argument("--progress-marker",required=True); resume.add_argument("--evidence",required=True)
     snap=sub.add_parser("snapshot"); snap.add_argument("--run-id",required=True)
+    save_snap=sub.add_parser("save-snapshot"); save_snap.add_argument("--run-id",required=True); save_snap.add_argument("--payload",required=True); save_snap.add_argument("--expected-event-cursor",type=int); save_snap.add_argument("--expected-state-version",type=int)
+    context=sub.add_parser("context"); context.add_argument("--run-id",required=True); context.add_argument("--phase",required=True); context.add_argument("--refresh",action="store_true")
+    exception=sub.add_parser("record-exception"); exception.add_argument("--run-id",required=True); exception.add_argument("--fingerprint",required=True); exception.add_argument("--category",required=True); exception.add_argument("--summary",required=True); exception.add_argument("--log-uri"); exception.add_argument("--details",default="{}")
+    resolve_exception=sub.add_parser("resolve-exception"); resolve_exception.add_argument("--run-id",required=True); resolve_exception.add_argument("--fingerprint",required=True); resolve_exception.add_argument("--evidence",required=True)
+    wait=sub.add_parser("record-external-wait"); wait.add_argument("--run-id",required=True); wait.add_argument("--external-request-id",required=True); wait.add_argument("--event-cursor",type=int,required=True); wait.add_argument("--wake-condition",required=True); wait.add_argument("--next-safe-check-at",required=True); wait.add_argument("--action-id",type=int)
+    poll=sub.add_parser("poll-external"); poll.add_argument("--external-request-id",required=True); poll.add_argument("--result",required=True); poll.add_argument("--changed",action="store_true"); poll.add_argument("--evidence",default="[]")
+    tool_success=sub.add_parser("tool-success"); tool_success.add_argument("--result",required=True); tool_success.add_argument("--identifiers",required=True); tool_success.add_argument("--version",type=int,required=True); tool_success.add_argument("--evidence-uri",required=True)
+    tool_failure=sub.add_parser("tool-failure"); tool_failure.add_argument("--category",required=True); tool_failure.add_argument("--error-fragment",required=True); tool_failure.add_argument("--log-uri",required=True); tool_failure.add_argument("--version",type=int)
+    tool_wait=sub.add_parser("tool-waiting-external"); tool_wait.add_argument("--external-request-id",required=True); tool_wait.add_argument("--event-cursor",type=int,required=True); tool_wait.add_argument("--wake-condition",required=True); tool_wait.add_argument("--next-safe-check-at",required=True)
+    host=sub.add_parser("host-operation"); host.add_argument("--operation",required=True); host.add_argument("--arguments",default="{}"); host.add_argument("--required-capability",required=True); host.add_argument("--capabilities",default="[]")
     metrics=sub.add_parser("metrics"); metrics.add_argument("--run-id",required=True); metrics.add_argument("--baseline-version",default="runtime-observations-v1")
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
     advance=sub.add_parser("advance"); advance.add_argument("--run-id",required=True); advance.add_argument("--max-actions",type=int,default=32)
@@ -91,6 +101,31 @@ def main() -> int:
         elif args.command=="advance":
             from advance_runtime import advance
             result=advance(db,args.run_id,args.max_actions)
+        elif args.command=="save-snapshot":
+            result=db.save_snapshot(args.run_id,json.loads(args.payload),args.expected_event_cursor,args.expected_state_version)
+        elif args.command=="context":
+            from phase_context import assemble_context, refresh_context
+            result=refresh_context(db,args.run_id,args.phase) if args.refresh else assemble_context(db,args.run_id,args.phase)
+        elif args.command=="record-exception":
+            result=db.record_exception(args.run_id,args.fingerprint,args.category,args.summary,args.log_uri,json.loads(args.details))
+        elif args.command=="resolve-exception":
+            result=db.resolve_exception(args.run_id,args.fingerprint,json.loads(args.evidence))
+        elif args.command=="record-external-wait":
+            result=db.record_external_wait(args.external_request_id,args.run_id,args.event_cursor,args.wake_condition,args.next_safe_check_at,args.action_id)
+        elif args.command=="poll-external":
+            result=db.poll_external_wait(args.external_request_id,json.loads(args.result),args.changed,json.loads(args.evidence))
+        elif args.command=="tool-success":
+            from tool_envelopes import success
+            result=success(json.loads(args.result),json.loads(args.identifiers),args.version,args.evidence_uri)
+        elif args.command=="tool-failure":
+            from tool_envelopes import failure
+            result=failure(args.category,args.error_fragment,args.log_uri,args.version)
+        elif args.command=="tool-waiting-external":
+            from tool_envelopes import waiting_external
+            result=waiting_external(args.external_request_id,args.event_cursor,args.wake_condition,args.next_safe_check_at)
+        elif args.command=="host-operation":
+            from tool_envelopes import host_operation
+            result=host_operation(args.operation,json.loads(args.arguments),args.required_capability,json.loads(args.capabilities))
         else: result=db.snapshot(args.run_id)
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 0
     finally: db.close()

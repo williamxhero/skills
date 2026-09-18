@@ -106,6 +106,41 @@ CREATE TABLE IF NOT EXISTS recovery_states(
     UNIQUE(action_id,fingerprint)
 );
 CREATE INDEX IF NOT EXISTS recovery_states_action ON recovery_states(action_id,status,updated_at);
+CREATE TABLE IF NOT EXISTS runtime_snapshots(
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    state_version INTEGER NOT NULL,
+    event_cursor INTEGER NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS unresolved_exceptions(
+    exception_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    fingerprint TEXT NOT NULL,
+    category TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    log_uri TEXT,
+    details TEXT NOT NULL DEFAULT '{}',
+    resolved INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    UNIQUE(run_id,fingerprint)
+);
+CREATE INDEX IF NOT EXISTS unresolved_exceptions_run ON unresolved_exceptions(run_id,resolved,last_seen);
+CREATE TABLE IF NOT EXISTS external_waits(
+    external_request_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    action_id INTEGER,
+    event_cursor INTEGER NOT NULL,
+    wake_condition TEXT NOT NULL,
+    next_safe_check_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_result_digest TEXT,
+    poll_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
@@ -510,3 +545,118 @@ class ControlDB:
         row=lambda q,p: [dict(x) for x in self.conn.execute(q,p)]
         run=self.conn.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
         return {"run":dict(run) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,))}
+
+    def event_cursor(self, run_id):
+        row = self.conn.execute("SELECT COALESCE(MAX(event_id),0) FROM events WHERE run_id=?", (run_id,)).fetchone()
+        return int(row[0])
+
+    def events_since(self, run_id, event_cursor=0):
+        if not isinstance(event_cursor, int) or isinstance(event_cursor, bool) or event_cursor < 0:
+            raise ValueError("event_cursor must be a non-negative integer")
+        rows = self.conn.execute(
+            "SELECT * FROM events WHERE run_id=? AND event_id>? ORDER BY event_id", (run_id, event_cursor)
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item["payload"])
+            result.append(item)
+        return result
+
+    def save_snapshot(self, run_id, payload, expected_event_cursor=None, expected_state_version=None):
+        """Save a compact state snapshot only if the caller read the current cursor."""
+        if not isinstance(payload, dict):
+            raise ValueError("snapshot payload must be a JSON object")
+        if expected_event_cursor is not None and (
+            not isinstance(expected_event_cursor, int) or isinstance(expected_event_cursor, bool)
+        ):
+            raise ValueError("expected_event_cursor must be an integer")
+        if expected_state_version is not None and (
+            not isinstance(expected_state_version, int) or isinstance(expected_state_version, bool)
+        ):
+            raise ValueError("expected_state_version must be an integer")
+        with transaction(self.conn):
+            cursor = self.event_cursor(run_id)
+            if expected_event_cursor is not None and expected_event_cursor != cursor:
+                raise ValueError(f"stale snapshot cursor: expected {expected_event_cursor}, current {cursor}")
+            if expected_state_version is not None and expected_state_version != cursor:
+                raise ValueError(f"stale snapshot version: expected {expected_state_version}, current {cursor}")
+            stamp = now()
+            encoded = _canonical_json(payload, "snapshot")
+            self.conn.execute(
+                "INSERT INTO runtime_snapshots(run_id,state_version,event_cursor,payload,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET state_version=excluded.state_version, "
+                "event_cursor=excluded.event_cursor,payload=excluded.payload,updated_at=excluded.updated_at",
+                (run_id, cursor, cursor, encoded, stamp, stamp),
+            )
+            self.event(run_id, "run", run_id, "runtime_snapshot_saved", {"state_version": cursor, "event_cursor": cursor})
+            # The snapshot event is intentionally outside the captured cursor. Return the new cursor.
+            cursor = self.event_cursor(run_id)
+            self.conn.execute(
+                "UPDATE runtime_snapshots SET state_version=?,event_cursor=? WHERE run_id=?",
+                (cursor, cursor, run_id),
+            )
+            return {"run_id": run_id, "state_version": cursor, "event_cursor": cursor, "payload": payload}
+
+    def read_snapshot(self, run_id):
+        row = self.conn.execute("SELECT * FROM runtime_snapshots WHERE run_id=?", (run_id,)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["payload"] = json.loads(result["payload"])
+        return result
+
+    def record_exception(self, run_id, fingerprint, category, summary, log_uri=None, details=None):
+        if not all(isinstance(value, str) and value.strip() for value in (fingerprint, category, summary)):
+            raise ValueError("fingerprint, category and summary are required")
+        stamp = now()
+        with transaction(self.conn):
+            self.conn.execute(
+                "INSERT INTO unresolved_exceptions(run_id,fingerprint,category,summary,log_uri,details,first_seen,last_seen) "
+                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(run_id,fingerprint) DO UPDATE SET category=excluded.category, "
+                "summary=excluded.summary,log_uri=excluded.log_uri,details=excluded.details,resolved=0,last_seen=excluded.last_seen",
+                (run_id, fingerprint, category, summary, log_uri, _canonical_json(details or {}, "details"), stamp, stamp),
+            )
+            row = self.conn.execute("SELECT * FROM unresolved_exceptions WHERE run_id=? AND fingerprint=?", (run_id, fingerprint)).fetchone()
+            self.event(run_id, "exception", str(row["exception_id"]), "exception_unresolved", {"fingerprint": fingerprint, "category": category})
+            return dict(row)
+
+    def resolve_exception(self, run_id, fingerprint, evidence):
+        if not isinstance(evidence, list) or not evidence:
+            raise ValueError("resolution evidence is required")
+        with transaction(self.conn):
+            row = self.conn.execute("SELECT * FROM unresolved_exceptions WHERE run_id=? AND fingerprint=?", (run_id, fingerprint)).fetchone()
+            if not row:
+                raise ValueError("unknown exception")
+            self.conn.execute("UPDATE unresolved_exceptions SET resolved=1,last_seen=?,details=? WHERE exception_id=?", (now(), _canonical_json({"resolution_evidence": evidence}, "details"), row["exception_id"]))
+            self.event(run_id, "exception", str(row["exception_id"]), "exception_resolved", {"fingerprint": fingerprint, "evidence": evidence})
+            return dict(self.conn.execute("SELECT * FROM unresolved_exceptions WHERE exception_id=?", (row["exception_id"],)).fetchone())
+
+    def unresolved_exceptions(self, run_id):
+        rows = self.conn.execute("SELECT * FROM unresolved_exceptions WHERE run_id=? AND resolved=0 ORDER BY exception_id", (run_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_external_wait(self, external_request_id, run_id, event_cursor, wake_condition, next_safe_check_at, action_id=None):
+        if not external_request_id or not wake_condition or not next_safe_check_at:
+            raise ValueError("external wait requires request id, wake condition and next safe check time")
+        with transaction(self.conn):
+            self.conn.execute(
+                "INSERT INTO external_waits(external_request_id,run_id,action_id,event_cursor,wake_condition,next_safe_check_at,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?, 'waiting',?,?) ON CONFLICT(external_request_id) DO UPDATE SET event_cursor=excluded.event_cursor, "
+                "wake_condition=excluded.wake_condition,next_safe_check_at=excluded.next_safe_check_at,status='waiting',updated_at=excluded.updated_at",
+                (external_request_id, run_id, action_id, event_cursor, wake_condition, next_safe_check_at, now(), now()),
+            )
+            return dict(self.conn.execute("SELECT * FROM external_waits WHERE external_request_id=?", (external_request_id,)).fetchone())
+
+    def poll_external_wait(self, external_request_id, result, changed, evidence=None):
+        with transaction(self.conn):
+            row = self.conn.execute("SELECT * FROM external_waits WHERE external_request_id=?", (external_request_id,)).fetchone()
+            if not row:
+                raise ValueError("unknown external request")
+            digest = hashlib.sha256(_canonical_json(result, "poll result").encode()).hexdigest()
+            changed = bool(changed) and digest != row["last_result_digest"] and row["status"] == "waiting"
+            status = "ready" if changed else row["status"]
+            self.conn.execute("UPDATE external_waits SET status=?,last_result_digest=?,poll_count=poll_count+1,updated_at=? WHERE external_request_id=?", (status, digest, now(), external_request_id))
+            if changed:
+                self.event(row["run_id"], "external_wait", external_request_id, "external_wait_changed", {"evidence": evidence or [], "result_digest": digest})
+            return {"external_request_id": external_request_id, "changed": bool(changed), "semantic_round": bool(changed), "status": status, "result_digest": digest, "evidence": evidence or []}

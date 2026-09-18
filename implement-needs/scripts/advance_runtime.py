@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from control_db import ControlDB
 from next_action import next_action
@@ -28,6 +29,24 @@ def _result(db, run_id, boundary, action=None, reason=None, processed=None):
         "event_cursor": _cursor(db),
         "evidence": [f"sqlite://events/{_cursor(db)}"],
     }
+
+
+def _waiting_result(db, run_id, action, reason, processed):
+    result = _result(db, run_id, "waiting_external", action, reason, processed)
+    target = action.get("target", run_id)
+    request_id = action.get("external_request_id") or f"wait:{run_id}:{action['kind']}:{target}"
+    wake_condition = action.get("wake_condition") or "authoritative external state changes"
+    next_safe = action.get("next_safe_check_at") or (
+        datetime.now(timezone.utc) + timedelta(seconds=30)
+    ).isoformat()
+    db.record_external_wait(request_id, run_id, result["event_cursor"], wake_condition, next_safe, action.get("action_id"))
+    result.update({
+        "external_request_id": request_id,
+        "event_cursor": result["event_cursor"],
+        "wake_condition": wake_condition,
+        "next_safe_check_at": next_safe,
+    })
+    return result
 
 
 def _deterministic_action(db, run_id, action):
@@ -64,7 +83,7 @@ def advance(db: ControlDB, run_id: str, max_actions=32):
             "SELECT status FROM actions WHERE action_id=?", (action.get("action_id"),)
         ).fetchone() if action.get("action_id") else None
         if pending and pending["status"] in {"pending", "running"}:
-            return _result(db, run_id, "waiting_external", action, "action_in_flight", processed)
+            return _waiting_result(db, run_id, action, "action_in_flight", processed)
         item, boundary = _deterministic_action(db, run_id, action)
         if boundary is not None:
             boundary["processed_actions"] = processed
@@ -74,7 +93,8 @@ def advance(db: ControlDB, run_id: str, max_actions=32):
             continue
         kind = action["kind"]
         if kind in {"wait_spec", "wait_ticket", "wait_ticket_blocker", "wait_spec_dependency", "wait_ticket_receipt", "wait_external"}:
-            return _result(db, run_id, "waiting_external", action, "external_state_unchanged", processed)
+            reason = "schedule_resume" if kind == "wait_external" else "external_state_unchanged"
+            return _waiting_result(db, run_id, action, reason, processed)
         if kind in {"repair_spec", "repair_ticket", "repair_queue", "repair_dependency", "repair_run"}:
             return _result(db, run_id, "blocked", action, action.get("reason", kind), processed)
         if kind == "final_release":
