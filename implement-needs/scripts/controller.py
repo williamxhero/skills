@@ -18,6 +18,10 @@ def main() -> int:
     observation=sub.add_parser("record-observation"); observation.add_argument("--run-id",required=True); observation.add_argument("--entity-type",required=True); observation.add_argument("--entity-id",required=True); observation.add_argument("--operation",required=True); observation.add_argument("--status",required=True); observation.add_argument("--evidence",default="[]"); observation.add_argument("--observation-key"); observation.add_argument("--phase"); observation.add_argument("--scope",default="run"); observation.add_argument("--unit"); observation.add_argument("--started-at"); observation.add_argument("--ended-at"); observation.add_argument("--duration-ms",type=float); observation.add_argument("--source",default="controller"); observation.add_argument("--usage",default="{}"); observation.add_argument("--metadata",default="{}")
     action=sub.add_parser("action"); action.add_argument("--run-id",required=True); action.add_argument("--kind",required=True); action.add_argument("--target",required=True)
     finish=sub.add_parser("finish-action"); finish.add_argument("--action-id",type=int,required=True); finish.add_argument("--status",choices=("succeeded","failed","blocked","cancelled"),required=True); finish.add_argument("--result")
+    intent=sub.add_parser("operation-intent"); intent.add_argument("--run-id",required=True); intent.add_argument("--operation",required=True); intent.add_argument("--target",required=True); intent.add_argument("--parameters",default="{}"); intent.add_argument("--generation",type=int,default=0); intent.add_argument("--idempotency-key")
+    start_intent=sub.add_parser("start-operation-intent"); start_intent.add_argument("--intent-id",type=int,required=True); start_intent.add_argument("--executor-id",required=True)
+    unknown_intent=sub.add_parser("operation-outcome-unknown"); unknown_intent.add_argument("--intent-id",type=int,required=True); unknown_intent.add_argument("--reason",required=True); unknown_intent.add_argument("--evidence",required=True)
+    reconcile_intent=sub.add_parser("reconcile-operation-intent"); reconcile_intent.add_argument("--intent-id",type=int,required=True); reconcile_intent.add_argument("--outcome",choices=("not_found","succeeded","failed"),required=True); reconcile_intent.add_argument("--evidence",required=True); reconcile_intent.add_argument("--result",default="{}")
     snap=sub.add_parser("snapshot"); snap.add_argument("--run-id",required=True)
     metrics=sub.add_parser("metrics"); metrics.add_argument("--run-id",required=True); metrics.add_argument("--baseline-version",default="runtime-observations-v1")
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
@@ -41,6 +45,10 @@ def main() -> int:
                 db.add_observation(args.run_id,args.entity_type,args.entity_id,{"operation":args.operation,"status":args.status,"evidence":json.loads(args.evidence)}); result={"entity_id":args.entity_id,"status":args.status}
         elif args.command=="action": result={"action_id":db.set_action(args.run_id,args.kind,args.target)}
         elif args.command=="finish-action": db.finish_action(args.action_id,args.status,json.loads(args.result) if args.result else None); result={"action_id":args.action_id,"status":args.status}
+        elif args.command=="operation-intent": result=db.create_operation_intent(args.run_id,args.operation,args.target,json.loads(args.parameters),args.generation,args.idempotency_key)
+        elif args.command=="start-operation-intent": result=db.start_operation_intent(args.intent_id,args.executor_id)
+        elif args.command=="operation-outcome-unknown": db.mark_operation_unknown(args.intent_id,args.reason,json.loads(args.evidence)); result={"intent_id":args.intent_id,"status":"outcome_unknown"}
+        elif args.command=="reconcile-operation-intent": result=db.reconcile_operation_intent(args.intent_id,args.outcome,json.loads(args.evidence),json.loads(args.result))
         elif args.command=="next-action":
             from next_action import next_action
             result=next_action(db,args.run_id)
