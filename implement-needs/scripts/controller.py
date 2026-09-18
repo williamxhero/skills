@@ -12,6 +12,7 @@ from evidence_gate import EvidenceGateError
 from run_state import PHASES, RUN_RESULTS, RunStateError
 from sync_scope import SyncScopeError, build_sync_plan
 from startup_contract import StartupContractError
+from dependency_readiness import readiness_from_db, structure_from_db
 from task_backend import (
     MCP_CONNECTOR,
     BackendError,
@@ -53,6 +54,8 @@ def main() -> int:
     startup_contract=sub.add_parser("startup-contract"); startup_contract.add_argument("--run-id",required=True); startup_contract.add_argument("--contract",required=True); startup_contract.add_argument("--available-dependencies",default=None)
     startup_check=sub.add_parser("startup-check"); startup_check.add_argument("--run-id",required=True)
     decide=sub.add_parser("decide"); decide.add_argument("--run-id",required=True); decide.add_argument("--subject",required=True); decide.add_argument("--selected",required=True); decide.add_argument("--recommendation",required=True); decide.add_argument("--evidence",required=True); decide.add_argument("--rationale",required=True); decide.add_argument("--actor",required=True); decide.add_argument("--scope",required=True); decide.add_argument("--source",required=True); decide.add_argument("--authorization",required=True)
+    dependency_check=sub.add_parser("dependency-check"); dependency_check.add_argument("--run-id",required=True)
+    dependency_readiness=sub.add_parser("dependency-readiness"); dependency_readiness.add_argument("--run-id",required=True); dependency_readiness.add_argument("--spec-id",required=True)
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -67,7 +70,7 @@ def main() -> int:
     for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check"} else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness"} else "open-existing"))
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
@@ -114,6 +117,10 @@ def main() -> int:
             result=db.startup_contract(args.run_id)
         elif args.command=="decide":
             result=db.decide(args.run_id, args.subject, json.loads(args.selected), json.loads(args.recommendation), json.loads(args.evidence), args.rationale, args.actor, json.loads(args.scope), args.source, json.loads(args.authorization), args.expected_version)
+        elif args.command=="dependency-check":
+            result=structure_from_db(db, args.run_id)
+        elif args.command=="dependency-readiness":
+            result=readiness_from_db(db, args.run_id, args.spec_id)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":

@@ -138,14 +138,23 @@ def assess_spec_readiness(
 
 
 def readiness_from_db(db, run_id: str, spec_id: str) -> dict[str, Any]:
+    rows = specs_from_db(db, run_id)
+    waived = [row[0] for row in db.conn.execute(
+        "SELECT entity_id FROM evidence_refs WHERE run_id=? AND entity_type='spec' AND evidence_kind='dependency_waiver'",
+        (run_id,),
+    )]
+    return assess_spec_readiness(rows, spec_id, run_id=run_id, waived_dependencies=waived)
+
+
+def specs_from_db(db, run_id: str) -> list[dict[str, Any]]:
     rows = [dict(row) for row in db.conn.execute("SELECT * FROM specs WHERE run_id=? ORDER BY position", (run_id,))]
     for row in rows:
         try:
             row["blocked_by"] = json.loads(row.get("blocked_by") or "[]")
         except (TypeError, json.JSONDecodeError):
             row["blocked_by"] = row.get("blocked_by")
-    waived = [row[0] for row in db.conn.execute(
-        "SELECT entity_id FROM evidence_refs WHERE run_id=? AND entity_type='spec' AND evidence_kind='dependency_waiver'",
-        (run_id,),
-    )]
-    return assess_spec_readiness(rows, spec_id, run_id=run_id, waived_dependencies=waived)
+    return rows
+
+
+def structure_from_db(db, run_id: str) -> dict[str, Any]:
+    return validate_spec_graph(specs_from_db(db, run_id), run_id=run_id)
