@@ -337,7 +337,24 @@
         "locked_route": {"$ref": "#/$defs/lockedRoute"},
         "planning_record_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "route_readback_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "evidence_levels": {"$ref": "#/$defs/evidenceLevels"}
+      }
+    },
+    "evidenceLevels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity_evidence",
+        "capability_evidence",
+        "configured_route_evidence",
+        "execution_evidence"
+      ],
+      "properties": {
+        "identity_evidence": {"type": "string", "minLength": 1},
+        "capability_evidence": {"type": "string", "minLength": 1},
+        "configured_route_evidence": {"type": "string", "minLength": 1},
+        "execution_evidence": {"type": "string", "minLength": 1}
       }
     },
     "ticketExecution": {

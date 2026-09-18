@@ -3,7 +3,6 @@ import subprocess
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 
 
@@ -24,7 +23,7 @@ class AppServerContractTests(unittest.TestCase):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / "receipt.json"
-            result = subprocess.run(["python", str(script), "--receipt", str(receipt)], capture_output=True, text=True)
+            result = subprocess.run(["python", str(script), "--receipt", str(receipt)], capture_output=True, text=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual("unblock-development", json.loads(receipt.read_text(encoding="utf-8"))["backend"])
 

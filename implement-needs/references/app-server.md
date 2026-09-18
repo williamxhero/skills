@@ -14,7 +14,7 @@ protocol failure.
 The minimum handshake is:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"implement-needs","version":"1"},"capabilities":{}}}
 ```
 
 Then probe the advertised thread/task creation, thread read, model readback, reasoning
@@ -25,6 +25,20 @@ script. The route is selected by `route-codex-task` before creation; the
 app-server must receive that exact model and effort. Creation arguments are request
 evidence only. A fresh thread read must expose the applied pair, or the controller fails
 closed and invokes `unblock-development`.
+
+Use `scripts/app_server_bridge.py` for the native fallback. It reads actual
+app-server thread records and a controller-owned identity metadata sidecar. Since the
+app-server does not natively provide task/run/attempt/owner identity, a thread is
+usable only when the sidecar supplies those fields and agrees with native thread id,
+cwd, and project id. The bridge ignores asynchronous JSON-RPC notifications while it
+waits for the matching response. A title token remains a discovery index, not an
+identity substitute.
+
+For an existing thread, enrollment is an explicit `adopt_thread` operation. It may
+write the sidecar only after a native `thread/read` proves the formal id, cwd, and
+project id. It cannot repair a thread whose native `projectId` is null, and it cannot
+invent task/run/attempt/owner values. Those are external facts that must already be
+present in the controller registry or an authenticated task-management readback.
 
 The normal lifecycle is:
 

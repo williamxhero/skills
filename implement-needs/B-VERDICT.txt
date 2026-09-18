@@ -1,0 +1,5 @@
+实现门禁已具备；当前 live #444 controller 不允许恢复主任务
+1. 单票身份持久化、applied-route 回读、完整身份门禁和 connector handshake 均已有测试覆盖。
+2. 原生 app-server bridge 已实现并实际回读 controller `01a09a58-dfcd-72b0-a5d7-c359eefce9a2`。
+3. 当前 live readback 的 `projectId` 为 null，且 app-server 不提供 task_id、run_id、attempt_id、owner_id、host_id；缺少经过审计且与原生 cwd/project 对齐的 metadata sidecar。
+4. 所以 #395 继续阻塞，不能创建替代 writer；不得自称 B acceptance 通过。

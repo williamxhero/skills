@@ -18,17 +18,25 @@ ROUTE_POLICY_DIR = Path(__file__).resolve().parents[2] / "route-codex-task" / "s
 sys.path.insert(0, str(ROUTE_POLICY_DIR))
 from route_policy import (
     DIFFICULTY_FLOOR,
-    EFFORT_RANK,
-    MODEL_RANK as MODEL_CLASS_RANK,
-    POLICY_ERROR as MODEL_POLICY_ERROR,
+    MODEL_RANK,
+    POLICY_ERROR,
     build_route_receipt,
-    decision_hash as _decision_hash,
+    decision_hash,
     validate_capabilities,
     validate_floor,
-    validate_pair as _pair,
-    validate_route as _shared_route,
+    validate_pair,
+    validate_route,
     validate_task_readback,
 )
+from route_policy import EFFORT_RANK as _EFFORT_RANK
+
+EFFORT_RANK = _EFFORT_RANK
+MODEL_CLASS_RANK = MODEL_RANK
+MODEL_POLICY_ERROR = POLICY_ERROR
+_decision_hash = decision_hash
+_pair = validate_pair
+_shared_route = validate_route
+
 AUTO_APPROVAL = {
     "confirmation_mode": "auto_approve",
     "approval_source": "implement-needs",
@@ -261,16 +269,7 @@ def _planning_task(
         xhigh_evidence=xhigh_evidence,
     )
     scope = record.get("scope")
-    if scope == "bounded":
-        _floor(
-            route,
-            "gpt-5.6-sol",
-            "high",
-            "$.planning_task.route",
-            capabilities,
-            issues,
-        )
-    elif scope == "broad_or_ambiguous":
+    if scope == "bounded" or scope == "broad_or_ambiguous":
         _floor(
             route,
             "gpt-5.6-sol",
@@ -1268,6 +1267,9 @@ def evaluate_route(
         record_hash=_sha256(record_raw),
         readback_hash_name="route_readback_sha256",
         readback_hash=_sha256(readback_raw),
+        identity_evidence="formal_readback",
+        capability_evidence="host_capability_readback",
+        configured_route_evidence="post_create_readback",
     ), 0
 
 

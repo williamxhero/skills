@@ -1,37 +1,210 @@
 """SQLite state store for the Implement Needs controller."""
 from __future__ import annotations
-import json, sqlite3
+
+import json
+import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Bump when the threads identity columns change; migrations stay additive so an
+# existing run database keeps every audit record it already holds.
+SCHEMA_VERSION = 4
+
+# Identity columns added by schema version 2. The legacy ``thread_id`` column is
+# retained and reinterpreted as the current backend thread id.
+THREAD_IDENTITY_COLUMNS = (
+    ("task_id", "TEXT"),
+    ("attempt_id", "TEXT"),
+    ("nonce", "TEXT"),
+    ("client_thread_id", "TEXT"),
+    ("formal_thread_id", "TEXT"),
+    ("host_id", "TEXT"),
+    ("owner_id", "TEXT"),
+    ("cwd", "TEXT"),
+    ("project_id", "TEXT"),
+    ("title_token", "TEXT"),
+    ("identity_readback", "TEXT"),
+    ("route_readback", "TEXT"),
+    ("route_receipt", "TEXT"),
+)
+
+RUN_MODE_COLUMNS = (
+    ("execution_mode", "TEXT NOT NULL DEFAULT 'whole-spec'"),
+    ("controller_task_id", "TEXT"),
+    ("queue_definition", "TEXT NOT NULL DEFAULT '[]'"),
+)
+
+TICKET_QUEUE_COLUMNS = (
+    ("queue_position", "INTEGER"),
+    ("acceptance", "TEXT NOT NULL DEFAULT '[]'"),
+)
+
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'whole-spec', controller_task_id TEXT, queue_definition TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), title TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', generation INTEGER NOT NULL DEFAULT 0, UNIQUE(run_id,position));
-CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', issue_url TEXT, UNIQUE(spec_id,title));
+CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', issue_url TEXT, queue_position INTEGER, UNIQUE(spec_id,title));
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
 """
 
+# A live attempt identity is unique per run. The registry ``run_id`` column is the
+# identity run. Rows without a task identity (legacy or pre-bootstrap) are exempt
+# so migration never invents identity values.
+UNIQUE_ATTEMPT_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS threads_attempt_identity"
+    " ON threads(run_id, task_id, attempt_id)"
+    " WHERE task_id IS NOT NULL;"
+)
+
 def now() -> str: return datetime.now(timezone.utc).isoformat()
+
+
+class ActionConflict(RuntimeError):
+    """A second executable action would violate the run's single-action gate."""
+
+
+_EVIDENCE_URI = re.compile(r"^[a-z][a-z0-9+.-]*:(?:/{0,2})\S+$", re.IGNORECASE)
+_COMMIT_SCHEMES = frozenset(("commit", "git", "https", "pr", "sha"))
+_TEST_SCHEMES = frozenset(("check", "ci", "https", "pytest", "test"))
+_READBACK_SCHEMES = frozenset(("github", "https"))
+_ACCEPTANCE_SCHEMES = frozenset(("acceptance", "file", "github", "https"))
+
+
+def _valid_evidence(value: object, schemes: frozenset[str]) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    for item in value:
+        if not isinstance(item, str) or not item.strip() or not _EVIDENCE_URI.match(item.strip()):
+            return False
+        if item.split(":", 1)[0].lower() not in schemes:
+            return False
+    return True
 
 class ControlDB:
     def __init__(self, path: str | Path):
         self.path=Path(path); self.path.parent.mkdir(parents=True,exist_ok=True)
         self.conn=sqlite3.connect(self.path,timeout=30,isolation_level=None); self.conn.row_factory=sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL"); self.conn.execute("PRAGMA foreign_keys=ON"); self.conn.executescript(SCHEMA)
+        try:
+            self.migrate()
+        except Exception:
+            # Release the handle before propagating: a rejected database must not
+            # stay locked, and callers never receive the object to close.
+            self.conn.close()
+            raise
     def close(self): self.conn.close()
+    def migrate(self):
+        """Add identity columns in place and record the schema version.
+
+        Migration is additive and never backfills identity: an existing row keeps
+        its audit columns and stays untracked until a formal readback binds it.
+        """
+        existing={row[1] for row in self.conn.execute("PRAGMA table_info(threads)")}
+        current=self.conn.execute("SELECT version FROM schema_meta ORDER BY rowid DESC LIMIT 1").fetchone()
+        # Refuse a database written by newer code before the up-to-date early
+        # return, otherwise the guard below it is unreachable.
+        if current is not None and current[0] > SCHEMA_VERSION:
+            raise ValueError(f"database schema {current[0]} is newer than {SCHEMA_VERSION}")
+        if current is not None and current[0] >= SCHEMA_VERSION:
+            return
+        with self.conn:
+            for name,declaration in THREAD_IDENTITY_COLUMNS:
+                if name not in existing:
+                    self.conn.execute(f"ALTER TABLE threads ADD COLUMN {name} {declaration}")
+            if "run_identity" in existing:
+                self.conn.execute("ALTER TABLE threads DROP COLUMN run_identity")
+            self.conn.executescript(UNIQUE_ATTEMPT_INDEX)
+            run_columns={row[1] for row in self.conn.execute("PRAGMA table_info(runs)")}
+            for name,declaration in RUN_MODE_COLUMNS:
+                if name not in run_columns:
+                    self.conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {declaration}")
+            ticket_columns={row[1] for row in self.conn.execute("PRAGMA table_info(tickets)")}
+            for name,declaration in TICKET_QUEUE_COLUMNS:
+                if name not in ticket_columns:
+                    self.conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {declaration}")
+            self.conn.execute("INSERT INTO schema_meta(version,migrated_at) VALUES(?,?)",(SCHEMA_VERSION,now()))
     def event(self,run_id,entity_type,entity_id,event_type,payload):
         self.conn.execute("INSERT INTO events(run_id,entity_type,entity_id,event_type,payload,observed_at) VALUES(?,?,?,?,?,?)",(run_id,entity_type,entity_id,event_type,json.dumps(payload,ensure_ascii=False,sort_keys=True),now()))
-    def create_run(self,run_id,initiative,requirement):
+    def create_run(self,run_id,initiative,requirement,execution_mode="whole-spec",controller_task_id=None,queue_definition=None):
+        if execution_mode not in {"whole-spec", "single-ticket-line"}:
+            raise ValueError("unsupported execution mode")
+        if execution_mode == "single-ticket-line" and not controller_task_id:
+            raise ValueError("single-ticket-line requires controller_task_id")
+        if (str(initiative).strip() in {"#444", "444"} or "#444" in str(requirement)) and execution_mode == "single-ticket-line" and controller_task_id != "codex://threads/01a09a58-dfcd-72b0-a5d7-c359eefce9a2":
+            raise ValueError("issue #444 has one designated controller task")
         stamp=now()
         with self.conn:
-            self.conn.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?)",(run_id,initiative,requirement,"active",None,stamp,stamp)); self.event(run_id,"run",run_id,"run_created",{})
+            self.conn.execute("INSERT INTO runs(run_id,initiative,requirement,status,current_action,created_at,updated_at,execution_mode,controller_task_id,queue_definition) VALUES(?,?,?,?,?,?,?,?,?,?)",(run_id,initiative,requirement,"active",None,stamp,stamp,execution_mode,controller_task_id,json.dumps(queue_definition or [],ensure_ascii=False))); self.event(run_id,"run",run_id,"run_created",{"execution_mode":execution_mode,"controller_task_id":controller_task_id})
+    def migrate_run_to_single_ticket_line(self, run_id, queue_definition):
+        """Convert an existing run without inventing controller identity.
+
+        This is an additive recovery operation for runs created before the global
+        ticket-line mode existed. It refuses to race an executable action and never
+        changes ticket, thread, or evidence rows. The controller identity remains
+        null until a live backend readback proves it.
+        """
+        if not isinstance(queue_definition, list) or not queue_definition:
+            raise ValueError("single-ticket-line queue must be a non-empty list")
+        if any(not isinstance(item, str) or not item.strip() for item in queue_definition):
+            raise ValueError("single-ticket-line queue entries must be non-empty strings")
+        if len(set(queue_definition)) != len(queue_definition):
+            raise ValueError("single-ticket-line queue entries must be unique")
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT execution_mode,controller_task_id,queue_definition,current_action "
+                "FROM runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("run not found")
+            active = self.conn.execute(
+                "SELECT action_id,kind,target FROM actions WHERE run_id=? "
+                "AND status IN ('pending','running') ORDER BY action_id LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if active is not None:
+                raise ActionConflict(
+                    f"action {active[0]} already owns run {run_id}: {active[1]}:{active[2]}"
+                )
+            try:
+                existing_queue = json.loads(row[2] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                existing_queue = None
+            if row[0] == "single-ticket-line":
+                if row[1] is not None:
+                    raise ValueError("single-ticket-line controller identity is already bound")
+                if existing_queue != queue_definition:
+                    raise ValueError("single-ticket-line queue is already defined differently")
+                return {"run_id": run_id, "changed": False, "execution_mode": row[0],
+                        "controller_task_id": None, "queue_definition": queue_definition,
+                        "next_action": "repair_queue"}
+            if row[0] != "whole-spec":
+                raise ValueError(f"unsupported existing execution mode: {row[0]}")
+            stamp = now()
+            self.conn.execute(
+                "UPDATE runs SET execution_mode='single-ticket-line',controller_task_id=NULL,"
+                "queue_definition=?,current_action=?,updated_at=? WHERE run_id=?",
+                (json.dumps(queue_definition, ensure_ascii=False), f"repair_queue:{run_id}", stamp, run_id),
+            )
+            self.event(run_id, "run", run_id, "run_mode_migrated", {
+                "from": row[0], "to": "single-ticket-line", "controller_task_id": None,
+                "queue_definition": queue_definition, "previous_current_action": row[3],
+                "reason": "single-line recovery requires verified controller identity",
+            })
+            return {"run_id": run_id, "changed": True, "execution_mode": "single-ticket-line",
+                    "controller_task_id": None, "queue_definition": queue_definition,
+                    "next_action": "repair_queue"}
     def set_action(self,run_id,kind,target,status="pending"):
         key=f"{run_id}:{kind}:{target}"; row=self.conn.execute("SELECT action_id FROM actions WHERE idempotency_key=?",(key,)).fetchone()
         if row: return row[0]
+        active=self.conn.execute("SELECT action_id,kind,target FROM actions WHERE run_id=? AND status IN ('pending','running') ORDER BY action_id LIMIT 1",(run_id,)).fetchone()
+        if active:
+            raise ActionConflict(f"action {active[0]} already owns run {run_id}: {active[1]}:{active[2]}")
         stamp=now()
         with self.conn:
             cur=self.conn.execute("INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(run_id,kind,target,status,key,stamp,stamp)); self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?",(f"{kind}:{target}",stamp,run_id)); return cur.lastrowid
@@ -40,13 +213,341 @@ class ControlDB:
     def add_spec(self,run_id,spec_id,title,position,blocked_by=None,acceptance=None):
         with self.conn:
             self.conn.execute("INSERT INTO specs(spec_id,run_id,title,status,position,blocked_by,acceptance) VALUES(?,?,?,?,?,?,?)",(spec_id,run_id,title,"planned",position,json.dumps(blocked_by or []),json.dumps(acceptance or []))); self.event(run_id,"spec",spec_id,"spec_created",{"title":title})
-    def add_ticket(self,spec_id,ticket_id,title,blocked_by=None,issue_url=None):
+    def add_ticket(self,spec_id,ticket_id,title,blocked_by=None,issue_url=None,queue_position=None):
         run_id=self.conn.execute("SELECT run_id FROM specs WHERE spec_id=?",(spec_id,)).fetchone()[0]
+        if queue_position is None:
+            row=self.conn.execute("SELECT COALESCE(MAX(queue_position),0)+1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)).fetchone()
+            queue_position=row[0]
+        if self.conn.execute("SELECT 1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=? AND t.queue_position=?",(run_id,queue_position)).fetchone():
+            raise ValueError(f"queue_position already used in run: {queue_position}")
         with self.conn:
-            self.conn.execute("INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,issue_url) VALUES(?,?,?,?,?,?)",(ticket_id,spec_id,title,"planned",json.dumps(blocked_by or []),issue_url)); self.event(run_id,"ticket",ticket_id,"ticket_created",{"spec_id":spec_id})
-    def add_thread(self,run_id,thread_id,kind,spec_id=None):
+            self.conn.execute("INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,issue_url,queue_position) VALUES(?,?,?,?,?,?,?)",(ticket_id,spec_id,title,"planned",json.dumps(blocked_by or []),issue_url,queue_position)); self.event(run_id,"ticket",ticket_id,"ticket_created",{"spec_id":spec_id,"queue_position":queue_position})
+    def import_ticket_ledger(self, run_id, entries):
+        """Import an externally read-back ticket ledger without creating issues.
+
+        The import is intentionally strict: it must cover the declared global
+        queue exactly, map every entry to a run-owned spec, and carry structured
+        evidence for already-closed tickets. It never changes GitHub state.
+        """
+        if not isinstance(entries, dict):
+            raise TypeError("ticket ledger must be a GitHub readback envelope")
+        source = entries.get("source")
+        if not isinstance(source, dict) or source.get("kind") != "github":
+            raise ValueError("ticket ledger source must be github")
+        source_evidence = source.get("evidence", source.get("readback_evidence", []))
+        if not _valid_evidence(source_evidence, _READBACK_SCHEMES):
+            raise ValueError("ticket ledger requires GitHub readback evidence")
+        expected_count = entries.get("expected_ticket_count")
+        if not isinstance(expected_count, int) or expected_count < 1:
+            raise ValueError("ticket ledger requires expected_ticket_count")
+        declared_queue = entries.get("queue")
+        if declared_queue is not None and (not isinstance(declared_queue, list) or any(not isinstance(item, str) for item in declared_queue)):
+            raise ValueError("ticket ledger queue is invalid")
+        entries = entries.get("tickets")
+        if not isinstance(entries, list) or not entries:
+            raise ValueError("ticket ledger must contain a non-empty tickets list")
+        if len(entries) != expected_count:
+            raise ValueError("ticket ledger count does not match expected_ticket_count")
         with self.conn:
-            self.conn.execute("INSERT INTO threads(thread_id,run_id,kind,spec_id,lifecycle,last_observed_at) VALUES(?,?,?,?,?,?)",(thread_id,run_id,kind,spec_id,"created",now())); self.event(run_id,"thread",thread_id,"thread_registered",{"kind":kind,"spec_id":spec_id})
+            run = self.conn.execute(
+                "SELECT execution_mode,queue_definition FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if run is None:
+                raise ValueError("run not found")
+            if run[0] != "single-ticket-line":
+                raise ValueError("ticket ledger requires single-ticket-line run")
+            try:
+                queue = json.loads(run[1] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                raise ValueError("run queue definition is invalid") from None
+            if not isinstance(queue, list) or len(set(queue)) != len(queue):
+                raise ValueError("run queue definition is invalid")
+            if len(queue) != expected_count:
+                raise ValueError("run queue count does not match expected_ticket_count")
+            if declared_queue is not None and declared_queue != queue:
+                raise ValueError("ticket ledger queue does not match run queue")
+            by_id = {}
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise TypeError("ticket ledger entries must be objects")
+                ticket_id = entry.get("ticket_id") or entry.get("id")
+                if not isinstance(ticket_id, str) or not ticket_id.strip() or ticket_id in by_id:
+                    raise ValueError("ticket ledger contains invalid or duplicate ticket_id")
+                by_id[ticket_id] = entry
+            if set(by_id) != set(queue) or len(by_id) != len(queue):
+                raise ValueError("ticket ledger does not exactly match queue_definition")
+            spec_rows = {
+                row[0]: row[1]
+                for row in self.conn.execute(
+                    "SELECT spec_id,status FROM specs WHERE run_id=?", (run_id,)
+                )
+            }
+            if not spec_rows:
+                raise ValueError("run spec ledger is incomplete")
+            if run[0] == "single-ticket-line" and self._is_issue_444_run(run_id) and len(queue) != 33:
+                raise ValueError("issue #444 requires exactly 33 queued tickets")
+            normalized = []
+            allowed = {"planned", "ready", "implementing", "verified", "merged", "closed", "blocked", "cancelled"}
+            for position, ticket_id in enumerate(queue, 1):
+                entry = by_id[ticket_id]
+                spec_id = entry.get("spec_id")
+                title = entry.get("title")
+                status = entry.get("status", "planned")
+                blockers = entry.get("blocked_by", [])
+                queue_position = entry.get("queue_position", position)
+                commits = entry.get("commits", [])
+                tests = entry.get("tests", entry.get("test_evidence", []))
+                acceptance = entry.get("acceptance", entry.get("acceptance_evidence", []))
+                readback_evidence = entry.get("readback_evidence", entry.get("github_readback_evidence", []))
+                if spec_id not in spec_rows or not isinstance(title, str) or not title.strip():
+                    raise ValueError(f"ticket ledger entry {ticket_id} has invalid spec/title")
+                if queue_position != position or status not in allowed:
+                    raise ValueError(f"ticket ledger entry {ticket_id} has invalid position/status")
+                if not isinstance(blockers, list) or any(item not in queue for item in blockers):
+                    raise ValueError(f"ticket ledger entry {ticket_id} has invalid blockers")
+                if ticket_id in blockers:
+                    raise ValueError(f"ticket ledger entry {ticket_id} blocks itself")
+                if not _valid_evidence(readback_evidence, _READBACK_SCHEMES):
+                    raise ValueError(f"ticket ledger entry {ticket_id} lacks GitHub readback evidence")
+                if status == "closed":
+                    if not _valid_evidence(commits, _COMMIT_SCHEMES):
+                        raise ValueError(f"ticket ledger entry {ticket_id} lacks commit evidence")
+                    if not _valid_evidence(tests, _TEST_SCHEMES):
+                        raise ValueError(f"ticket ledger entry {ticket_id} lacks test evidence")
+                    if not _valid_evidence(acceptance, _ACCEPTANCE_SCHEMES):
+                        raise ValueError(f"ticket ledger entry {ticket_id} lacks acceptance evidence")
+                normalized.append((
+                    ticket_id, spec_id, title, status, blockers, commits, tests, acceptance,
+                    entry.get("issue_url"), queue_position, readback_evidence,
+                ))
+            existing = [
+                tuple(row)
+                for row in self.conn.execute(
+                    "SELECT t.ticket_id,t.spec_id,t.title,t.status,t.blocked_by,t.commits,t.tests,t.acceptance,t.issue_url,t.queue_position "
+                    "FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=? "
+                    "ORDER BY t.queue_position", (run_id,)
+                )
+            ]
+            canonical = [
+                (ticket_id, spec_id, title, status, json.dumps(blockers, ensure_ascii=False),
+                 json.dumps(commits, ensure_ascii=False), json.dumps(tests, ensure_ascii=False),
+                 json.dumps(acceptance, ensure_ascii=False), issue_url, position)
+                for ticket_id, spec_id, title, status, blockers, commits, tests, acceptance, issue_url, position, _ in normalized
+            ]
+            if existing:
+                if existing != canonical:
+                    raise ValueError("ticket ledger is already defined differently")
+                return {"run_id": run_id, "changed": False, "ticket_count": len(canonical)}
+            for ticket_id, spec_id, title, status, blockers, commits, tests, acceptance, issue_url, position, _ in normalized:
+                self.conn.execute(
+                    "INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,commits,tests,acceptance,issue_url,queue_position) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (ticket_id, spec_id, title, status, json.dumps(blockers, ensure_ascii=False),
+                     json.dumps(commits, ensure_ascii=False), json.dumps(tests, ensure_ascii=False),
+                     json.dumps(acceptance, ensure_ascii=False),
+                     issue_url, position),
+                )
+            self.event(run_id, "ticket-ledger", run_id, "ticket_ledger_imported", {
+                "ticket_count": len(canonical), "source": source, "github_mutation": False,
+            })
+            return {"run_id": run_id, "changed": True, "ticket_count": len(canonical)}
+
+    def _is_issue_444_run(self, run_id):
+        row = self.conn.execute(
+            "SELECT initiative,requirement,controller_task_id FROM runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        return (
+            str(row[0]).strip() in {"#444", "444"}
+            or "#444" in str(row[1])
+            or row[2] == "codex://threads/01a09a58-dfcd-72b0-a5d7-c359eefce9a2"
+        )
+
+    def ticket_ledger_status(self, run_id):
+        """Return the persisted GitHub-backed queue gate without mutating state."""
+        run = self.conn.execute(
+            "SELECT execution_mode,queue_definition FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if run is None:
+            return {"allow": False, "errors": ["run_not_found"]}
+        try:
+            queue = json.loads(run[1] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            return {"allow": False, "errors": ["queue_definition_invalid"]}
+        errors = []
+        if run[0] != "single-ticket-line":
+            errors.append("not_single_ticket_line")
+        if not isinstance(queue, list) or not queue or len(set(queue)) != len(queue):
+            errors.append("queue_definition_invalid")
+        rows = self.conn.execute(
+            "SELECT t.ticket_id,t.queue_position,t.status,t.commits,t.tests,t.acceptance FROM tickets t JOIN specs s ON s.spec_id=t.spec_id "
+            "WHERE s.run_id=? ORDER BY t.queue_position", (run_id,)
+        ).fetchall()
+        if [row[0] for row in rows] != queue or [row[1] for row in rows] != list(range(1, len(queue) + 1)):
+            errors.append("ticket_ledger_incomplete")
+        for row in rows:
+            if row[2] == "closed" and (
+                not _valid_evidence(json.loads(row[3] or "[]"), _COMMIT_SCHEMES)
+                or not _valid_evidence(json.loads(row[4] or "[]"), _TEST_SCHEMES)
+                or not _valid_evidence(json.loads(row[5] or "[]"), _ACCEPTANCE_SCHEMES)
+            ):
+                errors.append("closed_ticket_missing_evidence")
+        imported = self.conn.execute(
+            "SELECT payload FROM events WHERE run_id=? AND entity_type='ticket-ledger' "
+            "AND event_type='ticket_ledger_imported' ORDER BY event_id DESC LIMIT 1", (run_id,)
+        ).fetchone()
+        if imported is None:
+            errors.append("ticket_ledger_readback_missing")
+        else:
+            try:
+                receipt = json.loads(imported[0])
+            except (TypeError, json.JSONDecodeError):
+                receipt = {}
+            source = receipt.get("source", {})
+            if source.get("kind") != "github" or not _valid_evidence(
+                source.get("evidence", source.get("readback_evidence", [])), _READBACK_SCHEMES
+            ):
+                errors.append("ticket_ledger_github_readback_missing")
+            if receipt.get("ticket_count") != len(queue):
+                errors.append("ticket_ledger_count_mismatch")
+        if self._is_issue_444_run(run_id) and len(queue) != 33:
+            errors.append("issue_444_ticket_count_not_33")
+        return {"allow": not errors, "errors": sorted(set(errors)), "ticket_count": len(queue) if isinstance(queue, list) else 0}
+    def add_thread(self,run_id,thread_id,kind,spec_id=None,identity=None,client_thread_id=None,host_id=None,owner_id=None,cwd=None,project_id=None,title_token=None,formal_thread_id=None):
+        """Register a task attempt, returning True only when a row was inserted.
+
+        A repeat call for the same run, task, and attempt is refused by the unique
+        attempt index, so a restarted controller cannot register a second row for
+        one attempt. The caller reconciles against the existing row instead.
+        """
+        fields={"task_id":None,"attempt_id":None,"nonce":None}
+        if identity is not None:
+            fields.update(identity.as_fields())
+        # The registry run column is the identity run. When the identity names a
+        # run that this database knows, that value is authoritative; otherwise the
+        # thread run is retained so the foreign key stays satisfiable.
+        identity_run=fields.get("run_id")
+        if identity_run:
+            known=self.conn.execute("SELECT 1 FROM runs WHERE run_id=?",(identity_run,)).fetchone()
+            if known:
+                run_id=identity_run
+        with self.conn:
+            cur=self.conn.execute(
+                "INSERT OR IGNORE INTO threads(thread_id,run_id,kind,spec_id,lifecycle,last_observed_at,task_id,attempt_id,nonce,client_thread_id,formal_thread_id,host_id,owner_id,cwd,project_id,title_token) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (thread_id,run_id,kind,spec_id,"created",now(),fields["task_id"],fields["attempt_id"],fields["nonce"],client_thread_id,formal_thread_id,host_id,owner_id,cwd,project_id,title_token))
+            inserted=cur.rowcount==1
+            if inserted:
+                self.event(run_id,"thread",thread_id,"thread_registered",{"kind":kind,"spec_id":spec_id,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
+            else:
+                self.event(run_id,"thread",thread_id,"thread_registration_refused",{"kind":kind,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
+        return inserted
+    def threads_by_identity(self,run_id,task_id,attempt_id=None):
+        """Return registered rows for a task identity, optionally one attempt."""
+        sql="SELECT * FROM threads WHERE run_id=? AND task_id=?"
+        params=[run_id,task_id]
+        if attempt_id is not None:
+            sql+=" AND attempt_id=?"; params.append(attempt_id)
+        return [dict(row) for row in self.conn.execute(sql+" ORDER BY attempt_id",params)]
+    def threads_by_formal_id(self,formal_thread_id,host_id=None):
+        sql="SELECT * FROM threads WHERE formal_thread_id=?"
+        params=[formal_thread_id]
+        if host_id is not None:
+            sql+=" AND host_id=?"; params.append(host_id)
+        return [dict(row) for row in self.conn.execute(sql,params)]
+    def threads_by_client_id(self,client_thread_id):
+        return [dict(row) for row in self.conn.execute("SELECT * FROM threads WHERE client_thread_id=?",(client_thread_id,))]
+    def threads_by_title_token(self,title_token):
+        return [dict(row) for row in self.conn.execute("SELECT * FROM threads WHERE title_token=?",(title_token,))]
+    def next_attempt_id(self,run_id,task_id,attempt_id):
+        """Return the next attempt only after the current row is terminal."""
+        from task_binding import may_advance_attempt
+        row=self.conn.execute(
+            "SELECT lifecycle,outcome FROM threads WHERE run_id=? AND task_id=? AND attempt_id=?",
+            (run_id,task_id,attempt_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("unknown task attempt")
+        if not may_advance_attempt(row[0],row[1]):
+            raise ValueError("current task attempt is not terminal")
+        from task_identity import next_attempt_id
+        return next_attempt_id(attempt_id)
+    def untracked_threads(self,run_id):
+        """Rows retained for audit that carry no task identity."""
+        return [dict(row) for row in self.conn.execute("SELECT * FROM threads WHERE run_id=? AND task_id IS NULL",(run_id,))]
+    def bind_identity(self,run_id,thread_id,formal_thread_id,host_id,identity_readback=None):
+        """Record the formal backend identity and its readback evidence."""
+        with self.conn:
+            cur=self.conn.execute("UPDATE threads SET formal_thread_id=?,host_id=?,identity_readback=?,last_observed_at=? WHERE thread_id=? AND run_id=?",(formal_thread_id,host_id,identity_readback,now(),thread_id,run_id))
+            if cur.rowcount!=1: raise ValueError("unknown thread")
+            self.event(run_id,"thread",thread_id,"thread_identity_bound",{"formal_thread_id":formal_thread_id,"host_id":host_id})
+    def observe_thread(self,run_id,thread_id,lifecycle=None,outcome=None,next_action=None,readback=None):
+        """Persist a backend observation without inventing a state transition."""
+        with self.conn:
+            row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()
+            if not row: raise ValueError("unknown thread")
+            self.conn.execute(
+                "UPDATE threads SET lifecycle=COALESCE(?,lifecycle),outcome=COALESCE(?,outcome),next_action=COALESCE(?,next_action),identity_readback=COALESCE(?,identity_readback),last_observed_at=? WHERE thread_id=? AND run_id=?",
+                (lifecycle,outcome,next_action,readback,now(),thread_id,run_id),
+            )
+            self.event(run_id,"thread",thread_id,"backend_reconciled",{"lifecycle":lifecycle,"outcome":outcome,"next_action":next_action})
+    def set_route_evidence(self,run_id,thread_id,route_readback=None,route_receipt=None):
+        """Persist post-create route readback and its receipt for this attempt."""
+        with self.conn:
+            cur=self.conn.execute("UPDATE threads SET route_readback=COALESCE(?,route_readback),route_receipt=COALESCE(?,route_receipt),last_observed_at=? WHERE thread_id=? AND run_id=?",(route_readback,route_receipt,now(),thread_id,run_id))
+            if cur.rowcount!=1: raise ValueError("unknown thread")
+            self.event(run_id,"thread",thread_id,"thread_route_evidence_recorded",{"route_readback":route_readback,"route_receipt":route_receipt})
+    def persist_controller_recovery(self, run_id, thread_id, identity, route_readback, next_action):
+        """Atomically cross the controller recovery barrier.
+
+        The caller must already have independently validated the backend record.
+        This method makes the final write indivisible: formal identity, lifecycle
+        readback, applied route, and the recomputed queue action are committed in
+        one SQLite transaction or none are committed.
+        """
+        if not isinstance(identity, dict):
+            raise TypeError("controller identity must be an object")
+        required = ("formal_thread_id", "host_id", "task_id", "run_id",
+                    "attempt_id", "owner_id", "cwd", "project_id", "lifecycle")
+        missing = [field for field in required if not identity.get(field)]
+        if missing:
+            raise ValueError("controller identity is incomplete: " + ", ".join(missing))
+        if not isinstance(route_readback, dict) or not route_readback.get("model") or not route_readback.get("effort"):
+            raise ValueError("controller applied route is incomplete")
+        if not isinstance(next_action, dict) or not next_action.get("kind") or not next_action.get("target"):
+            raise ValueError("controller next action is incomplete")
+        ledger = self.ticket_ledger_status(run_id)
+        if not ledger["allow"]:
+            raise ValueError("controller recovery ledger gate failed: " + ", ".join(ledger["errors"]))
+        identity_json = json.dumps(identity, ensure_ascii=False, sort_keys=True)
+        route_json = json.dumps(route_readback, ensure_ascii=False, sort_keys=True)
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT task_id,run_id,attempt_id,owner_id,cwd,project_id FROM threads "
+                "WHERE thread_id=? AND run_id=?", (thread_id, run_id)
+            ).fetchone()
+            if row is None:
+                raise ValueError("unknown controller thread")
+            expected = {
+                "task_id": row[0], "run_id": row[1], "attempt_id": row[2],
+                "owner_id": row[3], "cwd": row[4], "project_id": row[5],
+            }
+            mismatched = [field for field, value in expected.items()
+                          if value is not None and identity.get(field) != value]
+            if mismatched:
+                raise ValueError("controller identity disagrees with registry: " + ", ".join(mismatched))
+            self.conn.execute(
+                "UPDATE threads SET formal_thread_id=?,host_id=?,identity_readback=?,"
+                "route_readback=?,last_observed_at=? WHERE thread_id=? AND run_id=?",
+                (identity["formal_thread_id"], identity["host_id"], identity_json,
+                 route_json, now(), thread_id, run_id),
+            )
+            self.event(run_id, "thread", thread_id, "controller_recovery_committed", {
+                "identity": identity, "route": route_readback, "next_action": next_action,
+                "gates": ["ticket_ledger", "formal_identity", "applied_route"],
+            })
+            self.event(run_id, "run", run_id, "controller_next_action_recomputed", next_action)
     def add_observation(self,run_id,entity_type,entity_id,observation):
         with self.conn:
             self.event(run_id,entity_type,entity_id,"external_observation",observation)
@@ -57,13 +558,35 @@ class ControlDB:
         transition(SPEC_TRANSITIONS,row[1],status)
         with self.conn:
             self.conn.execute("UPDATE specs SET status=? WHERE spec_id=?",(status,spec_id)); self.event(row[0],"spec",spec_id,"spec_state_changed",{"status":status})
-    def update_ticket(self,ticket_id,status,commits=None,tests=None):
-        row=self.conn.execute("SELECT t.status,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?",(ticket_id,)).fetchone()
+    def update_ticket(self,ticket_id,status,commits=None,tests=None,acceptance=None):
+        row=self.conn.execute("SELECT t.status,t.commits,t.tests,t.acceptance,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?",(ticket_id,)).fetchone()
         if not row: raise ValueError("unknown ticket")
         allowed={"planned":{"ready","blocked"},"ready":{"implementing","blocked"},"implementing":{"verified","blocked"},"verified":{"merged","blocked"},"merged":{"closed"},"blocked":{"ready","implementing","cancelled"},"closed":set(),"cancelled":set()}
         if status not in allowed.get(row[0],set()): raise ValueError(f"illegal ticket transition: {row[0]} -> {status}")
+        try:
+            stored_commits = json.loads(row[1] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            stored_commits = None
+        try:
+            stored_tests = json.loads(row[2] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            stored_tests = None
+        try:
+            stored_acceptance = json.loads(row[3] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            stored_acceptance = None
+        resulting_commits = commits if commits is not None else stored_commits
+        resulting_tests = tests if tests is not None else stored_tests
+        resulting_acceptance = acceptance if acceptance is not None else stored_acceptance
+        if status == "closed":
+            if not _valid_evidence(resulting_commits, _COMMIT_SCHEMES):
+                raise ValueError("ticket closure requires structured commit evidence")
+            if not _valid_evidence(resulting_tests, _TEST_SCHEMES):
+                raise ValueError("ticket closure requires structured test evidence")
+            if not _valid_evidence(resulting_acceptance, _ACCEPTANCE_SCHEMES):
+                raise ValueError("ticket closure requires structured acceptance evidence")
         with self.conn:
-            self.conn.execute("UPDATE tickets SET status=?,commits=COALESCE(?,commits),tests=COALESCE(?,tests) WHERE ticket_id=?",(status,json.dumps(commits) if commits is not None else None,json.dumps(tests) if tests is not None else None,ticket_id)); self.event(row[1],"ticket",ticket_id,"ticket_state_changed",{"status":status,"commits":commits,"tests":tests})
+            self.conn.execute("UPDATE tickets SET status=?,commits=COALESCE(?,commits),tests=COALESCE(?,tests),acceptance=COALESCE(?,acceptance) WHERE ticket_id=?",(status,json.dumps(commits) if commits is not None else None,json.dumps(tests) if tests is not None else None,json.dumps(acceptance) if acceptance is not None else None,ticket_id)); self.event(row[4],"ticket",ticket_id,"ticket_state_changed",{"status":status,"commits":commits,"tests":tests,"acceptance":acceptance})
     def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None):
         with self.conn:
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()

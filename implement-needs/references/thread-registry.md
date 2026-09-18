@@ -6,13 +6,26 @@ index for every thread created by one
 answers “which threads exist and what must happen to each one.”
 
 The old `thread-registry.json` name refers only to a read-only export. Each database
-entry records `thread_id`, `kind`, optional `spec_id`, `owner`, `lifecycle`,
+entry records the legacy-compatible `thread_id` (the current backend thread ID),
+`kind`, optional `spec_id`, the managed identity tuple (`task_id`, `run_id`,
+`attempt_id`, `nonce`), backend handles (`client_thread_id`, `formal_thread_id`,
+`host_id`), binding context (`owner_id`, `cwd`, `project_id`), and `title_token`,
+along with `lifecycle`,
 `outcome`, `last_observed_at`, `next_action`, `archive_operation_evidence`, and
 `archive_readback_evidence`. Registry `outcome` may be `completed`,
 `cancelled_before_start`, `abandoned_after_bootstrap`, `repaired`, or `unknown`.
 Controller task lifecycle remains `queued`, `active`, `paused`, `handoff_received`,
 `verified`, or `archived`; cancellation is represented by `outcome` plus the final
 `archived` lifecycle, so the controller schema stays compatible.
+
+Rows without `task_id` are legacy audit rows (`legacy_untracked`). They remain
+exportable but are excluded from managed-task identity matching and must never be
+used as evidence for creating, rebinding, or replacing a task. Recovery looks up
+`formal_thread_id` plus `host_id` first, then `client_thread_id`, then the title
+token as a candidate index. Every candidate still requires a fresh formal readback
+matching identity, owner, cwd, and project before rebinding. A single-ticket-line
+controller must also persist the applied route readback on the same registry row;
+formal identity without model/effort route evidence is not recoverable.
 
 ## Reconciliation gate
 

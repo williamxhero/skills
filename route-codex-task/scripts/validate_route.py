@@ -13,6 +13,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from route_policy import (
+    EVIDENCE_MODES,
+    EVIDENCE_UNAVAILABLE,
     POLICY_ERROR,
     build_route_receipt,
     decision_hash,
@@ -20,6 +22,7 @@ from route_policy import (
     sha256,
     sort_issues,
     validate_capability_readback,
+    validate_execution_evidence,
     validate_route,
     validate_task_readback,
 )
@@ -44,8 +47,12 @@ def evaluate(
     expected_target: str,
     expected_host_id: str,
     expected_task_id: str,
+    evidence_mode: str = "configured_readback",
+    execution_evidence_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     issues: list[dict[str, str]] = []
+    if evidence_mode not in EVIDENCE_MODES:
+        issues.append(issue("invalid_evidence_mode", "$.evidence_mode", "Evidence mode must be configured_readback or execution_proof."))
     if POLICY_ERROR is not None:
         issues.append(issue("model_policy_invalid", "$.model_policy", f"route-codex-task policy is invalid: {POLICY_ERROR}."))
     record, record_raw = read_json(record_path, "route_record", issues)
@@ -86,6 +93,12 @@ def evaluate(
             capabilities=capabilities,
             xhigh_evidence=xhigh_evidence,
         )
+    execution_evidence = EVIDENCE_UNAVAILABLE
+    if execution_evidence_path is not None:
+        raw_evidence = read_json(execution_evidence_path, "execution_evidence", issues)
+        execution_evidence = validate_execution_evidence(raw_evidence[0], "$execution", issues)
+    if evidence_mode == "execution_proof" and execution_evidence == EVIDENCE_UNAVAILABLE:
+        issues.append(issue("execution_evidence_missing", "$.execution", "Execution-proof mode requires provider or turn level execution evidence."))
     issues = sort_issues(issues)
     if issues:
         payload: dict[str, Any] = {"schema_version": 1, "decision": "reject", "gate": "codex_task_route", "route_id": expected_route_id, "target": expected_target, "reasons": issues}
@@ -105,8 +118,12 @@ def evaluate(
         record_hash=sha256(record_raw),
         readback_hash_name="route_readback_sha256",
         readback_hash=sha256(readback_raw),
+        identity_evidence="formal_readback",
+        capability_evidence="host_capability_readback",
+        configured_route_evidence="post_create_readback",
+        execution_evidence=execution_evidence,
         gate="codex_task_route",
-        extra_fields={"host_id": host_id},
+        extra_fields={"host_id": host_id, "evidence_mode": evidence_mode},
     ), 0
 
 
@@ -135,6 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-target", required=True)
     parser.add_argument("--expected-host-id", required=True)
     parser.add_argument("--expected-task-id", required=True)
+    parser.add_argument("--evidence-mode", default="configured_readback", choices=list(EVIDENCE_MODES))
+    parser.add_argument("--execution-evidence", type=Path)
     parser.add_argument("--receipt", type=Path)
     args = parser.parse_args(argv)
     payload, code = evaluate(
@@ -144,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         expected_target=args.expected_target,
         expected_host_id=args.expected_host_id,
         expected_task_id=args.expected_task_id,
+        evidence_mode=args.evidence_mode,
+        execution_evidence_path=args.execution_evidence,
     )
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     if args.receipt is not None:
@@ -154,4 +175,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-

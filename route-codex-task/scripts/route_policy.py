@@ -11,6 +11,12 @@ from typing import Any
 POLICY_PATH = Path(__file__).resolve().parents[1] / "references" / "model-policy.json"
 SHA256_LENGTH = 64
 
+# Evidence levels recorded on every allow receipt. Each level names what was
+# actually observed, so a requested route or a title token can never be reported
+# as an applied or executed one.
+EVIDENCE_UNAVAILABLE = "unavailable"
+EVIDENCE_MODES = ("configured_readback", "execution_proof")
+
 
 def load_policy(path: Path = POLICY_PATH) -> tuple[dict[str, Any] | None, str | None]:
     """Return the canonical policy or a deterministic fail-closed reason."""
@@ -368,6 +374,35 @@ def validate_task_readback(
     return obj
 
 
+#: Fields a provider or turn level execution record must carry to prove that the
+#: requested route actually ran. Anything less stays ``unavailable``.
+EXECUTION_EVIDENCE_FIELDS = ("source", "turn_id", "model", "thinking", "observed_at")
+
+
+def validate_execution_evidence(
+    value: Any, path: str, issues: list[dict[str, str]]
+) -> str:
+    """Return a proof label for real execution evidence, else ``unavailable``.
+
+    A request, a route selection, or a task title is not execution evidence. Only
+    a record that names the provider or turn source, the turn, the observed model
+    and effort, and when it was observed counts as proof.
+    """
+    if value is None:
+        return EVIDENCE_UNAVAILABLE
+    if not isinstance(value, dict) or set(value) != set(EXECUTION_EVIDENCE_FIELDS):
+        issues.append(issue("invalid_execution_evidence", path, "Execution evidence must carry exactly source, turn_id, model, thinking, and observed_at."))
+        return EVIDENCE_UNAVAILABLE
+    for field in EXECUTION_EVIDENCE_FIELDS:
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            issues.append(issue("invalid_execution_evidence", f"{path}.{field}", "Execution evidence fields must be non-empty strings."))
+            return EVIDENCE_UNAVAILABLE
+    if policy_pair({"model": value["model"], "thinking": value["thinking"]}) is None:
+        issues.append(issue("invalid_execution_evidence", path, "Execution evidence pair must be allowed by route-codex-task."))
+        return EVIDENCE_UNAVAILABLE
+    return "provider_or_turn_readback"
+
+
 def build_route_receipt(
     *,
     identity_name: str,
@@ -381,6 +416,10 @@ def build_route_receipt(
     record_hash: str,
     readback_hash_name: str,
     readback_hash: str,
+    identity_evidence: str = EVIDENCE_UNAVAILABLE,
+    capability_evidence: str = EVIDENCE_UNAVAILABLE,
+    configured_route_evidence: str = EVIDENCE_UNAVAILABLE,
+    execution_evidence: str = EVIDENCE_UNAVAILABLE,
     gate: str = "task_route",
     extra_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -394,6 +433,12 @@ def build_route_receipt(
         "selection": selection,
         "applied": applied,
         "locked_route": {"recommended": route["recommended"], "fallbacks": route["fallbacks"]},
+        "evidence_levels": {
+            "identity_evidence": identity_evidence,
+            "capability_evidence": capability_evidence,
+            "configured_route_evidence": configured_route_evidence,
+            "execution_evidence": execution_evidence,
+        },
         record_hash_name: record_hash,
         readback_hash_name: readback_hash,
     }
@@ -401,6 +446,27 @@ def build_route_receipt(
         payload.update(extra_fields)
     payload["receipt_sha256"] = decision_hash(payload)
     return payload
+
+
+EVIDENCE_LEVEL_FIELDS = (
+    "identity_evidence",
+    "capability_evidence",
+    "configured_route_evidence",
+    "execution_evidence",
+)
+
+
+def evidence_level_issues(value: Any, path: str) -> list[dict[str, str]]:
+    """Validate the four recorded evidence levels on a route receipt."""
+    if not isinstance(value, dict) or set(value) != set(EVIDENCE_LEVEL_FIELDS):
+        return [issue("invalid_evidence_levels", path, "Route receipt must record identity, capability, configured route, and execution evidence levels.")]
+    issues: list[dict[str, str]] = []
+    for field in EVIDENCE_LEVEL_FIELDS:
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            issues.append(issue("invalid_evidence_levels", f"{path}.{field}", "Evidence levels must be non-empty strings; use unavailable when nothing was observed."))
+    if value.get("configured_route_evidence") == EVIDENCE_UNAVAILABLE:
+        issues.append(issue("configured_route_evidence_missing", f"{path}.configured_route_evidence", "An allow receipt requires a post-create configured route readback."))
+    return issues
 
 
 def route_receipt_issues(
@@ -420,7 +486,10 @@ def route_receipt_issues(
         "selection", "applied", "locked_route", "planning_record_sha256",
         "route_readback_sha256", "receipt_sha256",
     }
-    if not isinstance(value, dict) or set(value) != fields:
+    # evidence_levels is written by current receipts but stays optional on
+    # readback so receipts minted before the field existed still validate.
+    required = fields | ({"evidence_levels"} if isinstance(value, dict) and "evidence_levels" in value else set())
+    if not isinstance(value, dict) or set(value) != required:
         return [issue("invalid_route_receipt", path, "Route receipt must be the exact task_route allow receipt.")]
     issues: list[dict[str, str]] = []
     for field, expected in (("schema_version", 1), ("decision", "allow"), ("gate", "task_route"), ("run_id", run_id), ("target", target), ("task_id", task_id), ("selection", selection)):
@@ -461,6 +530,8 @@ def route_receipt_issues(
         digest = value.get(field)
         if not isinstance(digest, str) or len(digest) != SHA256_LENGTH or any(char not in "0123456789abcdef" for char in digest):
             issues.append(issue("invalid_route_receipt_hash", f"{path}.{field}", "Route receipt hashes must be lowercase SHA-256 values."))
+    if "evidence_levels" in value:
+        issues.extend(evidence_level_issues(value["evidence_levels"], f"{path}.evidence_levels"))
     if value.get("planning_record_sha256") != planning_record_sha256:
         issues.append(issue("route_receipt_planning_mismatch", f"{path}.planning_record_sha256", "Route receipt must bind the archived planning record."))
     receipt_body = dict(value)

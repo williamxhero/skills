@@ -124,6 +124,12 @@ class ProtocolFixture:
             },
             "planning_record_sha256": self.planning_record_sha256,
             "route_readback_sha256": "b" * 64,
+            "evidence_levels": {
+                "identity_evidence": "formal_readback",
+                "capability_evidence": "host_capability_readback",
+                "configured_route_evidence": "post_create_readback",
+                "execution_evidence": "unavailable",
+            },
         }
         canonical = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")

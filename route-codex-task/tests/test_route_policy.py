@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import copy
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -189,4 +189,3 @@ class RoutePolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

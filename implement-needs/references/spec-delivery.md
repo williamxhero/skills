@@ -56,6 +56,6 @@ or tickets in GitHub does not close the Codex task; both states require independ
 verification. Treat a child visible as `idle` or `notLoaded` as unarchived until the
 archive operation and post-operation readback succeed.
 
-One child owns one SPEC through merge and evidence handoff. Do not reuse it for another SPEC or overlap it with another implementation child, and do not create ticket implementation tasks, threads, worktrees, branches, or PRs. Repair tasks and read-only exploration or review tasks are role-limited helpers only; after they return, resume the recorded SPEC task. The controller retains release context while archived implementation context disappears.
+One child owns one SPEC through merge and evidence handoff in `whole-spec` mode. Do not reuse it for another SPEC or overlap it with another implementation child, and do not create ticket implementation tasks, threads, worktrees, branches, or PRs. When the run is `single-ticket-line`, the designated controller task owns the global queue and no implementation child is created; its queue position, blocker readback, commit, tests, and merge evidence are the ownership boundary. Repair tasks and read-only exploration or review tasks are role-limited helpers only. The controller retains release context while archived implementation context disappears.
 
 If a later SPEC exposes a defect in an earlier merged increment, add the smallest repair ticket to the current SPEC unless it changes the earlier accepted behavior; in that case plan and deliver a repair SPEC before continuing.

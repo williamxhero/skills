@@ -1,7 +1,10 @@
 """Export a read-only snapshot from SQLite."""
-import argparse, json
+import argparse
+import json
 from pathlib import Path
+
 from control_db import ControlDB
+
 p=argparse.ArgumentParser(); p.add_argument('--db',type=Path,required=True); p.add_argument('--run-id',required=True); p.add_argument('--output',type=Path); a=p.parse_args(); db=ControlDB(a.db)
 try:
     raw=json.dumps(db.snapshot(a.run_id),ensure_ascii=False,indent=2,sort_keys=True)+'\n'

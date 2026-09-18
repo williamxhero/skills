@@ -22,6 +22,13 @@ Immediately validate every active-state write with `scripts/validate_controller_
 
 The lifecycle log begins with `planning_archived.data.planning_record_sha256`. Every `spec_dispatched` event carries the complete `route_receipt` emitted by the SPEC route gate, and every recovery `child_reconnected` event repeats that exact receipt for a SPEC child (`null` for non-SPEC children). Lifecycle replay validates the receipt's self-hash, planning-record identity, target, owner task, selection, applied pair, locked recommendation, and fallback rank before dispatch or recovery can continue.
 
+Managed task identity is stored in SQLite as `task_id`, `run_id`, `attempt_id`, and
+`nonce`. The backend's formal thread ID and host ID are the authoritative external
+identity; `client_thread_id` and the machine-readable title token are recovery
+indexes only. A title match or create response alone never satisfies the bootstrap
+barrier. Identity and route readbacks are retained separately, and an attempt can
+advance only after its prior backend task is terminal and archived.
+
 Normalize the task snapshot to exactly `run_id`, `tasks`, and `implementation_ownership`. Each `tasks` entry uses the same `id`, `kind`, `spec_id`, and `lifecycle` fields as `child_tasks`:
 
 ```json
