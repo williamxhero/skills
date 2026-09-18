@@ -35,6 +35,18 @@ class ReconcileBackendTests(unittest.TestCase):
                 for position, ticket_id in enumerate(queue, 1)
             ],
         })
+        for from_phase, to_phase in (
+            ("initialized", "preflight_passed"),
+            ("preflight_passed", "grilling"),
+            ("grilling", "planning"),
+            ("planning", "implementing"),
+        ):
+            receipt = {
+                "run_id": run_id, "from_phase": from_phase, "to_phase": to_phase,
+                "status": "verified", "business_version": self.db.business_version(run_id),
+                "evidence": [f"phase://{to_phase}/verified"],
+            }
+            self.db.advance_run_phase(run_id, to_phase, receipt, self.db.business_version(run_id))
 
     def test_formal_readback_binds_and_persists(self):
         result = reconcile_inventory(self.db, "R1", {"reconciliation_status":"complete", "tasks":[{"formal_thread_id":"formal-1", "host_id":"host-1", "client_thread_id":"client-1", "title":format_token(TaskIdentity("T1","R1","01","0123456789abcdef")) + " work", "readback":{"formal_thread_id":"formal-1","host_id":"host-1","task_id":"T1","run_id":"R1","attempt_id":"01","owner_id":"owner","cwd":"C:/w","project_id":"p","lifecycle":"active","readback_evidence":["thread/read"]}}]})
