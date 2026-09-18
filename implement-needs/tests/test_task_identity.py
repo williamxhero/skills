@@ -329,7 +329,17 @@ class RegistryTests(unittest.TestCase):
         self.db.add_thread("r1", "th-1", "spec", "S1", identity=identity())
         with self.assertRaises(ValueError):
             self.db.next_attempt_id("r1", "T1", "01")
-        self.db.update_thread("r1", "th-1", "archived", outcome="completed")
+        version = self.db.business_version("r1")
+        gate = {
+            "schema_version": 1,
+            "expected": {"run_id": "r1", "target_id": "th-1", "candidate_sha": "abc", "environment": "test", "business_version": version},
+            "actor": {"id": "owner", "authorized": True},
+            "source": {"kind": "independent-readback", "trust": "verified"},
+            "readback": {"status": "verified", "run_id": "r1", "target_id": "th-1", "candidate_sha": "abc", "environment": "test", "archived": True},
+            "archive_operation": True,
+            "archive_readback": True,
+        }
+        self.db.update_thread("r1", "th-1", "archived", outcome="completed", operation="archive-op", readback="archive-readback", gate=gate)
         self.assertEqual("02", self.db.next_attempt_id("r1", "T1", "01"))
 
 

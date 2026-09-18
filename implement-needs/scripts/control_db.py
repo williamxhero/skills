@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from evidence_gate import EvidenceGateError, verify_terminal_contract
+
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
 SCHEMA_VERSION = 5
@@ -263,6 +265,9 @@ class ControlDB:
         self.conn.execute("INSERT INTO events(run_id,entity_type,entity_id,event_type,payload,observed_at,business_version) VALUES(?,?,?,?,?,?,?)",(run_id,entity_type,entity_id,event_type,json.dumps(payload,ensure_ascii=False,sort_keys=True),now(),next_version))
         return next_version
 
+    def _record_verified_gate(self, run_id, entity_type, entity_id, gate):
+        self.conn.execute("INSERT INTO evidence_refs(run_id,entity_type,entity_id,evidence_kind,payload,created_at) VALUES(?,?,?,?,?,?)",(run_id,entity_type,entity_id,"verified_transition_gate",json.dumps(gate,ensure_ascii=False,sort_keys=True),now()))
+
     def event(self,run_id,entity_type,entity_id,event_type,payload,expected_version=None):
         """Public compatibility wrapper for one atomic business event."""
         with self.transaction():
@@ -352,11 +357,14 @@ class ControlDB:
             self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?",(f"{kind}:{target}",stamp,run_id))
             self._business_event(run_id,"action",str(cur.lastrowid),"action_created",{"kind":kind,"target":target,"status":status})
             return cur.lastrowid
-    def finish_action(self,action_id,status,result=None,error=None,expected_version=None):
+    def finish_action(self,action_id,status,result=None,error=None,expected_version=None,gate=None):
         with self.transaction():
             row=self.conn.execute("SELECT run_id FROM actions WHERE action_id=?",(action_id,)).fetchone()
             if row is None: raise ValueError("unknown action")
             run_id=row[0]; self._check_version(run_id, expected_version)
+            if status == "succeeded":
+                verify_terminal_contract(gate, entity_type="action", run_id=run_id, target_id=str(action_id), expected_version=self.business_version(run_id))
+                self._record_verified_gate(run_id, "action", str(action_id), gate)
             self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
             self._business_event(run_id,"action",str(action_id),"action_finished",{"status":status,"result":result,"error":error})
     def add_spec(self,run_id,spec_id,title,position,blocked_by=None,acceptance=None,expected_version=None):
@@ -731,15 +739,24 @@ class ControlDB:
         return self._record_evidence(run_id, entity_type, entity_id, "delivery_proof", proof, expected_version)
     def record_dependency_waiver(self, run_id, entity_type, entity_id, waiver, expected_version=None):
         return self._record_evidence(run_id, entity_type, entity_id, "dependency_waiver", waiver, expected_version)
-    def update_spec(self,spec_id,status,expected_version=None):
+    def update_spec(self,spec_id,status,expected_version=None,gate=None):
         from transitions import SPEC_TRANSITIONS, transition
         row=self.conn.execute("SELECT run_id,status FROM specs WHERE spec_id=?",(spec_id,)).fetchone()
         if not row: raise ValueError("unknown spec")
         transition(SPEC_TRANSITIONS,row[1],status)
         with self.transaction():
             self._check_version(row[0], expected_version)
+            if status == "closed":
+                open_tickets = self.conn.execute("SELECT COUNT(*) FROM tickets WHERE spec_id=? AND status!='closed'", (spec_id,)).fetchone()[0]
+                archived = self.conn.execute("SELECT archive_operation_evidence,archive_readback_evidence FROM threads WHERE spec_id=? AND lifecycle='archived'", (spec_id,)).fetchall()
+                if open_tickets:
+                    raise EvidenceGateError("spec_tickets_incomplete", {"spec_id": spec_id, "open_ticket_count": open_tickets})
+                if not archived or any(not json.loads(item[0]) or not json.loads(item[1]) for item in archived):
+                    raise EvidenceGateError("spec_archive_evidence_missing", {"spec_id": spec_id})
+                verify_terminal_contract(gate, entity_type="spec", run_id=row[0], target_id=spec_id, expected_version=self.business_version(row[0]))
+                self._record_verified_gate(row[0], "spec", spec_id, gate)
             self.conn.execute("UPDATE specs SET status=? WHERE spec_id=?",(status,spec_id)); self._business_event(row[0],"spec",spec_id,"spec_state_changed",{"status":status})
-    def update_ticket(self,ticket_id,status,commits=None,tests=None,acceptance=None,expected_version=None):
+    def update_ticket(self,ticket_id,status,commits=None,tests=None,acceptance=None,expected_version=None,gate=None):
         row=self.conn.execute("SELECT t.status,t.commits,t.tests,t.acceptance,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?",(ticket_id,)).fetchone()
         if not row: raise ValueError("unknown ticket")
         allowed={"planned":{"ready","blocked"},"ready":{"implementing","blocked"},"implementing":{"verified","blocked"},"verified":{"merged","blocked"},"merged":{"closed"},"blocked":{"ready","implementing","cancelled"},"closed":set(),"cancelled":set()}
@@ -768,8 +785,11 @@ class ControlDB:
                 raise ValueError("ticket closure requires structured acceptance evidence")
         with self.transaction():
             self._check_version(row[4], expected_version)
+            if status == "closed":
+                verify_terminal_contract(gate, entity_type="ticket", run_id=row[4], target_id=ticket_id, expected_version=self.business_version(row[4]), commits=resulting_commits, tests=resulting_tests)
+                self._record_verified_gate(row[4], "ticket", ticket_id, gate)
             self.conn.execute("UPDATE tickets SET status=?,commits=COALESCE(?,commits),tests=COALESCE(?,tests),acceptance=COALESCE(?,acceptance) WHERE ticket_id=?",(status,json.dumps(commits) if commits is not None else None,json.dumps(tests) if tests is not None else None,json.dumps(acceptance) if acceptance is not None else None,ticket_id)); self._business_event(row[4],"ticket",ticket_id,"ticket_state_changed",{"status":status,"commits":commits,"tests":tests,"acceptance":acceptance})
-    def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None,expected_version=None):
+    def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None,expected_version=None,gate=None):
         with self.transaction():
             self._check_version(run_id, expected_version)
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()
@@ -780,6 +800,13 @@ class ControlDB:
             operations=json.loads(current[0]); readbacks=json.loads(current[1])
             if operation: operations.append(operation)
             if readback: readbacks.append(readback)
+            if lifecycle == "archived":
+                if not operation:
+                    raise EvidenceGateError("archive_operation_missing", {"target_id": thread_id})
+                if not readback:
+                    raise EvidenceGateError("archive_readback_missing", {"target_id": thread_id})
+                verify_terminal_contract(gate, entity_type="thread", run_id=run_id, target_id=thread_id, expected_version=self.business_version(run_id))
+                self._record_verified_gate(run_id, "thread", thread_id, gate)
             self.conn.execute("UPDATE threads SET lifecycle=?,outcome=?,next_action=?,last_observed_at=?,archive_operation_evidence=?,archive_readback_evidence=? WHERE thread_id=? AND run_id=?",(lifecycle,outcome,next_action,now(),json.dumps(operations),json.dumps(readbacks),thread_id,run_id)); self._business_event(run_id,"thread",thread_id,"thread_state_changed",{"lifecycle":lifecycle,"outcome":outcome})
     def decide(self,run_id,subject,selected,recommendation,evidence,rationale,expected_version=None):
         with self.transaction():
