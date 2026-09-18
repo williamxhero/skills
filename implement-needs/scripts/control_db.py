@@ -148,6 +148,30 @@ CREATE TABLE IF NOT EXISTS terminal_validations(
     evidence TEXT NOT NULL,
     validated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS delivery_receipts(
+    receipt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    repository TEXT NOT NULL,
+    target_sha TEXT NOT NULL,
+    target_ref TEXT NOT NULL,
+    artifact_digest TEXT,
+    test_plan TEXT NOT NULL,
+    test_selection TEXT NOT NULL,
+    environment_fingerprint TEXT NOT NULL,
+    acceptance_version TEXT NOT NULL,
+    validator_version TEXT NOT NULL,
+    result TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    provenance TEXT NOT NULL,
+    source_uri TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    equivalence_policy TEXT,
+    payload TEXT NOT NULL,
+    UNIQUE(run_id,entity_type,entity_id,repository,target_sha,test_plan,test_selection,environment_fingerprint,acceptance_version,validator_version,source_uri)
+);
+CREATE INDEX IF NOT EXISTS delivery_receipts_lookup ON delivery_receipts(run_id,entity_type,entity_id,target_sha,result);
 """
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
