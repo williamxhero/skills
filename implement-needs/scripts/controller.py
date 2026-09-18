@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import time
 from pathlib import Path
 
 from control_db import ActionConflict, ControlDB, DecisionError, PolicyError, RestoreValidationError, StaleState
@@ -12,7 +13,7 @@ from evidence_gate import EvidenceGateError
 from run_state import PHASES, RUN_RESULTS, RunStateError
 from sync_scope import SyncScopeError, build_sync_plan
 from startup_contract import StartupContractError
-from context_projection import ContextProjectionError, build_context, read_history
+from context_projection import ContextProjectionError, build_context, measure_context, read_history
 from dependency_readiness import readiness_from_db, structure_from_db
 from task_backend import (
     MCP_CONNECTOR,
@@ -35,8 +36,8 @@ def main() -> int:
     ticket=sub.add_parser("add-ticket"); ticket.add_argument("--spec-id",required=True); ticket.add_argument("--ticket-id",required=True); ticket.add_argument("--title",required=True); ticket.add_argument("--blocked-by",default="[]"); ticket.add_argument("--issue-url"); ticket.add_argument("--queue-position",type=int)
     thread=sub.add_parser("register-thread"); thread.add_argument("--run-id",required=True); thread.add_argument("--thread-id",required=True); thread.add_argument("--kind",required=True); thread.add_argument("--spec-id"); thread.add_argument("--identity"); thread.add_argument("--client-thread-id"); thread.add_argument("--formal-thread-id"); thread.add_argument("--host-id"); thread.add_argument("--owner-id"); thread.add_argument("--cwd"); thread.add_argument("--project-id"); thread.add_argument("--title-token")
     thread_state=sub.add_parser("thread-state"); thread_state.add_argument("--run-id",required=True); thread_state.add_argument("--thread-id",required=True); thread_state.add_argument("--lifecycle",required=True); thread_state.add_argument("--outcome",default="unknown"); thread_state.add_argument("--next-action"); thread_state.add_argument("--archive-operation"); thread_state.add_argument("--archive-readback"); thread_state.add_argument("--gate")
-    spec_state=sub.add_parser("spec-state"); spec_state.add_argument("--spec-id",required=True); spec_state.add_argument("--status",required=True); spec_state.add_argument("--gate")
-    ticket_state=sub.add_parser("ticket-state"); ticket_state.add_argument("--ticket-id",required=True); ticket_state.add_argument("--status",required=True); ticket_state.add_argument("--commits"); ticket_state.add_argument("--tests"); ticket_state.add_argument("--acceptance"); ticket_state.add_argument("--gate")
+    spec_state=sub.add_parser("spec-state"); spec_state.add_argument("--spec-id",required=True); spec_state.add_argument("--status",required=True); spec_state.add_argument("--gate"); spec_state.add_argument("--context")
+    ticket_state=sub.add_parser("ticket-state"); ticket_state.add_argument("--ticket-id",required=True); ticket_state.add_argument("--status",required=True); ticket_state.add_argument("--commits"); ticket_state.add_argument("--tests"); ticket_state.add_argument("--acceptance"); ticket_state.add_argument("--gate"); ticket_state.add_argument("--context")
     observation=sub.add_parser("record-observation"); observation.add_argument("--run-id",required=True); observation.add_argument("--entity-type",required=True); observation.add_argument("--entity-id",required=True); observation.add_argument("--operation",required=True); observation.add_argument("--status",required=True); observation.add_argument("--evidence",default="[]")
     action=sub.add_parser("action"); action.add_argument("--run-id",required=True); action.add_argument("--kind",required=True); action.add_argument("--target",required=True)
     finish=sub.add_parser("finish-action"); finish.add_argument("--action-id",type=int,required=True); finish.add_argument("--status",choices=("succeeded","failed","blocked","cancelled"),required=True); finish.add_argument("--result"); finish.add_argument("--gate")
@@ -71,6 +72,8 @@ def main() -> int:
     verify_policy=sub.add_parser("verify-policy"); verify_policy.add_argument("--run-id",required=True); verify_policy.add_argument("--policy",required=True); verify_policy.add_argument("--implementation-digest",required=True)
     context=sub.add_parser("context"); context.add_argument("--run-id",required=True); context.add_argument("--phase",required=True); context.add_argument("--entity-type",choices=("run","spec","ticket","intent"),required=True); context.add_argument("--entity-id",required=True)
     history=sub.add_parser("context-history"); history.add_argument("--pointer",required=True)
+    measure=sub.add_parser("measure-context"); measure.add_argument("--run-id",required=True); measure.add_argument("--phase",required=True); measure.add_argument("--entity-type",choices=("run","spec","ticket","intent"),required=True); measure.add_argument("--entity-id",required=True); measure.add_argument("--observed-tokens",type=int); measure.add_argument("--fee",type=float); measure.add_argument("--refresh-count",type=int,default=0); measure.add_argument("--rejection-count",type=int,default=0)
+    measurements=sub.add_parser("context-measurements"); measurements.add_argument("--run-id",required=True)
     backup_manifest=sub.add_parser("backup-manifest"); backup_manifest.add_argument("--run-id",required=True); backup_manifest.add_argument("--file-digests",default="{}"); backup_manifest.add_argument("--database-digest")
     validate_manifest=sub.add_parser("validate-backup-manifest"); validate_manifest.add_argument("--run-id",required=True); validate_manifest.add_argument("--manifest-id",type=int,required=True); validate_manifest.add_argument("--file-digests"); validate_manifest.add_argument("--database-digest")
     begin_restore=sub.add_parser("begin-restore"); begin_restore.add_argument("--run-id",required=True); begin_restore.add_argument("--manifest-id",type=int,required=True)
@@ -89,7 +92,7 @@ def main() -> int:
     for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context", "context-history"} else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context", "context-history", "context-measurements"} else "open-existing"))
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
@@ -100,8 +103,18 @@ def main() -> int:
             inserted=db.add_thread(args.run_id,args.thread_id,args.kind,args.spec_id,identity=identity,client_thread_id=args.client_thread_id,host_id=args.host_id,owner_id=args.owner_id,cwd=args.cwd,project_id=args.project_id,title_token=args.title_token,formal_thread_id=args.formal_thread_id,expected_version=args.expected_version)
             result={"thread_id":args.thread_id,"lifecycle":"created","inserted":inserted}
         elif args.command=="thread-state": db.update_thread(args.run_id,args.thread_id,args.lifecycle,args.outcome,args.next_action,args.archive_operation,args.archive_readback,args.expected_version,json.loads(args.gate) if args.gate else None); result={"thread_id":args.thread_id,"lifecycle":args.lifecycle}
-        elif args.command=="spec-state": db.update_spec(args.spec_id,args.status,args.expected_version,json.loads(args.gate) if args.gate else None); result={"spec_id":args.spec_id,"status":args.status}
-        elif args.command=="ticket-state": db.update_ticket(args.ticket_id,args.status,json.loads(args.commits) if args.commits else None,json.loads(args.tests) if args.tests else None,json.loads(args.acceptance) if args.acceptance else None,args.expected_version,json.loads(args.gate) if args.gate else None); result={"ticket_id":args.ticket_id,"status":args.status}
+        elif args.command=="spec-state":
+            if args.context:
+                db.update_spec_from_context(args.spec_id, args.status, json.loads(args.context), json.loads(args.gate) if args.gate else None)
+            else:
+                db.update_spec(args.spec_id,args.status,args.expected_version,json.loads(args.gate) if args.gate else None)
+            result={"spec_id":args.spec_id,"status":args.status}
+        elif args.command=="ticket-state":
+            if args.context:
+                db.update_ticket_from_context(args.ticket_id, args.status, json.loads(args.context), json.loads(args.commits) if args.commits else None, json.loads(args.tests) if args.tests else None, json.loads(args.acceptance) if args.acceptance else None, json.loads(args.gate) if args.gate else None)
+            else:
+                db.update_ticket(args.ticket_id,args.status,json.loads(args.commits) if args.commits else None,json.loads(args.tests) if args.tests else None,json.loads(args.acceptance) if args.acceptance else None,args.expected_version,json.loads(args.gate) if args.gate else None)
+            result={"ticket_id":args.ticket_id,"status":args.status}
         elif args.command=="record-observation": db.add_observation(args.run_id,args.entity_type,args.entity_id,{"operation":args.operation,"status":args.status,"evidence":json.loads(args.evidence)}); result={"entity_id":args.entity_id,"status":args.status}
         elif args.command=="action": result={"action_id":db.set_action(args.run_id,args.kind,args.target,expected_version=args.expected_version)}
         elif args.command=="finish-action": db.finish_action(args.action_id,args.status,json.loads(args.result) if args.result else None,expected_version=args.expected_version,gate=json.loads(args.gate) if args.gate else None); result={"action_id":args.action_id,"status":args.status}
@@ -168,6 +181,13 @@ def main() -> int:
             result=build_context(db, args.run_id, args.phase, args.entity_type, args.entity_id)
         elif args.command=="context-history":
             result=read_history(db, args.pointer)
+        elif args.command=="measure-context":
+            started = time.perf_counter()
+            context = build_context(db, args.run_id, args.phase, args.entity_type, args.entity_id)
+            measurement = measure_context(context, latency_ms=(time.perf_counter() - started) * 1000, observed_tokens=args.observed_tokens, fee=args.fee, refresh_count=args.refresh_count, rejection_count=args.rejection_count)
+            result=db.record_context_measurement(args.run_id, context, measurement)
+        elif args.command=="context-measurements":
+            result={"run_id": args.run_id, "measurements": db.context_measurements(args.run_id)}
         elif args.command=="backup-manifest":
             result=db.create_backup_manifest(args.run_id, json.loads(args.file_digests), args.database_digest, args.expected_version)
         elif args.command=="validate-backup-manifest":

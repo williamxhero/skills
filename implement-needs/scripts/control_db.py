@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS test_train_checkpoints(checkpoint_id INTEGER PRIMARY 
 CREATE TABLE IF NOT EXISTS run_policies(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), canonical_payload TEXT NOT NULL, policy_digest TEXT NOT NULL, implementation_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS backup_manifests(manifest_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), payload TEXT NOT NULL, manifest_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS restore_records(restore_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), manifest_id INTEGER NOT NULL REFERENCES backup_manifests(manifest_id), status TEXT NOT NULL, reconciliation_status TEXT NOT NULL, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS context_measurements(measurement_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), phase TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, read_business_version INTEGER NOT NULL, payload_bytes INTEGER NOT NULL, token_estimate INTEGER NOT NULL, observed_tokens INTEGER, fee REAL, latency_ms REAL, refresh_count INTEGER NOT NULL DEFAULT 0, rejection_count INTEGER NOT NULL DEFAULT 0, coverage TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -289,6 +290,8 @@ class ControlDB:
         for table in ("backup_manifests", "restore_records"):
             if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                 raise DatabaseModeError(f"database schema lacks {table} table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='context_measurements'").fetchone():
+            raise DatabaseModeError("database schema lacks context_measurements table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -358,6 +361,7 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS run_policies(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), canonical_payload TEXT NOT NULL, policy_digest TEXT NOT NULL, implementation_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS backup_manifests(manifest_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), payload TEXT NOT NULL, manifest_digest TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS restore_records(restore_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), manifest_id INTEGER NOT NULL REFERENCES backup_manifests(manifest_id), status TEXT NOT NULL, reconciliation_status TEXT NOT NULL, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS context_measurements(measurement_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), phase TEXT NOT NULL, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, read_business_version INTEGER NOT NULL, payload_bytes INTEGER NOT NULL, token_estimate INTEGER NOT NULL, observed_tokens INTEGER, fee REAL, latency_ms REAL, refresh_count INTEGER NOT NULL DEFAULT 0, rejection_count INTEGER NOT NULL DEFAULT 0, coverage TEXT NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS recovery_records(intent_id INTEGER PRIMARY KEY REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, classification TEXT NOT NULL, budget INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, last_evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute(
@@ -377,6 +381,64 @@ class ControlDB:
         if expected_version is not None and expected_version != actual:
             raise StaleState(run_id, expected_version, actual)
         return actual
+
+    def require_context_fresh(self, context, run_id=None):
+        """Validate a projection envelope before a context-driven mutation."""
+        if not isinstance(context, dict):
+            raise ValueError("context envelope is required")
+        required = {"run_id", "entity_type", "entity_id", "read_business_version"}
+        if not required.issubset(context):
+            raise ValueError("context envelope is incomplete")
+        context_run_id = context["run_id"]
+        if run_id is not None and context_run_id != run_id:
+            raise ValueError("context run_id mismatch")
+        version = context["read_business_version"]
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError("context read_business_version is invalid")
+        return self._check_version(context_run_id, version)
+
+    def update_spec_from_context(self, spec_id, status, context, gate=None):
+        row = self.conn.execute("SELECT run_id FROM specs WHERE spec_id=?", (spec_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown spec")
+        version = self.require_context_fresh(context, row[0])
+        return self.update_spec(spec_id, status, version, gate)
+
+    def update_ticket_from_context(self, ticket_id, status, context, commits=None, tests=None, acceptance=None, gate=None):
+        row = self.conn.execute(
+            "SELECT s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?", (ticket_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown ticket")
+        version = self.require_context_fresh(context, row[0])
+        return self.update_ticket(ticket_id, status, commits, tests, acceptance, version, gate)
+
+    def record_context_measurement(self, run_id, context, measurement):
+        """Persist telemetry without advancing business_version or satisfying a gate."""
+        if not isinstance(measurement, dict):
+            raise ValueError("context measurement must be an object")
+        self.require_context_fresh(context, run_id)
+        required = {"payload_bytes", "token_estimate", "coverage"}
+        if not required.issubset(measurement):
+            raise ValueError("context measurement is incomplete")
+        if any(not isinstance(measurement[key], int) or isinstance(measurement[key], bool) or measurement[key] < 0 for key in ("payload_bytes", "token_estimate")):
+            raise ValueError("context measurement sizes are invalid")
+        coverage = measurement["coverage"]
+        if not isinstance(coverage, dict) or not coverage.get("tokens") or not coverage.get("fees"):
+            raise ValueError("context measurement coverage is required")
+        with self.transaction():
+            stamp = now()
+            cur = self.conn.execute(
+                "INSERT INTO context_measurements(run_id,phase,entity_type,entity_id,read_business_version,payload_bytes,token_estimate,observed_tokens,fee,latency_ms,refresh_count,rejection_count,coverage,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, context["phase"], context["entity_type"], context["entity_id"], context["read_business_version"], measurement["payload_bytes"], measurement["token_estimate"], measurement.get("observed_tokens"), measurement.get("fee"), measurement.get("latency_ms"), measurement.get("refresh_count", 0), measurement.get("rejection_count", 0), self._canonical_json(coverage), stamp),
+            )
+            return {"measurement_id": cur.lastrowid, "run_id": run_id, "business_version": self.business_version(run_id), "measurement": measurement}
+
+    def context_measurements(self, run_id):
+        rows = [dict(row) for row in self.conn.execute("SELECT * FROM context_measurements WHERE run_id=? ORDER BY measurement_id", (run_id,))]
+        for row in rows:
+            row["coverage"] = json.loads(row["coverage"])
+        return rows
 
     def _business_event(self,run_id,entity_type,entity_id,event_type,payload):
         """Append an event and advance the run version inside the caller's tx."""
