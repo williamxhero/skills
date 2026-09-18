@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from evidence_gate import EvidenceGateError, verify_terminal_contract
+from authorization import AuthorizationError, authorization_digest, check_scope, validate_authorization
 from run_state import (
     PHASE_TRANSITIONS,
     RunStateError,
@@ -18,7 +19,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, ru
 CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS phase_receipts(receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), from_phase TEXT NOT NULL, to_phase TEXT NOT NULL, result TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS run_authorizations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, authorization_digest TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
 """
@@ -215,6 +217,8 @@ class ControlDB:
             raise DatabaseModeError("database schema lacks evidence_refs table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='phase_receipts'").fetchone():
             raise DatabaseModeError("database schema lacks phase_receipts table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_authorizations'").fetchone():
+            raise DatabaseModeError("database schema lacks run_authorizations table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -268,6 +272,12 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS phase_receipts(receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), from_phase TEXT NOT NULL, to_phase TEXT NOT NULL, result TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS run_authorizations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), payload TEXT NOT NULL, authorization_digest TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+            self.conn.execute(
+                "INSERT OR IGNORE INTO run_authorizations(run_id,payload,authorization_digest,status,created_at,updated_at) "
+                "SELECT run_id, ?, NULL, 'unconfigured', created_at, updated_at FROM runs",
+                (json.dumps({"status": "unconfigured"}, ensure_ascii=False, sort_keys=True),),
+            )
             self.conn.execute("INSERT INTO schema_meta(version,migrated_at) VALUES(?,?)",(SCHEMA_VERSION,now()))
     def business_version(self, run_id: str) -> int:
         row = self.conn.execute("SELECT business_version FROM runs WHERE run_id=?", (run_id,)).fetchone()
@@ -297,17 +307,57 @@ class ControlDB:
         with self.transaction():
             self._check_version(run_id, expected_version)
             return self._business_event(run_id,entity_type,entity_id,event_type,payload)
-    def create_run(self,run_id,initiative,requirement,execution_mode="whole-spec",controller_task_id=None,queue_definition=None):
+    def create_run(self,run_id,initiative,requirement,execution_mode="whole-spec",controller_task_id=None,queue_definition=None,authorization=None):
         if execution_mode not in {"whole-spec", "single-ticket-line"}:
             raise ValueError("unsupported execution mode")
         if execution_mode == "single-ticket-line" and not controller_task_id:
             raise ValueError("single-ticket-line requires controller_task_id")
         if (str(initiative).strip() in {"#444", "444"} or "#444" in str(requirement)) and execution_mode == "single-ticket-line" and controller_task_id != "codex://threads/01a09a58-dfcd-72b0-a5d7-c359eefce9a2":
             raise ValueError("issue #444 has one designated controller task")
+        auth = validate_authorization(authorization) if authorization is not None else None
         stamp=now()
         with self.transaction():
             self.conn.execute("INSERT INTO runs(run_id,initiative,requirement,status,current_action,created_at,updated_at,execution_mode,controller_task_id,queue_definition,business_version,run_phase,terminal_result,stop_reason,recovery_action) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(run_id,initiative,requirement,"active",None,stamp,stamp,execution_mode,controller_task_id,json.dumps(queue_definition or [],ensure_ascii=False),0,"initialized",None,None,None))
-            self._business_event(run_id,"run",run_id,"run_created",{"execution_mode":execution_mode,"controller_task_id":controller_task_id,"run_phase":"initialized"})
+            payload = auth if auth is not None else {"status": "unconfigured"}
+            self.conn.execute(
+                "INSERT INTO run_authorizations(run_id,payload,authorization_digest,status,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (run_id, json.dumps(payload, ensure_ascii=False, sort_keys=True), authorization_digest(auth) if auth is not None else None, "configured" if auth is not None else "unconfigured", stamp, stamp),
+            )
+            self._business_event(run_id,"run",run_id,"run_created",{"execution_mode":execution_mode,"controller_task_id":controller_task_id,"run_phase":"initialized","authorization_status":"configured" if auth is not None else "unconfigured"})
+
+    def authorization(self, run_id):
+        row = self.conn.execute("SELECT payload,status,authorization_digest FROM run_authorizations WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            raise AuthorizationError("authorization_missing", {"run_id": run_id})
+        return {"payload": json.loads(row[0]), "status": row[1], "authorization_digest": row[2]}
+
+    def configure_authorization(self, run_id, authorization, expected_version=None):
+        auth = validate_authorization(authorization)
+        digest = authorization_digest(auth)
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            row = self.conn.execute("SELECT status,authorization_digest FROM run_authorizations WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise AuthorizationError("authorization_missing", {"run_id": run_id})
+            if row[0] == "configured":
+                if row[1] == digest:
+                    return {"run_id": run_id, "changed": False, "authorization_digest": digest}
+                raise AuthorizationError("authorization_immutable", {"run_id": run_id})
+            self.conn.execute(
+                "UPDATE run_authorizations SET payload=?,authorization_digest=?,status='configured',updated_at=? WHERE run_id=?",
+                (json.dumps(auth, ensure_ascii=False, sort_keys=True), digest, now(), run_id),
+            )
+            version = self._business_event(run_id, "run", run_id, "run_authorization_configured", {"authorization_digest": digest})
+            return {"run_id": run_id, "changed": True, "authorization_digest": digest, "business_version": version}
+
+    def authorize(self, run_id, **kwargs):
+        record = self.authorization(run_id)
+        if record["status"] != "configured":
+            raise AuthorizationError("authorization_unconfigured", {"run_id": run_id})
+        decision = check_scope(record["payload"], **kwargs)
+        if decision["authorization_digest"] != record["authorization_digest"]:
+            raise AuthorizationError("authorization_digest_mismatch", {"run_id": run_id})
+        return decision
 
     def advance_run_phase(self, run_id, target_phase, receipt, expected_version=None):
         """Advance exactly one run phase after a bound phase readback."""
@@ -942,4 +992,4 @@ class ControlDB:
     def snapshot(self,run_id):
         row=lambda q,p: [dict(x) for x in self.conn.execute(q,p)]
         run=self.conn.execute("SELECT * FROM runs WHERE run_id=?",(run_id,)).fetchone()
-        return {"run":dict(run) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
+        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
