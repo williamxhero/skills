@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse, json
 from pathlib import Path
 from control_db import ControlDB
+from dependencies import dependency_status
 
 TERMINAL_SPEC={"closed","cancelled"}
 
@@ -13,7 +14,15 @@ def next_action(db: ControlDB, run_id: str) -> dict:
     for spec in specs:
         if spec["status"] in TERMINAL_SPEC: continue
         blockers=json.loads(spec["blocked_by"])
-        if any(db.conn.execute("SELECT status FROM specs WHERE spec_id=?",(x,)).fetchone()[0] not in TERMINAL_SPEC for x in blockers): continue
+        for blocker in blockers:
+            blocker_row=db.conn.execute("SELECT position FROM specs WHERE spec_id=?",(blocker,)).fetchone()
+            if blocker_row is None:
+                return {"kind":"repair_dependency","target":spec["spec_id"],"blocker":blocker,"reason":"unknown_blocker"}
+            if blocker_row[0] >= spec["position"]:
+                return {"kind":"repair_dependency","target":spec["spec_id"],"blocker":blocker,"reason":"forward_dependency"}
+            delivery=dependency_status(db,"spec",spec["spec_id"],"spec",blocker)
+            if not delivery["satisfied"]:
+                return {"kind":"wait_spec_dependency","target":spec["spec_id"],"blocker":blocker,"reason":delivery["code"]}
         status=spec["status"]
         if status=="planned": return {"kind":"advance_spec","target":spec["spec_id"],"next_status":"ready"}
         if status=="ready": return {"kind":"ticket_current_spec","target":spec["spec_id"]}

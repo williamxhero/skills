@@ -2,7 +2,8 @@
 from __future__ import annotations
 import hashlib
 import json, sqlite3
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCHEMA = """
@@ -52,9 +53,75 @@ CREATE TABLE IF NOT EXISTS operation_intents(
     UNIQUE(run_id,operation,target,generation,input_digest)
 );
 CREATE INDEX IF NOT EXISTS operation_intents_run_status ON operation_intents(run_id,status,updated_at);
+CREATE TABLE IF NOT EXISTS action_claims(
+    action_id INTEGER PRIMARY KEY REFERENCES actions(action_id),
+    owner_id TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    supports_fencing INTEGER NOT NULL DEFAULT 0,
+    outcome_reconciled INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS delivery_proofs(
+    proof_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    artifact_ref TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    UNIQUE(entity_type,entity_id,artifact_type,artifact_ref)
+);
+CREATE TABLE IF NOT EXISTS dependency_waivers(
+    waiver_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dependent_type TEXT NOT NULL,
+    dependent_id TEXT NOT NULL,
+    blocker_type TEXT NOT NULL,
+    blocker_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    authorization_source TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    UNIQUE(dependent_type,dependent_id,blocker_type,blocker_id)
+);
+CREATE INDEX IF NOT EXISTS dependency_waivers_lookup ON dependency_waivers(dependent_type,dependent_id,blocker_type,blocker_id);
+CREATE TABLE IF NOT EXISTS recovery_states(
+    recovery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    action_id INTEGER NOT NULL REFERENCES actions(action_id),
+    category TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    retry_owner TEXT NOT NULL,
+    budget_version TEXT NOT NULL,
+    max_attempts INTEGER NOT NULL,
+    deadline_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_strategy_digest TEXT NOT NULL,
+    last_progress_marker TEXT NOT NULL,
+    last_evidence_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(action_id,fingerprint)
+);
+CREATE INDEX IF NOT EXISTS recovery_states_action ON recovery_states(action_id,status,updated_at);
 """
 
 def now() -> str: return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def transaction(conn):
+    """Use a real SQLite write transaction even though the connection is autocommit."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 def _json_object(value, name):
@@ -89,6 +156,24 @@ def _evidence(value):
         raise ValueError("reconciliation evidence must be a non-empty string list")
     return value
 
+
+def _time_after(seconds):
+    if not isinstance(seconds, int) or isinstance(seconds, bool) or seconds < 1:
+        raise ValueError("lease_seconds must be a positive integer")
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def _is_expired(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00")) <= datetime.now(timezone.utc)
+
+
+class ActionClaimConflict(RuntimeError):
+    """Another executor currently owns the action."""
+
+
+class UnsafeLeaseTakeover(RuntimeError):
+    """A timed-out executor might still perform an unfenced external effect."""
+
 class ControlDB:
     def __init__(self, path: str | Path):
         self.path=Path(path); self.path.parent.mkdir(parents=True,exist_ok=True)
@@ -108,7 +193,9 @@ class ControlDB:
         with self.conn:
             cur=self.conn.execute("INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(run_id,kind,target,status,key,stamp,stamp)); self.conn.execute("UPDATE runs SET current_action=?,updated_at=? WHERE run_id=?",(f"{kind}:{target}",stamp,run_id)); return cur.lastrowid
     def finish_action(self,action_id,status,result=None,error=None):
-            with self.conn: self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
+            with self.conn:
+                self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
+                self.conn.execute("DELETE FROM action_claims WHERE action_id=?", (action_id,))
     def add_spec(self,run_id,spec_id,title,position,blocked_by=None,acceptance=None):
         with self.conn:
             self.conn.execute("INSERT INTO specs(spec_id,run_id,title,status,position,blocked_by,acceptance) VALUES(?,?,?,?,?,?,?)",(spec_id,run_id,title,"planned",position,json.dumps(blocked_by or []),json.dumps(acceptance or []))); self.event(run_id,"spec",spec_id,"spec_created",{"title":title})
@@ -165,7 +252,7 @@ class ControlDB:
                 raise ValueError("observation_key already exists with different data")
             return {"observation_id": existing["observation_id"], "created": False, **payload}
         stamp = now()
-        with self.conn:
+        with transaction(self.conn):
             cursor = self.conn.execute(
                 "INSERT INTO runtime_observations(run_id,observation_key,entity_type,entity_id,phase,status,scope,unit,started_at,ended_at,duration_ms,source,usage,metadata,observed_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -208,7 +295,7 @@ class ControlDB:
                 raise ValueError("idempotency key already exists with different intent")
             return {"intent": dict(existing), "created": False}
         stamp = now()
-        with self.conn:
+        with transaction(self.conn):
             cursor = self.conn.execute(
                 "INSERT INTO operation_intents(run_id,operation,target,generation,input_digest,normalized_parameters,idempotency_key,external_request_id,status,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -225,7 +312,7 @@ class ControlDB:
     def start_operation_intent(self, intent_id, executor_id):
         if not isinstance(executor_id, str) or not executor_id.strip():
             raise ValueError("executor_id is required")
-        with self.conn:
+        with transaction(self.conn):
             row = self.conn.execute("SELECT * FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
             if not row:
                 raise ValueError("unknown operation intent")
@@ -246,7 +333,7 @@ class ControlDB:
         evidence = _evidence(evidence)
         if not isinstance(reason, str) or not reason.strip():
             raise ValueError("unknown outcome reason is required")
-        with self.conn:
+        with transaction(self.conn):
             row = self.conn.execute("SELECT * FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
             if not row:
                 raise ValueError("unknown operation intent")
@@ -266,7 +353,7 @@ class ControlDB:
         evidence = _evidence(evidence)
         if outcome not in {"not_found", "succeeded", "failed"}:
             raise ValueError("reconciliation outcome must be not_found, succeeded, or failed")
-        with self.conn:
+        with transaction(self.conn):
             row = self.conn.execute("SELECT * FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone()
             if not row:
                 raise ValueError("unknown operation intent")
@@ -284,6 +371,99 @@ class ControlDB:
                 "outcome": outcome, "evidence": evidence,
             })
             return dict(self.conn.execute("SELECT * FROM operation_intents WHERE intent_id=?", (intent_id,)).fetchone())
+    def record_delivery_proof(self, entity_type, entity_id, artifact_type, artifact_ref, evidence):
+        if not all(isinstance(value, str) and value.strip() for value in (entity_type, entity_id, artifact_type, artifact_ref)):
+            raise ValueError("delivery proof fields are required")
+        evidence = _evidence(evidence)
+        existing = self.conn.execute(
+            "SELECT * FROM delivery_proofs WHERE entity_type=? AND entity_id=? AND artifact_type=? AND artifact_ref=?",
+            (entity_type, entity_id, artifact_type, artifact_ref),
+        ).fetchone()
+        if existing:
+            if json.loads(existing["evidence"]) != evidence:
+                raise ValueError("delivery proof already exists with different evidence")
+            return {"proof": dict(existing), "created": False}
+        stamp = now()
+        with transaction(self.conn):
+            cursor = self.conn.execute(
+                "INSERT INTO delivery_proofs(entity_type,entity_id,artifact_type,artifact_ref,evidence,observed_at) VALUES(?,?,?,?,?,?)",
+                (entity_type, entity_id, artifact_type, artifact_ref, json.dumps(evidence, ensure_ascii=False), stamp),
+            )
+        return {"proof": dict(self.conn.execute("SELECT * FROM delivery_proofs WHERE proof_id=?", (cursor.lastrowid,)).fetchone()), "created": True}
+    def waive_dependency(self, dependent_type, dependent_id, blocker_type, blocker_id, reason, authorization_source, scope, evidence):
+        if not all(isinstance(value, str) and value.strip() for value in (dependent_type, dependent_id, blocker_type, blocker_id, reason, authorization_source, scope)):
+            raise ValueError("dependency waiver fields are required")
+        evidence = _evidence(evidence)
+        fields = (dependent_type, dependent_id, blocker_type, blocker_id)
+        existing = self.conn.execute(
+            "SELECT * FROM dependency_waivers WHERE dependent_type=? AND dependent_id=? AND blocker_type=? AND blocker_id=?", fields
+        ).fetchone()
+        if existing:
+            expected = {"reason": reason, "authorization_source": authorization_source, "scope": scope, "evidence": evidence}
+            actual = {"reason": existing["reason"], "authorization_source": existing["authorization_source"], "scope": existing["scope"], "evidence": json.loads(existing["evidence"])}
+            if actual != expected:
+                raise ValueError("dependency waiver already exists with different details")
+            return {"waiver": dict(existing), "created": False}
+        stamp = now()
+        with transaction(self.conn):
+            cursor = self.conn.execute(
+                "INSERT INTO dependency_waivers(dependent_type,dependent_id,blocker_type,blocker_id,reason,authorization_source,scope,evidence,observed_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (*fields, reason, authorization_source, scope, json.dumps(evidence, ensure_ascii=False), stamp),
+            )
+        return {"waiver": dict(self.conn.execute("SELECT * FROM dependency_waivers WHERE waiver_id=?", (cursor.lastrowid,)).fetchone()), "created": True}
+    def claim_action(self, action_id, owner_id, lease_seconds=60, supports_fencing=False, outcome_reconciled=False):
+        """Atomically give one executor permission to run an action.
+
+        The default is deliberately conservative: an expired claim cannot be
+        reclaimed automatically because the old executor might still be making an
+        external request. Only a fencing-capable backend with a reconciled outcome
+        can transfer ownership.
+        """
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            raise ValueError("owner_id is required")
+        expires_at = _time_after(lease_seconds)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            action = self.conn.execute("SELECT run_id,status FROM actions WHERE action_id=?", (action_id,)).fetchone()
+            if not action:
+                raise ValueError("unknown action")
+            if action["status"] not in {"pending", "running"}:
+                raise ValueError(f"action cannot be claimed from {action['status']}")
+            claim = self.conn.execute("SELECT * FROM action_claims WHERE action_id=?", (action_id,)).fetchone()
+            if claim:
+                if not _is_expired(claim["lease_expires_at"]):
+                    raise ActionClaimConflict(f"action {action_id} is owned by {claim['owner_id']}")
+                if not (supports_fencing and outcome_reconciled):
+                    raise UnsafeLeaseTakeover(
+                        "expired action claim needs fencing support and outcome reconciliation before takeover"
+                    )
+                self.conn.execute("DELETE FROM action_claims WHERE action_id=?", (action_id,))
+                self.event(action["run_id"], "action", str(action_id), "action_claim_relinquished", {
+                    "previous_owner_id": claim["owner_id"], "reason": "expired_fenced_and_reconciled",
+                })
+            stamp = now()
+            self.conn.execute(
+                "INSERT INTO action_claims(action_id,owner_id,claimed_at,lease_expires_at,supports_fencing,outcome_reconciled) VALUES(?,?,?,?,?,?)",
+                (action_id, owner_id, stamp, expires_at, int(supports_fencing), int(outcome_reconciled)),
+            )
+            self.conn.execute("UPDATE actions SET status='running',updated_at=? WHERE action_id=?", (stamp, action_id))
+            self.event(action["run_id"], "action", str(action_id), "action_claimed", {
+                "owner_id": owner_id, "lease_expires_at": expires_at,
+                "supports_fencing": bool(supports_fencing), "outcome_reconciled": bool(outcome_reconciled),
+            })
+            result = dict(self.conn.execute("SELECT * FROM action_claims WHERE action_id=?", (action_id,)).fetchone())
+            self.conn.execute("COMMIT")
+            return result
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+    def assert_action_effect_permitted(self, action_id, owner_id):
+        claim = self.conn.execute("SELECT * FROM action_claims WHERE action_id=?", (action_id,)).fetchone()
+        if not claim or claim["owner_id"] != owner_id:
+            raise ActionClaimConflict("action effect is not owned by this executor")
+        if _is_expired(claim["lease_expires_at"]):
+            raise UnsafeLeaseTakeover("action effect permission expired; reconcile before continuing")
+        return dict(claim)
     def update_spec(self,spec_id,status):
         from transitions import SPEC_TRANSITIONS, transition
         row=self.conn.execute("SELECT run_id,status FROM specs WHERE spec_id=?",(spec_id,)).fetchone()
@@ -296,8 +476,17 @@ class ControlDB:
         if not row: raise ValueError("unknown ticket")
         allowed={"planned":{"ready","blocked"},"ready":{"implementing","blocked"},"implementing":{"verified","blocked"},"verified":{"merged","blocked"},"merged":{"closed"},"blocked":{"ready","implementing","cancelled"},"closed":set(),"cancelled":set()}
         if status not in allowed.get(row[0],set()): raise ValueError(f"illegal ticket transition: {row[0]} -> {status}")
-        with self.conn:
+        current = self.conn.execute("SELECT commits,tests FROM tickets WHERE ticket_id=?", (ticket_id,)).fetchone()
+        delivery_evidence = (commits if commits is not None else json.loads(current["commits"])) + (tests if tests is not None else json.loads(current["tests"]))
+        if status == "closed" and not delivery_evidence:
+            raise ValueError("closed ticket requires delivery evidence")
+        with transaction(self.conn):
             self.conn.execute("UPDATE tickets SET status=?,commits=COALESCE(?,commits),tests=COALESCE(?,tests) WHERE ticket_id=?",(status,json.dumps(commits) if commits is not None else None,json.dumps(tests) if tests is not None else None,ticket_id)); self.event(row[1],"ticket",ticket_id,"ticket_state_changed",{"status":status,"commits":commits,"tests":tests})
+            if status == "closed":
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO delivery_proofs(entity_type,entity_id,artifact_type,artifact_ref,evidence,observed_at) VALUES(?,?,?,?,?,?)",
+                    ("ticket", ticket_id, "delivery", f"ticket:{ticket_id}:closed", json.dumps(delivery_evidence, ensure_ascii=False), now()),
+                )
     def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None):
         with self.conn:
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()
