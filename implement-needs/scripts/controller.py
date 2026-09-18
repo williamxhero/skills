@@ -8,6 +8,7 @@ from pathlib import Path
 
 from control_db import ActionConflict, ControlDB, StaleState
 from evidence_gate import EvidenceGateError
+from run_state import PHASES, RUN_RESULTS, RunStateError
 from task_backend import (
     MCP_CONNECTOR,
     BackendError,
@@ -36,6 +37,9 @@ def main() -> int:
     finish=sub.add_parser("finish-action"); finish.add_argument("--action-id",type=int,required=True); finish.add_argument("--status",choices=("succeeded","failed","blocked","cancelled"),required=True); finish.add_argument("--result"); finish.add_argument("--gate")
     snap=sub.add_parser("snapshot"); snap.add_argument("--run-id",required=True)
     nxt=sub.add_parser("next-action"); nxt.add_argument("--run-id",required=True)
+    run_phase=sub.add_parser("run-phase"); run_phase.add_argument("--run-id",required=True); run_phase.add_argument("--phase",choices=PHASES[1:],required=True); run_phase.add_argument("--receipt",required=True)
+    run_result=sub.add_parser("run-result"); run_result.add_argument("--run-id",required=True); run_result.add_argument("--result",choices=tuple(RUN_RESULTS - {"completed"}),required=True); run_result.add_argument("--reason",required=True); run_result.add_argument("--receipt",required=True)
+    resume=sub.add_parser("resume-run"); resume.add_argument("--run-id",required=True)
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -47,7 +51,7 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt):
+    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
     db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command == "snapshot" else "open-existing"))
@@ -69,6 +73,12 @@ def main() -> int:
         elif args.command=="next-action":
             from next_action import next_action
             result=next_action(db,args.run_id)
+        elif args.command=="run-phase":
+            result=db.advance_run_phase(args.run_id,args.phase,json.loads(args.receipt),args.expected_version)
+        elif args.command=="run-result":
+            result=db.set_run_result(args.run_id,args.result,args.reason,json.loads(args.receipt),args.expected_version)
+        elif args.command=="resume-run":
+            result=db.resume_run(args.run_id,args.expected_version)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":
@@ -173,6 +183,9 @@ def main() -> int:
         result={"decision":"refresh","error":exc.code,"run_id":exc.run_id,"expected_version":exc.expected,"actual_version":exc.actual}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     except EvidenceGateError as exc:
+        result={"decision":"reject","error":exc.code,"details":exc.details}
+        print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
+    except RunStateError as exc:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     finally: db.close()

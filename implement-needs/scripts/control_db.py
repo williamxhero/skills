@@ -9,10 +9,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from evidence_gate import EvidenceGateError, verify_terminal_contract
+from run_state import (
+    PHASE_TRANSITIONS,
+    RunStateError,
+    validate_phase_receipt,
+    validate_result_receipt,
+)
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -38,6 +44,13 @@ RUN_MODE_COLUMNS = (
     ("queue_definition", "TEXT NOT NULL DEFAULT '[]'"),
 )
 
+RUN_STATE_COLUMNS = (
+    ("run_phase", "TEXT NOT NULL DEFAULT 'initialized'"),
+    ("terminal_result", "TEXT"),
+    ("stop_reason", "TEXT"),
+    ("recovery_action", "TEXT"),
+)
+
 TICKET_QUEUE_COLUMNS = (
     ("queue_position", "INTEGER"),
     ("acceptance", "TEXT NOT NULL DEFAULT '[]'"),
@@ -45,7 +58,7 @@ TICKET_QUEUE_COLUMNS = (
 
 SCHEMA = """
 PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'whole-spec', controller_task_id TEXT, queue_definition TEXT NOT NULL DEFAULT '[]', business_version INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'whole-spec', controller_task_id TEXT, queue_definition TEXT NOT NULL DEFAULT '[]', business_version INTEGER NOT NULL DEFAULT 0, run_phase TEXT NOT NULL DEFAULT 'initialized', terminal_result TEXT, stop_reason TEXT, recovery_action TEXT);
 CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), title TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', generation INTEGER NOT NULL DEFAULT 0, UNIQUE(run_id,position));
 CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', issue_url TEXT, queue_position INTEGER, UNIQUE(spec_id,title));
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
@@ -53,6 +66,7 @@ CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, 
 CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL, business_version INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS phase_receipts(receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), from_phase TEXT NOT NULL, to_phase TEXT NOT NULL, result TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS decisions(decision_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), subject TEXT NOT NULL, selected TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL DEFAULT '[]', rationale TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS schema_meta(version INTEGER NOT NULL, migrated_at TEXT NOT NULL);
 """
@@ -199,6 +213,11 @@ class ControlDB:
             raise DatabaseModeError("database schema lacks observations table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='evidence_refs'").fetchone():
             raise DatabaseModeError("database schema lacks evidence_refs table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='phase_receipts'").fetchone():
+            raise DatabaseModeError("database schema lacks phase_receipts table")
+        run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
+        if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
+            raise DatabaseModeError("database schema lacks run lifecycle columns")
         for run in self.conn.execute("SELECT run_id,business_version FROM runs"):
             latest = self.conn.execute("SELECT COALESCE(MAX(business_version),0) FROM events WHERE run_id=?", (run[0],)).fetchone()[0]
             if int(run[1]) != int(latest):
@@ -232,6 +251,10 @@ class ControlDB:
             for name,declaration in RUN_MODE_COLUMNS:
                 if name not in run_columns:
                     self.conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {declaration}")
+            run_columns={row[1] for row in self.conn.execute("PRAGMA table_info(runs)")}
+            for name,declaration in RUN_STATE_COLUMNS:
+                if name not in run_columns:
+                    self.conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {declaration}")
             ticket_columns={row[1] for row in self.conn.execute("PRAGMA table_info(tickets)")}
             for name,declaration in TICKET_QUEUE_COLUMNS:
                 if name not in ticket_columns:
@@ -244,6 +267,7 @@ class ControlDB:
                 self.conn.execute("ALTER TABLE events ADD COLUMN business_version INTEGER NOT NULL DEFAULT 0")
             self.conn.execute("CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS evidence_refs(evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, evidence_kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS phase_receipts(receipt_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), from_phase TEXT NOT NULL, to_phase TEXT NOT NULL, result TEXT NOT NULL, payload TEXT NOT NULL, business_version INTEGER NOT NULL, created_at TEXT NOT NULL)")
             self.conn.execute("INSERT INTO schema_meta(version,migrated_at) VALUES(?,?)",(SCHEMA_VERSION,now()))
     def business_version(self, run_id: str) -> int:
         row = self.conn.execute("SELECT business_version FROM runs WHERE run_id=?", (run_id,)).fetchone()
@@ -282,8 +306,97 @@ class ControlDB:
             raise ValueError("issue #444 has one designated controller task")
         stamp=now()
         with self.transaction():
-            self.conn.execute("INSERT INTO runs(run_id,initiative,requirement,status,current_action,created_at,updated_at,execution_mode,controller_task_id,queue_definition,business_version) VALUES(?,?,?,?,?,?,?,?,?,?,?)",(run_id,initiative,requirement,"active",None,stamp,stamp,execution_mode,controller_task_id,json.dumps(queue_definition or [],ensure_ascii=False),0))
-            self._business_event(run_id,"run",run_id,"run_created",{"execution_mode":execution_mode,"controller_task_id":controller_task_id})
+            self.conn.execute("INSERT INTO runs(run_id,initiative,requirement,status,current_action,created_at,updated_at,execution_mode,controller_task_id,queue_definition,business_version,run_phase,terminal_result,stop_reason,recovery_action) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(run_id,initiative,requirement,"active",None,stamp,stamp,execution_mode,controller_task_id,json.dumps(queue_definition or [],ensure_ascii=False),0,"initialized",None,None,None))
+            self._business_event(run_id,"run",run_id,"run_created",{"execution_mode":execution_mode,"controller_task_id":controller_task_id,"run_phase":"initialized"})
+
+    def advance_run_phase(self, run_id, target_phase, receipt, expected_version=None):
+        """Advance exactly one run phase after a bound phase readback."""
+        with self.transaction():
+            current_version = self._check_version(run_id, expected_version)
+            row = self.conn.execute(
+                "SELECT run_phase,terminal_result FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("run not found")
+            if row[1] is not None:
+                raise RunStateError("run_terminal", {"result": row[1], "run_phase": row[0]})
+            if target_phase not in PHASE_TRANSITIONS.get(row[0], set()):
+                raise RunStateError("illegal_run_phase_transition", {"from_phase": row[0], "to_phase": target_phase})
+            validate_phase_receipt(
+                receipt, run_id=run_id, from_phase=row[0], to_phase=target_phase,
+                expected_version=current_version,
+            )
+            status = "completed" if target_phase == "completed" else "active"
+            terminal = "completed" if target_phase == "completed" else None
+            self.conn.execute(
+                "UPDATE runs SET run_phase=?,status=?,terminal_result=?,stop_reason=NULL,recovery_action=NULL,current_action=NULL,updated_at=? WHERE run_id=?",
+                (target_phase, status, terminal, now(), run_id),
+            )
+            next_version = self._business_event(
+                run_id, "run", run_id, "run_phase_changed",
+                {"from_phase": row[0], "to_phase": target_phase, "receipt": receipt},
+            )
+            self.conn.execute(
+                "INSERT INTO phase_receipts(run_id,from_phase,to_phase,result,payload,business_version,created_at) VALUES(?,?,?,?,?,?,?)",
+                (run_id, row[0], target_phase, "completed", json.dumps(receipt, ensure_ascii=False, sort_keys=True), next_version, now()),
+            )
+            return {"run_id": run_id, "from_phase": row[0], "run_phase": target_phase, "business_version": next_version}
+
+    def set_run_result(self, run_id, result, reason, receipt, expected_version=None):
+        """Persist blocked, user-stopped, or verified no-change without fake success."""
+        if result not in {"blocked", "user_stopped", "no_change"}:
+            raise RunStateError("unsupported_run_result", {"result": result})
+        with self.transaction():
+            current_version = self._check_version(run_id, expected_version)
+            row = self.conn.execute(
+                "SELECT run_phase,terminal_result FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("run not found")
+            if row[1] is not None:
+                raise RunStateError("run_terminal", {"result": row[1], "run_phase": row[0]})
+            if result == "no_change":
+                if row[0] != "planning":
+                    raise RunStateError("no_change_requires_planning", {"run_phase": row[0]})
+                if self.conn.execute(
+                    "SELECT COUNT(*) FROM specs WHERE run_id=?", (run_id,)
+                ).fetchone()[0] != 0:
+                    raise RunStateError("no_change_requires_empty_specs", {"run_id": run_id})
+            validate_result_receipt(
+                receipt, run_id=run_id, phase=row[0], result=result,
+                expected_version=current_version,
+            )
+            if reason != receipt["reason"]:
+                raise RunStateError("result_reason_mismatch", {"expected": receipt["reason"], "actual": reason})
+            recovery = receipt.get("recovery_action")
+            self.conn.execute(
+                "UPDATE runs SET status=?,terminal_result=?,stop_reason=?,recovery_action=?,current_action=NULL,updated_at=? WHERE run_id=?",
+                (result, result, reason, recovery, now(), run_id),
+            )
+            next_version = self._business_event(
+                run_id, "run", run_id, "run_result_recorded",
+                {"result": result, "reason": reason, "recovery_action": recovery, "receipt": receipt},
+            )
+            self.conn.execute(
+                "INSERT INTO phase_receipts(run_id,from_phase,to_phase,result,payload,business_version,created_at) VALUES(?,?,?,?,?,?,?)",
+                (run_id, row[0], row[0], result, json.dumps(receipt, ensure_ascii=False, sort_keys=True), next_version, now()),
+            )
+            return {"run_id": run_id, "run_phase": row[0], "result": result, "business_version": next_version}
+
+    def resume_run(self, run_id, expected_version=None):
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            row = self.conn.execute("SELECT run_phase,terminal_result FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise ValueError("run not found")
+            if row[1] not in {"blocked", "user_stopped"}:
+                raise RunStateError("run_not_resumable", {"result": row[1]})
+            self.conn.execute(
+                "UPDATE runs SET status='active',terminal_result=NULL,stop_reason=NULL,recovery_action=NULL,updated_at=? WHERE run_id=?",
+                (now(), run_id),
+            )
+            version = self._business_event(run_id, "run", run_id, "run_resumed", {"run_phase": row[0]})
+            return {"run_id": run_id, "run_phase": row[0], "business_version": version}
     def migrate_run_to_single_ticket_line(self, run_id, queue_definition, expected_version=None):
         """Convert an existing run without inventing controller identity.
 
