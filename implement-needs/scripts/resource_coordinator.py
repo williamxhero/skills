@@ -64,3 +64,22 @@ class ResourceCoordinator:
         except Exception:
             self.conn.execute("ROLLBACK")
             raise
+
+    def release(self, resource_key, owner_id):
+        """Release a resource only when the current owner explicitly does so."""
+        if not all(isinstance(value, str) and value.strip() for value in (resource_key, owner_id)):
+            raise ValueError("resource_key and owner_id are required")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = self.conn.execute("SELECT owner_id FROM resource_claims WHERE resource_key=?", (resource_key,)).fetchone()
+            if current is None:
+                self.conn.execute("COMMIT")
+                return {"resource_key": resource_key, "released": False}
+            if current["owner_id"] != owner_id:
+                raise ActionClaimConflict(f"resource {resource_key} is owned by {current['owner_id']}")
+            self.conn.execute("DELETE FROM resource_claims WHERE resource_key=?", (resource_key,))
+            self.conn.execute("COMMIT")
+            return {"resource_key": resource_key, "released": True}
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise

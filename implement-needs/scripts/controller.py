@@ -25,6 +25,7 @@ def main() -> int:
     claim=sub.add_parser("claim-action"); claim.add_argument("--action-id",type=int,required=True); claim.add_argument("--owner-id",required=True); claim.add_argument("--lease-seconds",type=int,default=60); claim.add_argument("--supports-fencing",action="store_true"); claim.add_argument("--outcome-reconciled",action="store_true")
     effect=sub.add_parser("assert-action-effect"); effect.add_argument("--action-id",type=int,required=True); effect.add_argument("--owner-id",required=True)
     resource=sub.add_parser("claim-resource"); resource.add_argument("--coordination-db",type=Path,required=True); resource.add_argument("--resource-key",required=True); resource.add_argument("--owner-id",required=True); resource.add_argument("--run-id",required=True); resource.add_argument("--lease-seconds",type=int,default=60); resource.add_argument("--supports-fencing",action="store_true"); resource.add_argument("--outcome-reconciled",action="store_true")
+    release_resource=sub.add_parser("release-resource"); release_resource.add_argument("--coordination-db",type=Path,required=True); release_resource.add_argument("--resource-key",required=True); release_resource.add_argument("--owner-id",required=True)
     proof=sub.add_parser("record-delivery-proof"); proof.add_argument("--entity-type",choices=("spec","ticket"),required=True); proof.add_argument("--entity-id",required=True); proof.add_argument("--artifact-type",default="delivery"); proof.add_argument("--artifact-ref",required=True); proof.add_argument("--evidence",required=True)
     waiver=sub.add_parser("waive-dependency"); waiver.add_argument("--dependent-type",choices=("spec","ticket"),required=True); waiver.add_argument("--dependent-id",required=True); waiver.add_argument("--blocker-type",choices=("spec","ticket"),required=True); waiver.add_argument("--blocker-id",required=True); waiver.add_argument("--reason",required=True); waiver.add_argument("--authorization-source",required=True); waiver.add_argument("--scope",required=True); waiver.add_argument("--evidence",required=True)
     dependencies=sub.add_parser("validate-dependencies"); dependencies.add_argument("--run-id",required=True)
@@ -63,6 +64,11 @@ def main() -> int:
             from resource_coordinator import ResourceCoordinator
             coordinator=ResourceCoordinator(args.coordination_db)
             try: result=coordinator.acquire(args.resource_key,args.owner_id,args.run_id,args.lease_seconds,args.supports_fencing,args.outcome_reconciled)
+            finally: coordinator.close()
+        elif args.command=="release-resource":
+            from resource_coordinator import ResourceCoordinator
+            coordinator=ResourceCoordinator(args.coordination_db)
+            try: result=coordinator.release(args.resource_key,args.owner_id)
             finally: coordinator.close()
         elif args.command=="record-delivery-proof": result=db.record_delivery_proof(args.entity_type,args.entity_id,args.artifact_type,args.artifact_ref,json.loads(args.evidence))
         elif args.command=="waive-dependency": result=db.waive_dependency(args.dependent_type,args.dependent_id,args.blocker_type,args.blocker_id,args.reason,args.authorization_source,args.scope,json.loads(args.evidence))

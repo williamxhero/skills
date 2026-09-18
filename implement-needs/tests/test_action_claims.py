@@ -60,17 +60,23 @@ class ActionClaimTests(unittest.TestCase):
             coordinator_path = Path(directory) / "coordination.db"
             first = ResourceCoordinator(coordinator_path)
             second = ResourceCoordinator(coordinator_path)
-            claim = first.acquire("repo:https://github.com/acme/example#main", "controller-a", "run-a")
-            self.assertEqual("run-a", claim["run_id"])
-            with self.assertRaises(ActionClaimConflict):
-                second.acquire("repo:https://github.com/acme/example#main", "controller-b", "run-b")
-            first.conn.execute("UPDATE resource_claims SET lease_expires_at='2000-01-01T00:00:00+00:00'")
-            with self.assertRaises(UnsafeLeaseTakeover):
-                second.acquire("repo:https://github.com/acme/example#main", "controller-b", "run-b")
-            replacement = second.acquire("repo:https://github.com/acme/example#main", "controller-b", "run-b", supports_fencing=True, outcome_reconciled=True)
-            self.assertEqual("run-b", replacement["run_id"])
-            first.close()
-            second.close()
+            try:
+                claim = first.acquire("repo:https://github.com/acme/example#main", "controller-a", "run-a")
+                self.assertEqual("run-a", claim["run_id"])
+                with self.assertRaises(ActionClaimConflict):
+                    second.acquire("repo:https://github.com/acme/example#main", "controller-b", "run-b")
+                first.conn.execute("UPDATE resource_claims SET lease_expires_at='2000-01-01T00:00:00+00:00'")
+                with self.assertRaises(UnsafeLeaseTakeover):
+                    second.acquire("repo:https://github.com/acme/example#main", "controller-b", "run-b")
+                replacement = second.acquire("repo:https://github.com/acme/example#main", "controller-b", "run-b", supports_fencing=True, outcome_reconciled=True)
+                self.assertEqual("run-b", replacement["run_id"])
+                with self.assertRaises(ActionClaimConflict):
+                    second.release("repo:https://github.com/acme/example#main", "controller-a")
+                self.assertTrue(second.release("repo:https://github.com/acme/example#main", "controller-b")["released"])
+                self.assertFalse(second.release("repo:https://github.com/acme/example#main", "controller-b")["released"])
+            finally:
+                first.close()
+                second.close()
 
 
 if __name__ == "__main__":
