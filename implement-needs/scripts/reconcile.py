@@ -14,6 +14,7 @@ from task_backend import (
     read_task,
 )
 from task_binding import AMBIGUOUS, BOUND, Candidate, bind_candidate
+from dependency_readiness import readiness_from_db, structure_from_db
 
 
 def probe_and_record(db, run_id, transport):
@@ -287,7 +288,27 @@ def audit(db, run_id):
     if db.conn.execute("SELECT COUNT(*) FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=? AND t.status='closed' AND (t.commits='[]' OR t.tests='[]')",(run_id,)).fetchone()[0]: errors.append("closed_ticket_missing_evidence")
     if db.conn.execute("SELECT COUNT(*) FROM threads WHERE run_id=? AND lifecycle='created' AND next_action IS NULL",(run_id,)).fetchone()[0]: errors.append("unassigned_created_thread")
     if db.conn.execute("SELECT COUNT(*) FROM actions WHERE run_id=? AND status IN ('pending','running')",(run_id,)).fetchone()[0] > 1: errors.append("multiple_pending_actions")
+    structure = structure_from_db(db, run_id)
+    errors.extend("dependency_" + item["code"] for item in structure["errors"])
+    if structure["status"] == "valid":
+        candidates = [row[0] for row in db.conn.execute("SELECT spec_id FROM specs WHERE run_id=? AND status NOT IN ('closed','cancelled') ORDER BY position", (run_id,))]
+        if candidates:
+            readiness = readiness_from_db(db, run_id, candidates[0])
+            if readiness["status"] == "blocked":
+                errors.append("dependency_blocked:" + candidates[0])
     return errors
+
+
+def dependency_audit(db, run_id, spec_id=None):
+    structure = structure_from_db(db, run_id)
+    if structure["status"] != "valid":
+        return {"decision": "repair", "status": "invalid", "errors": structure["errors"], "readiness": None}
+    candidates = [row[0] for row in db.conn.execute("SELECT spec_id FROM specs WHERE run_id=? AND status NOT IN ('closed','cancelled') ORDER BY position", (run_id,))]
+    target = spec_id or (candidates[0] if candidates else None)
+    if target is None:
+        return {"decision": "allow", "status": "ready", "errors": [], "readiness": None}
+    readiness = readiness_from_db(db, run_id, target)
+    return {"decision": "repair" if readiness["status"] == "blocked" else "allow", "status": readiness["status"], "errors": readiness.get("errors", []), "readiness": readiness}
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--db',type=Path,required=True); p.add_argument('--run-id',required=True); p.add_argument('--inventory',type=Path); p.add_argument('--backend-command'); a=p.parse_args(); db=ControlDB.open_existing(a.db)
@@ -309,6 +330,6 @@ def main():
             try: result=reconcile_inventory(db,a.run_id,json.loads(a.inventory.read_text(encoding='utf-8')))
             except (OSError,UnicodeError,json.JSONDecodeError): result={'decision':'repair','status':'inconclusive','errors':['inventory_unreadable'],'matches':[]}
             result['run_id']=a.run_id; print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 0 if result['decision']=='allow' else 1
-        errors=audit(db,a.run_id); print(json.dumps({'run_id':a.run_id,'decision':'allow' if not errors else 'repair','errors':errors},ensure_ascii=False)); return 0 if not errors else 1
+        errors=audit(db,a.run_id); dependency=dependency_audit(db,a.run_id); print(json.dumps({'run_id':a.run_id,'decision':'allow' if not errors else 'repair','errors':errors,'dependency':dependency},ensure_ascii=False)); return 0 if not errors else 1
     finally: db.close()
 if __name__=='__main__': raise SystemExit(main())
