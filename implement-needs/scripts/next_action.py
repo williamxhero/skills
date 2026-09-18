@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from control_db import ControlDB
+from dependency_readiness import readiness_from_db
 
 TERMINAL_SPEC={"closed","cancelled"}
 
@@ -119,8 +120,11 @@ def next_action(db: ControlDB, run_id: str) -> dict:
     specs=db.conn.execute("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)).fetchall()
     for spec in specs:
         if spec["status"] in TERMINAL_SPEC: continue
-        blockers=json.loads(spec["blocked_by"])
-        if any(db.conn.execute("SELECT status FROM specs WHERE spec_id=?",(x,)).fetchone()[0] not in TERMINAL_SPEC for x in blockers): continue
+        readiness = readiness_from_db(db, run_id, spec["spec_id"])
+        if readiness["status"] == "blocked":
+            return {"kind": "repair_spec", "target": spec["spec_id"], "reason": readiness["reason"], "readiness": readiness}
+        if readiness["status"] == "waiting":
+            return {"kind": "wait_spec_dependency", "target": spec["spec_id"], "reason": readiness["reason"], "readiness": readiness}
         status=spec["status"]
         if status=="planned": return {"kind":"advance_spec","target":spec["spec_id"],"next_status":"ready"}
         if status=="ready": return {"kind":"ticket_current_spec","target":spec["spec_id"]}
