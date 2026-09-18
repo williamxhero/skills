@@ -7,8 +7,10 @@ import shlex
 from pathlib import Path
 
 from control_db import ActionConflict, ControlDB, StaleState
+from authorization import AuthorizationError
 from evidence_gate import EvidenceGateError
 from run_state import PHASES, RUN_RESULTS, RunStateError
+from sync_scope import SyncScopeError, build_sync_plan
 from task_backend import (
     MCP_CONNECTOR,
     BackendError,
@@ -25,7 +27,7 @@ def main() -> int:
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db",type=Path,required=True)
     sub=parser.add_subparsers(dest="command",required=True)
-    init=sub.add_parser("init"); init.add_argument("--run-id",required=True); init.add_argument("--initiative",required=True); init.add_argument("--requirement",required=True); init.add_argument("--execution-mode",choices=("whole-spec","single-ticket-line"),default="whole-spec"); init.add_argument("--controller-task-id"); init.add_argument("--queue-definition",default="[]")
+    init=sub.add_parser("init"); init.add_argument("--run-id",required=True); init.add_argument("--initiative",required=True); init.add_argument("--requirement",required=True); init.add_argument("--execution-mode",choices=("whole-spec","single-ticket-line"),default="whole-spec"); init.add_argument("--controller-task-id"); init.add_argument("--queue-definition",default="[]"); init.add_argument("--authorization")
     spec=sub.add_parser("add-spec"); spec.add_argument("--run-id",required=True); spec.add_argument("--spec-id",required=True); spec.add_argument("--title",required=True); spec.add_argument("--position",type=int,required=True); spec.add_argument("--blocked-by",default="[]"); spec.add_argument("--acceptance",default="[]")
     ticket=sub.add_parser("add-ticket"); ticket.add_argument("--spec-id",required=True); ticket.add_argument("--ticket-id",required=True); ticket.add_argument("--title",required=True); ticket.add_argument("--blocked-by",default="[]"); ticket.add_argument("--issue-url"); ticket.add_argument("--queue-position",type=int)
     thread=sub.add_parser("register-thread"); thread.add_argument("--run-id",required=True); thread.add_argument("--thread-id",required=True); thread.add_argument("--kind",required=True); thread.add_argument("--spec-id"); thread.add_argument("--identity"); thread.add_argument("--client-thread-id"); thread.add_argument("--formal-thread-id"); thread.add_argument("--host-id"); thread.add_argument("--owner-id"); thread.add_argument("--cwd"); thread.add_argument("--project-id"); thread.add_argument("--title-token")
@@ -40,6 +42,13 @@ def main() -> int:
     run_phase=sub.add_parser("run-phase"); run_phase.add_argument("--run-id",required=True); run_phase.add_argument("--phase",choices=PHASES[1:],required=True); run_phase.add_argument("--receipt",required=True)
     run_result=sub.add_parser("run-result"); run_result.add_argument("--run-id",required=True); run_result.add_argument("--result",choices=tuple(RUN_RESULTS - {"completed"}),required=True); run_result.add_argument("--reason",required=True); run_result.add_argument("--receipt",required=True)
     resume=sub.add_parser("resume-run"); resume.add_argument("--run-id",required=True)
+    configure_auth=sub.add_parser("configure-auth"); configure_auth.add_argument("--run-id",required=True); configure_auth.add_argument("--authorization",required=True)
+    auth_check=sub.add_parser("auth-check"); auth_check.add_argument("--run-id",required=True); auth_check.add_argument("--action",required=True); auth_check.add_argument("--path"); auth_check.add_argument("--target-ref"); auth_check.add_argument("--environment"); auth_check.add_argument("--full-project",action="store_true")
+    freeze=sub.add_parser("freeze-candidate"); freeze.add_argument("--run-id",required=True); freeze.add_argument("--candidate-sha",required=True); freeze.add_argument("--merge-sha"); freeze.add_argument("--evidence",required=True)
+    candidate_evidence=sub.add_parser("candidate-evidence"); candidate_evidence.add_argument("--run-id",required=True); candidate_evidence.add_argument("--kind",choices=("test","package","deployment","synchronization","final-readback"),required=True); candidate_evidence.add_argument("--evidence",required=True)
+    invalidate=sub.add_parser("invalidate-candidate"); invalidate.add_argument("--run-id",required=True); invalidate.add_argument("--reason",required=True); invalidate.add_argument("--observed-candidate-sha")
+    sync_plan=sub.add_parser("sync-plan"); sync_plan.add_argument("--run-id",required=True); sync_plan.add_argument("--changed-paths",required=True); sync_plan.add_argument("--requested-paths"); sync_plan.add_argument("--full-project",action="store_true")
+    record_sync=sub.add_parser("record-sync"); record_sync.add_argument("--run-id",required=True); record_sync.add_argument("--readback",required=True)
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -51,12 +60,12 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume):
+    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command == "snapshot" else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan"} else "open-existing"))
     try:
-        if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition)); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
+        if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
         elif args.command=="add-ticket": db.add_ticket(args.spec_id,args.ticket_id,args.title,json.loads(args.blocked_by),args.issue_url,args.queue_position,args.expected_version); result={"ticket_id":args.ticket_id}
         elif args.command=="register-thread":
@@ -79,6 +88,21 @@ def main() -> int:
             result=db.set_run_result(args.run_id,args.result,args.reason,json.loads(args.receipt),args.expected_version)
         elif args.command=="resume-run":
             result=db.resume_run(args.run_id,args.expected_version)
+        elif args.command=="configure-auth":
+            result=db.configure_authorization(args.run_id,json.loads(args.authorization),args.expected_version)
+        elif args.command=="auth-check":
+            result=db.authorize(args.run_id, action=args.action, path=args.path, target_ref=args.target_ref, environment=args.environment, full_project=args.full_project)
+        elif args.command=="freeze-candidate":
+            result=db.freeze_candidate(args.run_id,args.candidate_sha,json.loads(args.evidence),args.merge_sha,args.expected_version)
+        elif args.command=="candidate-evidence":
+            result=db.record_candidate_evidence(args.run_id,args.kind,json.loads(args.evidence),args.expected_version)
+        elif args.command=="invalidate-candidate":
+            result=db.invalidate_candidate(args.run_id,args.reason,args.observed_candidate_sha,args.expected_version)
+        elif args.command=="sync-plan":
+            record=db.authorization(args.run_id)
+            result=build_sync_plan(record["payload"],json.loads(args.changed_paths),requested_paths=json.loads(args.requested_paths) if args.requested_paths else None,full_project=args.full_project)
+        elif args.command=="record-sync":
+            result=db.record_synchronization(args.run_id,json.loads(args.readback),args.expected_version)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":
@@ -186,6 +210,12 @@ def main() -> int:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     except RunStateError as exc:
+        result={"decision":"reject","error":exc.code,"details":exc.details}
+        print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
+    except AuthorizationError as exc:
+        result={"decision":"reject","error":exc.code,"details":exc.details}
+        print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
+    except SyncScopeError as exc:
         result={"decision":"reject","error":exc.code,"details":exc.details}
         print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 1
     finally: db.close()
