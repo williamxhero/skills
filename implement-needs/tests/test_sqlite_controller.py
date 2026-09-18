@@ -11,6 +11,17 @@ from next_action import next_action
 from transitions import SPEC_TRANSITIONS, THREAD_TRANSITIONS, transition
 
 
+def verified_gate(db, run_id, target_id, candidate="abc", environment="test", scope="controller"):
+    return {
+        "schema_version": 1,
+        "expected": {"run_id": run_id, "target_id": target_id, "candidate_sha": candidate, "environment": environment, "business_version": db.business_version(run_id)},
+        "actor": {"id": "owner", "authorized": True},
+        "source": {"kind": "independent-readback", "trust": "verified"},
+        "readback": {"status": "verified", "run_id": run_id, "target_id": target_id, "candidate_sha": candidate, "environment": environment},
+        "test_scope": scope,
+    }
+
+
 class SQLiteControllerTests(unittest.TestCase):
     def test_initializes_wal_and_persists_idempotent_action(self):
         with tempfile.TemporaryDirectory() as d:
@@ -85,8 +96,8 @@ class SQLiteControllerTests(unittest.TestCase):
             for status in ("ready", "implementing", "verified", "merged"):
                 db.update_ticket("T-01", status)
             db.update_ticket(
-                "T-01", "closed", ["commit:abc"], ["test:green"],
-                ["acceptance:T-01"],
+                "T-01", "closed", ["commit:abc"], ["test://abc/controller"],
+                ["acceptance:T-01"], gate=verified_gate(db, "run-line", "T-01"),
             )
             action = next_action(db, "run-line")
             self.assertEqual("advance_ticket", action["kind"])
@@ -212,7 +223,7 @@ class SQLiteControllerTests(unittest.TestCase):
                 db.update_ticket("T", status)
             with self.assertRaises(ValueError):
                 db.update_ticket("T", "closed")
-            db.update_ticket("T", "closed", ["commit:abc"], ["test:green"], ["acceptance:#T"])
+            db.update_ticket("T", "closed", ["commit:abc"], ["test://abc/controller"], ["acceptance:#T"], gate=verified_gate(db, "r", "T"))
             self.assertEqual("closed", db.conn.execute("SELECT status FROM tickets WHERE ticket_id='T'").fetchone()[0])
             db.close()
 
