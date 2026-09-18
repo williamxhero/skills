@@ -67,6 +67,7 @@ class RuntimeObservationTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)["created"])
             db = ControlDB(path)
             self.assertEqual("verification", db.conn.execute("SELECT phase FROM runtime_observations").fetchone()[0])
+            self.assertEqual("milliseconds", db.conn.execute("SELECT unit FROM runtime_observations").fetchone()[0])
             self.assertEqual(["cli://a1"], json.loads(db.conn.execute("SELECT metadata FROM runtime_observations").fetchone()[0])["evidence"])
             db.close()
 
