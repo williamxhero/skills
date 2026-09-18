@@ -10,6 +10,7 @@ from pathlib import Path
 
 from evidence_gate import EvidenceGateError, verify_terminal_contract
 from authorization import AuthorizationError, authorization_digest, check_scope, validate_authorization
+from sync_scope import validate_sync_readback
 from run_state import (
     PHASE_TRANSITIONS,
     RunStateError,
@@ -433,6 +434,27 @@ class ControlDB:
             version = self._business_event(run_id, "candidate", active["candidate_sha"], "candidate_evidence_recorded", {"evidence_kind": evidence_kind, "evidence_id": cur.lastrowid, "candidate_sha": active["candidate_sha"]})
             self.conn.execute("UPDATE candidate_evidence SET business_version=? WHERE evidence_id=?", (version, cur.lastrowid))
             return {"run_id": run_id, "evidence_id": cur.lastrowid, "candidate_sha": active["candidate_sha"], "business_version": version}
+
+    def record_synchronization(self, run_id, readback, expected_version=None):
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            active = self._candidate_active(run_id)
+            authorization = self.authorization(run_id)
+            if authorization["status"] != "configured":
+                raise AuthorizationError("authorization_unconfigured", {"run_id": run_id})
+            payload = validate_sync_readback(
+                readback,
+                candidate_sha=active["candidate_sha"],
+                target_ref=validate_authorization(authorization["payload"])["target_ref"],
+                authorization_digest_value=active["authorization_digest"],
+                repository_id=validate_authorization(authorization["payload"])["repository"]["id"],
+                full_project=bool(readback.get("full_project")),
+            )
+            payload = dict(payload)
+            payload["business_version"] = current
+            action = "full-project-sync" if payload["full_project"] else "run-scoped-sync"
+            self.authorize(run_id, action=action, full_project=payload["full_project"])
+            return self.record_candidate_evidence(run_id, "synchronization", payload, current)
 
     def invalidate_candidate(self, run_id, reason, observed_candidate_sha=None, expected_version=None):
         if not isinstance(reason, str) or not reason.strip():
