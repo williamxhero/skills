@@ -27,6 +27,11 @@ def dependency_status(db, dependent_type, dependent_id, blocker_type, blocker_id
         (blocker_type, blocker_id),
     ).fetchone()
     if not proof:
+        proof = db.conn.execute(
+            "SELECT evidence_id FROM evidence_refs WHERE entity_type=? AND entity_id=? AND evidence_kind='delivery_proof' LIMIT 1",
+            (blocker_type, blocker_id),
+        ).fetchone()
+    if not proof:
         return {"satisfied": False, "code": "delivery_proof_missing"}
     return {"satisfied": True, "code": "delivered", "proof_id": proof["proof_id"]}
 

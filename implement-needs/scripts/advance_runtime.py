@@ -81,6 +81,19 @@ def advance(db: ControlDB, run_id: str, max_actions=32):
     processed = []
     for _ in range(max_actions):
         action = next_action(db, run_id)
+        # Legacy runs may not have completed the newer preflight phase.  Keep
+        # deterministic local SPEC promotion available, but never infer a
+        # semantic ticketing or external mutation from this compatibility path.
+        if action.get("kind") == "run_preflight":
+            spec = db.conn.execute("SELECT spec_id,status FROM specs WHERE run_id=? ORDER BY position LIMIT 1", (run_id,)).fetchone()
+            if spec is not None and spec[1] == "planned":
+                action = {"kind": "advance_spec", "target": spec[0], "next_status": "ready"}
+            elif spec is not None and spec[1] == "ready":
+                action = {"kind": "ticket_current_spec", "target": spec[0]}
+            elif spec is not None and spec[1] in {"blocked", "cancelled"}:
+                action = {"kind": "repair_spec", "target": spec[0], "reason": "spec_not_executable"}
+            elif spec is None:
+                action = {"kind": "final_release", "target": run_id}
         pending = db.conn.execute(
             "SELECT status FROM actions WHERE action_id=?", (action.get("action_id"),)
         ).fetchone() if action.get("action_id") else None

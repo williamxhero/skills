@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 
 from control_db import ControlDB
-from dependency_readiness import readiness_from_db
+from dependency_readiness import readiness_from_db, structure_from_db
+from dependencies import validation_errors
 
 TERMINAL_SPEC={"closed","cancelled"}
 
@@ -123,10 +124,28 @@ def next_action(db: ControlDB, run_id: str) -> dict:
             if status == "merged": return {"kind":"close_ticket","target":target,"controller_task_id":run[1]}
             if status == "blocked": return {"kind":"repair_ticket","target":target,"controller_task_id":run[1]}
         return {"kind":"final_verification","target":run_id,"controller_task_id":run[1]}
-    phase_action = _phase_action(db, run_id, run)
+    specs = db.conn.execute("SELECT * FROM specs WHERE run_id=? ORDER BY position", (run_id,)).fetchall()
+    structure = structure_from_db(db, run_id)
+    if structure["status"] != "valid" and run[3] in {"implementing", "verifying", "release", "final_verification", "synchronization"}:
+        return {"kind": "repair_spec", "target": structure["errors"][0].get("spec_id") or run_id, "reason": "structural_error", "errors": structure["errors"]}
+    has_dependency_edges = any(json.loads(spec["blocked_by"] or "[]") for spec in specs)
+    if has_dependency_edges:
+        dependency_errors = validation_errors(db, run_id)
+        actionable = []
+        for item in dependency_errors:
+            if item["code"] == "blocker_not_delivered":
+                blocker_row = db.conn.execute("SELECT status FROM specs WHERE spec_id=?", (item["blocker"],)).fetchone()
+                if blocker_row is not None and blocker_row[0] not in {"cancelled", "blocked"}:
+                    continue
+            actionable.append(item)
+        if actionable:
+            first = actionable[0]
+            if first["code"] == "delivery_proof_missing":
+                return {"kind": "wait_spec_dependency", "target": first["dependent"], "reason": first["code"]}
+            return {"kind": "repair_dependency", "target": first["dependent"], "blocker": first["blocker"], "reason": first["code"]}
+    phase_action = None if has_dependency_edges else _phase_action(db, run_id, run)
     if phase_action is not None:
         return phase_action
-    specs=db.conn.execute("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)).fetchall()
     for spec in specs:
         if spec["status"] in TERMINAL_SPEC: continue
         readiness = readiness_from_db(db, run_id, spec["spec_id"])
