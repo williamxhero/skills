@@ -378,6 +378,37 @@ class ControlDB:
             raise StaleState(run_id, expected_version, actual)
         return actual
 
+    def require_context_fresh(self, context, run_id=None):
+        """Validate a projection envelope before a context-driven mutation."""
+        if not isinstance(context, dict):
+            raise ValueError("context envelope is required")
+        required = {"run_id", "entity_type", "entity_id", "read_business_version"}
+        if not required.issubset(context):
+            raise ValueError("context envelope is incomplete")
+        context_run_id = context["run_id"]
+        if run_id is not None and context_run_id != run_id:
+            raise ValueError("context run_id mismatch")
+        version = context["read_business_version"]
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError("context read_business_version is invalid")
+        return self._check_version(context_run_id, version)
+
+    def update_spec_from_context(self, spec_id, status, context, gate=None):
+        row = self.conn.execute("SELECT run_id FROM specs WHERE spec_id=?", (spec_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown spec")
+        version = self.require_context_fresh(context, row[0])
+        return self.update_spec(spec_id, status, version, gate)
+
+    def update_ticket_from_context(self, ticket_id, status, context, commits=None, tests=None, acceptance=None, gate=None):
+        row = self.conn.execute(
+            "SELECT s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?", (ticket_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown ticket")
+        version = self.require_context_fresh(context, row[0])
+        return self.update_ticket(ticket_id, status, commits, tests, acceptance, version, gate)
+
     def _business_event(self,run_id,entity_type,entity_id,event_type,payload):
         """Append an event and advance the run version inside the caller's tx."""
         current = self.business_version(run_id)
