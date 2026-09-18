@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from urllib.parse import quote, unquote
 
 
@@ -172,3 +173,24 @@ def read_history(db, pointer):
     if row is None:
         raise ContextProjectionError("history_unreachable", {"pointer": pointer})
     return {"pointer": pointer, "entity_type": entity_type, "entity_id": entity_id, "record": dict(row)}
+
+
+def measure_context(context, *, latency_ms=None, observed_tokens=None, fee=None, refresh_count=0, rejection_count=0):
+    """Measure transport cost while keeping unavailable provider data explicit."""
+    if not isinstance(context, dict) or "projection" not in context:
+        raise ContextProjectionError("context_envelope_invalid")
+    encoded = json.dumps(context, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "payload_bytes": len(encoded),
+        "token_estimate": max(1, math.ceil(len(encoded) / 4)),
+        "observed_tokens": observed_tokens,
+        "fee": fee,
+        "latency_ms": latency_ms,
+        "refresh_count": refresh_count,
+        "rejection_count": rejection_count,
+        "coverage": {
+            "tokens": "observed" if observed_tokens is not None else "estimated",
+            "fees": "observed" if fee is not None else "unknown",
+            "latency": "observed" if latency_ms is not None else "unknown",
+        },
+    }
