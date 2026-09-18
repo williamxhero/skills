@@ -15,7 +15,7 @@ from sync_scope import SyncScopeError, build_sync_plan
 from startup_contract import StartupContractError
 from context_projection import ContextProjectionError, build_context, measure_context, read_history
 from action_contracts import ActionContractError, render_cli_help, validate_action_surface
-from safety_metrics import collect_metrics, benchmark_manifest
+from safety_metrics import collect_metrics, benchmark_manifest, compare_metrics
 from dependency_readiness import readiness_from_db, structure_from_db
 from task_backend import (
     MCP_CONNECTOR,
@@ -80,6 +80,7 @@ def main() -> int:
     action_check=sub.add_parser("action-contract-check"); action_check.add_argument("--actions",required=True)
     safety_metrics=sub.add_parser("safety-metrics"); safety_metrics.add_argument("--run-id",required=True); safety_metrics.add_argument("--scenario",choices=("simulation","contract-backed"),default="contract-backed")
     benchmark=sub.add_parser("benchmark-manifest")
+    compare=sub.add_parser("compare-safety-metrics"); compare.add_argument("--before",type=Path,required=True); compare.add_argument("--after",type=Path,required=True)
     backup_manifest=sub.add_parser("backup-manifest"); backup_manifest.add_argument("--run-id",required=True); backup_manifest.add_argument("--file-digests",default="{}"); backup_manifest.add_argument("--database-digest")
     validate_manifest=sub.add_parser("validate-backup-manifest"); validate_manifest.add_argument("--run-id",required=True); validate_manifest.add_argument("--manifest-id",type=int,required=True); validate_manifest.add_argument("--file-digests"); validate_manifest.add_argument("--database-digest")
     begin_restore=sub.add_parser("begin-restore"); begin_restore.add_argument("--run-id",required=True); begin_restore.add_argument("--manifest-id",type=int,required=True)
@@ -98,7 +99,7 @@ def main() -> int:
     for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context", "context-history", "context-measurements", "action-contract", "action-contract-check", "safety-metrics", "benchmark-manifest"} else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context", "context-history", "context-measurements", "action-contract", "action-contract-check", "safety-metrics", "benchmark-manifest", "compare-safety-metrics"} else "open-existing"))
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
@@ -202,6 +203,8 @@ def main() -> int:
             result=collect_metrics(db, args.run_id, scenario=args.scenario)
         elif args.command=="benchmark-manifest":
             result=benchmark_manifest()
+        elif args.command=="compare-safety-metrics":
+            result=compare_metrics(json.loads(args.before.read_text(encoding="utf-8")), json.loads(args.after.read_text(encoding="utf-8")))
         elif args.command=="backup-manifest":
             result=db.create_backup_manifest(args.run_id, json.loads(args.file_digests), args.database_digest, args.expected_version)
         elif args.command=="validate-backup-manifest":

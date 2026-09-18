@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from control_db import ControlDB
-from safety_metrics import BENCHMARK_TASKS, collect_metrics
+from safety_metrics import BENCHMARK_TASKS, benchmark_manifest, collect_metrics, compare_metrics
 
 
 class SafetyMetricsTests(unittest.TestCase):
@@ -34,6 +34,14 @@ class SafetyMetricsTests(unittest.TestCase):
             self.assertIsNone(report["behavior"]["duplicate_external_operations"])
             self.assertNotEqual(True, report["correctness"]["delivery_success"])
             db.close()
+
+    def test_comparison_keeps_correctness_gate_and_unknown_efficiency_visible(self):
+        report = {"benchmark": benchmark_manifest(), "correctness": {"delivery_success": True}, "efficiency": {"input_tokens": None}}
+        compared = compare_metrics(report, report)
+        self.assertTrue(compared["correctness_gate"]["must_be_reviewed_before_efficiency"])
+        self.assertEqual("unknown", compared["efficiency_delta"]["coverage"]["tokens"])
+        with self.assertRaises(ValueError):
+            compare_metrics({**report, "benchmark": {"tasks": []}}, report)
 
 
 if __name__ == "__main__": unittest.main()

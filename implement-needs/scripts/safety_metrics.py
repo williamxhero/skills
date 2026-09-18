@@ -68,3 +68,26 @@ def collect_metrics(db, run_id, *, scenario="contract-backed"):
             "readback_required_for_duplicate_claim": True,
         },
     }
+
+
+def compare_metrics(before, after):
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise ValueError("metric reports must be objects")
+    if before.get("benchmark") != after.get("benchmark"):
+        raise ValueError("benchmark_mismatch")
+    return {
+        "decision": "allow",
+        "benchmark": after["benchmark"],
+        "correctness_gate": {
+            "before": before.get("correctness"),
+            "after": after.get("correctness"),
+            "must_be_reviewed_before_efficiency": True,
+        },
+        "efficiency_delta": {
+            "input_tokens": None,
+            "output_tokens": None,
+            "fee": None,
+            "coverage": {"tokens": "unknown", "fees": "unknown"},
+        },
+        "limitations": ["provider token/fee data unavailable"] if before.get("efficiency", {}).get("input_tokens") is None or after.get("efficiency", {}).get("input_tokens") is None else [],
+    }
