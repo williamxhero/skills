@@ -60,6 +60,9 @@ def next_action(db: ControlDB, run_id: str) -> dict:
     unknown = db.conn.execute("SELECT intent_id,target FROM operation_intents WHERE run_id=? AND status='outcome_unknown' ORDER BY intent_id LIMIT 1", (run_id,)).fetchone()
     if unknown:
         return {"kind": "reconcile_intent", "target": str(unknown[0]), "intent_id": unknown[0], "reason": "outcome_unknown"}
+    bootstrap = db.conn.execute("SELECT b.thread_id,b.state FROM thread_bootstraps b JOIN threads t ON t.thread_id=b.thread_id WHERE b.run_id=? AND t.kind!='controller' AND b.state IN ('bootstrap','route_verifying') ORDER BY b.created_at LIMIT 1", (run_id,)).fetchone()
+    if bootstrap:
+        return {"kind": "verify_thread_route" if bootstrap[1] == "bootstrap" else "assign_thread", "target": bootstrap[0], "bootstrap_state": bootstrap[1]}
     train = db.test_train_status(run_id)
     if train["due_checkpoints"]:
         return {"kind": "run_checkpoint", "target": run_id, "checkpoint": train["due_checkpoints"][0], "reason": "checkpoint_due"}
