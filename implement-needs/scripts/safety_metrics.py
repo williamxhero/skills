@@ -30,10 +30,12 @@ def collect_metrics(db, run_id, *, scenario="contract-backed"):
         return {"decision": "reject", "error": "run_not_found"}
     intents = db.conn.execute("SELECT status,result FROM operation_intents WHERE run_id=?", (run_id,)).fetchall()
     actions = db.conn.execute("SELECT status,attempts,result FROM actions WHERE run_id=?", (run_id,)).fetchall()
+    recoveries = db.conn.execute("SELECT r.status,i.status FROM recovery_records r JOIN operation_intents i ON i.intent_id=r.intent_id WHERE i.run_id=?", (run_id,)).fetchall()
     unknown = sum(row[0] == "outcome_unknown" for row in intents)
     reconciled = sum(row[0] in {"succeeded", "failed"} for row in intents)
     observed_readbacks = sum(bool(_result(row).get("readback")) for row in intents if row[0] in {"succeeded", "failed"})
     duplicate_evidence = sum(max(0, int(row[1] or 0) - 1) for row in actions)
+    recovery_success = sum(row[1] in {"succeeded", "failed"} for row in recoveries)
     coverage = {
         "scenario": scenario,
         "provider_readback": "observed" if observed_readbacks else "unknown",
@@ -50,7 +52,7 @@ def collect_metrics(db, run_id, *, scenario="contract-backed"):
             "terminal_result": run[1],
             "false_completion_count": 0 if run[1] in {"blocked", "no_change", "user_stopped", "completed"} else None,
             "delivery_success": run[1] == "completed",
-            "recovery_success_rate": (reconciled / len(intents)) if intents else None,
+            "recovery_success_rate": (recovery_success / len(recoveries)) if recoveries else None,
         },
         "behavior": {
             "unknown_outcomes": unknown,
@@ -59,4 +61,10 @@ def collect_metrics(db, run_id, *, scenario="contract-backed"):
         },
         "efficiency": {"controller_turns": None, "input_tokens": None, "output_tokens": None, "fee": None},
         "coverage": coverage,
+        "evidence_basis": {
+            "intents": len(intents),
+            "actions": len(actions),
+            "recovery_records": len(recoveries),
+            "readback_required_for_duplicate_claim": True,
+        },
     }
