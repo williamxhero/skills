@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -74,6 +74,8 @@ CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL 
 CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', issue_url TEXT, queue_position INTEGER, UNIQUE(spec_id,title));
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS thread_bootstraps(thread_id TEXT PRIMARY KEY REFERENCES threads(thread_id), run_id TEXT NOT NULL REFERENCES runs(run_id), state TEXT NOT NULL, budget INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, route_receipt TEXT, assignment_receipt TEXT, cancellation_receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS test_train_obligations(obligation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), spec_id TEXT NOT NULL REFERENCES specs(spec_id), level TEXT NOT NULL, required INTEGER NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,spec_id,level));
+CREATE TABLE IF NOT EXISTS test_train_checkpoints(checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), sequence INTEGER NOT NULL, start_position INTEGER NOT NULL, end_position INTEGER NOT NULL, members TEXT NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,sequence));
 CREATE TABLE IF NOT EXISTS actions(action_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, attempts INTEGER NOT NULL DEFAULT 0, result TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -258,6 +260,9 @@ class ControlDB:
                 raise DatabaseModeError(f"database schema lacks {table} table")
         if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_bootstraps'").fetchone():
             raise DatabaseModeError("database schema lacks thread_bootstraps table")
+        for table in ("test_train_obligations", "test_train_checkpoints"):
+            if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                raise DatabaseModeError(f"database schema lacks {table} table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -322,6 +327,8 @@ class ControlDB:
             self.conn.execute("CREATE TABLE IF NOT EXISTS operation_intents(intent_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), logical_action TEXT NOT NULL, target TEXT NOT NULL, target_state TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, owner TEXT, result TEXT, error TEXT, business_version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS thread_bootstraps(thread_id TEXT PRIMARY KEY REFERENCES threads(thread_id), run_id TEXT NOT NULL REFERENCES runs(run_id), state TEXT NOT NULL, budget INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, route_receipt TEXT, assignment_receipt TEXT, cancellation_receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("INSERT OR IGNORE INTO thread_bootstraps(thread_id,run_id,state,budget,created_at,updated_at) SELECT thread_id,run_id,'bootstrap',3,last_observed_at,last_observed_at FROM threads")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS test_train_obligations(obligation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), spec_id TEXT NOT NULL REFERENCES specs(spec_id), level TEXT NOT NULL, required INTEGER NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,spec_id,level))")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS test_train_checkpoints(checkpoint_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), sequence INTEGER NOT NULL, start_position INTEGER NOT NULL, end_position INTEGER NOT NULL, members TEXT NOT NULL, status TEXT NOT NULL, candidate_sha TEXT, evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(run_id,sequence))")
             self.conn.execute("CREATE TABLE IF NOT EXISTS intent_claims(claim_id INTEGER PRIMARY KEY AUTOINCREMENT, intent_id INTEGER NOT NULL REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, lease_until TEXT NOT NULL, fencing_supported INTEGER NOT NULL, fencing_receipt TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS recovery_records(intent_id INTEGER PRIMARY KEY REFERENCES operation_intents(intent_id), owner TEXT NOT NULL, classification TEXT NOT NULL, budget INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, last_evidence TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute(
@@ -1108,6 +1115,69 @@ class ControlDB:
             else:
                 self._business_event(run_id,"thread",thread_id,"thread_registration_refused",{"kind":kind,"task_id":fields["task_id"],"attempt_id":fields["attempt_id"]})
         return inserted
+    def initialize_test_train(self, run_id, spec_ids, checkpoint_size=10, expected_version=None):
+        if not isinstance(spec_ids, list) or not spec_ids or any(not isinstance(item, str) or not item.strip() for item in spec_ids) or len(set(spec_ids)) != len(spec_ids):
+            raise ValueError("test train requires an ordered, unique SPEC list")
+        if checkpoint_size != 10:
+            raise ValueError("checkpoint_size is fixed at 10")
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            actual = [row[0] for row in self.conn.execute("SELECT spec_id FROM specs WHERE run_id=? ORDER BY position", (run_id,))]
+            if actual != spec_ids:
+                raise ValueError("test train SPEC membership does not match the ordered run plan")
+            existing = self.conn.execute("SELECT COUNT(*) FROM test_train_obligations WHERE run_id=?", (run_id,)).fetchone()[0]
+            if existing:
+                return {"run_id": run_id, "changed": False, "spec_count": len(spec_ids)}
+            stamp = now()
+            for spec_id in spec_ids:
+                for level in ("L0", "L1", "L2"):
+                    self.conn.execute("INSERT INTO test_train_obligations(run_id,spec_id,level,required,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (run_id, spec_id, level, 1, "pending", stamp, stamp))
+            for sequence, start in enumerate(range(0, len(spec_ids), checkpoint_size), 1):
+                members = spec_ids[start:start + checkpoint_size]
+                self.conn.execute("INSERT INTO test_train_checkpoints(run_id,sequence,start_position,end_position,members,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)", (run_id, sequence, start + 1, start + len(members), json.dumps(members, ensure_ascii=False), "pending", stamp, stamp))
+            version = self._business_event(run_id, "test-train", run_id, "test_train_initialized", {"spec_count": len(spec_ids), "checkpoint_size": checkpoint_size, "checkpoint_count": (len(spec_ids) + 9) // 10})
+            return {"run_id": run_id, "changed": True, "spec_count": len(spec_ids), "business_version": version}
+
+    def test_train_status(self, run_id):
+        obligations = [dict(row) for row in self.conn.execute("SELECT * FROM test_train_obligations WHERE run_id=? ORDER BY obligation_id", (run_id,))]
+        checkpoints = [dict(row) for row in self.conn.execute("SELECT * FROM test_train_checkpoints WHERE run_id=? ORDER BY sequence", (run_id,))]
+        due = []
+        closed = {row[0] for row in self.conn.execute("SELECT spec_id FROM specs WHERE run_id=? AND status IN ('closed','cancelled')", (run_id,))}
+        for checkpoint in checkpoints:
+            members = json.loads(checkpoint["members"])
+            if set(members).issubset(closed) and checkpoint["status"] != "passed":
+                due.append(checkpoint["sequence"])
+        return {"run_id": run_id, "initialized": bool(obligations), "obligations": obligations, "checkpoints": checkpoints, "due_checkpoints": due, "allow_next_segment": not due}
+
+    def record_test_gate(self, run_id, spec_id, level, status, candidate_sha, evidence, expected_version=None):
+        if level not in {"L0", "L1", "L2", "L3"} or status not in {"passed", "failed"}:
+            raise ValueError("unsupported test gate")
+        if not isinstance(candidate_sha, str) or not candidate_sha.strip() or not isinstance(evidence, list) or not evidence:
+            raise ValueError("test gate requires candidate SHA and evidence")
+        with self.transaction():
+            current = self._check_version(run_id, expected_version)
+            row = self.conn.execute("SELECT obligation_id,required FROM test_train_obligations WHERE run_id=? AND spec_id=? AND level=?", (run_id, spec_id, level)).fetchone()
+            if row is None:
+                if level == "L3":
+                    self.conn.execute("INSERT INTO test_train_obligations(run_id,spec_id,level,required,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (run_id, spec_id, level, 1, "pending", now(), now()))
+                    row = self.conn.execute("SELECT obligation_id,required FROM test_train_obligations WHERE run_id=? AND spec_id=? AND level=?", (run_id, spec_id, level)).fetchone()
+                else:
+                    raise ValueError("test train obligation missing")
+            self.conn.execute("UPDATE test_train_obligations SET status=?,candidate_sha=?,evidence=?,updated_at=? WHERE obligation_id=?", (status, candidate_sha, json.dumps(evidence, ensure_ascii=False), now(), row[0]))
+            version = self._business_event(run_id, "test-train", spec_id, "test_gate_recorded", {"level": level, "status": status, "candidate_sha": candidate_sha, "evidence": evidence})
+            return {"run_id": run_id, "spec_id": spec_id, "level": level, "status": status, "business_version": version}
+
+    def record_checkpoint(self, run_id, sequence, status, candidate_sha, evidence, expected_version=None):
+        if status not in {"passed", "failed"} or not isinstance(candidate_sha, str) or not candidate_sha.strip() or not isinstance(evidence, list) or not evidence:
+            raise ValueError("checkpoint requires status, candidate SHA and evidence")
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            row = self.conn.execute("SELECT checkpoint_id FROM test_train_checkpoints WHERE run_id=? AND sequence=?", (run_id, sequence)).fetchone()
+            if row is None:
+                raise ValueError("unknown checkpoint")
+            version = self._business_event(run_id, "test-train", str(sequence), "checkpoint_recorded", {"status": status, "candidate_sha": candidate_sha, "evidence": evidence})
+            self.conn.execute("UPDATE test_train_checkpoints SET status=?,candidate_sha=?,evidence=?,updated_at=? WHERE checkpoint_id=?", (status, candidate_sha, json.dumps(evidence, ensure_ascii=False), now(), row[0]))
+            return {"run_id": run_id, "sequence": sequence, "status": status, "business_version": version}
     def bootstrap(self, run_id, thread_id):
         row = self.conn.execute("SELECT * FROM thread_bootstraps WHERE run_id=? AND thread_id=?", (run_id, thread_id)).fetchone()
         if row is None:
@@ -1375,4 +1445,4 @@ class ControlDB:
             except StartupContractError as exc:
                 if exc.code != "startup_contract_missing":
                     raise
-        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"startup_contract":startup,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"bootstraps":row("SELECT * FROM thread_bootstraps WHERE run_id=? ORDER BY thread_id",(run_id,)),"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"intents":row("SELECT * FROM operation_intents WHERE run_id=? ORDER BY intent_id",(run_id,)),"claims":row("SELECT c.* FROM intent_claims c JOIN operation_intents i ON i.intent_id=c.intent_id WHERE i.run_id=? ORDER BY claim_id",(run_id,)),"recovery":row("SELECT r.* FROM recovery_records r JOIN operation_intents i ON i.intent_id=r.intent_id WHERE i.run_id=? ORDER BY intent_id",(run_id,)),"decisions":row("SELECT * FROM decisions WHERE run_id=? ORDER BY decision_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}
+        return {"run":dict(run) if run else None,"authorization":self.authorization(run_id) if run else None,"startup_contract":startup,"candidate":self.candidate_snapshot(run_id) if run else None,"specs":row("SELECT * FROM specs WHERE run_id=? ORDER BY position",(run_id,)),"tickets":row("SELECT t.* FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",(run_id,)),"threads":row("SELECT * FROM threads WHERE run_id=?",(run_id,)),"bootstraps":row("SELECT * FROM thread_bootstraps WHERE run_id=? ORDER BY thread_id",(run_id,)),"test_train": {"obligations": row("SELECT * FROM test_train_obligations WHERE run_id=? ORDER BY obligation_id", (run_id,)), "checkpoints": row("SELECT * FROM test_train_checkpoints WHERE run_id=? ORDER BY sequence", (run_id,))},"actions":row("SELECT * FROM actions WHERE run_id=? ORDER BY action_id",(run_id,)),"intents":row("SELECT * FROM operation_intents WHERE run_id=? ORDER BY intent_id",(run_id,)),"claims":row("SELECT c.* FROM intent_claims c JOIN operation_intents i ON i.intent_id=c.intent_id WHERE i.run_id=? ORDER BY claim_id",(run_id,)),"recovery":row("SELECT r.* FROM recovery_records r JOIN operation_intents i ON i.intent_id=r.intent_id WHERE i.run_id=? ORDER BY intent_id",(run_id,)),"decisions":row("SELECT * FROM decisions WHERE run_id=? ORDER BY decision_id",(run_id,)),"events":row("SELECT * FROM events WHERE run_id=? ORDER BY event_id",(run_id,)),"observations":row("SELECT * FROM observations WHERE run_id=? ORDER BY observation_id",(run_id,)),"evidence_refs":row("SELECT * FROM evidence_refs WHERE run_id=? ORDER BY evidence_id",(run_id,))}

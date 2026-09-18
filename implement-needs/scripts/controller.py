@@ -62,6 +62,10 @@ def main() -> int:
     claim_intent=sub.add_parser("claim-intent"); claim_intent.add_argument("--intent-id",type=int,required=True); claim_intent.add_argument("--owner",required=True); claim_intent.add_argument("--lease-until",required=True); claim_intent.add_argument("--fencing-supported",action="store_true"); claim_intent.add_argument("--fencing-receipt")
     recovery=sub.add_parser("record-recovery"); recovery.add_argument("--intent-id",type=int,required=True); recovery.add_argument("--owner",required=True); recovery.add_argument("--classification",required=True); recovery.add_argument("--budget",type=int,required=True); recovery.add_argument("--evidence")
     bootstrap_state=sub.add_parser("bootstrap-state"); bootstrap_state.add_argument("--run-id",required=True); bootstrap_state.add_argument("--thread-id",required=True); bootstrap_state.add_argument("--state",choices=("route_verifying","assigned","cancelled"),required=True); bootstrap_state.add_argument("--receipt")
+    train_init=sub.add_parser("initialize-test-train"); train_init.add_argument("--run-id",required=True); train_init.add_argument("--spec-ids",required=True)
+    test_gate=sub.add_parser("test-gate"); test_gate.add_argument("--run-id",required=True); test_gate.add_argument("--spec-id",required=True); test_gate.add_argument("--level",choices=("L0","L1","L2","L3"),required=True); test_gate.add_argument("--status",choices=("passed","failed"),required=True); test_gate.add_argument("--candidate-sha",required=True); test_gate.add_argument("--evidence",required=True)
+    checkpoint=sub.add_parser("checkpoint"); checkpoint.add_argument("--run-id",required=True); checkpoint.add_argument("--sequence",type=int,required=True); checkpoint.add_argument("--status",choices=("passed","failed"),required=True); checkpoint.add_argument("--candidate-sha",required=True); checkpoint.add_argument("--evidence",required=True)
+    train_status=sub.add_parser("test-train-status"); train_status.add_argument("--run-id",required=True)
     migrate=sub.add_parser("migrate-run-to-single-ticket-line"); migrate.add_argument("--run-id",required=True); migrate.add_argument("--queue-definition",required=True)
     ledger=sub.add_parser("import-ticket-ledger"); ledger.add_argument("--run-id",required=True); ledger.add_argument("--ledger",type=Path,required=True)
     build_ledger=sub.add_parser("build-ticket-ledger"); build_ledger.add_argument("--readback",type=Path,required=True); build_ledger.add_argument("--history",type=Path,help="historical local delivery evidence JSON"); build_ledger.add_argument("--output",type=Path,required=True)
@@ -73,10 +77,10 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state):
+    for versioned in (spec, ticket, thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness"} else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status"} else "open-existing"))
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
@@ -139,6 +143,14 @@ def main() -> int:
             result=db.record_recovery(args.intent_id, args.owner, args.classification, args.budget, json.loads(args.evidence) if args.evidence else None, args.expected_version)
         elif args.command=="bootstrap-state":
             result=db.advance_bootstrap(args.run_id, args.thread_id, args.state, json.loads(args.receipt) if args.receipt else None, args.expected_version)
+        elif args.command=="initialize-test-train":
+            result=db.initialize_test_train(args.run_id, json.loads(args.spec_ids), expected_version=args.expected_version)
+        elif args.command=="test-gate":
+            result=db.record_test_gate(args.run_id, args.spec_id, args.level, args.status, args.candidate_sha, json.loads(args.evidence), args.expected_version)
+        elif args.command=="checkpoint":
+            result=db.record_checkpoint(args.run_id, args.sequence, args.status, args.candidate_sha, json.loads(args.evidence), args.expected_version)
+        elif args.command=="test-train-status":
+            result=db.test_train_status(args.run_id)
         elif args.command=="migrate-run-to-single-ticket-line":
             result=db.migrate_run_to_single_ticket_line(args.run_id,json.loads(args.queue_definition),args.expected_version)
         elif args.command=="import-ticket-ledger":

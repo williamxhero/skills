@@ -60,6 +60,9 @@ def next_action(db: ControlDB, run_id: str) -> dict:
     unknown = db.conn.execute("SELECT intent_id,target FROM operation_intents WHERE run_id=? AND status='outcome_unknown' ORDER BY intent_id LIMIT 1", (run_id,)).fetchone()
     if unknown:
         return {"kind": "reconcile_intent", "target": str(unknown[0]), "intent_id": unknown[0], "reason": "outcome_unknown"}
+    train = db.test_train_status(run_id)
+    if train["due_checkpoints"]:
+        return {"kind": "run_checkpoint", "target": run_id, "checkpoint": train["due_checkpoints"][0], "reason": "checkpoint_due"}
     pending=db.conn.execute("SELECT kind,target,action_id FROM actions WHERE run_id=? AND status IN ('pending','running') ORDER BY action_id LIMIT 1",(run_id,)).fetchone()
     if pending: return {"kind":pending[0],"target":pending[1],"action_id":pending[2]}
     run=db.conn.execute("SELECT execution_mode,controller_task_id,queue_definition,run_phase,terminal_result FROM runs WHERE run_id=?",(run_id,)).fetchone()
