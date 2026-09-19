@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
-from context_budget_gate import BUDGET_VERSION, PHASE_BUDGETS, admit_context
+from context_budget_gate import BUDGET_VERSION, PHASE_BUDGETS, admit_context, benchmark_budget_suite
 from control_db import ControlDB
 from phase_context import assemble_context
 
@@ -56,6 +56,18 @@ class ContextBudgetGateTests(unittest.TestCase):
         report = admit_context(self.db, "run", "planning", mode="delta")
         self.assertEqual("blocked", report["decision"])
         self.assertEqual("delta_base_cursor_missing", report["reason"])
+
+    def test_fixed_budget_suite_covers_all_five_fixtures(self):
+        fixture_runs = {}
+        for index, case in enumerate(("empty-run", "active-dependency", "closed-delivery", "recovery-exception", "release-context")):
+            run_id = f"budget-fixture-{index}"
+            fixture_runs[case] = run_id
+            self.db.create_run(run_id, "initiative", case)
+            assemble_context(self.db, run_id, "planning")
+        report = benchmark_budget_suite(self.db, fixture_runs)
+        self.assertEqual("allow", report["decision"])
+        self.assertEqual(list(fixture_runs), list(report["cases"]))
+        self.assertTrue(all(item["safety"]["side_effect_boundary"] for item in report["cases"].values()))
 
     def test_read_only_budget_cli_is_public(self):
         controller = Path(__file__).parents[1] / "scripts" / "controller.py"

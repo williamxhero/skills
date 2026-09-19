@@ -5,6 +5,7 @@ import json
 import math
 
 from context_delta import ContextDeltaError, build_delta_context
+from context_budget import BENCHMARK_CASES
 from context_projection import ContextProjectionError, PHASE_PROJECTIONS, read_history
 from phase_context import compact_context_from_snapshot
 
@@ -139,3 +140,23 @@ def admit_context(db, run_id, phase, mode="compact", base_event_cursor=None, bas
             "budget": selected_budget,
             "fallback": "blocked",
         }
+
+
+def benchmark_budget_suite(db, fixture_runs, phase="planning", budget=None):
+    """Evaluate the fixed P3 fixture set without mutating business state."""
+    if not isinstance(fixture_runs, dict):
+        return {"decision": "inconclusive", "reason": "fixture_manifest_invalid"}
+    missing = [case for case in BENCHMARK_CASES if case not in fixture_runs]
+    if missing:
+        return {"decision": "inconclusive", "reason": "fixture_cases_missing", "missing_cases": missing}
+    cases = {
+        case: admit_context(db, fixture_runs[case], phase, budget=budget)
+        for case in BENCHMARK_CASES
+    }
+    allowed = all(item["decision"] == "allow" for item in cases.values())
+    return {
+        "decision": "allow" if allowed else "inconclusive",
+        "benchmark": {"name": "implement-needs-context-budget-v1", "cases": list(BENCHMARK_CASES), "fixed": True},
+        "phase": phase,
+        "cases": cases,
+    }

@@ -93,7 +93,7 @@ def main() -> int:
     receipt_check=sub.add_parser("validate-delivery-receipt"); receipt_check.add_argument("--run-id",required=True); receipt_check.add_argument("--entity-type",choices=("spec","ticket","run"),required=True); receipt_check.add_argument("--entity-id",required=True); receipt_check.add_argument("--expected",required=True)
     advance_cmd=sub.add_parser("advance"); advance_cmd.add_argument("--run-id",required=True); advance_cmd.add_argument("--max-actions",type=int,default=32)
     context_budget=sub.add_parser("context-budget"); context_budget.add_argument("--run-id",required=True); context_budget.add_argument("--phase",default="planning"); context_budget.add_argument("--mode",choices=("compact","delta"),default="compact"); context_budget.add_argument("--fixture",action="append",default=[],help="CASE=RUN_ID; repeat for the fixed five-case suite")
-    budget_gate=sub.add_parser("context-budget-gate"); budget_gate.add_argument("--run-id",required=True); budget_gate.add_argument("--phase",required=True); budget_gate.add_argument("--mode",choices=("compact","delta"),default="compact"); budget_gate.add_argument("--base-event-cursor",type=int); budget_gate.add_argument("--base-state-version",type=int)
+    budget_gate=sub.add_parser("context-budget-gate"); budget_gate.add_argument("--run-id",required=True); budget_gate.add_argument("--phase",required=True); budget_gate.add_argument("--mode",choices=("compact","delta"),default="compact"); budget_gate.add_argument("--base-event-cursor",type=int); budget_gate.add_argument("--base-state-version",type=int); budget_gate.add_argument("--fixture",action="append",default=[],help="CASE=RUN_ID; repeat for the fixed five-case suite")
     backup_manifest=sub.add_parser("backup-manifest"); backup_manifest.add_argument("--run-id",required=True); backup_manifest.add_argument("--file-digests",default="{}"); backup_manifest.add_argument("--database-digest")
     validate_manifest=sub.add_parser("validate-backup-manifest"); validate_manifest.add_argument("--run-id",required=True); validate_manifest.add_argument("--manifest-id",type=int,required=True); validate_manifest.add_argument("--file-digests"); validate_manifest.add_argument("--database-digest")
     begin_restore=sub.add_parser("begin-restore"); begin_restore.add_argument("--run-id",required=True); begin_restore.add_argument("--manifest-id",type=int,required=True)
@@ -286,8 +286,16 @@ def main() -> int:
             else:
                 result = benchmark_context_suite(db, fixtures, args.phase) if fixtures else benchmark_context(db, args.run_id, args.phase)
         elif args.command=="context-budget-gate":
-            from context_budget_gate import admit_context
-            result=admit_context(db, args.run_id, args.phase, args.mode, args.base_event_cursor, args.base_state_version)
+            from context_budget_gate import BENCHMARK_CASES, admit_context, benchmark_budget_suite
+            fixtures = {}
+            for item in args.fixture:
+                if "=" not in item:
+                    raise ValueError("--fixture must use CASE=RUN_ID")
+                case, fixture_run_id = item.split("=", 1)
+                if case not in BENCHMARK_CASES or not fixture_run_id or case in fixtures:
+                    raise ValueError("--fixture must name each fixed benchmark case once")
+                fixtures[case] = fixture_run_id
+            result=benchmark_budget_suite(db, fixtures, args.phase) if fixtures else admit_context(db, args.run_id, args.phase, args.mode, args.base_event_cursor, args.base_state_version)
         elif args.command=="save-snapshot":
             result=db.save_snapshot(args.run_id, json.loads(args.payload), args.expected_event_cursor, args.expected_state_version)
         elif args.command=="backup-manifest":
