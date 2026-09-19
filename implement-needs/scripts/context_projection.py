@@ -156,7 +156,23 @@ def build_context(db, run_id, phase, entity_type, entity_id):
 
 def read_history(db, pointer):
     if not isinstance(pointer, str) or not pointer.startswith("history://"):
-        raise ContextProjectionError("history_pointer_invalid")
+        if not isinstance(pointer, str) or not pointer.startswith("snapshot://"):
+            raise ContextProjectionError("history_pointer_invalid")
+        parts = pointer[len("snapshot://"):].split("/", 1)
+        if len(parts) != 2 or parts[0] != "run" or not parts[1]:
+            raise ContextProjectionError("history_pointer_invalid", {"pointer": pointer})
+        run_id = unquote(parts[1])
+        row = db.conn.execute("SELECT * FROM runtime_snapshots WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            raise ContextProjectionError("history_unreachable", {"pointer": pointer})
+        return {
+            "pointer": pointer,
+            "entity_type": "snapshot",
+            "entity_id": run_id,
+            "state_version": row["state_version"],
+            "event_cursor": row["event_cursor"],
+            "record": json.loads(row["payload"]),
+        }
     parts = pointer[len("history://"):].split("/", 1)
     if len(parts) != 2 or parts[0] not in {"run", "spec", "ticket", "intent"} or not parts[1]:
         raise ContextProjectionError("history_pointer_invalid", {"pointer": pointer})

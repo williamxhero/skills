@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import quote
 
 from control_db import ControlDB
 
@@ -58,11 +59,17 @@ def assemble_context(db: ControlDB, run_id: str, phase: str) -> dict[str, Any]:
         payload = build_snapshot(db, run_id)
         saved = db.save_snapshot(run_id, payload, db.event_cursor(run_id))
         stored = db.read_snapshot(run_id) or saved
+    return compact_context_from_snapshot(db, run_id, phase, stored)
+
+
+def compact_context_from_snapshot(db: ControlDB, run_id: str, phase: str, stored: dict[str, Any]) -> dict[str, Any]:
+    """Build the compact envelope from an already persisted snapshot."""
     cursor = int(stored["event_cursor"])
     return {
         "run_id": run_id,
         "phase": phase,
         "state_version": int(stored["state_version"]),
+        "business_version": int(stored["state_version"]),
         "event_cursor": cursor,
         "acceptance": stored["payload"].get("acceptance", []),
         "direct_dependencies": stored["payload"].get("direct_dependencies", []),
@@ -70,7 +77,7 @@ def assemble_context(db: ControlDB, run_id: str, phase: str) -> dict[str, Any]:
         "worktree": stored["payload"].get("worktree", {}),
         "version": stored["payload"].get("version", {}),
         "evidence": stored["payload"].get("evidence", []),
-        "snapshot": stored["payload"],
+        "snapshot_pointer": f"snapshot://run/{quote(run_id, safe='')}",
         "events": db.events_since(run_id, cursor),
         "unresolved_exceptions": db.unresolved_exceptions(run_id),
     }
