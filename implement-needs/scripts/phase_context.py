@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import quote
 
 from control_db import ControlDB
 
@@ -70,7 +71,7 @@ def assemble_context(db: ControlDB, run_id: str, phase: str) -> dict[str, Any]:
         "worktree": stored["payload"].get("worktree", {}),
         "version": stored["payload"].get("version", {}),
         "evidence": stored["payload"].get("evidence", []),
-        "snapshot": stored["payload"],
+        "snapshot_pointer": f"snapshot://run/{quote(run_id, safe='')}",
         "events": db.events_since(run_id, cursor),
         "unresolved_exceptions": db.unresolved_exceptions(run_id),
     }

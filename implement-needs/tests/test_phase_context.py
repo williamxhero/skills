@@ -29,6 +29,8 @@ class PhaseContextTests(unittest.TestCase):
         self.assertEqual(cursor, context["event_cursor"])
         self.assertEqual(["spec_state_changed"], [event["event_type"] for event in context["events"]])
         self.assertEqual(["merged", "tested"], context["acceptance"])
+        self.assertNotIn("snapshot", context)
+        self.assertEqual("snapshot://run/run-1", context["snapshot_pointer"])
 
     def test_stale_snapshot_write_is_rejected(self):
         first = self.db.save_snapshot("run-1", build_snapshot(self.db, "run-1"), self.db.event_cursor("run-1"))
