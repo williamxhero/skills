@@ -92,6 +92,7 @@ def main() -> int:
     receipt=sub.add_parser("record-delivery-receipt"); receipt.add_argument("--run-id",required=True); receipt.add_argument("--entity-type",choices=("spec","ticket","run"),required=True); receipt.add_argument("--entity-id",required=True); receipt.add_argument("--receipt",required=True)
     receipt_check=sub.add_parser("validate-delivery-receipt"); receipt_check.add_argument("--run-id",required=True); receipt_check.add_argument("--entity-type",choices=("spec","ticket","run"),required=True); receipt_check.add_argument("--entity-id",required=True); receipt_check.add_argument("--expected",required=True)
     advance_cmd=sub.add_parser("advance"); advance_cmd.add_argument("--run-id",required=True); advance_cmd.add_argument("--max-actions",type=int,default=32)
+    context_budget=sub.add_parser("context-budget"); context_budget.add_argument("--run-id",required=True); context_budget.add_argument("--phase",default="planning")
     backup_manifest=sub.add_parser("backup-manifest"); backup_manifest.add_argument("--run-id",required=True); backup_manifest.add_argument("--file-digests",default="{}"); backup_manifest.add_argument("--database-digest")
     validate_manifest=sub.add_parser("validate-backup-manifest"); validate_manifest.add_argument("--run-id",required=True); validate_manifest.add_argument("--manifest-id",type=int,required=True); validate_manifest.add_argument("--file-digests"); validate_manifest.add_argument("--database-digest")
     begin_restore=sub.add_parser("begin-restore"); begin_restore.add_argument("--run-id",required=True); begin_restore.add_argument("--manifest-id",type=int,required=True)
@@ -114,7 +115,7 @@ def main() -> int:
     for versioned in (thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
-    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context-history", "context-measurements", "action-contract", "action-contract-check", "safety-metrics", "benchmark-manifest", "compare-safety-metrics"} else "open-existing"))
+    db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context-history", "context-measurements", "context-budget", "action-contract", "action-contract-check", "safety-metrics", "benchmark-manifest", "compare-safety-metrics"} else "open-existing"))
     try:
         if args.command=="init": db.create_run(args.run_id,args.initiative,args.requirement,args.execution_mode,args.controller_task_id,json.loads(args.queue_definition),json.loads(args.authorization) if args.authorization else None); result={"run_id":args.run_id,"status":"active","execution_mode":args.execution_mode}
         elif args.command=="add-spec": db.add_spec(args.run_id,args.spec_id,args.title,args.position,json.loads(args.blocked_by),json.loads(args.acceptance),args.expected_version); result={"spec_id":args.spec_id}
@@ -255,6 +256,9 @@ def main() -> int:
         elif args.command=="advance":
             from advance_runtime import advance
             result=advance(db, args.run_id, args.max_actions)
+        elif args.command=="context-budget":
+            from context_budget import benchmark_context
+            result=benchmark_context(db, args.run_id, args.phase)
         elif args.command=="save-snapshot":
             result=db.save_snapshot(args.run_id, json.loads(args.payload), args.expected_event_cursor, args.expected_state_version)
         elif args.command=="backup-manifest":

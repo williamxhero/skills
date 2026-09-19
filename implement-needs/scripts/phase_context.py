@@ -60,6 +60,12 @@ def assemble_context(db: ControlDB, run_id: str, phase: str) -> dict[str, Any]:
         saved = db.save_snapshot(run_id, payload, db.event_cursor(run_id))
         stored = db.read_snapshot(run_id) or saved
     cursor = int(stored["event_cursor"])
+    return compact_context_from_snapshot(db, run_id, phase, stored)
+
+
+def compact_context_from_snapshot(db: ControlDB, run_id: str, phase: str, stored: dict[str, Any]) -> dict[str, Any]:
+    """Build the compact envelope from an already persisted snapshot."""
+    cursor = int(stored["event_cursor"])
     return {
         "run_id": run_id,
         "phase": phase,
