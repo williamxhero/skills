@@ -158,21 +158,52 @@ def read_history(db, pointer):
     if not isinstance(pointer, str) or not pointer.startswith("history://"):
         if not isinstance(pointer, str) or not pointer.startswith("snapshot://"):
             raise ContextProjectionError("history_pointer_invalid")
-        parts = pointer[len("snapshot://"):].split("/", 1)
-        if len(parts) != 2 or parts[0] != "run" or not parts[1]:
+        parts = pointer[len("snapshot://"):].split("/")
+        if len(parts) < 2 or parts[0] != "run" or not parts[1]:
             raise ContextProjectionError("history_pointer_invalid", {"pointer": pointer})
         run_id = unquote(parts[1])
         row = db.conn.execute("SELECT * FROM runtime_snapshots WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
             raise ContextProjectionError("history_unreachable", {"pointer": pointer})
-        return {
-            "pointer": pointer,
-            "entity_type": "snapshot",
-            "entity_id": run_id,
-            "state_version": row["state_version"],
-            "event_cursor": row["event_cursor"],
-            "record": json.loads(row["payload"]),
-        }
+        if len(parts) == 2:
+            return {
+                "pointer": pointer,
+                "entity_type": "snapshot",
+                "entity_id": run_id,
+                "state_version": row["state_version"],
+                "event_cursor": row["event_cursor"],
+                "record": json.loads(row["payload"]),
+            }
+        if len(parts) == 4 and parts[2] == "collection" and parts[3] in {
+            "acceptance", "direct_dependencies", "decisions", "worktree", "version", "evidence",
+            "unresolved_exceptions",
+        }:
+            payload = json.loads(row["payload"])
+            record = db.unresolved_exceptions(run_id) if parts[3] == "unresolved_exceptions" else payload.get(parts[3], [])
+            return {
+                "pointer": pointer,
+                "entity_type": "snapshot_collection",
+                "entity_id": f"{run_id}:{parts[3]}",
+                "state_version": row["state_version"],
+                "event_cursor": row["event_cursor"],
+                "record": record,
+            }
+        if len(parts) == 4 and parts[2] == "events":
+            try:
+                event_cursor = int(parts[3])
+            except ValueError:
+                raise ContextProjectionError("history_pointer_invalid", {"pointer": pointer}) from None
+            if event_cursor < 0:
+                raise ContextProjectionError("history_pointer_invalid", {"pointer": pointer})
+            return {
+                "pointer": pointer,
+                "entity_type": "snapshot_events",
+                "entity_id": run_id,
+                "state_version": row["state_version"],
+                "event_cursor": event_cursor,
+                "record": db.events_since(run_id, event_cursor),
+            }
+        raise ContextProjectionError("history_pointer_invalid", {"pointer": pointer})
     parts = pointer[len("history://"):].split("/", 1)
     if len(parts) != 2 or parts[0] not in {"run", "spec", "ticket", "intent"} or not parts[1]:
         raise ContextProjectionError("history_pointer_invalid", {"pointer": pointer})
