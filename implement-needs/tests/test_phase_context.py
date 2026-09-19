@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from control_db import ControlDB
+from context_projection import ContextProjectionError, read_history
 from phase_context import assemble_context, build_snapshot
 
 
@@ -31,6 +32,15 @@ class PhaseContextTests(unittest.TestCase):
         self.assertEqual(["merged", "tested"], context["acceptance"])
         self.assertNotIn("snapshot", context)
         self.assertEqual("snapshot://run/run-1", context["snapshot_pointer"])
+        history = read_history(self.db, context["snapshot_pointer"])
+        self.assertEqual("snapshot", history["entity_type"])
+        self.assertEqual("run-1", history["entity_id"])
+        self.assertIn("specs", history["record"])
+
+    def test_snapshot_pointer_is_fail_closed_when_unreachable(self):
+        with self.assertRaises(ContextProjectionError) as raised:
+            read_history(self.db, "snapshot://run/missing")
+        self.assertEqual("history_unreachable", raised.exception.code)
 
     def test_stale_snapshot_write_is_rejected(self):
         first = self.db.save_snapshot("run-1", build_snapshot(self.db, "run-1"), self.db.event_cursor("run-1"))
