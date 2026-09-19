@@ -59,7 +59,6 @@ def assemble_context(db: ControlDB, run_id: str, phase: str) -> dict[str, Any]:
         payload = build_snapshot(db, run_id)
         saved = db.save_snapshot(run_id, payload, db.event_cursor(run_id))
         stored = db.read_snapshot(run_id) or saved
-    cursor = int(stored["event_cursor"])
     return compact_context_from_snapshot(db, run_id, phase, stored)
 
 
@@ -70,6 +69,7 @@ def compact_context_from_snapshot(db: ControlDB, run_id: str, phase: str, stored
         "run_id": run_id,
         "phase": phase,
         "state_version": int(stored["state_version"]),
+        "business_version": int(stored["state_version"]),
         "event_cursor": cursor,
         "acceptance": stored["payload"].get("acceptance", []),
         "direct_dependencies": stored["payload"].get("direct_dependencies", []),
