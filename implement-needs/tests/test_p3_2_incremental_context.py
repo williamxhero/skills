@@ -37,7 +37,7 @@ class IncrementalContextTests(unittest.TestCase):
         self.assertEqual(before, self.db.business_version("run"))
         self.assertEqual(["acceptance://S1"], read_history(self.db, delta["base"]["pointer"])["record"]["acceptance"])
 
-    def test_changed_events_are_returned_as_delta_and_pointer(self):
+    def test_changed_events_are_returned_as_delta(self):
         self.db.update_spec("S1", "ready")
         delta = build_delta_context(self.db, "run", "recovery", self.snapshot["event_cursor"])
         self.assertEqual("changed", delta["collections"]["events"]["kind"])

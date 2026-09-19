@@ -43,18 +43,11 @@ def _count(value):
     return len(value) if isinstance(value, (list, dict)) else (0 if value in (None, "") else 1)
 
 
-def _pointer(run_id, collection, base_event_cursor=None):
-    encoded_run = quote(run_id, safe="")
-    if collection == "events":
-        return f"snapshot://run/{encoded_run}/events/{int(base_event_cursor)}"
-    return f"snapshot://run/{encoded_run}/collection/{quote(collection, safe='')}"
-
-
 def _snapshot_value(payload, collection):
     return payload.get(collection, [])
 
 
-def _descriptor(run_id, collection, base_value, current_value, required, base_event_cursor):
+def _descriptor(base_value, current_value, required):
     current_digest = canonical_digest(current_value)
     unchanged = base_value == current_value
     descriptor = {
@@ -125,12 +118,9 @@ def build_delta_context(db, run_id, phase, base_event_cursor, base_state_version
         if base_values[collection] == values[collection]:
             continue
         collections[collection] = _descriptor(
-            run_id,
-            collection,
             base_values[collection],
             values[collection],
             collection in required,
-            base_event_cursor,
         )
     base_digest = canonical_digest(base_values)
     return {

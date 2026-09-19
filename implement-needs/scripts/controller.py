@@ -224,6 +224,9 @@ def main() -> int:
             result=db.verify_policy(args.run_id, json.loads(args.policy), args.implementation_digest)
         elif args.command=="context":
             if args.entity_type and args.entity_id:
+                if args.delta:
+                    from context_delta import ContextDeltaError
+                    raise ContextDeltaError("delta_entity_conflict")
                 result=build_context(db, args.run_id, args.phase, args.entity_type, args.entity_id)
             elif args.delta:
                 from context_delta import ContextDeltaError, build_delta_context
