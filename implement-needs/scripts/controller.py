@@ -80,7 +80,7 @@ def main() -> int:
     train_status=sub.add_parser("test-train-status"); train_status.add_argument("--run-id",required=True)
     pin_policy=sub.add_parser("pin-policy"); pin_policy.add_argument("--run-id",required=True); pin_policy.add_argument("--policy",required=True); pin_policy.add_argument("--implementation-digest",required=True); pin_policy.add_argument("--migration")
     verify_policy=sub.add_parser("verify-policy"); verify_policy.add_argument("--run-id",required=True); verify_policy.add_argument("--policy",required=True); verify_policy.add_argument("--implementation-digest",required=True)
-    context=sub.add_parser("context"); context.add_argument("--run-id",required=True); context.add_argument("--phase",required=True); context.add_argument("--entity-type",choices=("run","spec","ticket","intent")); context.add_argument("--entity-id"); context.add_argument("--refresh",action="store_true")
+    context=sub.add_parser("context"); context.add_argument("--run-id",required=True); context.add_argument("--phase",required=True); context.add_argument("--entity-type",choices=("run","spec","ticket","intent")); context.add_argument("--entity-id"); context.add_argument("--refresh",action="store_true"); context.add_argument("--delta",action="store_true"); context.add_argument("--base-event-cursor",type=int); context.add_argument("--base-state-version",type=int); context.add_argument("--base-digests",default="{}")
     history=sub.add_parser("context-history"); history.add_argument("--pointer",required=True)
     measure=sub.add_parser("measure-context"); measure.add_argument("--run-id",required=True); measure.add_argument("--phase",required=True); measure.add_argument("--entity-type",choices=("run","spec","ticket","intent"),required=True); measure.add_argument("--entity-id",required=True); measure.add_argument("--observed-tokens",type=int); measure.add_argument("--fee",type=float); measure.add_argument("--refresh-count",type=int,default=0); measure.add_argument("--rejection-count",type=int,default=0)
     measurements=sub.add_parser("context-measurements"); measurements.add_argument("--run-id",required=True)
@@ -92,7 +92,7 @@ def main() -> int:
     receipt=sub.add_parser("record-delivery-receipt"); receipt.add_argument("--run-id",required=True); receipt.add_argument("--entity-type",choices=("spec","ticket","run"),required=True); receipt.add_argument("--entity-id",required=True); receipt.add_argument("--receipt",required=True)
     receipt_check=sub.add_parser("validate-delivery-receipt"); receipt_check.add_argument("--run-id",required=True); receipt_check.add_argument("--entity-type",choices=("spec","ticket","run"),required=True); receipt_check.add_argument("--entity-id",required=True); receipt_check.add_argument("--expected",required=True)
     advance_cmd=sub.add_parser("advance"); advance_cmd.add_argument("--run-id",required=True); advance_cmd.add_argument("--max-actions",type=int,default=32)
-    context_budget=sub.add_parser("context-budget"); context_budget.add_argument("--run-id",required=True); context_budget.add_argument("--phase",default="planning"); context_budget.add_argument("--fixture",action="append",default=[],help="CASE=RUN_ID; repeat for the fixed five-case suite")
+    context_budget=sub.add_parser("context-budget"); context_budget.add_argument("--run-id",required=True); context_budget.add_argument("--phase",default="planning"); context_budget.add_argument("--mode",choices=("compact","delta"),default="compact"); context_budget.add_argument("--fixture",action="append",default=[],help="CASE=RUN_ID; repeat for the fixed five-case suite")
     backup_manifest=sub.add_parser("backup-manifest"); backup_manifest.add_argument("--run-id",required=True); backup_manifest.add_argument("--file-digests",default="{}"); backup_manifest.add_argument("--database-digest")
     validate_manifest=sub.add_parser("validate-backup-manifest"); validate_manifest.add_argument("--run-id",required=True); validate_manifest.add_argument("--manifest-id",type=int,required=True); validate_manifest.add_argument("--file-digests"); validate_manifest.add_argument("--database-digest")
     begin_restore=sub.add_parser("begin-restore"); begin_restore.add_argument("--run-id",required=True); begin_restore.add_argument("--manifest-id",type=int,required=True)
@@ -224,7 +224,19 @@ def main() -> int:
             result=db.verify_policy(args.run_id, json.loads(args.policy), args.implementation_digest)
         elif args.command=="context":
             if args.entity_type and args.entity_id:
+                if args.delta:
+                    from context_delta import ContextDeltaError
+                    raise ContextDeltaError("delta_entity_conflict")
                 result=build_context(db, args.run_id, args.phase, args.entity_type, args.entity_id)
+            elif args.delta:
+                from context_delta import ContextDeltaError, build_delta_context
+                if args.base_event_cursor is None:
+                    raise ContextDeltaError("delta_base_cursor_missing")
+                try:
+                    base_digests=json.loads(args.base_digests)
+                except (TypeError, json.JSONDecodeError):
+                    raise ContextDeltaError("delta_base_digests_invalid") from None
+                result=build_delta_context(db, args.run_id, args.phase, args.base_event_cursor, args.base_state_version, base_digests)
             else:
                 from phase_context import assemble_context, refresh_context
                 result=refresh_context(db, args.run_id, args.phase) if args.refresh else assemble_context(db, args.run_id, args.phase)
@@ -257,7 +269,7 @@ def main() -> int:
             from advance_runtime import advance
             result=advance(db, args.run_id, args.max_actions)
         elif args.command=="context-budget":
-            from context_budget import BENCHMARK_CASES, benchmark_context, benchmark_context_suite
+            from context_budget import BENCHMARK_CASES, benchmark_context, benchmark_context_suite, benchmark_delta_context, benchmark_delta_suite
             fixtures = {}
             for item in args.fixture:
                 if "=" not in item:
@@ -268,7 +280,10 @@ def main() -> int:
                 if case in fixtures:
                     raise ValueError("--fixture cannot repeat a benchmark case")
                 fixtures[case] = fixture_run_id
-            result = benchmark_context_suite(db, fixtures, args.phase) if fixtures else benchmark_context(db, args.run_id, args.phase)
+            if args.mode == "delta":
+                result = benchmark_delta_suite(db, fixtures, args.phase) if fixtures else benchmark_delta_context(db, args.run_id, args.phase)
+            else:
+                result = benchmark_context_suite(db, fixtures, args.phase) if fixtures else benchmark_context(db, args.run_id, args.phase)
         elif args.command=="save-snapshot":
             result=db.save_snapshot(args.run_id, json.loads(args.payload), args.expected_event_cursor, args.expected_state_version)
         elif args.command=="backup-manifest":
