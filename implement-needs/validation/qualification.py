@@ -21,7 +21,7 @@ REQUIRED_REPORT_FIELDS = (
     "scenario_version", "skill_digest", "harness_digest", "project_identity_receipt",
     "logical_id_to_external_id_map", "artifact_counts", "recovery_results",
     "release_train_receipts", "task_census", "repository_sync_receipt", "cleanup_receipt",
-    "backend_capability_receipt",
+    "backend_capability_receipt", "route_visibility_receipt", "controller_lifecycle_receipt",
 )
 EXPECTED_COUNTS = {
     "umbrella_specs": 1, "child_specs": 3, "tickets": 8, "grill_tasks": 1,
@@ -159,6 +159,31 @@ def _is_true(receipt: Any, key: str) -> bool:
     return isinstance(receipt, dict) and receipt.get(key) is True
 
 
+def route_visibility_errors(receipt: Any) -> list[str]:
+    if not isinstance(receipt, dict):
+        return ["route_visibility_missing"]
+    errors = []
+    for field in ("planned", "applied", "executed"):
+        value = receipt.get(field)
+        if not isinstance(value, dict):
+            errors.append(f"route_{field}_missing")
+            continue
+        if field != "executed" and (not value.get("model") or not value.get("effort")):
+            errors.append(f"route_{field}_incomplete")
+    if receipt.get("ticket_override"):
+        errors.append("ticket_route_override_forbidden")
+    if receipt.get("identity_consistent") is not True:
+        errors.append("route_identity_mismatch")
+    return errors
+
+
+def lifecycle_errors(receipt: Any) -> list[str]:
+    if not isinstance(receipt, dict):
+        return ["controller_lifecycle_missing"]
+    required = ("continuation_persisted", "watchdog_tested", "cleanup_readback_verified")
+    return [f"lifecycle_{field}_missing" for field in required if receipt.get(field) is not True]
+
+
 def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
     """Independently decide whether an externally collected report is qualified."""
     reasons = scenario_errors(scenario)
@@ -167,6 +192,8 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
             reasons.append(f"report_{field}_missing")
     reasons.extend(project_identity_errors(report.get("project_identity_receipt")))
     reasons.extend(backend_errors(report.get("backend_capability_receipt")))
+    reasons.extend(route_visibility_errors(report.get("route_visibility_receipt")))
+    reasons.extend(lifecycle_errors(report.get("controller_lifecycle_receipt")))
     counts = report.get("artifact_counts")
     if counts != EXPECTED_COUNTS:
         reasons.append("artifact_counts_mismatch")
@@ -188,10 +215,14 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     cleanup = report.get("cleanup_receipt")
     if not _is_true(cleanup, "complete"):
         reasons.append("cleanup_incomplete")
+    elif any(not isinstance(item, dict) or item.get("archive_readback", {}).get("archived") is not True
+             for item in cleanup.get("receipts", [])):
+        reasons.append("cleanup_readback_missing")
     recoveries = report.get("recovery_results")
     required_recoveries = {"planning_restart", "ticket_restart", "assignment_restart",
                            "merge_before_archive_restart", "release_restart", "lost_response",
-                           "idempotency_retry"}
+                           "idempotency_retry", "controller_interrupted", "capacity_fallback",
+                           "stream_disconnect", "uncertain_side_effect"}
     if not isinstance(recoveries, dict) or not all(recoveries.get(key) == "passed" for key in required_recoveries):
         reasons.append("recovery_matrix_incomplete")
     release = report.get("release_train_receipts")

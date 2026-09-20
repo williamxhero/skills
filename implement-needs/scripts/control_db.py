@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -60,6 +60,12 @@ TICKET_QUEUE_COLUMNS = (
     ("acceptance", "TEXT NOT NULL DEFAULT '[]'"),
 )
 
+SPEC_ROUTE_COLUMNS = (
+    ("route_summary", "TEXT NOT NULL DEFAULT '{}'"),
+    ("route_summary_digest", "TEXT"),
+    ("route_summary_status", "TEXT NOT NULL DEFAULT 'missing'"),
+)
+
 DECISION_COLUMNS = (
     ("actor", "TEXT NOT NULL DEFAULT ''"),
     ("scope", "TEXT NOT NULL DEFAULT '{}'"),
@@ -70,7 +76,7 @@ DECISION_COLUMNS = (
 SCHEMA = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, initiative TEXT NOT NULL, requirement TEXT NOT NULL, status TEXT NOT NULL, current_action TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, execution_mode TEXT NOT NULL DEFAULT 'whole-spec', controller_task_id TEXT, queue_definition TEXT NOT NULL DEFAULT '[]', business_version INTEGER NOT NULL DEFAULT 0, run_phase TEXT NOT NULL DEFAULT 'initialized', terminal_result TEXT, stop_reason TEXT, recovery_action TEXT);
-CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), title TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', generation INTEGER NOT NULL DEFAULT 0, UNIQUE(run_id,position));
+CREATE TABLE IF NOT EXISTS specs(spec_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), title TEXT NOT NULL, status TEXT NOT NULL, position INTEGER NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', generation INTEGER NOT NULL DEFAULT 0, route_summary TEXT NOT NULL DEFAULT '{}', route_summary_digest TEXT, route_summary_status TEXT NOT NULL DEFAULT 'missing', UNIQUE(run_id,position));
 CREATE TABLE IF NOT EXISTS tickets(ticket_id TEXT PRIMARY KEY, spec_id TEXT NOT NULL REFERENCES specs(spec_id), title TEXT NOT NULL, status TEXT NOT NULL, blocked_by TEXT NOT NULL DEFAULT '[]', commits TEXT NOT NULL DEFAULT '[]', tests TEXT NOT NULL DEFAULT '[]', acceptance TEXT NOT NULL DEFAULT '[]', issue_url TEXT, queue_position INTEGER, UNIQUE(spec_id,title));
 CREATE TABLE IF NOT EXISTS threads(thread_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL, spec_id TEXT REFERENCES specs(spec_id), lifecycle TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT 'unknown', next_action TEXT, last_observed_at TEXT NOT NULL, archive_operation_evidence TEXT NOT NULL DEFAULT '[]', archive_readback_evidence TEXT NOT NULL DEFAULT '[]');
 CREATE TABLE IF NOT EXISTS thread_bootstraps(thread_id TEXT PRIMARY KEY REFERENCES threads(thread_id), run_id TEXT NOT NULL REFERENCES runs(run_id), state TEXT NOT NULL, budget INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, route_receipt TEXT, assignment_receipt TEXT, cancellation_receipt TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -395,6 +401,10 @@ class ControlDB:
             for name,declaration in TICKET_QUEUE_COLUMNS:
                 if name not in ticket_columns:
                     self.conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {declaration}")
+            spec_columns={row[1] for row in self.conn.execute("PRAGMA table_info(specs)")}
+            for name,declaration in SPEC_ROUTE_COLUMNS:
+                if name not in spec_columns:
+                    self.conn.execute(f"ALTER TABLE specs ADD COLUMN {name} {declaration}")
             decision_columns={row[1] for row in self.conn.execute("PRAGMA table_info(decisions)")}
             for name,declaration in DECISION_COLUMNS:
                 if name not in decision_columns:
@@ -1274,6 +1284,52 @@ class ControlDB:
             self._check_version(run_id, expected_version)
             self.conn.execute("INSERT INTO specs(spec_id,run_id,title,status,position,blocked_by,acceptance) VALUES(?,?,?,?,?,?,?)",(spec_id,run_id,title,"planned",position,json.dumps(blocked_by or []),json.dumps(acceptance or [])))
             self._business_event(run_id,"spec",spec_id,"spec_created",{"title":title})
+    def set_route_summary(self, spec_id, summary, expected_version=None):
+        """Persist a validated planned route, never an applied-route claim."""
+        from route_summary import validate_route_summary
+        row = self.conn.execute("SELECT run_id FROM specs WHERE spec_id=?", (spec_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown spec")
+        checked = validate_route_summary(summary, spec_id=spec_id)
+        run_id = row[0]
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            self.conn.execute(
+                "UPDATE specs SET route_summary=?,route_summary_digest=?,route_summary_status=? WHERE spec_id=?",
+                (json.dumps(checked, ensure_ascii=False, sort_keys=True), checked["summary_digest"], "verified", spec_id),
+            )
+            self._business_event(run_id, "spec", spec_id, "spec_route_summary_recorded", {
+                "summary_digest": checked["summary_digest"], "planned_model": checked["planned_model"],
+                "planned_effort": checked["planned_effort"],
+            })
+            return checked
+
+    def route_summary(self, spec_id):
+        row = self.conn.execute("SELECT route_summary,route_summary_digest,route_summary_status FROM specs WHERE spec_id=?", (spec_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown spec")
+        try:
+            value = json.loads(row[0] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            value = {}
+        if row[1] and value.get("summary_digest") != row[1]:
+            raise ValueError("route summary digest mismatch")
+        value["status"] = row[2]
+        return value
+
+    def set_applied_route(self, thread_id, route_readback, expected_version=None):
+        """Record configured route evidence only after an independent readback."""
+        if not isinstance(route_readback, dict) or not route_readback.get("model") or not route_readback.get("effort"):
+            raise ValueError("applied route readback is incomplete")
+        row = self.conn.execute("SELECT run_id FROM threads WHERE thread_id=?", (thread_id,)).fetchone()
+        if row is None:
+            raise ValueError("unknown thread")
+        run_id = row[0]
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            self.conn.execute("UPDATE threads SET route_readback=?,last_observed_at=? WHERE thread_id=?", (json.dumps(route_readback, ensure_ascii=False, sort_keys=True), now(), thread_id))
+            version = self._business_event(run_id, "thread", thread_id, "applied_route_readback_recorded", {"route_readback": route_readback})
+            return {"thread_id": thread_id, "route_readback": route_readback, "business_version": version}
     def add_ticket(self,spec_id,ticket_id,title,blocked_by=None,issue_url=None,queue_position=None,expected_version=None):
         run_id=self.conn.execute("SELECT run_id FROM specs WHERE spec_id=?",(spec_id,)).fetchone()[0]
         with self.transaction():
@@ -2179,7 +2235,11 @@ class ControlDB:
             row=self.conn.execute("SELECT lifecycle FROM threads WHERE thread_id=? AND run_id=?",(thread_id,run_id)).fetchone()
             if not row: raise ValueError("unknown thread")
             from transitions import THREAD_TRANSITIONS, transition
-            transition(THREAD_TRANSITIONS,row[0],lifecycle)
+            # Backend observations such as ``idle`` and ``notLoaded`` are not
+            # controller lifecycle states.  They remain unarchived observations
+            # until the archive operation and independent readback are verified.
+            if not (lifecycle == "archived" and row[0] not in THREAD_TRANSITIONS):
+                transition(THREAD_TRANSITIONS,row[0],lifecycle)
             current=self.conn.execute("SELECT archive_operation_evidence,archive_readback_evidence FROM threads WHERE thread_id=?",(thread_id,)).fetchone()
             operations=json.loads(current[0]); readbacks=json.loads(current[1])
             if operation: operations.append(operation)

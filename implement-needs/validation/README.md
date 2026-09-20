@@ -36,6 +36,11 @@ python implement-needs/validation/scripts/verify_qualification.py \
   --scenario implement-needs/validation/scenarios/whole-spec-v1.json \
   --report <qualification.json>
 
+python implement-needs/validation/scripts/register_qualification.py \
+  --index implement-needs/validation/reports/index.json \
+  --scenario implement-needs/validation/scenarios/whole-spec-v1.json \
+  --report <qualification.json>
+
 python implement-needs/validation/scripts/cleanup_qualification.py \
   --manifest <run-manifest.json> --run-id <run-id>
 ```
