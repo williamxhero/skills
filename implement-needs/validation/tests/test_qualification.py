@@ -107,6 +107,12 @@ class QualificationContractTests(unittest.TestCase):
         self.assertIn("backend_route_mismatch", result["reasons"])
         self.assertIn("backend_archive_incomplete", result["reasons"])
 
+    def test_missing_turn_execution_evidence_is_not_reported_as_available(self) -> None:
+        report = self.valid_report()
+        report["route_visibility_receipt"]["executed"] = {}
+        result = verify_report(report, self.scenario)
+        self.assertIn("route_executed_evidence_unavailable", result["reasons"])
+
     def test_digest_excludes_report_output_but_not_subject_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

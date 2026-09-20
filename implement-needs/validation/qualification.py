@@ -170,6 +170,8 @@ def route_visibility_errors(receipt: Any) -> list[str]:
             continue
         if field != "executed" and (not value.get("model") or not value.get("effort")):
             errors.append(f"route_{field}_incomplete")
+        if field == "executed" and not value.get("turn_id") and value.get("status") != "unavailable":
+            errors.append("route_executed_evidence_unavailable")
     if receipt.get("ticket_override"):
         errors.append("ticket_route_override_forbidden")
     if receipt.get("identity_consistent") is not True:
@@ -215,8 +217,8 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     cleanup = report.get("cleanup_receipt")
     if not _is_true(cleanup, "complete"):
         reasons.append("cleanup_incomplete")
-    elif any(not isinstance(item, dict) or item.get("archive_readback", {}).get("archived") is not True
-             for item in cleanup.get("receipts", [])):
+    elif not cleanup.get("receipts") or any(not isinstance(item, dict) or item.get("archive_readback", {}).get("archived") is not True
+                                             for item in cleanup.get("receipts", [])):
         reasons.append("cleanup_readback_missing")
     recoveries = report.get("recovery_results")
     required_recoveries = {"planning_restart", "ticket_restart", "assignment_restart",
