@@ -42,6 +42,14 @@ def detect_interruption(db: ControlDB, run_id: str, *, now_value: datetime | Non
     if waiting is not None and state["state"] in {"active_without_action", "non_active_without_action"}:
         return {**base, "detected": False, "classification": "waiting_external", "wait": dict(waiting)}
     if state["state"] == "action_present":
+        pending = state.get("pending_action")
+        if pending and pending.get("kind") == "controller_interrupted":
+            claim = db.conn.execute(
+                "SELECT lease_expires_at FROM action_claims WHERE action_id=?", (pending["action_id"],)
+            ).fetchone()
+            expired = claim is not None and _parse(claim[0]) <= (now_value or datetime.now(timezone.utc))
+            return {**base, "detected": True, "classification": "recovery_action_pending" if not expired else "recovery_lease_expired",
+                    "reason": "existing_recovery_action", "recovery_required": True, "lease_expired": expired}
         return {**base, "detected": False, "classification": "action_present"}
     if run[0] != "active":
         return {**base, "detected": False, "classification": "not_active"}
@@ -88,7 +96,7 @@ def _finish_recovery_action(db: ControlDB, run_id: str, action: dict[str, Any], 
 
 def supervise(db: ControlDB, run_id: str, *, owner_id: str = "supervisor",
               lease_seconds: int = 60, stale_after_seconds: int = 0,
-              max_attempts: int = 3, execute: bool = True,
+              max_attempts: int = 3, budget_seconds: float = 300.0, execute: bool = True,
               max_actions: int = 1) -> dict[str, Any]:
     """Detect, claim, and optionally execute one recovery frontier."""
     detection = detect_interruption(db, run_id, stale_after_seconds=stale_after_seconds)
@@ -103,6 +111,14 @@ def supervise(db: ControlDB, run_id: str, *, owner_id: str = "supervisor",
     result["recovery"] = recovery
     if not action:
         result["execution"] = {"status": "blocked", "reason": "recovery_action_missing"}
+        result["outcome"] = "blocked"
+        return result
+    if not isinstance(budget_seconds, (int, float)) or isinstance(budget_seconds, bool) or budget_seconds <= 0:
+        raise ValueError("budget_seconds must be positive")
+    age = float(detection.get("age_seconds", 0.0))
+    if age >= budget_seconds:
+        result["execution"] = {"status": "blocked", "reason": "recovery_time_budget_exhausted",
+                                "action_id": action["action_id"], "resume_action": action["kind"]}
         result["outcome"] = "blocked"
         return result
     if not execute:

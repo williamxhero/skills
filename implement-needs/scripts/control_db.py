@@ -1278,6 +1278,8 @@ class ControlDB:
                 verify_terminal_contract(gate, entity_type="action", run_id=run_id, target_id=str(action_id), expected_version=self.business_version(run_id))
                 self._record_verified_gate(run_id, "action", str(action_id), gate)
             self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
+            if status in {"succeeded", "failed", "blocked", "cancelled"}:
+                self.conn.execute("DELETE FROM action_claims WHERE action_id=?", (action_id,))
             current = self.conn.execute("SELECT current_action,recovery_action FROM runs WHERE run_id=?", (run_id,)).fetchone()
             action_ref = f"{row[1]}:{row[2]}"
             if status in {"succeeded", "cancelled"} and current is not None:
@@ -2223,6 +2225,7 @@ class ControlDB:
             if action and entity["status"] == next_status:
                 action_id = int(action["action_id"])
                 self.conn.execute("UPDATE actions SET status='succeeded',result=?,error=NULL,attempts=attempts+1,updated_at=? WHERE action_id=?", (json.dumps({"next_status": next_status}), now(), action_id))
+                self.conn.execute("UPDATE runs SET current_action=CASE WHEN current_action=? THEN NULL ELSE current_action END,updated_at=? WHERE run_id=?", (f"{kind}:{target}", now(), run_id))
                 self._business_event(run_id, "action", str(action_id), "action_reconciled", {"status":"succeeded", "next_status":next_status})
                 return action_id
             if action and action["status"] not in {"pending", "running"}:
@@ -2244,6 +2247,7 @@ class ControlDB:
                 self.conn.execute("UPDATE tickets SET status=? WHERE ticket_id=?", (next_status, target))
                 self._business_event(run_id, "ticket", target, "ticket_state_changed", {"status": next_status})
             self.conn.execute("UPDATE actions SET status='succeeded',result=?,attempts=attempts+1,updated_at=? WHERE action_id=?", (json.dumps({"next_status":next_status}), now(), action_id))
+            self.conn.execute("UPDATE runs SET current_action=CASE WHEN current_action=? THEN NULL ELSE current_action END,updated_at=? WHERE run_id=?", (f"{kind}:{target}", now(), run_id))
             self._business_event(run_id, "action", str(action_id), "action_finished", {"status":"succeeded", "error":None})
             return action_id
     def update_thread(self,run_id,thread_id,lifecycle,outcome="unknown",next_action=None,operation=None,readback=None,expected_version=None,gate=None):
