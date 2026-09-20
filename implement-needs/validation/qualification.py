@@ -200,8 +200,7 @@ def recovery_errors(results: Any, evidence: Any, frontier: Any) -> list[str]:
         for key in sorted(required):
             value = results[key]
             if isinstance(value, str):
-                if value != "passed":
-                    errors.append(f"recovery_{key}_failed")
+                errors.append(f"recovery_{key}_evidence_missing")
                 continue
             if not isinstance(value, dict):
                 errors.append(f"recovery_{key}_evidence_missing")

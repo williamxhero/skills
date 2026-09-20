@@ -122,6 +122,13 @@ class QualificationContractTests(unittest.TestCase):
         self.assertEqual(REJECTED, result["decision"])
         self.assertIn("recovery_controller_interrupted_execution_missing", result["reasons"])
 
+    def test_legacy_passed_string_cannot_replace_recovery_execution_evidence(self) -> None:
+        report = self.valid_report()
+        report["recovery_results"]["controller_interrupted"] = "passed"
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("recovery_controller_interrupted_evidence_missing", result["reasons"])
+
     def test_duplicate_formal_task_identity_is_rejected(self) -> None:
         report = self.valid_report()
         report["task_census"]["tasks"][1]["formal_thread_id"] = report["task_census"]["tasks"][0]["formal_thread_id"]

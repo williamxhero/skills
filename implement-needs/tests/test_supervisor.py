@@ -2,12 +2,13 @@ import json
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
-from control_db import ControlDB
+from control_db import ActionClaimConflict, ControlDB
 from supervisor import detect_interruption, supervise
 
 
@@ -58,6 +59,13 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual("explicit_stop", stopped["outcome"])
         self.assertFalse(stopped["recovery_detected"])
 
+    def test_missing_run_and_invalid_budget_are_fail_closed_without_action(self):
+        self.assertEqual("missing_run", detect_interruption(self.db, "missing")["classification"])
+        before = self.db.snapshot("run")["actions"]
+        with self.assertRaisesRegex(ValueError, "budget_seconds"):
+            supervise(self.db, "run", budget_seconds=0)
+        self.assertEqual(before, self.db.snapshot("run")["actions"])
+
     def test_expired_recovery_lease_can_be_fenced_and_taken_over(self):
         first = supervise(self.db, "run", owner_id="sup-a", execute=False)
         action_id = first["recovery"]["action"]["action_id"]
@@ -69,6 +77,25 @@ class SupervisorTests(unittest.TestCase):
         takeover = supervise(self.db, "run", owner_id="sup-b")
         self.assertEqual("recovery_completed", takeover["outcome"])
         self.assertEqual("sup-b", takeover["claim"]["owner_id"])
+
+    def test_concurrent_supervisors_have_one_durable_action_owner(self):
+        materialized = supervise(self.db, "run", execute=False)
+        action_id = materialized["recovery"]["action"]["action_id"]
+
+        def claim(owner):
+            local = ControlDB.open_existing(self.path)
+            try:
+                return {"owner": local.claim_action(action_id, owner, supports_fencing=True, outcome_reconciled=True)["owner_id"]}
+            except ActionClaimConflict:
+                return {"owner": None}
+            finally:
+                local.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(claim, ("sup-a", "sup-b")))
+        winners = [item["owner"] for item in results if item["owner"]]
+        self.assertEqual(1, len(winners))
+        self.assertIn(winners[0], {"sup-a", "sup-b"})
 
     def test_time_budget_blocks_but_leaves_resume_action(self):
         self.db.conn.execute("UPDATE runs SET updated_at='2000-01-01T00:00:00+00:00' WHERE run_id='run'")

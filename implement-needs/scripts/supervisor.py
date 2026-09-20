@@ -26,12 +26,12 @@ def detect_interruption(db: ControlDB, run_id: str, *, now_value: datetime | Non
     """Classify the persisted state without creating an action."""
     if not isinstance(stale_after_seconds, int) or isinstance(stale_after_seconds, bool) or stale_after_seconds < 0:
         raise ValueError("stale_after_seconds must be a non-negative integer")
-    state = active_action_invariant(db, run_id)
     run = db.conn.execute(
         "SELECT status,terminal_result,stop_reason,run_phase,updated_at FROM runs WHERE run_id=?", (run_id,)
     ).fetchone()
     if run is None:
-        return {"detected": False, "classification": "missing_run", "run_id": run_id, "state": state}
+        return {"detected": False, "classification": "missing_run", "run_id": run_id}
+    state = active_action_invariant(db, run_id)
     base = {"run_id": run_id, "state": state, "run_phase": run[3], "updated_at": run[4]}
     if run[1] in TERMINAL_RESULTS:
         return {**base, "detected": False, "classification": "explicit_stop" if run[1] == "user_stopped" else "terminal", "terminal_result": run[1]}
@@ -106,6 +106,8 @@ def supervise(db: ControlDB, run_id: str, *, owner_id: str = "supervisor",
     if not detection.get("detected"):
         result["outcome"] = detection.get("classification")
         return result
+    if not isinstance(budget_seconds, (int, float)) or isinstance(budget_seconds, bool) or budget_seconds <= 0:
+        raise ValueError("budget_seconds must be positive")
     recovery = reconcile_controller_interruption(db, run_id, reason=detection["reason"])
     action = recovery.get("action")
     result["recovery"] = recovery
@@ -113,8 +115,6 @@ def supervise(db: ControlDB, run_id: str, *, owner_id: str = "supervisor",
         result["execution"] = {"status": "blocked", "reason": "recovery_action_missing"}
         result["outcome"] = "blocked"
         return result
-    if not isinstance(budget_seconds, (int, float)) or isinstance(budget_seconds, bool) or budget_seconds <= 0:
-        raise ValueError("budget_seconds must be positive")
     age = float(detection.get("age_seconds", 0.0))
     if age >= budget_seconds:
         result["execution"] = {"status": "blocked", "reason": "recovery_time_budget_exhausted",
