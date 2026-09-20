@@ -6,7 +6,7 @@ from live backend evidence.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -104,19 +104,42 @@ class FaultInjectingBackend:
         return {"reconciliation_status": "complete", "tasks": tasks}
 
 
+def build_whole_spec_plan() -> dict[str, Any]:
+    """Return the minimum three-SPEC dependency/merge topology for qualification."""
+    return {"topology": "whole-spec", "specs": [
+        {"id": "SPEC-1", "blocked_by": [], "tickets": ["T-11", "T-12"]},
+        {"id": "SPEC-2", "blocked_by": ["SPEC-1"], "tickets": ["T-21", "T-22", "T-23"]},
+        {"id": "SPEC-3", "blocked_by": ["SPEC-2"], "tickets": ["T-31", "T-32"]},
+    ], "branch_merge": "SPEC-1 -> SPEC-2 -> SPEC-3", "route_summary_required": True}
+
+
 def run_fault_matrix(seed: int = 129) -> dict[str, Any]:
     """Return reproducible scenario evidence; no production task is accessed."""
     plan = FaultPlan(delayed_history_reads=1, duplicate_notifications=True,
-                     disconnect_once=True, capacity_once=True)
+                     disconnect_once=True, capacity_once=False)
     backend = FaultInjectingBackend(plan)
     thread = backend.create_thread(run_id=f"scenario-{seed}", task_id="SPEC-1", attempt_id="01")
     try:
         first = backend.send(thread["formal_thread_id"], thread["host_id"])
     except ConnectionError as exc:
         first = {"status": "stream_disconnected", "error": str(exc)}
+    # The first attempt is not replayed.  A capacity failure is recorded only
+    # on a separately-created fallback attempt after archive readback.
+    if first.get("status") == "stream_disconnected":
+        plan.capacity_once = False
+        continued = backend.send(thread["formal_thread_id"], thread["host_id"], message="checkpoint-continue")
+    else:
+        continued = first
+    plan.capacity_once = True
+    capacity = backend.send(thread["formal_thread_id"], thread["host_id"], message="fallback-gate")
     archive = backend.archive(thread["formal_thread_id"], thread["host_id"])
     readback = backend.archive_readback(thread["formal_thread_id"], thread["host_id"])
+    replacement = backend.create_thread(run_id=f"scenario-{seed}", task_id="SPEC-2", attempt_id="02", model="gpt-5.6-terra", effort="xhigh")
+    replacement_route = backend.read_applied_route(replacement["formal_thread_id"], replacement["host_id"])
     return {"scenario_kind": "normalized_fake_backend", "seed": seed,
+            "plan": build_whole_spec_plan(),
             "faults": plan.__dict__, "events": backend.events,
-            "first_attempt": first, "archive": archive, "archive_readback": readback,
+            "first_attempt": first, "checkpoint_continue": continued, "capacity_failure": capacity,
+            "archive": archive, "archive_readback": readback,
+            "replacement": replacement, "replacement_route": replacement_route,
             "live_external_evidence": False}

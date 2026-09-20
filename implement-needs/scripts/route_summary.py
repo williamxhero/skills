@@ -8,10 +8,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
+from pathlib import Path
 from typing import Any, Mapping
 
 
 FACTORS = ("difficulty", "risk", "coupling", "ambiguity", "verification_burden")
+
+_ROUTE_POLICY = Path(__file__).resolve().parents[2] / "route-codex-task" / "scripts"
+if str(_ROUTE_POLICY) not in sys.path:
+    sys.path.insert(0, str(_ROUTE_POLICY))
+try:
+    from route_policy import validate_pair
+except ImportError:  # fail closed in validation, while keeping import diagnostics clear
+    validate_pair = None
 
 
 class RouteSummaryError(ValueError):
@@ -32,6 +42,11 @@ def validate_route_summary(summary: Mapping[str, Any], *, spec_id: str | None = 
     for field in ("spec_id", "planning_version", "planned_model", "planned_effort",
                   "selection", "strategy_version"):
         _text(value.get(field), field)
+    if validate_pair is None:
+        raise RouteSummaryError("route-codex-task policy unavailable")
+    route_issues: list[dict[str, Any]] = []
+    if validate_pair({"model": value["planned_model"], "thinking": value["planned_effort"]}, "route_summary.planned", route_issues) is None:
+        raise RouteSummaryError("planned route is not in the approved route policy")
     if spec_id is not None and value["spec_id"] != spec_id:
         raise RouteSummaryError("route summary spec identity mismatch")
     if planning_version is not None and value["planning_version"] != planning_version:
@@ -42,6 +57,9 @@ def validate_route_summary(summary: Mapping[str, Any], *, spec_id: str | None = 
     fallbacks = value.get("approved_fallbacks", [])
     if not isinstance(fallbacks, list) or any(not isinstance(item, Mapping) for item in fallbacks):
         raise RouteSummaryError("approved_fallbacks must be an array of objects")
+    for item in fallbacks:
+        if validate_pair({"model": item.get("model"), "thinking": item.get("effort")}, "route_summary.fallback", route_issues) is None:
+            raise RouteSummaryError("fallback route is not in the approved route policy")
     evidence = value.get("evidence")
     if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item.strip() for item in evidence):
         raise RouteSummaryError("route summary evidence is required")

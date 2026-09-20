@@ -7,8 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
 from control_db import ControlDB
-from controller_recovery import (active_action_invariant, reconcile_controller_interruption,
+from controller_recovery import (active_action_invariant, classify_controller_failure,
+                                 persist_failure_action, reconcile_controller_interruption,
                                  stale_controller, watchdog)
+from next_action import next_action
+from advance_runtime import advance
 from route_summary import RouteSummaryError, make_route_summary
 
 
@@ -52,6 +55,26 @@ class ControllerContinuationTests(unittest.TestCase):
         bad = dict(summary); bad["ticket_override"] = "gpt-5.6-luna"
         with self.assertRaises(RouteSummaryError):
             self.db.set_route_summary("S1", bad)
+
+    def test_closed_spec_and_planned_successor_materialize_lost_wakeup(self):
+        self.db.add_spec("run", "S1", "closed", 1)
+        self.db.add_spec("run", "S2", "next", 2)
+        # Seed the persisted crash point directly: the child completion was
+        # observed, but its terminal delivery gate/next action write was lost.
+        self.db.conn.execute("UPDATE specs SET status='closed' WHERE spec_id='S1'")
+        self.db.conn.execute("UPDATE runs SET run_phase='implementing' WHERE run_id='run'")
+        self.assertEqual("controller_interrupted", next_action(self.db, "run")["kind"])
+        result = advance(self.db, "run", max_actions=1)
+        self.assertEqual("controller_interrupted", result["action"]["kind"])
+        self.assertEqual("pending", self.db.conn.execute("SELECT status FROM actions WHERE kind='controller_interrupted'").fetchone()[0])
+
+    def test_outer_failure_is_classified_and_persisted_idempotently(self):
+        self.assertEqual("model_capacity", classify_controller_failure(error={"code": "model_capacity"}))
+        first = persist_failure_action(self.db, "run", "model_capacity")
+        second = persist_failure_action(self.db, "run", "model_capacity")
+        self.assertTrue(first["changed"])
+        self.assertFalse(second["changed"])
+        self.assertEqual("recover_capacity", self.db.conn.execute("SELECT kind FROM actions").fetchone()[0])
 
 
 if __name__ == "__main__":

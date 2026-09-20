@@ -79,6 +79,9 @@ def advance(db: ControlDB, run_id: str, max_actions=32):
     if not isinstance(max_actions, int) or isinstance(max_actions, bool) or max_actions < 1:
         raise ValueError("max_actions must be a positive integer")
     processed = []
+    from controller_recovery import lost_wakeup_candidate, reconcile_controller_interruption
+    if lost_wakeup_candidate(db, run_id):
+        reconcile_controller_interruption(db, run_id, reason="completed_spec_without_persisted_next_action")
     for _ in range(max_actions):
         action = next_action(db, run_id)
         # Legacy runs may not have completed the newer preflight phase.  Keep

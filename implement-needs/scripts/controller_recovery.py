@@ -44,6 +44,16 @@ def active_action_invariant(db: ControlDB, run_id: str) -> dict[str, Any]:
             "pending_action": dict(pending) if pending else None}
 
 
+def lost_wakeup_candidate(db: ControlDB, run_id: str) -> bool:
+    """Recognize the observed SPEC-closed → next-SPEC-ready lost wake-up."""
+    state = active_action_invariant(db, run_id)
+    if state["state"] != "active_without_action" or state["run_phase"] not in {"implementing", "verifying"}:
+        return False
+    closed = db.conn.execute("SELECT 1 FROM specs WHERE run_id=? AND status='closed' LIMIT 1", (run_id,)).fetchone()
+    planned = db.conn.execute("SELECT 1 FROM specs WHERE run_id=? AND status='planned' LIMIT 1", (run_id,)).fetchone()
+    return closed is not None and planned is not None
+
+
 def reconcile_controller_interruption(db: ControlDB, run_id: str, *, reason: str = "controller_turn_interrupted") -> dict[str, Any]:
     """Atomically materialize a recovery action for an active empty run."""
     state = active_action_invariant(db, run_id)
@@ -147,7 +157,21 @@ def persist_failure_action(db: ControlDB, run_id: str, classification: str, *, t
                "uncertain": "reconcile_side_effects", "blocked": "repair_identity",
                "terminal_failure": "repair_controller"}
     kind = actions.get(classification, "repair_controller")
-    action_id = db.set_action(run_id, kind, target or run_id)
-    db.conn.execute("UPDATE runs SET recovery_action=?,updated_at=? WHERE run_id=?", (kind, now(), run_id))
-    return {"action_id": action_id, "kind": kind, "target": target or run_id,
-            "classification": classification, "evidence": evidence or [f"controller://failure/{classification}"]}
+    target = target or run_id
+    key = f"{run_id}:{kind}:{target}"
+    with db.transaction():
+        existing = db.conn.execute("SELECT * FROM actions WHERE idempotency_key=?", (key,)).fetchone()
+        if existing:
+            return {"action_id": existing["action_id"], "kind": kind, "target": target,
+                    "classification": classification, "changed": False,
+                    "evidence": evidence or [f"controller://failure/{classification}"]}
+        active = db.conn.execute("SELECT action_id,kind,target FROM actions WHERE run_id=? AND status IN ('pending','running') LIMIT 1", (run_id,)).fetchone()
+        if active:
+            raise ActionConflict(f"action {active[0]} already owns run {run_id}: {active[1]}:{active[2]}")
+        stamp = now()
+        cur = db.conn.execute("INSERT INTO actions(run_id,kind,target,status,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", (run_id, kind, target, "pending", key, stamp, stamp))
+        db.conn.execute("UPDATE runs SET current_action=?,recovery_action=?,updated_at=? WHERE run_id=?", (f"{kind}:{target}", kind, stamp, run_id))
+        db._business_event(run_id, "controller", run_id, "controller_failure_action_persisted", {"classification": classification, "action_id": cur.lastrowid, "evidence": evidence or []})
+        return {"action_id": cur.lastrowid, "kind": kind, "target": target,
+                "classification": classification, "changed": True,
+                "evidence": evidence or [f"controller://failure/{classification}"]}
