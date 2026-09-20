@@ -36,6 +36,24 @@ class ThreadCleanupTests(unittest.TestCase):
         result = classify_inventory(run_id="run", registry=[entry], host_tasks=[host])
         self.assertEqual(1, len(result["host_unregistered"]))
 
+    def test_stale_registered_thread_requires_repair_even_without_orphan(self):
+        entry = dict(self.db.conn.execute("SELECT * FROM threads WHERE thread_id='helper'").fetchone())
+        result = classify_inventory(
+            run_id="run", registry=[entry],
+            host_tasks=[{"formal_thread_id": "formal", "host_id": "local", "lifecycle": "idle"}],
+        )
+        self.assertEqual("repair", result["decision"])
+        self.assertEqual(1, len(result["stale"]))
+
+    def test_archive_receipt_is_idempotent_after_readback(self):
+        entry = dict(self.db.conn.execute("SELECT * FROM threads WHERE thread_id='helper'").fetchone())
+        receipt = archive_with_readback(archive=lambda **_: {"ok": True}, readback=lambda **_: {"archived": True}, entry=entry)
+        first = record_cleanup_receipt(self.db, "run", receipt)
+        second = record_cleanup_receipt(self.db, "run", receipt)
+        self.assertTrue(first["created"])
+        self.assertFalse(second["created"])
+        self.assertEqual("already_archived", second["registry_transition"])
+
 
 if __name__ == "__main__":
     unittest.main()
