@@ -21,11 +21,11 @@ class ActionContract:
 
 _PHASE_ACTIONS = {
     "preflight": ("run_preflight", "run_grill", "run_planning", "confirm_no_change", "enter_implementation"),
-    "implementation": ("publish_spec", "ticket_current_spec", "dispatch_spec", "wait_spec", "wait_spec_dependency", "wait_ticket_receipt", "verify_spec", "merge_spec", "close_spec", "repair_spec", "advance_spec", "advance_ticket", "dispatch_ticket", "wait_ticket", "wait_ticket_blocker", "verify_ticket", "merge_ticket", "close_ticket", "repair_ticket", "repair_queue", "reconcile_intent", "verify_thread_route", "assign_thread", "run_checkpoint"),
+    "implementation": ("publish_spec", "ticket_current_spec", "dispatch_spec", "wait_spec", "wait_spec_dependency", "wait_ticket_receipt", "verify_spec", "merge_spec", "close_spec", "repair_spec", "advance_spec", "advance_ticket", "dispatch_ticket", "wait_ticket", "wait_ticket_blocker", "verify_ticket", "merge_ticket", "close_ticket", "repair_ticket", "repair_queue", "reconcile_intent", "verify_thread_route", "assign_thread", "run_checkpoint", "controller_interrupted", "checkpoint_continue", "recover_capacity", "reconcile_side_effects", "repair_identity", "repair_controller"),
     "release": ("final_verification", "advance_release", "advance_synchronization", "complete_run", "final_release", "terminal", "repair_run"),
 }
 _READ_ONLY = {"wait_spec", "wait_ticket", "wait_ticket_blocker", "verify_spec", "verify_ticket", "terminal"}
-_RECOVERY = {"repair_spec", "repair_ticket", "repair_queue"}
+_RECOVERY = {"repair_spec", "repair_ticket", "repair_queue", "controller_interrupted", "checkpoint_continue", "recover_capacity", "reconcile_side_effects", "repair_identity", "repair_controller"}
 
 
 def _contract(name, phase):

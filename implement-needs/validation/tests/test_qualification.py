@@ -20,6 +20,13 @@ assert CLEANUP_MODULE_SPEC and CLEANUP_MODULE_SPEC.loader
 cleanup_qualification = importlib.util.module_from_spec(CLEANUP_MODULE_SPEC)
 CLEANUP_MODULE_SPEC.loader.exec_module(cleanup_qualification)
 
+REGISTER_MODULE_SPEC = importlib.util.spec_from_file_location(
+    "register_qualification", ROOT / "validation/scripts/register_qualification.py"
+)
+assert REGISTER_MODULE_SPEC and REGISTER_MODULE_SPEC.loader
+register_qualification = importlib.util.module_from_spec(REGISTER_MODULE_SPEC)
+REGISTER_MODULE_SPEC.loader.exec_module(register_qualification)
+
 
 class QualificationContractTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -33,7 +40,7 @@ class QualificationContractTests(unittest.TestCase):
             "project_identity_receipt": {"project_id": "project-1", "canonical_path": "C:/skills"},
             "logical_id_to_external_id_map": {f"item-{index}": f"external-{index}" for index in range(20)},
             "artifact_counts": EXPECTED_COUNTS,
-            "recovery_results": {key: "passed" for key in ("planning_restart", "ticket_restart", "assignment_restart", "merge_before_archive_restart", "release_restart", "lost_response", "idempotency_retry")},
+            "recovery_results": {key: "passed" for key in ("planning_restart", "ticket_restart", "assignment_restart", "merge_before_archive_restart", "release_restart", "lost_response", "idempotency_retry", "controller_interrupted", "capacity_fallback", "stream_disconnect", "uncertain_side_effect")},
             "release_train_receipts": {level: "passed" for level in ("L0", "L1", "L2", "L3", "L4", "L5")},
             "backend_capability_receipt": {
                 "capabilities": ["create_thread", "list_tasks", "read_thread", "read_applied_route", "send_message_to_thread", "set_thread_archived", "read_archive_state"],
@@ -48,7 +55,9 @@ class QualificationContractTests(unittest.TestCase):
                 ],
             },
             "repository_sync_receipt": {"local_remote_head_equal": True},
-            "cleanup_receipt": {"complete": True},
+            "cleanup_receipt": {"complete": True, "receipts": [{"archive_readback": {"archived": True}}]},
+            "route_visibility_receipt": {"planned": {"model": "gpt-5.6-sol", "effort": "high"}, "applied": {"model": "gpt-5.6-sol", "effort": "high"}, "executed": {"turn_id": "turn-1"}, "identity_consistent": True},
+            "controller_lifecycle_receipt": {"continuation_persisted": True, "watchdog_tested": True, "cleanup_readback_verified": True},
         }
 
     def test_complete_external_evidence_qualifies(self) -> None:
@@ -98,6 +107,12 @@ class QualificationContractTests(unittest.TestCase):
         self.assertIn("backend_route_mismatch", result["reasons"])
         self.assertIn("backend_archive_incomplete", result["reasons"])
 
+    def test_missing_turn_execution_evidence_is_not_reported_as_available(self) -> None:
+        report = self.valid_report()
+        report["route_visibility_receipt"]["executed"] = {}
+        result = verify_report(report, self.scenario)
+        self.assertIn("route_executed_evidence_unavailable", result["reasons"])
+
     def test_digest_excludes_report_output_but_not_subject_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -139,6 +154,27 @@ class QualificationContractTests(unittest.TestCase):
                 "--index", str(index),
             ], text=True, capture_output=True, check=False)
             self.assertEqual(3, completed.returncode, completed.stdout + completed.stderr)
+
+    def test_registration_is_atomic_and_rejects_incomplete_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = root / "index.json"
+            index.write_text(json.dumps({"schema_version": 1, "qualifications": []}), encoding="utf-8")
+            report = self.valid_report(); report["cleanup_receipt"] = {"complete": False}
+            report_path = root / "report.json"; report_path.write_text(json.dumps(report), encoding="utf-8")
+            result = register_qualification.register(index_path=index, scenario_path=ROOT / "validation/scenarios/whole-spec-v1.json", report_path=report_path)
+            self.assertEqual("blocked", result["decision"])
+            self.assertEqual([], json.loads(index.read_text(encoding="utf-8"))["qualifications"])
+
+    def test_registration_writes_only_a_verified_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = root / "index.json"
+            report = self.valid_report(); report_path = root / "run" / "qualification.json"
+            report_path.parent.mkdir(); report_path.write_text(json.dumps(report), encoding="utf-8")
+            result = register_qualification.register(index_path=index, scenario_path=ROOT / "validation/scenarios/whole-spec-v1.json", report_path=report_path)
+            self.assertEqual("registered", result["decision"])
+            self.assertEqual("QUALIFIED", json.loads(index.read_text(encoding="utf-8"))["qualifications"][0]["decision"])
 
     def test_cleanup_removes_branch_before_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
