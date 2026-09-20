@@ -50,10 +50,18 @@ class TaskBackendTests(unittest.TestCase):
 
     def test_create_reads_formal_identity(self):
         backend = FakeBackend()
-        result = create_bootstrap_task(backend, "R1", self.identity(), "Implement issue", "gpt-5.6-terra", "high", owner_id="o", cwd="C:/w", project_id="p")
+        result = create_bootstrap_task(
+            backend, "R1", self.identity(), "Implement issue", "gpt-5.6-terra", "high",
+            owner_id="o", cwd="C:/w", project_id="p",
+            project_id_source="saved_project_readback",
+            project_canonical_path="C:/w",
+            project_identity_evidence=["codex-app:list_projects:skills"],
+        )
         self.assertEqual(result["formal_thread_id"], "t-1")
         self.assertEqual(result["identity_readback"]["lifecycle"], "queued")
         self.assertTrue(result["title"].startswith("[INN v=1 task=T1 run=R1 attempt=01"))
+        create_params = backend.calls[0][1]
+        self.assertEqual("saved_project_readback", create_params["project_id_source"])
 
     def test_app_server_requires_confirmed_method_map(self):
         backend = TaskBackend("codex-app-server-jsonrpc", object(), {})
@@ -98,6 +106,7 @@ class TaskBackendTests(unittest.TestCase):
     def test_connector_probe_requires_live_capabilities(self):
         class Connector:
             def request(self, operation, params):
+                self.calls = getattr(self, "calls", []) + [(operation, params)]
                 self.operation = operation
                 self.operations = getattr(self, "operations", []) + [operation]
                 if operation == "capabilities":
@@ -120,6 +129,11 @@ class TaskBackendTests(unittest.TestCase):
         self.assertEqual("allow", result["decision"])
         self.assertIn(connector.operation, {"create_thread", "send_message_to_thread", "set_thread_archived"})
         self.assertEqual({"capabilities", "list_tasks", "read_thread", "read_applied_route", "read_archive_state", "create_thread", "send_message_to_thread", "set_thread_archived"}, set(connector.operations))
+        mutations = [params for operation, params in connector.calls if operation in {
+            "create_thread", "send_message_to_thread", "set_thread_archived"
+        }]
+        self.assertEqual(3, len(mutations))
+        self.assertTrue(all(params.get("dry_run") is True for params in mutations))
 
     def test_list_tasks_passes_recovery_indexes_to_backend(self):
         backend = FakeBackend()

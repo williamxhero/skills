@@ -1,0 +1,72 @@
+{
+  "schema_version": 2,
+  "decision": "allow",
+  "backend": "app-server-bridge",
+  "operations": [
+    "create_thread",
+    "list_tasks",
+    "read_thread",
+    "read_applied_route",
+    "send_message_to_thread",
+    "set_thread_archived",
+    "read_archive_state"
+  ],
+  "probe_target": {
+    "formal_thread_id": "01a0bc31-11d0-7cf3-9876-ecf0548fdd50",
+    "host_id": "local"
+  },
+  "identity_readback": {
+    "formal_thread_id": "01a0bc31-11d0-7cf3-9876-ecf0548fdd50",
+    "host_id": "local",
+    "task_id": "v3-cwd-probe-live",
+    "run_id": "qualification-v3-cwd-1789863727",
+    "attempt_id": "01",
+    "owner_id": "qualification-controller",
+    "cwd": "C:\\Users\\will\\.codex\\skills",
+    "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+    "project_id_source": "saved_project_readback",
+    "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+    "project_identity_evidence": ["codex-app:list_projects:skills"],
+    "client_thread_id": "01a0bc31-11d0-7cf3-9876-ecf0548fdd50",
+    "lifecycle": "completed",
+    "readback_evidence": [
+      "app-server:thread/read:01a0bc31-11d0-7cf3-9876-ecf0548fdd50",
+      "formal_thread_readback",
+      "turn/completed",
+      "persisted_history_readback"
+    ]
+  },
+  "route_readback": {
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "evidence": [
+      "app-server:thread/read:01a0bc31-11d0-7cf3-9876-ecf0548fdd50:route",
+      "configured_route_readback"
+    ]
+  },
+  "expected_route": {
+    "model": "gpt-5.6-sol",
+    "effort": "high"
+  },
+  "archive_readback": {
+    "archived": true,
+    "required": true,
+    "readback_evidence": [
+      "app-server:thread/list:archived:01a0bc31-11d0-7cf3-9876-ecf0548fdd50",
+      "archive_readback"
+    ]
+  },
+  "capability_evidence": [
+    "app-server:initialize",
+    "live_capabilities",
+    "probe:list_tasks",
+    "probe:read_thread",
+    "probe:read_applied_route",
+    "probe:read_archive_state",
+    "probe:create_thread:dry_run",
+    "probe:send_message_to_thread:dry_run",
+    "probe:set_thread_archived:dry_run",
+    "turn/completed",
+    "persisted_history_readback"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "version": "failure-matrix-v1",
+  "cases": [
+    "missing_project_id", "incomplete_backend_capability", "existing_specs", "existing_tickets",
+    "planning_restart", "ticket_restart", "assignment_restart", "merge_before_archive_restart",
+    "release_restart", "lost_response", "idempotency_retry", "route_drift",
+    "archive_readback_failure", "ticket_level_artifact", "overlapping_specs", "git_head_mismatch"
+  ]
+}

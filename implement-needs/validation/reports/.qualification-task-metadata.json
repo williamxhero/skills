@@ -1,0 +1,94 @@
+{
+  "threads": [
+    {
+      "formal_thread_id": "01a0bc31-11d0-7cf3-9876-ecf0548fdd50",
+      "host_id": "local",
+      "task_id": "v3-cwd-probe-live",
+      "run_id": "qualification-v3-cwd-1789863727",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ]
+    },
+    {
+      "formal_thread_id": "01a0bc43-7ce4-7c10-acd3-ff395a47b9ea",
+      "host_id": "local",
+      "task_id": "qualification-grill-grill",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ]
+    },
+    {
+      "formal_thread_id": "01a0bc43-a239-7382-8698-bdbda233311b",
+      "host_id": "local",
+      "task_id": "qualification-planning-planning",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ]
+    },
+    {
+      "formal_thread_id": "01a0bc43-be0e-7b21-9e71-4ea0afbd8d77",
+      "host_id": "local",
+      "task_id": "qualification-spec-spec-1",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ]
+    },
+    {
+      "formal_thread_id": "01a0bc43-da75-7a83-bc55-9d0b70f8baaf",
+      "host_id": "local",
+      "task_id": "qualification-spec-spec-2",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ]
+    },
+    {
+      "formal_thread_id": "01a0bc44-035c-7193-95f2-fd550c5a572b",
+      "host_id": "local",
+      "task_id": "qualification-spec-spec-3",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ]
+    }
+  ]
+}

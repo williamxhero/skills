@@ -5,12 +5,31 @@ description: 'Run a requirement through Grill, incremental SPEC/ticket delivery,
 
 # Implement Needs
 
+Before a normal run, require a matching `QUALIFIED` report from
+`validation/reports/index.json` for the current Skill and validation harness
+digests. Check this with
+`python validation/scripts/qualification_gate.py --scenario whole-spec-v1 --backend thread`.
+If no matching report exists, run only the qualification preflight and stop
+before GitHub or task mutation. Read `validation/README.md` for the
+qualification commands and evidence contract. Qualification uses a new managed
+task with a formally read-back non-empty `project_id`; a `requestId`, title
+token, or `codex://threads/...` URL never supplies task identity. For the native
+app-server fallback, pass the saved-project readback explicitly as
+`project_id_source="saved_project_readback"`, with its non-empty evidence and
+`project_canonical_path == cwd`; the bridge then omits Desktop-only `projectId`
+from `thread/start` and verifies the returned formal thread by native `cwd` plus
+the controller sidecar. This is controller saved-project identity, not a claim
+that app-server natively returned project membership.
+
 `implement-needs` is a thin controller. SQLite owns state, ordering, idempotency, and
 recovery; delegated skills own semantic work.
 
 The task backend is the only task/thread boundary. Use `scripts/task_backend.py` for
 creation, discovery, formal readback, route readback, assignment, archive, and
 archive-state readback. The adapter contract is in `references/task-backend.md`.
+For managed turn failure classification, checkpointed continue, capacity
+replacement, and side-effect reconciliation, read `references/managed-recovery.md`
+and use `scripts/managed_recovery.py`.
 Backend selection requires a live capability response. A command-line flag is not
 capability evidence.
 
@@ -28,7 +47,11 @@ dependency with a same-looking Skill or an unverified host.
    readback. Without an allow receipt, invoke `IN: Unblock Development` and keep
    implementation blocked. A standard MCP bridge must complete MCP initialize,
    tools/list, and real tools/call probes; app-server fallback must probe every
-   read and dry-run mutation operation, not only initialize. For issue #444, build
+   read and dry-run mutation operation, not only initialize. Capability selection
+   reuses an existing managed probe target and must not create a capability-probe
+   task. A fresh live lifecycle probe is qualification-only; register it as a
+   run-owned `probe` thread and require archive plus archive readback in a finally
+   cleanup path before accepting its receipt. For issue #444, build
    the 33-ticket ledger from GitHub root/issue readbacks and run
    `import-ticket-ledger` before controller recovery.
 3. Run reconciliation through the selected backend before every create, after each
@@ -40,8 +63,9 @@ dependency with a same-looking Skill or an unverified host.
 8. Invoke `to-tickets` for that SPEC only; record the ticket graph and GitHub readbacks.
 9. In the default `whole-spec` mode, invoke `implement-spec` for the whole SPEC: one managed task, branch, worktree,
    and PR. Mint `task_id`, `run_id`, `attempt_id`, and `nonce`; create the task with
-   its canonical title token, register it in SQLite, perform formal identity and
-   route readbacks, then send its assignment in the same controller turn.
+its canonical title token, register it in SQLite, perform formal identity and
+   route readbacks, then send its assignment in the same controller turn. Carry
+   the verified project readback fields into every bootstrap create.
 10. Verify commits, tests, review, PR, merge, ticket closure, and thread archival.
 11. Repeat from step 7 until all SPECs are closed.
 12. Invoke `test-release-train`, package/deploy when configured, then `IN: Commit n Push`.
@@ -87,6 +111,10 @@ Register every thread before sending work. A new thread must receive route readb
 its assignment in the same controller turn. If that cannot happen, record
 `cancelled_before_start` or `abandoned_after_bootstrap`, archive it, and read back the
 archive before dispatching anything else. Never wait on an idle bootstrap thread.
+Capability selection only reads an existing target and exercises mutations as dry runs.
+An explicitly requested live lifecycle probe is a managed `probe` thread: successful,
+failed, and interrupted probe paths all archive it and require `archived: true` readback;
+without that receipt, the probe is blocked rather than allowed.
 
 Persist every operation receipt and readback in SQLite before marking local success.
 Keep `identity_evidence`, `capability_evidence`, `configured_route_evidence`, and

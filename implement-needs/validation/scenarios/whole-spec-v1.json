@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "version": "whole-spec-v1",
+  "topology": "whole-spec",
+  "expected_artifact_counts": {
+    "umbrella_specs": 1,
+    "child_specs": 3,
+    "tickets": 8,
+    "grill_tasks": 1,
+    "planning_tasks": 1,
+    "spec_tasks": 3,
+    "spec_pull_requests": 3,
+    "ticket_implementation_artifacts": 0
+  },
+  "specs": [
+    {"id": "SPEC-1", "title": "Event model and SQLite persistence", "blocked_by": [], "tickets": ["event-model", "schema", "repository"]},
+    {"id": "SPEC-2", "title": "Command-line interface", "blocked_by": ["SPEC-1"], "tickets": ["add", "list", "filter"]},
+    {"id": "SPEC-3", "title": "JSON export and HTTP smoke", "blocked_by": ["SPEC-2"], "tickets": ["export", "http-smoke"]}
+  ]
+}
