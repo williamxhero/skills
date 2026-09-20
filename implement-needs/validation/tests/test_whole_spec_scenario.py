@@ -15,6 +15,11 @@ class WholeSpecScenarioTests(unittest.TestCase):
         self.assertEqual("completed", result["checkpoint_continue"]["status"])
         self.assertEqual("model_capacity", result["capacity_failure"]["error"]["code"])
         self.assertTrue(result["archive_readback"]["archived"])
+        backend = module.FaultInjectingBackend(module.FaultPlan(delayed_history_reads=1))
+        thread = backend.create_thread(run_id="r", task_id="S", attempt_id="01")
+        turn = backend.send(thread["formal_thread_id"], thread["host_id"])
+        self.assertIsNone(backend.read_persisted_history(thread["formal_thread_id"], turn["turn_id"])["rollout"])
+        self.assertIsNotNone(backend.read_persisted_history(thread["formal_thread_id"], turn["turn_id"])["rollout"])
         self.assertFalse(result["live_external_evidence"])
 
 

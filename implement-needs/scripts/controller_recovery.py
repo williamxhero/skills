@@ -46,7 +46,12 @@ def active_action_invariant(db: ControlDB, run_id: str) -> dict[str, Any]:
 
 def lost_wakeup_candidate(db: ControlDB, run_id: str) -> bool:
     """Recognize the observed SPEC-closed → next-SPEC-ready lost wake-up."""
-    state = active_action_invariant(db, run_id)
+    try:
+        state = active_action_invariant(db, run_id)
+    except ControllerRecoveryError as exc:
+        if str(exc) == "run_not_found":
+            return False
+        raise
     if state["state"] != "active_without_action" or state["run_phase"] not in {"implementing", "verifying"}:
         return False
     closed = db.conn.execute("SELECT 1 FROM specs WHERE run_id=? AND status='closed' LIMIT 1", (run_id,)).fetchone()

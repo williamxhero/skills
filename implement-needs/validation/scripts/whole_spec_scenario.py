@@ -40,6 +40,7 @@ class FaultInjectingBackend:
         self.events: list[dict[str, Any]] = []
         self.threads: dict[tuple[str, str], dict[str, Any]] = {}
         self.turns: dict[tuple[str, str], dict[str, Any]] = {}
+        self._history_reads: dict[tuple[str, str], int] = {}
         self._counter = 0
 
     def create_thread(self, *, run_id: str, task_id: str, attempt_id: str, kind: str = "spec",
@@ -83,7 +84,18 @@ class FaultInjectingBackend:
             raise ConnectionError("scenario stream disconnected")
         completion = {"turn_id": turn, "status": "completed", "output": "scenario"}
         self.events.append({"type": "turn_completed", **completion})
+        if self.plan.duplicate_notifications:
+            self.events.append({"type": "turn_completed", "duplicate": True, **completion})
         return completion
+
+    def read_persisted_history(self, formal_thread_id: str, turn_id: str) -> dict[str, Any]:
+        key = (formal_thread_id, turn_id)
+        reads = self._history_reads.get(key, 0)
+        self._history_reads[key] = reads + 1
+        if reads < self.plan.delayed_history_reads:
+            return {"thread_id": formal_thread_id, "turn_id": turn_id, "rollout": None, "temporary": True}
+        return {"thread_id": formal_thread_id, "turn_id": turn_id,
+                "rollout": self.turns[key], "temporary": False}
 
     def archive(self, formal_thread_id: str, host_id: str) -> dict[str, Any]:
         self.threads[(formal_thread_id, host_id)]["archived"] = True
