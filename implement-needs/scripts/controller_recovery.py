@@ -118,15 +118,28 @@ def watchdog(db: ControlDB, run_id: str, *, now_value: datetime | None = None,
 
 def complete_child_and_persist_next_action(db: ControlDB, run_id: str, *, child_kind: str,
                                            child_id: str, next_action: Mapping[str, Any] | None = None,
-                                           result: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Commit terminal observation and the next action in one business transaction."""
+                                           result: Mapping[str, Any] | None = None,
+                                           expected_version: int | None = None) -> dict[str, Any]:
+    """Commit a terminal child observation and its continuation atomically.
+
+    The completion boundary is deliberately idempotent.  A retried completion
+    returns the original action and business version without appending another
+    event, while a stale caller is rejected before either the child or run is
+    changed.  The caller must have already persisted the child's terminal
+    delivery state; this function owns only the indivisible continuation write.
+    """
     if child_kind not in {"spec", "ticket"} or not child_id:
         raise ValueError("child identity is required")
     with db.transaction():
         table = "specs" if child_kind == "spec" else "tickets"
-        row = db.conn.execute(f"SELECT status FROM {table} WHERE {child_kind}_id=?", (child_id,)).fetchone()
+        db._check_version(run_id, expected_version)
+        row = db.conn.execute(f"SELECT status FROM {table} WHERE {child_kind}_id=? AND run_id=?" if child_kind == "spec" else
+                              f"SELECT t.status FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=? AND s.run_id=?",
+                              (child_id, run_id)).fetchone()
         if row is None:
             raise ValueError("child not found")
+        if row[0] not in {"closed", "cancelled"}:
+            raise ControllerRecoveryError("child_not_terminal")
         if next_action is None:
             from next_action import next_action as compute_next_action
             next_action = compute_next_action(db, run_id)
@@ -135,19 +148,30 @@ def complete_child_and_persist_next_action(db: ControlDB, run_id: str, *, child_
         key = f"{run_id}:{next_action['kind']}:{next_action['target']}"
         existing = db.conn.execute("SELECT * FROM actions WHERE idempotency_key=?", (key,)).fetchone()
         if existing is None:
+            active = db.conn.execute(
+                "SELECT action_id,kind,target FROM actions WHERE run_id=? AND status IN ('pending','running') ORDER BY action_id LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            if active is not None:
+                raise ActionConflict(f"action {active[0]} already owns run {run_id}: {active[1]}:{active[2]}")
             stamp = now()
             cur = db.conn.execute("INSERT INTO actions(run_id,kind,target,status,idempotency_key,result,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
                                   (run_id, next_action["kind"], next_action["target"], "pending", key, json.dumps(dict(result or {}), ensure_ascii=False), stamp, stamp))
             action = dict(db.conn.execute("SELECT * FROM actions WHERE action_id=?", (cur.lastrowid,)).fetchone())
-        else:
-            action = dict(existing)
-        db.conn.execute("UPDATE runs SET current_action=?,recovery_action=NULL,updated_at=? WHERE run_id=?",
-                        (f"{next_action['kind']}:{next_action['target']}", now(), run_id))
-        db._business_event(run_id, child_kind, child_id, f"{child_kind}_completed_next_action_persisted", {
-            "child_result": dict(result or {}), "next_action": dict(next_action), "action_id": action["action_id"],
-        })
+            version = db._business_event(run_id, child_kind, child_id, f"{child_kind}_completed_next_action_persisted", {
+                "child_result": dict(result or {}), "next_action": dict(next_action), "action_id": action["action_id"],
+            })
+            db.conn.execute("UPDATE runs SET current_action=?,recovery_action=NULL,updated_at=? WHERE run_id=?",
+                            (f"{next_action['kind']}:{next_action['target']}", now(), run_id))
+            return {"child_id": child_id, "action": action, "next_action": dict(next_action),
+                    "business_version": version, "created": True}
+        action = dict(existing)
+        if action["run_id"] != run_id:
+            raise ControllerRecoveryError("action_run_mismatch")
+        # The same idempotency key is the authoritative completion receipt.  Do
+        # not emit a second business event or move the run backwards on retry.
         return {"child_id": child_id, "action": action, "next_action": dict(next_action),
-                "business_version": db.business_version(run_id)}
+                "business_version": db.business_version(run_id), "created": False}
 
 
 def classify_controller_failure(*, error: Mapping[str, Any] | str | None = None,

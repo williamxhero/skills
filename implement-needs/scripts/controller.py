@@ -46,6 +46,7 @@ def main() -> int:
     tool_failure=sub.add_parser("tool-failure"); tool_failure.add_argument("--category",required=True); tool_failure.add_argument("--error-fragment",required=True); tool_failure.add_argument("--log-uri",required=True); tool_failure.add_argument("--version",type=int)
     host_operation=sub.add_parser("host-operation"); host_operation.add_argument("--operation",required=True); host_operation.add_argument("--arguments",default="{}"); host_operation.add_argument("--required-capability",required=True); host_operation.add_argument("--capabilities",default="[]"); host_operation.add_argument("--capability-evidence",default="[]")
     action=sub.add_parser("action"); action.add_argument("--run-id",required=True); action.add_argument("--kind",required=True); action.add_argument("--target",required=True)
+    complete_child=sub.add_parser("complete-child"); complete_child.add_argument("--run-id",required=True); complete_child.add_argument("--child-kind",choices=("spec", "ticket"),required=True); complete_child.add_argument("--child-id",required=True); complete_child.add_argument("--next-action",required=True); complete_child.add_argument("--result",default="{}")
     finish=sub.add_parser("finish-action"); finish.add_argument("--action-id",type=int,required=True); finish.add_argument("--status",choices=("succeeded","failed","blocked","cancelled"),required=True); finish.add_argument("--result"); finish.add_argument("--gate")
     snap=sub.add_parser("snapshot"); snap.add_argument("--run-id",required=True)
     save_snap=sub.add_parser("save-snapshot"); save_snap.add_argument("--run-id",required=True); save_snap.add_argument("--payload",required=True); save_snap.add_argument("--expected-event-cursor",type=int); save_snap.add_argument("--expected-state-version",type=int)
@@ -113,7 +114,7 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (thread, thread_state, spec_state, ticket_state, action, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile):
+    for versioned in (thread, thread_state, spec_state, ticket_state, action, complete_child, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
     db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context-history", "context-measurements", "context-budget", "context-budget-gate", "action-contract", "action-contract-check", "safety-metrics", "benchmark-manifest", "compare-safety-metrics"} else "open-existing"))
@@ -156,6 +157,13 @@ def main() -> int:
             from tool_envelopes import host_operation
             result=host_operation(args.operation, json.loads(args.arguments), args.required_capability, json.loads(args.capabilities), json.loads(args.capability_evidence))
         elif args.command=="action": result={"action_id":db.set_action(args.run_id,args.kind,args.target,expected_version=args.expected_version)}
+        elif args.command=="complete-child":
+            from controller_recovery import complete_child_and_persist_next_action
+            result=complete_child_and_persist_next_action(
+                db, args.run_id, child_kind=args.child_kind, child_id=args.child_id,
+                next_action=json.loads(args.next_action), result=json.loads(args.result),
+                expected_version=args.expected_version,
+            )
         elif args.command=="finish-action": db.finish_action(args.action_id,args.status,json.loads(args.result) if args.result else None,expected_version=args.expected_version,gate=json.loads(args.gate) if args.gate else None); result={"action_id":args.action_id,"status":args.status}
         elif args.command=="next-action":
             from next_action import next_action
