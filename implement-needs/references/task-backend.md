@@ -20,18 +20,37 @@ The mutating operations must accept `dry_run: true` and return `dry_run: true`; 
 capability name alone is insufficient. The identity probe must contain task, run,
 attempt, owner, cwd, and project fields, and route/archive reads must carry backend
 evidence. The preferred native fallback is `app-server-bridge`: it calls real
-app-server thread and turn methods, skips JSON-RPC notifications until the matching
-response, and normalizes their records. Its controller-owned metadata sidecar supplies
+app-server thread and turn methods, retains JSON-RPC notifications and correlates
+turn completion by `threadId + turnId`, and normalizes their records. Its controller-owned metadata sidecar supplies
 only fields app-server does not expose (`task_id`, `run_id`, `attempt_id`, `owner_id`,
-and host identity); every sidecar record must match native thread id, cwd, and project
-id. Missing or mismatched metadata is a protocol failure. The legacy raw
+and host identity). When an app-server version omits `projectId` from native
+thread readback, the sidecar may additionally carry a saved-project readback,
+its canonical path, and non-empty evidence; that substitution is accepted only
+when the canonical path exactly equals the task cwd. It is never derived from a
+title, request ID, or URL. Every sidecar record must match native thread id and
+cwd; missing or mismatched metadata is a protocol failure. The legacy raw
 `codex-app-server-jsonrpc` method-map path remains fail-closed. A flag that merely
 names either backend is rejected.
+
+For `project_id_source: saved_project_readback`, `thread/start` sends only the
+canonical `cwd` and route parameters; it must not send the Desktop-only
+`projectId`. After creation, the bridge reads the native formal thread id and
+cwd, then joins them to the controller sidecar and the saved-project readback.
+This proves execution at the saved project's canonical cwd, not native
+app-server project membership. Invalid saved-project evidence blocks before
+`thread/start`.
 
 The app-server probe must execute `list_tasks`, formal identity read,
 applied-route read, archive read, and dry-run create/send/archive operations.
 An initialize response or method map alone is not a capability receipt. The
 method map must include a formal `probe_target`.
+
+Routine capability selection reuses that existing probe target. It must never
+create a separate capability-probe task: its create, send, and archive checks
+all use `dry_run: true`. A fresh thread is reserved for an explicitly requested
+live lifecycle qualification. Register it as a run-owned `probe` thread before
+work, then archive and read back `archived: true` in cleanup on every outcome;
+an absent cleanup readback makes that qualification blocked.
 
 Select the native bridge with `--app-server-command "codex app-server --stdio"`
 and `--app-server-metadata <identity.json>`, or reconcile with

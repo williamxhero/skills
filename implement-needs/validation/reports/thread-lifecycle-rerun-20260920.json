@@ -1,0 +1,231 @@
+{
+  "schema_version": 1,
+  "run_id": "qualification-v3-cwd-1789867979",
+  "backend": "app-server-bridge",
+  "project_identity": {
+    "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+    "project_id_source": "saved_project_readback",
+    "canonical_path": "C:\\Users\\will\\.codex\\skills",
+    "evidence": [
+      "codex-app:list_projects:skills"
+    ]
+  },
+  "create": {
+    "formal_thread_id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+    "client_thread_id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+    "host_id": "local",
+    "evidence": [
+      "app-server:thread/start",
+      "app-server:metadata:persisted"
+    ]
+  },
+  "identity_readback": {
+    "formal_thread_id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+    "host_id": "local",
+    "task_id": "v3-cwd-probe-live",
+    "run_id": "qualification-v3-cwd-1789867979",
+    "attempt_id": "01",
+    "owner_id": "qualification-controller",
+    "cwd": "C:\\Users\\will\\.codex\\skills",
+    "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+    "project_id_source": "saved_project_readback",
+    "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+    "project_identity_evidence": [
+      "codex-app:list_projects:skills"
+    ],
+    "client_thread_id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+    "title": "",
+    "lifecycle": "completed",
+    "readback_evidence": [
+      "app-server:thread/read:01a0bc71-f1e1-7ef0-ac1d-23974ef63709"
+    ]
+  },
+  "route_readback": {
+    "model": "gpt-5.6-sol",
+    "effort": "high",
+    "evidence": [
+      "app-server:thread/read:01a0bc71-f1e1-7ef0-ac1d-23974ef63709:route"
+    ]
+  },
+  "list_readback": {
+    "tasks": [],
+    "next_cursor": null
+  },
+  "dry_run": {
+    "create": {
+      "dry_run": true,
+      "evidence": [
+        "app-server:thread/start:dry-run-contract"
+      ]
+    },
+    "send": {
+      "dry_run": true,
+      "evidence": [
+        "app-server:turn/start:dry-run-contract"
+      ]
+    },
+    "archive": {
+      "dry_run": true,
+      "evidence": [
+        "app-server:thread/archive:dry-run-contract"
+      ]
+    }
+  },
+  "turn_start": {
+    "thread_id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+    "turn_id": "01a0bc71-f693-7042-8876-462c0002c657",
+    "evidence": [
+      "app-server:turn/start:01a0bc71-f1e1-7ef0-ac1d-23974ef63709:01a0bc71-f693-7042-8876-462c0002c657"
+    ]
+  },
+  "turn_completed": {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+      "turn": {
+        "id": "01a0bc71-f693-7042-8876-462c0002c657",
+        "items": [
+          {
+            "type": "agentMessage",
+            "id": "msg_0b7418fa06f7275a016aaf37d093a887d084129b9d69ee67a4",
+            "text": "V3_PROBE_READY",
+            "phase": "final_answer",
+            "memoryCitation": null,
+            "delivery": null,
+            "questions": null
+          }
+        ],
+        "itemsView": "summary",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1789867980,
+        "completedAt": 1789867985,
+        "durationMs": 5219
+      }
+    },
+    "emittedAtMs": 1789867985724
+  },
+  "history_read_attempts": [
+    {
+      "kind": "read",
+      "turn_count": 1,
+      "matching_turn": true
+    }
+  ],
+  "final_thread_readback": {
+    "thread": {
+      "id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+      "environments": [
+        {
+          "environmentId": "local",
+          "cwd": "C:\\Users\\will\\.codex\\skills",
+          "runtimeWorkspaceRoots": [
+            "C:\\Users\\will\\.codex\\skills"
+          ]
+        }
+      ],
+      "extra": null,
+      "sessionId": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+      "forkedFromId": null,
+      "parentThreadId": null,
+      "preview": "Reply exactly V3_PROBE_READY. Do not modify files, Git, GitHub, tasks, or external state.",
+      "ephemeral": false,
+      "section": null,
+      "sectionEnteredAt": null,
+      "projectId": null,
+      "historyMode": "paginated",
+      "modelProvider": "CPA",
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high",
+      "createdAt": 1789867979,
+      "updatedAt": 1789867985,
+      "recencyAt": 1789867980,
+      "status": {
+        "type": "idle"
+      },
+      "path": "C:\\Users\\will\\.codex\\sessions\\2026\\09\\20\\rollout-2026-09-20T09-32-59-01a0bc71-f1e1-7ef0-ac1d-23974ef63709.jsonl",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "cliVersion": "0.155.0-alpha.9.2",
+      "originator": "Codex Desktop",
+      "source": "vscode",
+      "canAcceptDirectInput": true,
+      "threadSource": null,
+      "agentNickname": null,
+      "agentRole": null,
+      "gitInfo": {
+        "sha": "706b4088b5115e48d7a9a351b3a0fc34ea29682a",
+        "branch": "master",
+        "originUrl": "https://github.com/williamxhero/skills.git"
+      },
+      "name": null,
+      "daybreakEnabled": null,
+      "turns": [
+        {
+          "id": "01a0bc71-f693-7042-8876-462c0002c657",
+          "items": [
+            {
+              "type": "userMessage",
+              "id": "01a0bc71-fda2-7e90-a878-2a595f15a8c4",
+              "clientId": null,
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Reply exactly V3_PROBE_READY. Do not modify files, Git, GitHub, tasks, or external state.",
+                  "text_elements": []
+                }
+              ]
+            },
+            {
+              "type": "agentMessage",
+              "id": "msg_0b7418fa06f7275a016aaf37d093a887d084129b9d69ee67a4",
+              "text": "V3_PROBE_READY",
+              "phase": "final_answer",
+              "memoryCitation": null,
+              "delivery": null,
+              "questions": null
+            }
+          ],
+          "itemsView": "full",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1789867980,
+          "completedAt": 1789867985,
+          "durationMs": 5219
+        }
+      ]
+    }
+  },
+  "final_identity_readback": {
+    "formal_thread_id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+    "host_id": "local",
+    "task_id": "v3-cwd-probe-live",
+    "run_id": "qualification-v3-cwd-1789867979",
+    "attempt_id": "01",
+    "owner_id": "qualification-controller",
+    "cwd": "C:\\Users\\will\\.codex\\skills",
+    "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+    "project_id_source": "saved_project_readback",
+    "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+    "project_identity_evidence": [
+      "codex-app:list_projects:skills"
+    ],
+    "client_thread_id": "01a0bc71-f1e1-7ef0-ac1d-23974ef63709",
+    "title": "Reply exactly V3_PROBE_READY. Do not modify files, Git, GitHub, tasks, or external state.",
+    "lifecycle": "completed",
+    "readback_evidence": [
+      "app-server:thread/read:01a0bc71-f1e1-7ef0-ac1d-23974ef63709"
+    ]
+  },
+  "archive": {
+    "evidence": [
+      "app-server:thread/archive:01a0bc71-f1e1-7ef0-ac1d-23974ef63709"
+    ]
+  },
+  "archive_readback": {
+    "archived": true,
+    "evidence": [
+      "app-server:thread/list:archived:01a0bc71-f1e1-7ef0-ac1d-23974ef63709"
+    ]
+  },
+  "decision": "allow"
+}

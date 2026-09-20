@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "qualifications": [
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "5a14bf1ab35575201f05a63c569b4f2f84d2f7616778ab057fe8f9e1e97042a2",
+      "harness_digest": "af81641accd0827140487862330411633a7e16be6004513b67b7e617f8d1bbbd",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260920-refresh",
+      "report": "qualification-whole-spec-v1-20260920-refresh/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "d2e3168cbe35a76db150e9d5e33b60b4cf901b29bab183fddaafe0a4f80b3b57",
+      "harness_digest": "26b2d562f8a9db45df0d3e777038248f9c975614891f83e4b73ca3ea6b93ec42",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "report": "qualification-whole-spec-v1-20260920/qualification.json"
+    }
+  ]
+}

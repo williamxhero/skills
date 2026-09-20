@@ -12,6 +12,7 @@ import json
 import shlex
 import subprocess
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -100,6 +101,7 @@ class JsonRpcStdioTransport:
         self.timeout = timeout
         self._lock = threading.Lock()
         self._request_id = 0
+        self.notifications: list[dict[str, Any]] = []
 
     def request(self, method: str, params: Mapping[str, Any] | None = None) -> Any:
         with self._lock:
@@ -123,6 +125,65 @@ class JsonRpcStdioTransport:
                 # Only the response carrying our request id completes this call.
                 if isinstance(response, Mapping) and response.get("id") == self._request_id:
                     return response
+                if isinstance(response, Mapping) and response.get("id") is None:
+                    self._record_notification(response)
+
+    def _record_notification(self, notification: Mapping[str, Any]) -> None:
+        """Retain protocol notifications instead of silently discarding them."""
+        if not hasattr(self, "notifications"):
+            self.notifications = []
+        self.notifications.append(dict(notification))
+
+    @staticmethod
+    def _notification_matches(notification: Mapping[str, Any], method: str,
+                               thread_id: str, turn_id: str) -> bool:
+        if notification.get("method") != method:
+            return False
+        params = notification.get("params")
+        if not isinstance(params, Mapping):
+            return False
+        event_thread = params.get("threadId") or params.get("thread_id")
+        event_turn = params.get("turnId") or params.get("turn_id")
+        turn = params.get("turn")
+        if isinstance(turn, Mapping):
+            event_turn = event_turn or turn.get("id")
+        return event_thread == thread_id and event_turn == turn_id
+
+    def wait_for_notification(self, method: str, *, thread_id: str, turn_id: str,
+                              timeout: float | None = None) -> dict[str, Any]:
+        """Wait for one notification identified by protocol thread and turn IDs.
+
+        Notifications already consumed while waiting for another response remain
+        in the ledger and are checked first.  Unrelated notifications are also
+        retained, so callers can audit the complete event stream.
+        """
+        limit = self.timeout if timeout is None else max(0.0, timeout)
+        deadline = time.monotonic() + limit
+        with self._lock:
+            for notification in getattr(self, "notifications", []):
+                if self._notification_matches(notification, method, thread_id, turn_id):
+                    return notification
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise BackendError(
+                        f"app-server notification timeout: {method} {thread_id}/{turn_id}"
+                    )
+                assert self.process.stdout is not None
+                line = _readline_with_timeout(self.process.stdout, min(self.timeout, remaining))
+                if not line:
+                    raise BackendError("app-server returned no JSON-RPC notification")
+                try:
+                    notification = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise BackendError("app-server returned invalid JSON") from exc
+                if not isinstance(notification, Mapping):
+                    raise BackendError("app-server returned a non-object notification")
+                if notification.get("id") is not None:
+                    raise BackendError("app-server returned a response while awaiting notification")
+                self._record_notification(notification)
+                if self._notification_matches(notification, method, thread_id, turn_id):
+                    return dict(notification)
 
     def close(self) -> None:
         if self.process.poll() is None:
@@ -462,6 +523,9 @@ def create_bootstrap_task(
     owner_id: str | None = None,
     cwd: str | None = None,
     project_id: str | None = None,
+    project_id_source: str | None = None,
+    project_canonical_path: str | None = None,
+    project_identity_evidence: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a task and return creation plus formal identity evidence.
 
@@ -476,6 +540,9 @@ def create_bootstrap_task(
         "attempt_id": task_identity.attempt_id, "title": title,
         "description": description, "model": model, "effort": effort,
         "owner_id": owner_id, "cwd": cwd, "project_id": project_id,
+        "project_id_source": project_id_source,
+        "project_canonical_path": project_canonical_path,
+        "project_identity_evidence": project_identity_evidence,
     }))
     formal = _first(result, "formal_thread_id", "formalThreadId", "thread_id", "threadId")
     host = _first(result, "host_id", "hostId")
@@ -555,6 +622,76 @@ def read_applied_route(backend: TaskBackend | Any, formal_thread_id: str, host_i
 def send_assignment(backend: TaskBackend | Any, formal_thread_id: str, host_id: str, message: str) -> dict[str, Any]:
     result = _mapping(_adapter(backend).call("send_message_to_thread", {"formal_thread_id": formal_thread_id, "host_id": host_id, "message": message}))
     return {**result, "evidence": list(result.get("evidence", [])) + ["assignment_sent"]}
+
+
+def wait_for_turn_completion(backend: TaskBackend | Any, formal_thread_id: str,
+                             host_id: str, turn_id: str, timeout: float | None = None) -> dict[str, Any]:
+    """Wait for the terminal event for exactly one formal thread/turn pair."""
+    adapter = _adapter(backend)
+    waiter = getattr(adapter.transport, "wait_for_turn_completion", None)
+    if callable(waiter):
+        event = waiter(formal_thread_id, turn_id, timeout=timeout)
+    else:
+        event = adapter.call("wait_for_turn_completion", {
+            "formal_thread_id": formal_thread_id, "host_id": host_id,
+            "turn_id": turn_id, "timeout": timeout,
+        })
+    result = _mapping(event)
+    params = result.get("params", result)
+    if not isinstance(params, Mapping):
+        raise BackendError("turn completion event has no params")
+    event_thread = _first(params, "threadId", "thread_id")
+    event_turn = _first(params, "turnId", "turn_id")
+    turn = params.get("turn")
+    if isinstance(turn, Mapping):
+        event_turn = event_turn or _first(turn, "id", "turnId")
+    if event_thread != formal_thread_id or event_turn != turn_id:
+        raise BackendError("turn completion event identity mismatch")
+    return result
+
+
+def read_persisted_history(backend: TaskBackend | Any, formal_thread_id: str,
+                           host_id: str, turn_id: str) -> dict[str, Any]:
+    """Read persisted history and require the requested turn when turns are exposed."""
+    adapter = _adapter(backend)
+    reader = getattr(adapter.transport, "read_history", None)
+    if callable(reader):
+        result = reader(formal_thread_id, turn_id)
+    elif adapter.name == APP_SERVER:
+        # ``thread/read`` is already capability-probed as the read-thread
+        # operation.  Direct app-server mode has no separate history method;
+        # request the same formal read with turns included.
+        method = adapter.method_map.get("read_thread") if adapter.method_map else None
+        if not method:
+            raise ProtocolError("app-server history read is not capability-probed")
+        raw = adapter.transport.request(method, {"threadId": formal_thread_id, "includeTurns": True})
+        result = raw.get("result", raw) if isinstance(raw, Mapping) else raw
+    else:
+        result = adapter.call("read_history", {"formal_thread_id": formal_thread_id,
+                                                "host_id": host_id, "turn_id": turn_id})
+    result = _mapping(result)
+    turns = result.get("turns")
+    if isinstance(turns, list) and not any(isinstance(item, Mapping) and item.get("id") == turn_id for item in turns):
+        raise BackendError("persisted history does not contain the requested turn")
+    return {**result, "history_evidence": list(result.get("evidence", [])) + ["persisted_history_readback"]}
+
+
+def send_managed_turn(backend: TaskBackend | Any, formal_thread_id: str, host_id: str,
+                      message: str, *, timeout: float | None = None,
+                      wait: bool = True) -> dict[str, Any]:
+    """Send once, retain the formal turn id, and optionally complete the lifecycle."""
+    result = send_assignment(backend, formal_thread_id, host_id, message)
+    turn_id = _first(result, "turn_id", "turnId")
+    if not isinstance(turn_id, str) or not turn_id.strip():
+        raise BackendError("managed turn response has no formal turn id")
+    output = {"thread_id": formal_thread_id, "host_id": host_id,
+              "turn_id": turn_id, "send": result}
+    if wait:
+        completion = wait_for_turn_completion(backend, formal_thread_id, host_id, turn_id, timeout)
+        history = read_persisted_history(backend, formal_thread_id, host_id, turn_id)
+        output.update({"completion": completion, "history": history,
+                       "execution_evidence": ["turn_completion", "persisted_history"]})
+    return output
 
 
 def archive_task(backend: TaskBackend | Any, formal_thread_id: str, host_id: str) -> dict[str, Any]:

@@ -30,9 +30,18 @@ Use `scripts/app_server_bridge.py` for the native fallback. It reads actual
 app-server thread records and a controller-owned identity metadata sidecar. Since the
 app-server does not natively provide task/run/attempt/owner identity, a thread is
 usable only when the sidecar supplies those fields and agrees with native thread id,
-cwd, and project id. The bridge ignores asynchronous JSON-RPC notifications while it
-waits for the matching response. A title token remains a discovery index, not an
-identity substitute.
+cwd, and project id. The bridge retains asynchronous JSON-RPC notifications while it
+waits for the matching response. After `turn/start`, it preserves the returned
+`turn_id` and waits for the matching `turn/completed` event by formal
+`threadId + turnId`. A title token remains a discovery index, not an identity
+substitute.
+
+When the sidecar has `project_id_source: saved_project_readback`, use the saved
+project's verified canonical cwd but omit `projectId` from `thread/start`; a
+standalone app-server process may not recognize Desktop's saved-project registry.
+After creation, require native thread id/cwd and route readbacks plus the non-empty
+saved-project evidence. Record this as controller saved-project identity, never as
+native app-server project membership.
 
 For an existing thread, enrollment is an explicit `adopt_thread` operation. It may
 write the sidecar only after a native `thread/read` proves the formal id, cwd, and
@@ -40,13 +49,24 @@ project id. It cannot repair a thread whose native `projectId` is null, and it c
 invent task/run/attempt/owner values. Those are external facts that must already be
 present in the controller registry or an authenticated task-management readback.
 
-The normal lifecycle is:
+Routine backend selection is read-only against an existing managed probe target
+apart from `dry_run` mutation checks. It does not create a capability-probe
+thread. An explicitly requested live lifecycle qualification uses this lifecycle:
 
 ```text
 probe -> create fresh thread -> read applied route -> route receipt allow
--> start turn -> read status/handoff -> independent verification
--> final thread read -> persist app-server archive record
+-> start turn -> await matching `turn/completed` -> bounded persisted-history read
+-> independent output verification -> final thread read -> archive -> archive readback
+
+Register the fresh qualification thread as a run-owned `probe` before it starts.
+Its cleanup runs after success or failure; `archived: true` from a fresh archive
+readback is required before the receipt can be `allow`.
 ```
+
+The first persisted-history read may be empty, or may return the known transient
+`rollout is empty` error. Retry only that condition for a bounded interval and retain
+the attempt evidence. A persistent empty history or any unrelated error is a
+fail-closed qualification failure.
 
 Planning has one fresh planning thread. Each SPEC has exactly one fresh implementation
 thread owning all of its tickets. Never create a ticket implementation thread, reuse a

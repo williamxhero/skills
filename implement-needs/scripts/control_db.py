@@ -22,7 +22,7 @@ from run_state import (
 
 # Bump when the threads identity columns change; migrations stay additive so an
 # existing run database keeps every audit record it already holds.
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # Identity columns added by schema version 2. The legacy ``thread_id`` column is
 # retained and reinterpreted as the current backend thread id.
@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS recovery_records(intent_id INTEGER PRIMARY KEY REFERE
 CREATE TABLE IF NOT EXISTS events(event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL, business_version INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS recovery_states(recovery_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), action_id INTEGER NOT NULL REFERENCES actions(action_id), category TEXT NOT NULL, fingerprint TEXT NOT NULL, retry_owner TEXT NOT NULL, budget_version TEXT NOT NULL, max_attempts INTEGER NOT NULL, deadline_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_strategy_digest TEXT NOT NULL, last_progress_marker TEXT NOT NULL, last_evidence_digest TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(action_id,fingerprint));
+CREATE TABLE IF NOT EXISTS managed_turns(turn_key TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, formal_thread_id TEXT NOT NULL, host_id TEXT NOT NULL, turn_id TEXT NOT NULL, previous_turn_id TEXT, operation_intent_id INTEGER REFERENCES operation_intents(intent_id), failure_class TEXT NOT NULL, status TEXT NOT NULL, checkpoint TEXT NOT NULL DEFAULT '{}', terminal_event TEXT NOT NULL DEFAULT '{}', history_readback TEXT NOT NULL DEFAULT '{}', output_evidence TEXT NOT NULL DEFAULT '[]', side_effect_evidence TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(formal_thread_id,turn_id));
 CREATE TABLE IF NOT EXISTS runtime_snapshots(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), state_version INTEGER NOT NULL, event_cursor INTEGER NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS unresolved_exceptions(exception_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), fingerprint TEXT NOT NULL, category TEXT NOT NULL, summary TEXT NOT NULL, log_uri TEXT, details TEXT NOT NULL DEFAULT '{}', resolved INTEGER NOT NULL DEFAULT 0, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(run_id,fingerprint));
 CREATE TABLE IF NOT EXISTS terminal_validations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), state_version INTEGER NOT NULL, decision TEXT NOT NULL, evidence TEXT NOT NULL, validated_at TEXT NOT NULL);
@@ -348,6 +349,8 @@ class ControlDB:
         for table in ("recovery_states", "runtime_snapshots", "unresolved_exceptions", "terminal_validations"):
             if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                 raise DatabaseModeError(f"database schema lacks {table} table")
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_turns'").fetchone():
+            raise DatabaseModeError("database schema lacks managed_turns table")
         run_columns = {item[1] for item in self.conn.execute("PRAGMA table_info(runs)")}
         if not {"run_phase", "terminal_result", "stop_reason", "recovery_action"}.issubset(run_columns):
             raise DatabaseModeError("database schema lacks run lifecycle columns")
@@ -404,6 +407,7 @@ class ControlDB:
                 self.conn.execute("ALTER TABLE events ADD COLUMN business_version INTEGER NOT NULL DEFAULT 0")
             self.conn.execute("CREATE TABLE IF NOT EXISTS observations(observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, payload TEXT NOT NULL, observed_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS recovery_states(recovery_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), action_id INTEGER NOT NULL REFERENCES actions(action_id), category TEXT NOT NULL, fingerprint TEXT NOT NULL, retry_owner TEXT NOT NULL, budget_version TEXT NOT NULL, max_attempts INTEGER NOT NULL, deadline_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_strategy_digest TEXT NOT NULL, last_progress_marker TEXT NOT NULL, last_evidence_digest TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(action_id,fingerprint))")
+            self.conn.execute("CREATE TABLE IF NOT EXISTS managed_turns(turn_key TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, formal_thread_id TEXT NOT NULL, host_id TEXT NOT NULL, turn_id TEXT NOT NULL, previous_turn_id TEXT, operation_intent_id INTEGER REFERENCES operation_intents(intent_id), failure_class TEXT NOT NULL, status TEXT NOT NULL, checkpoint TEXT NOT NULL DEFAULT '{}', terminal_event TEXT NOT NULL DEFAULT '{}', history_readback TEXT NOT NULL DEFAULT '{}', output_evidence TEXT NOT NULL DEFAULT '[]', side_effect_evidence TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(formal_thread_id,turn_id))")
             self.conn.execute("CREATE TABLE IF NOT EXISTS runtime_snapshots(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), state_version INTEGER NOT NULL, event_cursor INTEGER NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
             self.conn.execute("CREATE TABLE IF NOT EXISTS unresolved_exceptions(exception_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL REFERENCES runs(run_id), fingerprint TEXT NOT NULL, category TEXT NOT NULL, summary TEXT NOT NULL, log_uri TEXT, details TEXT NOT NULL DEFAULT '{}', resolved INTEGER NOT NULL DEFAULT 0, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(run_id,fingerprint))")
             self.conn.execute("CREATE TABLE IF NOT EXISTS terminal_validations(run_id TEXT PRIMARY KEY REFERENCES runs(run_id), state_version INTEGER NOT NULL, decision TEXT NOT NULL, evidence TEXT NOT NULL, validated_at TEXT NOT NULL)")
@@ -1154,6 +1158,63 @@ class ControlDB:
             self.conn.execute("UPDATE recovery_records SET consumed=consumed+1,last_evidence=?,updated_at=? WHERE intent_id=?", (json.dumps(evidence, ensure_ascii=False, sort_keys=True) if evidence is not None else None, now(), intent_id))
             version = self._business_event(row[0], "intent", str(intent_id), "recovery_attempt_recorded", {"classification": classification, "owner": owner, "remaining": budget - consumed - 1})
             return {"intent_id": intent_id, "status": "active", "remaining": budget - consumed - 1, "business_version": version}
+
+    def record_managed_turn(self, run_id, identity, failure_class, status="started",
+                            *, previous_turn_id=None, operation_intent_id=None,
+                            checkpoint=None, terminal_event=None, history_readback=None,
+                            output_evidence=None, side_effect_evidence=None):
+        """Persist one formal turn receipt; repeated writes are idempotent."""
+        required = ("task_id", "attempt_id", "formal_thread_id", "host_id", "turn_id")
+        if not isinstance(identity, dict) or any(not isinstance(identity.get(k), str) or not identity[k].strip() for k in required):
+            raise ValueError("managed turn requires formal task, thread, host and turn identity")
+        if not isinstance(failure_class, str) or not failure_class.strip() or not isinstance(status, str) or not status.strip():
+            raise ValueError("managed turn class and status are required")
+        turn_key = f"{run_id}:{identity['formal_thread_id']}:{identity['turn_id']}"
+        values = {
+            "checkpoint": checkpoint or {}, "terminal_event": terminal_event or {},
+            "history_readback": history_readback or {}, "output_evidence": output_evidence or [],
+            "side_effect_evidence": side_effect_evidence or [],
+        }
+        with self.transaction():
+            existing = self.conn.execute("SELECT * FROM managed_turns WHERE turn_key=?", (turn_key,)).fetchone()
+            if existing:
+                if (existing["run_id"], existing["formal_thread_id"], existing["turn_id"]) != (run_id, identity["formal_thread_id"], identity["turn_id"]):
+                    raise ValueError("managed turn key conflicts with existing identity")
+                return {"turn": dict(existing), "created": False}
+            stamp = now()
+            self.conn.execute(
+                "INSERT INTO managed_turns(turn_key,run_id,task_id,attempt_id,formal_thread_id,host_id,turn_id,previous_turn_id,operation_intent_id,failure_class,status,checkpoint,terminal_event,history_readback,output_evidence,side_effect_evidence,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (turn_key, run_id, identity["task_id"], identity["attempt_id"], identity["formal_thread_id"], identity["host_id"], identity["turn_id"], previous_turn_id, operation_intent_id, failure_class, status, json.dumps(values["checkpoint"], ensure_ascii=False, sort_keys=True), json.dumps(values["terminal_event"], ensure_ascii=False, sort_keys=True), json.dumps(values["history_readback"], ensure_ascii=False, sort_keys=True), json.dumps(values["output_evidence"], ensure_ascii=False, sort_keys=True), json.dumps(values["side_effect_evidence"], ensure_ascii=False, sort_keys=True), stamp, stamp),
+            )
+            self._business_event(run_id, "managed_turn", turn_key, "managed_turn_recorded", {"turn_id": identity["turn_id"], "failure_class": failure_class, "status": status})
+            return {"turn": dict(self.conn.execute("SELECT * FROM managed_turns WHERE turn_key=?", (turn_key,)).fetchone()), "created": True}
+
+    def update_managed_turn(self, run_id, formal_thread_id, turn_id, *, failure_class=None,
+                            status=None, terminal_event=None, history_readback=None,
+                            output_evidence=None, side_effect_evidence=None, checkpoint=None):
+        turn_key = f"{run_id}:{formal_thread_id}:{turn_id}"
+        with self.transaction():
+            row = self.conn.execute("SELECT * FROM managed_turns WHERE turn_key=?", (turn_key,)).fetchone()
+            if row is None:
+                raise ValueError("unknown managed turn")
+            updates = {
+                "failure_class": failure_class if failure_class is not None else row["failure_class"],
+                "status": status if status is not None else row["status"],
+                "terminal_event": terminal_event if terminal_event is not None else json.loads(row["terminal_event"]),
+                "history_readback": history_readback if history_readback is not None else json.loads(row["history_readback"]),
+                "output_evidence": output_evidence if output_evidence is not None else json.loads(row["output_evidence"]),
+                "side_effect_evidence": side_effect_evidence if side_effect_evidence is not None else json.loads(row["side_effect_evidence"]),
+                "checkpoint": checkpoint if checkpoint is not None else json.loads(row["checkpoint"]),
+            }
+            self.conn.execute("UPDATE managed_turns SET failure_class=?,status=?,terminal_event=?,history_readback=?,output_evidence=?,side_effect_evidence=?,checkpoint=?,updated_at=? WHERE turn_key=?", (updates["failure_class"], updates["status"], json.dumps(updates["terminal_event"], ensure_ascii=False, sort_keys=True), json.dumps(updates["history_readback"], ensure_ascii=False, sort_keys=True), json.dumps(updates["output_evidence"], ensure_ascii=False, sort_keys=True), json.dumps(updates["side_effect_evidence"], ensure_ascii=False, sort_keys=True), json.dumps(updates["checkpoint"], ensure_ascii=False, sort_keys=True), now(), turn_key))
+            self._business_event(run_id, "managed_turn", turn_key, "managed_turn_updated", {"turn_id": turn_id, "failure_class": updates["failure_class"], "status": updates["status"]})
+            return dict(self.conn.execute("SELECT * FROM managed_turns WHERE turn_key=?", (turn_key,)).fetchone())
+
+    def managed_turn(self, run_id, formal_thread_id, turn_id):
+        row = self.conn.execute("SELECT * FROM managed_turns WHERE turn_key=? AND run_id=?", (f"{run_id}:{formal_thread_id}:{turn_id}", run_id)).fetchone()
+        if row is None:
+            raise ValueError("unknown managed turn")
+        return dict(row)
 
     def set_action(self,run_id,kind,target,status="pending",expected_version=None):
         with self.transaction():

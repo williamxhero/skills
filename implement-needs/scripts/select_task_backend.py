@@ -7,6 +7,7 @@ import shlex
 from pathlib import Path
 
 from task_backend import (
+    BackendError,
     JsonLineTransport,
     JsonRpcStdioTransport,
     McpStdioTransport,
@@ -85,7 +86,7 @@ def main() -> int:
         payload = {"schema_version": 2, **result,
                    "evidence": result.get("capability_evidence", []), "decision": "allow"}
         code = 0
-    except (OSError, UnicodeError, json.JSONDecodeError, ProtocolError, ValueError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, ProtocolError, BackendError, ValueError) as exc:
         payload = {"schema_version": 2, "backend": "unblock-development",
                    "evidence": ["all_task_backends:unavailable", str(exc)], "decision": "repair"}
         code = 1
