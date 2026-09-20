@@ -57,12 +57,12 @@ def _phase_action(db: ControlDB, run_id: str, run) -> dict | None:
         return {"kind": "enter_implementation", "target": run_id, "phase": "planning"}
     return None
 
-def next_action(db: ControlDB, run_id: str) -> dict:
+def next_action(db: ControlDB, run_id: str, *, include_recovery: bool = True) -> dict:
     # This is a read-only signal.  The dispatch/advance entrypoint materializes
     # it through controller_recovery.reconcile_controller_interruption before
     # any external mutation.
     from controller_recovery import lost_wakeup_candidate
-    if lost_wakeup_candidate(db, run_id):
+    if include_recovery and lost_wakeup_candidate(db, run_id):
         return {"kind": "controller_interrupted", "target": run_id,
                 "reason": "completed_spec_without_persisted_next_action"}
     unknown = db.conn.execute("SELECT intent_id,target FROM operation_intents WHERE run_id=? AND status='outcome_unknown' ORDER BY intent_id LIMIT 1", (run_id,)).fetchone()

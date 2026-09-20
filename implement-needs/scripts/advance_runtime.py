@@ -74,16 +74,16 @@ def _pending_local_action(db, action):
     return action
 
 
-def advance(db: ControlDB, run_id: str, max_actions=32):
+def advance(db: ControlDB, run_id: str, max_actions=32, *, include_recovery: bool = True):
     """Execute deterministic local transitions and stop at the first boundary."""
     if not isinstance(max_actions, int) or isinstance(max_actions, bool) or max_actions < 1:
         raise ValueError("max_actions must be a positive integer")
     processed = []
     from controller_recovery import lost_wakeup_candidate, reconcile_controller_interruption
-    if lost_wakeup_candidate(db, run_id):
+    if include_recovery and lost_wakeup_candidate(db, run_id):
         reconcile_controller_interruption(db, run_id, reason="completed_spec_without_persisted_next_action")
     for _ in range(max_actions):
-        action = next_action(db, run_id)
+        action = next_action(db, run_id, include_recovery=include_recovery)
         # Legacy runs may not have completed the newer preflight phase.  Keep
         # deterministic local SPEC promotion available, but never infer a
         # semantic ticketing or external mutation from this compatibility path.

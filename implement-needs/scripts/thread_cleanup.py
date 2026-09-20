@@ -1,6 +1,7 @@
 """Evidence-first cleanup for run-owned helper threads."""
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 
@@ -29,7 +30,7 @@ def classify_inventory(*, run_id: str, registry: list[Mapping[str, Any]], host_t
         lifecycle = (task or {}).get("lifecycle") or (task or {}).get("status")
         if lifecycle in NON_TERMINAL_OBSERVATIONS and row.get("kind") not in PROTECTED_KINDS:
             stale.append({"thread_id": row.get("thread_id"), "formal_thread_id": key[0], "host_id": key[1], "lifecycle": lifecycle})
-    return {"decision": "allow" if not orphan_registry and not orphan_host else "repair",
+    return {"decision": "allow" if not orphan_registry and not orphan_host and not stale else "repair",
             "registry_absent_from_host": orphan_registry, "host_unregistered": orphan_host,
             "stale": stale, "run_id": run_id,
             "evidence": ["formal_thread_id+host_id:inventory"]}
@@ -81,6 +82,18 @@ def record_cleanup_receipt(db, run_id: str, receipt: Mapping[str, Any]) -> dict[
     row = db.conn.execute("SELECT run_id FROM threads WHERE thread_id=?", (thread_id,)).fetchone()
     if row is None or row[0] != run_id:
         raise CleanupError("cleanup thread is not run-owned")
+    existing = db.conn.execute(
+        "SELECT lifecycle,archive_readback_evidence FROM threads WHERE thread_id=? AND run_id=?",
+        (thread_id, run_id),
+    ).fetchone()
+    if existing and existing[0] == "archived":
+        try:
+            readbacks = json.loads(existing[1] or "[]")
+        except (TypeError, ValueError):
+            readbacks = []
+        if any(isinstance(item, Mapping) and item.get("archived") is True for item in readbacks):
+            return {"thread_id": thread_id, "status": "archived", "created": False,
+                    "registry_transition": "already_archived", "evidence": receipt["evidence"]}
     version = db.business_version(run_id)
     gate = {"schema_version": 1,
             "expected": {"run_id": run_id, "target_id": thread_id, "candidate_sha": "cleanup",
@@ -92,4 +105,5 @@ def record_cleanup_receipt(db, run_id: str, receipt: Mapping[str, Any]) -> dict[
             "archive_operation": True, "archive_readback": True}
     db.update_thread(run_id, thread_id, "archived", outcome="cleanup_verified",
                      operation=receipt["operation"], readback=receipt["archive_readback"], gate=gate)
-    return {"thread_id": thread_id, "status": "archived", "evidence": receipt["evidence"]}
+    return {"thread_id": thread_id, "status": "archived", "created": True,
+            "registry_transition": "archived", "evidence": receipt["evidence"]}

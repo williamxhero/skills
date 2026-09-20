@@ -40,7 +40,9 @@ class QualificationContractTests(unittest.TestCase):
             "project_identity_receipt": {"project_id": "project-1", "canonical_path": "C:/skills"},
             "logical_id_to_external_id_map": {f"item-{index}": f"external-{index}" for index in range(20)},
             "artifact_counts": EXPECTED_COUNTS,
-            "recovery_results": {key: "passed" for key in ("planning_restart", "ticket_restart", "assignment_restart", "merge_before_archive_restart", "release_restart", "lost_response", "idempotency_retry", "controller_interrupted", "capacity_fallback", "stream_disconnect", "uncertain_side_effect")},
+            "recovery_results": {key: {"detected": True, "executed": True} for key in ("planning_restart", "ticket_restart", "assignment_restart", "merge_before_archive_restart", "release_restart", "lost_response", "idempotency_retry", "controller_interrupted", "capacity_fallback", "stream_disconnect", "uncertain_side_effect")},
+            "recovery_evidence": {"detection": ["recovery://detected"], "execution": ["recovery://executed"]},
+            "final_frontier": {"successor_reached": True, "spec_id": "SPEC-3"},
             "release_train_receipts": {level: "passed" for level in ("L0", "L1", "L2", "L3", "L4", "L5")},
             "backend_capability_receipt": {
                 "capabilities": ["create_thread", "list_tasks", "read_thread", "read_applied_route", "send_message_to_thread", "set_thread_archived", "read_archive_state"],
@@ -55,7 +57,7 @@ class QualificationContractTests(unittest.TestCase):
                 ],
             },
             "repository_sync_receipt": {"local_remote_head_equal": True},
-            "cleanup_receipt": {"complete": True, "receipts": [{"archive_readback": {"archived": True}}]},
+            "cleanup_receipt": {"complete": True, "receipts": [{"archive_readback": {"archived": True}, "registry_transition": "archived"}]},
             "route_visibility_receipt": {"planned": {"model": "gpt-5.6-sol", "effort": "high"}, "applied": {"model": "gpt-5.6-sol", "effort": "high"}, "executed": {"turn_id": "turn-1"}, "identity_consistent": True},
             "controller_lifecycle_receipt": {"continuation_persisted": True, "watchdog_tested": True, "cleanup_readback_verified": True},
         }
@@ -112,6 +114,27 @@ class QualificationContractTests(unittest.TestCase):
         report["route_visibility_receipt"]["executed"] = {}
         result = verify_report(report, self.scenario)
         self.assertIn("route_executed_evidence_unavailable", result["reasons"])
+
+    def test_recovery_detection_without_execution_cannot_qualify(self) -> None:
+        report = self.valid_report()
+        report["recovery_results"]["controller_interrupted"] = {"detected": True, "executed": False}
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("recovery_controller_interrupted_execution_missing", result["reasons"])
+
+    def test_legacy_passed_string_cannot_replace_recovery_execution_evidence(self) -> None:
+        report = self.valid_report()
+        report["recovery_results"]["controller_interrupted"] = "passed"
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("recovery_controller_interrupted_evidence_missing", result["reasons"])
+
+    def test_duplicate_formal_task_identity_is_rejected(self) -> None:
+        report = self.valid_report()
+        report["task_census"]["tasks"][1]["formal_thread_id"] = report["task_census"]["tasks"][0]["formal_thread_id"]
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("duplicate_task_identity", result["reasons"])
 
     def test_digest_excludes_report_output_but_not_subject_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

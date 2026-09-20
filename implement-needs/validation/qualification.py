@@ -20,6 +20,7 @@ REQUIRED_TASK_IDENTITY = ("formal_thread_id", "host_id", "project_id", "cwd")
 REQUIRED_REPORT_FIELDS = (
     "scenario_version", "skill_digest", "harness_digest", "project_identity_receipt",
     "logical_id_to_external_id_map", "artifact_counts", "recovery_results",
+    "recovery_evidence", "final_frontier",
     "release_train_receipts", "task_census", "repository_sync_receipt", "cleanup_receipt",
     "backend_capability_receipt", "route_visibility_receipt", "controller_lifecycle_receipt",
 )
@@ -186,6 +187,40 @@ def lifecycle_errors(receipt: Any) -> list[str]:
     return [f"lifecycle_{field}_missing" for field in required if receipt.get(field) is not True]
 
 
+def recovery_errors(results: Any, evidence: Any, frontier: Any) -> list[str]:
+    """Require execution evidence, not merely a detected recovery condition."""
+    required = {"planning_restart", "ticket_restart", "assignment_restart",
+                "merge_before_archive_restart", "release_restart", "lost_response",
+                "idempotency_retry", "controller_interrupted", "capacity_fallback",
+                "stream_disconnect", "uncertain_side_effect"}
+    errors: list[str] = []
+    if not isinstance(results, dict) or not all(key in results for key in required):
+        errors.append("recovery_matrix_incomplete")
+    else:
+        for key in sorted(required):
+            value = results[key]
+            if isinstance(value, str):
+                errors.append(f"recovery_{key}_evidence_missing")
+                continue
+            if not isinstance(value, dict):
+                errors.append(f"recovery_{key}_evidence_missing")
+                continue
+            if value.get("detected") is not True:
+                errors.append(f"recovery_{key}_detection_missing")
+            if value.get("executed") is not True:
+                errors.append(f"recovery_{key}_execution_missing")
+    if not isinstance(evidence, dict):
+        errors.append("recovery_evidence_missing")
+    else:
+        if not isinstance(evidence.get("detection"), list) or not evidence["detection"]:
+            errors.append("recovery_detection_receipt_missing")
+        if not isinstance(evidence.get("execution"), list) or not evidence["execution"]:
+            errors.append("recovery_execution_receipt_missing")
+    if not isinstance(frontier, dict) or frontier.get("successor_reached") is not True:
+        errors.append("recovery_successor_not_reached")
+    return errors
+
+
 def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str, Any]:
     """Independently decide whether an externally collected report is qualified."""
     reasons = scenario_errors(scenario)
@@ -203,11 +238,16 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     expected_kinds = {"grill": 1, "planning": 1, "spec": 3}
     task_rows = tasks.get("tasks") if isinstance(tasks, dict) else None
     actual_kinds: dict[str, int] = {}
+    identities: set[tuple[str, str]] = set()
     if isinstance(task_rows, list):
         for task in task_rows:
             if isinstance(task, dict):
                 actual_kinds[task.get("kind")] = actual_kinds.get(task.get("kind"), 0) + 1
                 reasons.extend(task_identity_errors(task))
+                identity = (task.get("formal_thread_id"), task.get("host_id"))
+                if identity in identities:
+                    reasons.append("duplicate_task_identity")
+                identities.add(identity)
     if (not _is_true(tasks, "all_archived") or not _is_true(tasks, "no_orphans")
             or actual_kinds != expected_kinds):
         reasons.append("task_census_incomplete")
@@ -220,13 +260,7 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     elif not cleanup.get("receipts") or any(not isinstance(item, dict) or item.get("archive_readback", {}).get("archived") is not True
                                              for item in cleanup.get("receipts", [])):
         reasons.append("cleanup_readback_missing")
-    recoveries = report.get("recovery_results")
-    required_recoveries = {"planning_restart", "ticket_restart", "assignment_restart",
-                           "merge_before_archive_restart", "release_restart", "lost_response",
-                           "idempotency_retry", "controller_interrupted", "capacity_fallback",
-                           "stream_disconnect", "uncertain_side_effect"}
-    if not isinstance(recoveries, dict) or not all(recoveries.get(key) == "passed" for key in required_recoveries):
-        reasons.append("recovery_matrix_incomplete")
+    reasons.extend(recovery_errors(report.get("recovery_results"), report.get("recovery_evidence"), report.get("final_frontier")))
     release = report.get("release_train_receipts")
     if not isinstance(release, dict) or not all(release.get(level) == "passed" for level in ("L0", "L1", "L2", "L3", "L4", "L5")):
         reasons.append("release_train_incomplete")
