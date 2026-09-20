@@ -1271,13 +1271,30 @@ class ControlDB:
         return dict(claim)
     def finish_action(self,action_id,status,result=None,error=None,expected_version=None,gate=None):
         with self.transaction():
-            row=self.conn.execute("SELECT run_id FROM actions WHERE action_id=?",(action_id,)).fetchone()
+            row=self.conn.execute("SELECT run_id,kind,target FROM actions WHERE action_id=?",(action_id,)).fetchone()
             if row is None: raise ValueError("unknown action")
             run_id=row[0]; self._check_version(run_id, expected_version)
             if status == "succeeded":
                 verify_terminal_contract(gate, entity_type="action", run_id=run_id, target_id=str(action_id), expected_version=self.business_version(run_id))
                 self._record_verified_gate(run_id, "action", str(action_id), gate)
             self.conn.execute("UPDATE actions SET status=?,result=?,error=?,attempts=attempts+1,updated_at=? WHERE action_id=?",(status,json.dumps(result,ensure_ascii=False) if result is not None else None,error,now(),action_id))
+            current = self.conn.execute("SELECT current_action,recovery_action FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            action_ref = f"{row[1]}:{row[2]}"
+            if status in {"succeeded", "cancelled"} and current is not None:
+                self.conn.execute(
+                    "UPDATE runs SET current_action=CASE WHEN current_action=? THEN NULL ELSE current_action END, "
+                    "recovery_action=CASE WHEN recovery_action=? THEN NULL ELSE recovery_action END, updated_at=? WHERE run_id=?",
+                    (action_ref, row[1], now(), run_id),
+                )
+            elif status == "blocked" and current is not None:
+                # A blocked recovery remains resumable, but no longer owns the
+                # active execution slot.  The recovery kind is the durable
+                # resume intent and is intentionally retained.
+                self.conn.execute(
+                    "UPDATE runs SET current_action=CASE WHEN current_action=? THEN NULL ELSE current_action END, "
+                    "recovery_action=COALESCE(recovery_action,?), updated_at=? WHERE run_id=?",
+                    (action_ref, row[1], now(), run_id),
+                )
             self._business_event(run_id,"action",str(action_id),"action_finished",{"status":status,"result":result,"error":error})
     def add_spec(self,run_id,spec_id,title,position,blocked_by=None,acceptance=None,expected_version=None):
         with self.transaction():
