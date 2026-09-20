@@ -1,0 +1,82 @@
+{
+  "run_id": "qualification-whole-spec-v1-20260920",
+  "all_archived": true,
+  "no_orphans": true,
+  "tasks": [
+    {
+      "kind": "grill",
+      "task_id": "qualification-grill-grill",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "formal_thread_id": "01a0bc43-7ce4-7c10-acd3-ff395a47b9ea",
+      "host_id": "local",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "route": {"model": "gpt-5.6-sol", "effort": "high"},
+      "turn_id": "01a0bc43-8224-79d2-b792-8c2be933f97b",
+      "turn_completed": true,
+      "archive_readback": true
+    },
+    {
+      "kind": "planning",
+      "task_id": "qualification-planning-planning",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "formal_thread_id": "01a0bc43-a239-7382-8698-bdbda233311b",
+      "host_id": "local",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "route": {"model": "gpt-5.6-sol", "effort": "high"},
+      "turn_id": "01a0bc43-a693-7da1-be6c-de663b49e945",
+      "turn_completed": true,
+      "archive_readback": true
+    },
+    {
+      "kind": "spec",
+      "task_id": "qualification-spec-spec-1",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "formal_thread_id": "01a0bc43-be0e-7b21-9e71-4ea0afbd8d77",
+      "host_id": "local",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "route": {"model": "gpt-5.6-sol", "effort": "high"},
+      "turn_id": "01a0bc43-c297-70b3-9132-e81136dc6807",
+      "turn_completed": true,
+      "archive_readback": true
+    },
+    {
+      "kind": "spec",
+      "task_id": "qualification-spec-spec-2",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "formal_thread_id": "01a0bc43-da75-7a83-bc55-9d0b70f8baaf",
+      "host_id": "local",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "route": {"model": "gpt-5.6-sol", "effort": "high"},
+      "turn_id": "01a0bc43-df4e-7cb3-ad83-c49414cf3583",
+      "turn_completed": true,
+      "archive_readback": true
+    },
+    {
+      "kind": "spec",
+      "task_id": "qualification-spec-spec-3",
+      "run_id": "qualification-whole-spec-v1-20260920",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "formal_thread_id": "01a0bc44-035c-7193-95f2-fd550c5a572b",
+      "host_id": "local",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "route": {"model": "gpt-5.6-sol", "effort": "high"},
+      "turn_id": "01a0bc44-07ac-73a0-83fa-244bb9a87a2d",
+      "turn_completed": true,
+      "archive_readback": true
+    }
+  ]
+}

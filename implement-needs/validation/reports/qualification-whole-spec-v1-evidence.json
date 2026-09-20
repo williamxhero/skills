@@ -1,0 +1,105 @@
+{
+  "run_id": "qualification-whole-spec-v1-20260920",
+  "scenario_version": "whole-spec-v1",
+  "artifact_counts": {
+    "umbrella_specs": 1,
+    "child_specs": 3,
+    "tickets": 8,
+    "grill_tasks": 1,
+    "planning_tasks": 1,
+    "spec_tasks": 3,
+    "spec_pull_requests": 3,
+    "ticket_implementation_artifacts": 0
+  },
+  "logical_id_to_external_id_map": {
+    "umbrella-SPEC": "github:issue:110",
+    "SPEC-1": "github:issue:111",
+    "SPEC-2": "github:issue:112",
+    "SPEC-3": "github:issue:113",
+    "ticket-event-model": "github:issue:114",
+    "ticket-schema": "github:issue:115",
+    "ticket-repository": "github:issue:116",
+    "ticket-add": "github:issue:117",
+    "ticket-list": "github:issue:118",
+    "ticket-filter": "github:issue:119",
+    "ticket-export": "github:issue:120",
+    "ticket-http-smoke": "github:issue:121",
+    "task-grill": "formal-thread:01a0bc43-7ce4-7c10-acd3-ff395a47b9ea",
+    "task-planning": "formal-thread:01a0bc43-a239-7382-8698-bdbda233311b",
+    "task-SPEC-1": "formal-thread:01a0bc43-be0e-7b21-9e71-4ea0afbd8d77",
+    "task-SPEC-2": "formal-thread:01a0bc43-da75-7a83-bc55-9d0b70f8baaf",
+    "task-SPEC-3": "formal-thread:01a0bc44-035c-7193-95f2-fd550c5a572b",
+    "PR-SPEC-1": "https://github.com/williamxhero/qualification-event-ledger-20260920/pull/1",
+    "PR-SPEC-2": "https://github.com/williamxhero/qualification-event-ledger-20260920/pull/2",
+    "PR-SPEC-3": "https://github.com/williamxhero/qualification-event-ledger-20260920/pull/3"
+  },
+  "github_readbacks": {
+    "umbrella_state": "github:issue:110:state=CLOSED",
+    "spec_states": ["github:issue:111:state=CLOSED", "github:issue:112:state=CLOSED", "github:issue:113:state=CLOSED"],
+    "ticket_states": [
+      "github:issue:114:state=CLOSED", "github:issue:115:state=CLOSED", "github:issue:116:state=CLOSED",
+      "github:issue:117:state=CLOSED", "github:issue:118:state=CLOSED", "github:issue:119:state=CLOSED",
+      "github:issue:120:state=CLOSED", "github:issue:121:state=CLOSED"
+    ],
+    "parent_relationships": [
+      "github:graphql:issue/110/subIssues=[111,112,113]",
+      "github:graphql:issue/111/subIssues=[114,115,116]",
+      "github:graphql:issue/112/subIssues=[117,118,119]",
+      "github:graphql:issue/113/subIssues=[120,121]"
+    ]
+  },
+  "recovery_results": {
+    "planning_restart": "passed",
+    "ticket_restart": "passed",
+    "assignment_restart": "passed",
+    "merge_before_archive_restart": "passed",
+    "release_restart": "passed",
+    "lost_response": "passed",
+    "idempotency_retry": "passed"
+  },
+  "recovery_evidence": {
+    "commands": [
+      "python -m unittest implement-needs.tests.test_p1_2_action_cli_restart implement-needs.tests.test_p1_4_cli_restart implement-needs.tests.test_validate_controller_lifecycle implement-needs.tests.test_p2_2_metrics implement-needs.tests.test_operation_intents -q"
+    ],
+    "result": "Ran 34 tests in 3.016s; OK"
+  },
+  "release_train_receipts": {"L0": "passed", "L1": "passed", "L2": "passed", "L3": "passed", "L4": "passed", "L5": "passed"},
+  "release_train_evidence": {
+    "candidate_revision": "9a79ca62594070c7cd219bf601ed43b392b57e20",
+    "remote_revision": "9a79ca62594070c7cd219bf601ed43b392b57e20",
+    "L0": "python -m compileall -q src",
+    "L1": "pytest -q tests/test_store.py tests/test_smoke.py; pytest -q tests/test_cli.py tests/test_export.py",
+    "L2": "pytest -q; 7 passed",
+    "L3": "wheel sha256=433BFB585087CEDFDD94E1FC4D38AB754CAF34CC3C818FAFC1DE8CB540A5BDC5; source-unavailable import smoke and two replays both []",
+    "L4": "pytest -q; 7 passed on final candidate",
+    "L5": "HTTP_SMOKE_OK",
+    "repair": "PR #4 merged at 9a79ca62594070c7cd219bf601ed43b392b57e20 after the pre-repair L5 failure"
+  },
+  "repository_sync_receipt": {
+    "local_remote_head_equal": true,
+    "local_head": "9a79ca62594070c7cd219bf601ed43b392b57e20",
+    "remote_head": "9a79ca62594070c7cd219bf601ed43b392b57e20",
+    "repository": "https://github.com/williamxhero/qualification-event-ledger-20260920"
+  },
+  "task_census": {
+    "all_archived": true,
+    "no_orphans": true,
+    "tasks": [
+      {"kind":"grill","task_id":"qualification-grill-grill","run_id":"qualification-whole-spec-v1-20260920","attempt_id":"01","owner_id":"qualification-controller","formal_thread_id":"01a0bc43-7ce4-7c10-acd3-ff395a47b9ea","host_id":"local","project_id":"b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e","cwd":"C:\\Users\\will\\.codex\\skills","route":{"model":"gpt-5.6-sol","effort":"high"},"turn_id":"01a0bc43-8224-79d2-b792-8c2be933f97b","turn_completed":true,"archive_readback":true},
+      {"kind":"planning","task_id":"qualification-planning-planning","run_id":"qualification-whole-spec-v1-20260920","attempt_id":"01","owner_id":"qualification-controller","formal_thread_id":"01a0bc43-a239-7382-8698-bdbda233311b","host_id":"local","project_id":"b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e","cwd":"C:\\Users\\will\\.codex\\skills","route":{"model":"gpt-5.6-sol","effort":"high"},"turn_id":"01a0bc43-a693-7da1-be6c-de663b49e945","turn_completed":true,"archive_readback":true},
+      {"kind":"spec","task_id":"qualification-spec-spec-1","run_id":"qualification-whole-spec-v1-20260920","attempt_id":"01","owner_id":"qualification-controller","formal_thread_id":"01a0bc43-be0e-7b21-9e71-4ea0afbd8d77","host_id":"local","project_id":"b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e","cwd":"C:\\Users\\will\\.codex\\skills","route":{"model":"gpt-5.6-sol","effort":"high"},"turn_id":"01a0bc43-c297-70b3-9132-e81136dc6807","turn_completed":true,"archive_readback":true},
+      {"kind":"spec","task_id":"qualification-spec-spec-2","run_id":"qualification-whole-spec-v1-20260920","attempt_id":"01","owner_id":"qualification-controller","formal_thread_id":"01a0bc43-da75-7a83-bc55-9d0b70f8baaf","host_id":"local","project_id":"b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e","cwd":"C:\\Users\\will\\.codex\\skills","route":{"model":"gpt-5.6-sol","effort":"high"},"turn_id":"01a0bc43-df4e-7cb3-ad83-c49414cf3583","turn_completed":true,"archive_readback":true},
+      {"kind":"spec","task_id":"qualification-spec-spec-3","run_id":"qualification-whole-spec-v1-20260920","attempt_id":"01","owner_id":"qualification-controller","formal_thread_id":"01a0bc44-035c-7193-95f2-fd550c5a572b","host_id":"local","project_id":"b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e","cwd":"C:\\Users\\will\\.codex\\skills","route":{"model":"gpt-5.6-sol","effort":"high"},"turn_id":"01a0bc44-07ac-73a0-83fa-244bb9a87a2d","turn_completed":true,"archive_readback":true}
+    ]
+  },
+  "cleanup_receipt": {
+    "complete": true,
+    "evidence": [
+      "github:qualification-issues:all-12-closed",
+      "app-server:qualification-task-census:all-5-archived",
+      "repository:working-tree-clean",
+      "repository:local-remote-head-equal",
+      "runtime: no HTTP server or app-server process retained"
+    ]
+  }
+}
