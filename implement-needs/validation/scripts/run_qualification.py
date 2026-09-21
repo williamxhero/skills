@@ -30,6 +30,30 @@ def _receipt(path: Path | None) -> dict[str, Any] | None:
     return load_json(path) if path else None
 
 
+def _live_source_run_id(report: dict[str, Any]) -> str | None:
+    provenance = report.get("evidence_provenance")
+    if isinstance(provenance, dict) and isinstance(provenance.get("source_run_id"), str):
+        return provenance["source_run_id"]
+    source_run_ids: set[str] = set()
+    tasks = report.get("task_census")
+    if isinstance(tasks, dict) and isinstance(tasks.get("tasks"), list):
+        source_run_ids.update(
+            task.get("run_id") for task in tasks["tasks"]
+            if isinstance(task, dict) and isinstance(task.get("run_id"), str)
+        )
+    backend = report.get("backend_capability_receipt")
+    if isinstance(backend, dict):
+        identity = backend.get("identity_readback", backend.get("probe_target"))
+        if isinstance(identity, dict) and isinstance(identity.get("run_id"), str):
+            source_run_ids.add(identity["run_id"])
+    cleanup_run_id = report.get("cleanup_run_id")
+    if isinstance(cleanup_run_id, str):
+        source_run_ids.add(cleanup_run_id)
+    if len(source_run_ids) > 1:
+        raise ValueError("live evidence refers to multiple source runs")
+    return next(iter(source_run_ids), report.get("run_id"))
+
+
 def _digests() -> dict[str, str]:
     subject_files = [ROOT / "SKILL.md", *((ROOT / "references").glob("*.md")),
                      *((ROOT / "scripts").glob("*.py"))]
@@ -94,7 +118,7 @@ def main() -> int:
         decision = {"decision": REJECTED, "reasons": preflight["reasons"], "run_id": run_id}
     else:
         report = load_json(args.evidence_report)
-        source_run_id = report.get("run_id")
+        source_run_id = _live_source_run_id(report)
         report.update({"run_id": run_id, "backend_kind": args.backend,
                        "scenario_version": scenario.get("version"), **_digests(),
                        "project_identity_receipt": preflight["project_identity_receipt"],

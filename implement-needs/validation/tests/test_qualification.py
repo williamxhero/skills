@@ -27,6 +27,13 @@ assert REGISTER_MODULE_SPEC and REGISTER_MODULE_SPEC.loader
 register_qualification = importlib.util.module_from_spec(REGISTER_MODULE_SPEC)
 REGISTER_MODULE_SPEC.loader.exec_module(register_qualification)
 
+RUN_MODULE_SPEC = importlib.util.spec_from_file_location(
+    "run_qualification", ROOT / "validation/scripts/run_qualification.py"
+)
+assert RUN_MODULE_SPEC and RUN_MODULE_SPEC.loader
+run_qualification = importlib.util.module_from_spec(RUN_MODULE_SPEC)
+RUN_MODULE_SPEC.loader.exec_module(run_qualification)
+
 
 class QualificationContractTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -167,6 +174,18 @@ class QualificationContractTests(unittest.TestCase):
         }
         result = verify_report(report, self.scenario)
         self.assertEqual(QUALIFIED, result["decision"])
+
+    def test_requalification_preserves_original_live_source_run(self) -> None:
+        report = self.valid_report()
+        report["run_id"] = "qualification-intermediate"
+        self.assertEqual("qualification-test", run_qualification._live_source_run_id(report))
+        report["evidence_provenance"] = {
+            "mode": "reverified_existing_live_run",
+            "source_run_id": "qualification-original",
+            "current_run_id": "qualification-intermediate",
+            "evidence": ["qualification://qualification-original/live-readbacks"],
+        }
+        self.assertEqual("qualification-original", run_qualification._live_source_run_id(report))
 
     def test_digest_excludes_report_output_but_not_subject_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
