@@ -43,6 +43,8 @@ def digest_tree(root: Path, *, exclude: Iterable[Path] = ()) -> str:
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         if any(path == item or item in path.parents for item in excluded):
             continue
+        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
         digest.update(len(relative).to_bytes(8, "big")); digest.update(relative)
         contents = path.read_bytes()

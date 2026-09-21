@@ -20,6 +20,26 @@
       "decision": "QUALIFIED",
       "run_id": "qualification-whole-spec-v1-20260920",
       "report": "qualification-whole-spec-v1-20260920/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "9175380a7eb88096bb4d48415eb33b4673f3b4a3e1a27052cf3c526b59b7e269",
+      "harness_digest": "bee83ce2097b97ab96b5acbe52ee6c2015490e75f5224a7026f35ff1533c52e4",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+      "report": "qualification-whole-spec-v1-20260921-handofffix/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "9175380a7eb88096bb4d48415eb33b4673f3b4a3e1a27052cf3c526b59b7e269",
+      "harness_digest": "e013044cfad4f7a79c0064ef51e2042117ab1038368cee4800f987352584c5c0",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-digestfix",
+      "report": "qualification-whole-spec-v1-20260921-digestfix/qualification.json"
     }
   ]
 }

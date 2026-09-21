@@ -147,6 +147,16 @@ class QualificationContractTests(unittest.TestCase):
             (root / "subject.txt").write_text("two", encoding="utf-8")
             self.assertNotEqual(before, digest_tree(root, exclude=(reports,)))
 
+    def test_digest_excludes_python_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "subject.py").write_text("VALUE = 1\n", encoding="utf-8")
+            before = digest_tree(root)
+            cache = root / "__pycache__"
+            cache.mkdir()
+            (cache / "subject.cpython-313.pyc").write_bytes(b"volatile bytecode")
+            self.assertEqual(before, digest_tree(root))
+
     def test_cli_verifier_returns_nonzero_for_incomplete_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             report_path = Path(temporary) / "report.json"
