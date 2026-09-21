@@ -29,19 +29,48 @@
       "required": ["repository", "spec_issue", "ticket_issues"],
       "properties": {
         "repository": {"const": "williamxhero/skills"},
-        "spec_issue": {"const": 149},
+        "spec_issue": {"enum": [149, 150]},
         "ticket_issues": {
-          "type": "array",
-          "prefixItems": [
-            {"const": 152},
-            {"const": 153},
-            {"const": 154}
-          ],
-          "items": false,
-          "minItems": 3,
-          "maxItems": 3
+          "oneOf": [
+            {
+              "type": "array",
+              "prefixItems": [
+                {"const": 152},
+                {"const": 153},
+                {"const": 154}
+              ],
+              "items": false,
+              "minItems": 3,
+              "maxItems": 3
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {"const": 155},
+                {"const": 156},
+                {"const": 157}
+              ],
+              "items": false,
+              "minItems": 3,
+              "maxItems": 3
+            }
+          ]
         }
       },
+      "oneOf": [
+        {
+          "properties": {
+            "spec_issue": {"const": 149},
+            "ticket_issues": {"const": [152, 153, 154]}
+          }
+        },
+        {
+          "properties": {
+            "spec_issue": {"const": 150},
+            "ticket_issues": {"const": [155, 156, 157]}
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "parent_continuation": {
