@@ -23,11 +23,17 @@ REQUIRED_REPORT_FIELDS = (
     "recovery_evidence", "final_frontier",
     "release_train_receipts", "task_census", "repository_sync_receipt", "cleanup_receipt",
     "backend_capability_receipt", "route_visibility_receipt", "controller_lifecycle_receipt",
+    "takeover_results",
 )
 EXPECTED_COUNTS = {
     "umbrella_specs": 1, "child_specs": 3, "tickets": 8, "grill_tasks": 1,
     "planning_tasks": 1, "spec_tasks": 3, "spec_pull_requests": 3,
     "ticket_implementation_artifacts": 0,
+}
+EXPECTED_TAKEOVER_STAGES = {
+    "requirement", "planning", "ticketing", "implementation", "verification",
+    "merge_cleanup", "final_verification", "release", "synchronization",
+    "terminal", "managed_run",
 }
 
 
@@ -96,6 +102,22 @@ def scenario_errors(scenario: dict[str, Any]) -> list[str]:
             errors.append(f"scenario_spec_{number}")
     if specs[1].get("blocked_by") != ["SPEC-1"] or specs[2].get("blocked_by") != ["SPEC-2"]:
         errors.append("scenario_dependencies")
+    if set(scenario.get("takeover_stages", [])) != EXPECTED_TAKEOVER_STAGES:
+        errors.append("scenario_takeover_stages")
+    return errors
+
+
+def takeover_errors(results: Any) -> list[str]:
+    if not isinstance(results, dict):
+        return ["takeover_results_missing"]
+    errors: list[str] = []
+    stages = results.get("stages")
+    if not isinstance(stages, list) or set(stages) != EXPECTED_TAKEOVER_STAGES:
+        errors.append("takeover_stage_coverage_incomplete")
+    if results.get("all_stages_covered") is not True:
+        errors.append("takeover_matrix_incomplete")
+    if results.get("resources_created") != 0:
+        errors.append("takeover_created_duplicate_resources")
     return errors
 
 
@@ -233,6 +255,7 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     reasons.extend(backend_errors(report.get("backend_capability_receipt")))
     reasons.extend(route_visibility_errors(report.get("route_visibility_receipt")))
     reasons.extend(lifecycle_errors(report.get("controller_lifecycle_receipt")))
+    reasons.extend(takeover_errors(report.get("takeover_results")))
     counts = report.get("artifact_counts")
     if counts != EXPECTED_COUNTS:
         reasons.append("artifact_counts_mismatch")

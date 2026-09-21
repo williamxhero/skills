@@ -23,6 +23,7 @@ from validation.qualification import (
     QUALIFIED, REJECTED, backend_errors, digest_paths, digest_tree, load_json, project_identity_errors,
     qualification_key, scenario_errors, verify_report, write_json,
 )
+from validation.scripts.whole_spec_scenario import run_takeover_matrix
 
 
 def _receipt(path: Path | None) -> dict[str, Any] | None:
@@ -97,6 +98,7 @@ def main() -> int:
                        "scenario_version": scenario.get("version"), **_digests(),
                        "project_identity_receipt": preflight["project_identity_receipt"],
                        "backend_capability_receipt": preflight["backend_receipt"],
+                       "takeover_results": run_takeover_matrix(),
                        "backend_contract_version": report.get("backend_contract_version", 1)})
         decision = verify_report(report, scenario)
     report["qualification_key"] = qualification_key(report)

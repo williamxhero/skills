@@ -7,11 +7,13 @@ to guess a replacement environment.
 
 ## Required startup sequence
 
-1. Initialize or open the run database.
-2. Resolve the canonical Skill dependencies and their explicitly registered aliases.
-3. Record the runtime, Skill root, target repository and branch, tracker mode, host
+1. Read `takeover.md` and inventory the requirement's existing lifecycle state.
+2. Open the matching run database when one exists; otherwise initialize a run only
+   after the takeover inventory has a unique, evidence-backed entry action.
+3. Resolve the canonical Skill dependencies and their explicitly registered aliases.
+4. Record the runtime, Skill root, target repository and branch, tracker mode, host
    capabilities, permissions, and resolved dependency path/digest/version/adapter.
-4. Run `startup-check` before proceeding with phase work.
+5. Run `startup-check` before proceeding with phase work.
 
 The contract is canonicalized and stored with a SHA-256 digest. Repeating the
 same contract is idempotent. A different contract cannot overwrite a verified

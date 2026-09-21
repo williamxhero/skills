@@ -2,6 +2,19 @@
   "schema_version": 1,
   "version": "whole-spec-v1",
   "topology": "whole-spec",
+  "takeover_stages": [
+    "requirement",
+    "planning",
+    "ticketing",
+    "implementation",
+    "verification",
+    "merge_cleanup",
+    "final_verification",
+    "release",
+    "synchronization",
+    "terminal",
+    "managed_run"
+  ],
   "expected_artifact_counts": {
     "umbrella_specs": 1,
     "child_specs": 3,

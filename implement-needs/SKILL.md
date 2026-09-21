@@ -1,6 +1,6 @@
 ---
 name: implement-needs
-description: 'Run a requirement through Grill, incremental SPEC/ticket delivery, sequential implementation, merge, release, and repository synchronization.'
+description: 'Start or take over a requirement at any lifecycle stage, reconcile existing planning and delivery artifacts, then continue through implementation, merge, release, and repository synchronization.'
 ---
 
 # Implement Needs
@@ -37,9 +37,27 @@ Read `references/startup-and-scope.md` before creating or resuming a run. Record
 verify the startup contract before phase work; do not replace a missing or mismatched
 dependency with a same-looking Skill or an unverified host.
 
-## Fixed flow
+## Entry and takeover
 
-1. Open or resume `.scratch/<initiative>/implement-needs.db`.
+Every invocation begins with read-only lifecycle discovery, even when the request
+looks new. Read `references/takeover.md`, collect the requirement identity plus
+controller, planning, ticket, implementation, PR/merge, cleanup, release, and
+repository-sync readbacks, then run `scripts/takeover.py --inventory <file>`.
+
+If a managed run exists, reconcile and resume its exact `next_action`. Otherwise,
+initialize a run from the verified inventory and record existing artifacts through
+the controller's formal import, identity, receipt, and reconciliation APIs. Continue
+from the planner's unique entry action. Completed stages are evidence, not work to
+repeat: create only artifacts absent from the readback, and never recreate an Issue,
+task, branch, worktree, commit, PR, release, or deployment that already exists.
+
+An incomplete or contradictory inventory is a blocker. Resolve it with additional
+readback; never guess an earlier stage or silently restart from Grill.
+
+## Continuation flow
+
+1. Open the discovered managed database, or initialize `.scratch/<initiative>/implement-needs.db`
+   and adopt the verified external inventory.
 2. Select the first usable live backend with `scripts/select_task_backend.py`. Use
    the configured Host Task API bridge when available, then the MCP/Desktop bridge,
    then a probed `codex-app-server-jsonrpc`. Each connector must answer its
@@ -57,18 +75,18 @@ dependency with a same-looking Skill or an unverified host.
 3. Run reconciliation through the selected backend before every create, after each
    status-changing wait, before archive, and before terminal validation. Recover the
    oldest pending action; render the unique next action with `scripts/dispatch.py`.
-5. Invoke `grilling`; accept viable AI recommendations automatically.
-6. Invoke `to-spec` for one umbrella SPEC and ordered child SPECs with SPEC-level dependencies.
-7. Select the first unblocked SPEC.
-8. Invoke `to-tickets` for that SPEC only; record the ticket graph and GitHub readbacks.
-9. In the default `whole-spec` mode, invoke `implement-spec` for the whole SPEC: one managed task, branch, worktree,
+4. Execute the takeover planner's unique entry action. Invoke `grilling`, `to-spec`,
+   or `to-tickets` only when the corresponding verified state is absent or partial.
+5. Select the first unblocked SPEC that is not already terminal.
+6. In the default `whole-spec` mode, invoke `implement-spec` for the whole SPEC: one managed task, branch, worktree,
    and PR. Mint `task_id`, `run_id`, `attempt_id`, and `nonce`; create the task with
 its canonical title token, register it in SQLite, perform formal identity and
    route readbacks, then send its assignment in the same controller turn. Carry
    the verified project readback fields into every bootstrap create.
-10. Verify commits, tests, review, PR, merge, ticket closure, and thread archival.
-11. Repeat from step 7 until all SPECs are closed.
-12. Invoke `test-release-train`, package/deploy when configured, then `IN: Commit n Push`.
+7. Verify or reconcile commits, tests, review, PR, merge, ticket closure, and thread archival.
+8. Repeat from step 5 until all SPECs are closed.
+9. Invoke or reconcile `test-release-train`, package/deploy when configured, then
+   `IN: Commit n Push`.
 
 SPECs run strictly sequentially in `whole-spec` mode. Tickets never receive their own
 implementation task, thread, branch, worktree, or PR in that mode.

@@ -60,6 +60,15 @@ class QualificationContractTests(unittest.TestCase):
             "cleanup_receipt": {"complete": True, "receipts": [{"archive_readback": {"archived": True}, "registry_transition": "archived"}]},
             "route_visibility_receipt": {"planned": {"model": "gpt-5.6-sol", "effort": "high"}, "applied": {"model": "gpt-5.6-sol", "effort": "high"}, "executed": {"turn_id": "turn-1"}, "identity_consistent": True},
             "controller_lifecycle_receipt": {"continuation_persisted": True, "watchdog_tested": True, "cleanup_readback_verified": True},
+            "takeover_results": {
+                "all_stages_covered": True,
+                "resources_created": 0,
+                "stages": [
+                    "requirement", "planning", "ticketing", "implementation",
+                    "verification", "merge_cleanup", "final_verification",
+                    "release", "synchronization", "terminal", "managed_run",
+                ],
+            },
         }
 
     def test_complete_external_evidence_qualifies(self) -> None:
@@ -135,6 +144,13 @@ class QualificationContractTests(unittest.TestCase):
         result = verify_report(report, self.scenario)
         self.assertEqual(REJECTED, result["decision"])
         self.assertIn("duplicate_task_identity", result["reasons"])
+
+    def test_incomplete_takeover_matrix_is_rejected(self) -> None:
+        report = self.valid_report()
+        report["takeover_results"]["stages"].remove("implementation")
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("takeover_stage_coverage_incomplete", result["reasons"])
 
     def test_digest_excludes_report_output_but_not_subject_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

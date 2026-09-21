@@ -7,7 +7,14 @@ from live backend evidence.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+import sys
 from typing import Any
+
+SKILL_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SKILL_ROOT / "scripts"))
+
+from takeover import plan_takeover
 
 
 @dataclass
@@ -155,3 +162,62 @@ def run_fault_matrix(seed: int = 129) -> dict[str, Any]:
             "archive": archive, "archive_readback": readback,
             "replacement": replacement, "replacement_route": replacement_route,
             "live_external_evidence": False}
+
+
+def _takeover_inventory(**states: str) -> dict[str, Any]:
+    inventory = {
+        "schema_version": 1,
+        "requirement": {"status": "verified", "evidence": ["scenario://requirement/readback"]},
+        "controller": {"status": "missing"},
+        "planning": {"status": "absent"},
+        "tickets": {"status": "absent"},
+        "implementation": {"status": "absent"},
+        "merge": {"status": "absent"},
+        "cleanup": {"status": "not_required"},
+        "release": {"status": "absent"},
+        "synchronization": {"status": "absent"},
+    }
+    for name, status in states.items():
+        inventory[name] = {"status": status}
+        if status not in {"absent", "missing", "not_required"}:
+            inventory[name]["evidence"] = [f"scenario://{name}/{status}/readback"]
+    return inventory
+
+
+def run_takeover_matrix() -> dict[str, Any]:
+    """Exercise every supported takeover frontier without external mutation."""
+    inputs = [
+        _takeover_inventory(),
+        _takeover_inventory(planning="partial"),
+        _takeover_inventory(planning="complete", tickets="partial"),
+        _takeover_inventory(planning="complete", tickets="complete"),
+        _takeover_inventory(planning="complete", tickets="complete", implementation="active"),
+        _takeover_inventory(planning="complete", tickets="complete", implementation="complete", merge="open"),
+        _takeover_inventory(planning="complete", tickets="complete", implementation="complete", merge="merged", cleanup="pending"),
+        _takeover_inventory(planning="complete", tickets="complete", implementation="complete", merge="merged", cleanup="complete"),
+        _takeover_inventory(planning="complete", tickets="complete", implementation="complete", merge="merged", cleanup="complete", release="pending"),
+        _takeover_inventory(planning="complete", tickets="complete", implementation="complete", merge="merged", cleanup="complete", release="complete", synchronization="pending"),
+        _takeover_inventory(planning="complete", tickets="complete", implementation="complete", merge="merged", cleanup="complete", release="complete", synchronization="complete"),
+    ]
+    managed = _takeover_inventory(planning="complete")
+    managed["controller"] = {
+        "status": "active",
+        "run_id": "scenario-managed-run",
+        "next_action": {"kind": "wait_spec", "target": "SPEC-2"},
+        "evidence": ["scenario://controller/snapshot"],
+    }
+    inputs.append(managed)
+    cases = [plan_takeover(item) for item in inputs]
+    stages = sorted({item["entry_stage"] for item in cases})
+    expected = {
+        "requirement", "planning", "ticketing", "implementation", "verification",
+        "merge_cleanup", "final_verification", "release", "synchronization",
+        "terminal", "managed_run",
+    }
+    return {
+        "all_stages_covered": set(stages) == expected,
+        "stages": stages,
+        "cases": cases,
+        "resources_created": sum(len(item["resources_to_create"]) for item in cases),
+        "live_external_evidence": False,
+    }

@@ -11,6 +11,13 @@ non-empty `project_id` from formal readback before it performs any GitHub
 mutation. `request_id`, title tokens, and `codex://threads/...` URLs are
 correlation or recovery indexes; they are not task identity.
 
+Qualification also runs the normalized takeover matrix for every supported entry
+frontier: requirement, planning, ticketing, implementation, verification,
+merge cleanup, final verification, release, synchronization, terminal, and an
+existing managed run. The matrix is side-effect free and must report zero created
+resources. Live GitHub/task evidence remains separately required for the whole-SPEC
+delivery and cleanup contract.
+
 ## Commands
 
 Before a normal run, check the immutable subject/harness key:
