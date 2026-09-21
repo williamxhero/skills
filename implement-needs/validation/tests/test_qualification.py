@@ -152,6 +152,22 @@ class QualificationContractTests(unittest.TestCase):
         self.assertEqual(REJECTED, result["decision"])
         self.assertIn("takeover_stage_coverage_incomplete", result["reasons"])
 
+    def test_cross_run_live_evidence_requires_explicit_provenance(self) -> None:
+        report = self.valid_report()
+        report["run_id"] = "qualification-reverify"
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("cross_run_evidence_provenance_missing", result["reasons"])
+
+        report["evidence_provenance"] = {
+            "mode": "reverified_existing_live_run",
+            "source_run_id": "qualification-test",
+            "current_run_id": "qualification-reverify",
+            "evidence": ["qualification://qualification-test/live-readbacks"],
+        }
+        result = verify_report(report, self.scenario)
+        self.assertEqual(QUALIFIED, result["decision"])
+
     def test_digest_excludes_report_output_but_not_subject_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

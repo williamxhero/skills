@@ -121,6 +121,41 @@ def takeover_errors(results: Any) -> list[str]:
     return errors
 
 
+def evidence_provenance_errors(report: dict[str, Any]) -> list[str]:
+    current_run_id = report.get("run_id")
+    source_run_ids: set[str] = set()
+    tasks = report.get("task_census")
+    if isinstance(tasks, dict) and isinstance(tasks.get("tasks"), list):
+        source_run_ids.update(
+            task.get("run_id") for task in tasks["tasks"]
+            if isinstance(task, dict) and isinstance(task.get("run_id"), str)
+        )
+    backend = report.get("backend_capability_receipt")
+    if isinstance(backend, dict):
+        identity = backend.get("identity_readback", backend.get("probe_target"))
+        if isinstance(identity, dict) and isinstance(identity.get("run_id"), str):
+            source_run_ids.add(identity["run_id"])
+    cleanup_run_id = report.get("cleanup_run_id")
+    if isinstance(cleanup_run_id, str):
+        source_run_ids.add(cleanup_run_id)
+    if not source_run_ids or source_run_ids == {current_run_id}:
+        return []
+    if len(source_run_ids) != 1:
+        return ["cross_run_evidence_inconsistent"]
+    source_run_id = next(iter(source_run_ids))
+    provenance = report.get("evidence_provenance")
+    if not isinstance(provenance, dict):
+        return ["cross_run_evidence_provenance_missing"]
+    valid = (
+        provenance.get("mode") == "reverified_existing_live_run"
+        and provenance.get("source_run_id") == source_run_id
+        and provenance.get("current_run_id") == current_run_id
+        and isinstance(provenance.get("evidence"), list)
+        and bool(provenance["evidence"])
+    )
+    return [] if valid else ["cross_run_evidence_provenance_invalid"]
+
+
 def project_identity_errors(receipt: Any) -> list[str]:
     if not isinstance(receipt, dict):
         return ["project_identity_missing"]
@@ -256,6 +291,7 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     reasons.extend(route_visibility_errors(report.get("route_visibility_receipt")))
     reasons.extend(lifecycle_errors(report.get("controller_lifecycle_receipt")))
     reasons.extend(takeover_errors(report.get("takeover_results")))
+    reasons.extend(evidence_provenance_errors(report))
     counts = report.get("artifact_counts")
     if counts != EXPECTED_COUNTS:
         reasons.append("artifact_counts_mismatch")

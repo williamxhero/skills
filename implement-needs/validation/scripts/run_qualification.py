@@ -94,12 +94,20 @@ def main() -> int:
         decision = {"decision": REJECTED, "reasons": preflight["reasons"], "run_id": run_id}
     else:
         report = load_json(args.evidence_report)
+        source_run_id = report.get("run_id")
         report.update({"run_id": run_id, "backend_kind": args.backend,
                        "scenario_version": scenario.get("version"), **_digests(),
                        "project_identity_receipt": preflight["project_identity_receipt"],
                        "backend_capability_receipt": preflight["backend_receipt"],
                        "takeover_results": run_takeover_matrix(),
                        "backend_contract_version": report.get("backend_contract_version", 1)})
+        if source_run_id != run_id:
+            report["evidence_provenance"] = {
+                "mode": "reverified_existing_live_run",
+                "source_run_id": source_run_id,
+                "current_run_id": run_id,
+                "evidence": [f"qualification://{source_run_id}/live-readbacks"],
+            }
         decision = verify_report(report, scenario)
     report["qualification_key"] = qualification_key(report)
     report["verification"] = decision
