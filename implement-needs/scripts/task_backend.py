@@ -687,7 +687,7 @@ def send_managed_turn(backend: TaskBackend | Any, formal_thread_id: str, host_id
     output = {"thread_id": formal_thread_id, "host_id": host_id,
               "turn_id": turn_id, "send": result}
     if wait:
-        from managed_recovery import COMPLETED, classify_turn_outcome
+        from managed_recovery import COMPLETED, NO_PROGRESS, classify_turn_outcome
 
         completion = wait_for_turn_completion(backend, formal_thread_id, host_id, turn_id, timeout)
         history = read_persisted_history(backend, formal_thread_id, host_id, turn_id)
@@ -700,6 +700,8 @@ def send_managed_turn(backend: TaskBackend | Any, formal_thread_id: str, host_id
         evidence = ["turn_completion"]
         if outcome == COMPLETED:
             evidence.append("persisted_history")
+        elif outcome == NO_PROGRESS:
+            evidence.extend(["empty_completion", "no_progress"])
         output.update({"completion": completion, "history": history,
                        "outcome": outcome, "execution_evidence": evidence})
     return output

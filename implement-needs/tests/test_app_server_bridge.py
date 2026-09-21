@@ -146,6 +146,26 @@ class AppServerBridgeTests(unittest.TestCase):
         self.assertEqual(["thread-1"], [task["formal_thread_id"] for task in result["tasks"]])
         self.assertIn(("thread/list", {"archived": True, "limit": 100}), self.rpc.calls)
 
+    def test_formal_target_inventory_drains_archived_pages(self):
+        self.rpc.archived = True
+        original_request = self.rpc.request
+
+        def paged_request(method, params):
+            self.rpc.calls.append((method, params))
+            if method == "thread/list" and params.get("archived", False):
+                if params.get("cursor") is None:
+                    return {"result": {"data": [{"id": f"other-{i}"} for i in range(100)], "nextCursor": "page-2"}}
+                return {"result": {"data": [self.rpc.thread("thread-1")], "nextCursor": None}}
+            return original_request(method, params)
+
+        self.rpc.request = paged_request
+
+        result = self.bridge.request("list_tasks", {"formal_thread_id": "thread-1"})
+
+        self.assertEqual(["thread-1"], [task["formal_thread_id"] for task in result["tasks"]])
+        archived_calls = [params for method, params in self.rpc.calls if method == "thread/list" and params.get("archived", False)]
+        self.assertEqual("page-2", archived_calls[1]["cursor"])
+
     def test_capability_probe_accepts_an_archived_formal_target(self):
         self.rpc.archived = True
 

@@ -59,6 +59,35 @@ class ManagedTurnBackendTests(unittest.TestCase):
         self.assertEqual("uncertain", result["outcome"])
         self.assertNotIn("persisted_history", result["execution_evidence"])
 
+    def test_repeated_empty_completed_turns_escalate_to_no_progress(self):
+        class RepeatedEmpty(FakeTransport):
+            def __init__(self):
+                self.count = 0
+
+            def send_message_to_thread(self, **params):
+                self.count += 1
+                return {"turn_id": f"turn-{self.count}", "evidence": ["send:readback"]}
+
+            def wait_for_turn_completion(self, thread_id, turn_id, timeout=None):
+                return {"method": "turn/completed", "params": {
+                    "threadId": thread_id, "turnId": turn_id, "status": "completed"
+                }}
+
+            def read_history(self, thread_id, turn_id):
+                return {"turns": [
+                    {"id": f"turn-{number}", "status": "completed", "items": []}
+                    for number in range(1, self.count + 1)
+                ]}
+
+        transport = RepeatedEmpty()
+        backend = TaskBackend("fake", transport)
+        outcomes = [
+            send_managed_turn(backend, "thread-1", "local", "continue", wait=True)["outcome"]
+            for _ in range(3)
+        ]
+
+        self.assertEqual(["uncertain", "uncertain", "no_progress"], outcomes)
+
 
 if __name__ == "__main__":
     unittest.main()

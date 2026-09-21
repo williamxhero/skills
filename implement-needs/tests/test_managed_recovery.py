@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 
 from control_db import ControlDB
 from managed_recovery import (
-    BLOCKED, COMPLETED, MODEL_CAPACITY, STREAM_DISCONNECTED, UNCERTAIN,
+    BLOCKED, COMPLETED, MODEL_CAPACITY, NO_PROGRESS, STREAM_DISCONNECTED, UNCERTAIN,
     RecoveryError, assert_no_replay, build_recovery_message, checkpoint,
     classify_turn_outcome, decide_recovery, reconcile_side_effects,
     recover_capacity_attempt, replacement_attempt_allowed,
@@ -40,6 +40,24 @@ class ManagedRecoveryTests(unittest.TestCase):
                 history_readback={"turns": [{"id": "turn-1", "output": "verified handoff"}]},
             ),
         )
+
+    def test_repeated_empty_completion_is_no_progress_and_blocks_recovery(self):
+        history = {"turns": [
+            {"id": "turn-1", "status": "completed", "items": []},
+            {"id": "turn-2", "status": "completed", "items": []},
+            {"id": "turn-3", "status": "completed", "items": []},
+        ]}
+        self.assertEqual(
+            NO_PROGRESS,
+            classify_turn_outcome(
+                completion={"status": "completed"},
+                history_readback=history,
+                turn_id="turn-3",
+            ),
+        )
+        decision = decide_recovery(NO_PROGRESS)
+        self.assertEqual("repair", decision.action)
+        self.assertEqual("blocked", decision.next_action)
 
     def test_checkpointed_continue_is_identity_bound_and_not_a_replay(self):
         cp = checkpoint(identity=IDENTITY, previous_turn_id="turn-1", failure_class=STREAM_DISCONNECTED,

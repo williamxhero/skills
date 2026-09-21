@@ -61,6 +61,165 @@ class ReconcileBackendTests(unittest.TestCase):
         self.assertEqual("repair", result["decision"])
         self.assertIn("backend_inventory_inconclusive", result["errors"])
 
+    def test_archived_attempt_with_verified_archive_evidence_is_audit_only_when_backend_forgets_it(self):
+        self.db.conn.execute(
+            "UPDATE threads SET formal_thread_id='formal-1', host_id='host-1', lifecycle='archived', outcome='completed', "
+            "archive_operation_evidence=?, archive_readback_evidence=? WHERE thread_id='local-1'",
+            (
+                json.dumps(["archive"]),
+                json.dumps(["archived"]),
+            ),
+        )
+        self.db.conn.commit()
+
+        result = reconcile_inventory(
+            self.db, "R1", {"reconciliation_status": "complete", "tasks": []}
+        )
+
+        self.assertEqual("allow", result["decision"])
+        self.assertEqual([], result["errors"])
+        self.assertEqual([], result["matches"])
+
+    def test_backend_missing_archived_attempt_without_archive_readback_still_blocks(self):
+        self.db.conn.execute(
+            "UPDATE threads SET lifecycle='archived', outcome='completed', "
+            "archive_operation_evidence=?, archive_readback_evidence='[]' WHERE thread_id='local-1'",
+            (json.dumps(["archive"]),),
+        )
+        self.db.conn.commit()
+
+        result = reconcile_inventory(
+            self.db, "R1", {"reconciliation_status": "complete", "tasks": []}
+        )
+
+        self.assertEqual("repair", result["decision"])
+        self.assertIn("registry_threads_absent_from_backend", result["errors"])
+
+    def test_returned_archived_audit_attempt_cannot_be_rebound_or_downgraded(self):
+        self.db.conn.execute(
+            "UPDATE threads SET formal_thread_id='formal-1', host_id='host-1', lifecycle='archived', outcome='completed', "
+            "archive_operation_evidence=?, archive_readback_evidence=? WHERE thread_id='local-1'",
+            (json.dumps(["archive"]), json.dumps(["archived"])),
+        )
+        self.db.conn.commit()
+
+        result = reconcile_inventory(self.db, "R1", {
+            "reconciliation_status": "complete",
+            "tasks": [{
+                "formal_thread_id": "formal-1", "host_id": "host-1",
+                "readback": {
+                    "formal_thread_id": "formal-1", "host_id": "host-1",
+                    "task_id": "T1", "run_id": "R1", "attempt_id": "01",
+                    "owner_id": "owner", "cwd": "C:/w", "project_id": "p",
+                    "lifecycle": "completed", "readback_evidence": ["thread/read"],
+                },
+            }],
+        })
+
+        self.assertEqual("allow", result["decision"])
+        self.assertEqual([], result["matches"])
+        self.assertEqual("archived", self.db.threads_by_client_id("client-1")[0]["lifecycle"])
+
+    def test_backend_missing_terminal_outcome_without_archived_lifecycle_still_blocks(self):
+        self.db.conn.execute(
+            "UPDATE threads SET lifecycle='working', outcome='completed', "
+            "archive_operation_evidence=?, archive_readback_evidence=? WHERE thread_id='local-1'",
+            (
+                json.dumps(["archive"]),
+                json.dumps(["archived"]),
+            ),
+        )
+        self.db.conn.commit()
+
+        result = reconcile_inventory(
+            self.db, "R1", {"reconciliation_status": "complete", "tasks": []}
+        )
+
+        self.assertEqual("repair", result["decision"])
+        self.assertIn("registry_threads_absent_from_backend", result["errors"])
+
+    def test_backend_completed_attempt_with_verified_archive_evidence_is_audit_only(self):
+        self.db.conn.execute(
+            "UPDATE threads SET lifecycle='completed', outcome='interrupted_after_bootstrap', "
+            "archive_operation_evidence=?, archive_readback_evidence=? WHERE thread_id='local-1'",
+            (json.dumps(["archive"]), json.dumps(["archived"])),
+        )
+        self.db.conn.commit()
+
+        result = reconcile_inventory(
+            self.db, "R1", {"reconciliation_status": "complete", "tasks": []}
+        )
+
+        self.assertEqual("allow", result["decision"])
+        self.assertEqual([], result["errors"])
+
+    def test_backend_created_unknown_attempt_with_archive_like_strings_still_blocks(self):
+        self.db.conn.execute(
+            "UPDATE threads SET lifecycle='created', outcome='unknown', "
+            "archive_operation_evidence=?, archive_readback_evidence=? WHERE thread_id='local-1'",
+            (json.dumps(["archive"]), json.dumps(["archived"])),
+        )
+        self.db.conn.commit()
+
+        result = reconcile_inventory(
+            self.db, "R1", {"reconciliation_status": "complete", "tasks": []}
+        )
+
+        self.assertEqual("repair", result["decision"])
+        self.assertIn("registry_threads_absent_from_backend", result["errors"])
+
+    def test_live_reconciliation_ignores_identityless_verified_archived_history(self):
+        archived_identity = TaskIdentity("OLD", "R1", "01", "fedcba9876543210")
+        self.db.add_thread("R1", "archived-history", "spec", identity=archived_identity)
+        self.db.conn.execute(
+            "UPDATE threads SET lifecycle='archived', outcome='completed', "
+            "archive_operation_evidence=?, archive_readback_evidence=? WHERE thread_id='archived-history'",
+            (json.dumps(["archive"]), json.dumps(["archived"])),
+        )
+        self.db.conn.commit()
+        queries = []
+
+        class Backend:
+            def list_tasks(self, **params):
+                queries.append(params)
+                return {"tasks": [{
+                    "formal_thread_id": "formal-1", "host_id": "host-1",
+                    "client_thread_id": "client-1",
+                    "title": format_token(TaskIdentity("T1", "R1", "01", "0123456789abcdef")),
+                }]}
+
+            def read_thread(self, **params):
+                return {"formal_thread_id": params["formal_thread_id"], "host_id": params["host_id"],
+                        "task_id": "T1", "run_id": "R1", "attempt_id": "01",
+                        "owner_id": "owner", "cwd": "C:/w", "project_id": "p",
+                        "lifecycle": "active", "readback_evidence": ["thread/read"]}
+
+        result = reconcile_backend(self.db, "R1", Backend())
+
+        self.assertEqual("allow", result["decision"])
+        self.assertEqual(["local-1"], [match["thread_id"] for match in result["matches"]])
+        self.assertTrue(any(query.get("client_thread_id") == "client-1" for query in queries))
+        self.assertFalse(any((query.get("title_prefix") or "").startswith("[INN v=1 task=OLD") for query in queries))
+
+    def test_live_reconciliation_keeps_archived_row_without_readback_live(self):
+        archived_identity = TaskIdentity("OLD", "R1", "01", "fedcba9876543210")
+        self.db.add_thread("R1", "unverified-history", "spec", identity=archived_identity)
+        self.db.conn.execute(
+            "UPDATE threads SET lifecycle='archived', outcome='completed', "
+            "archive_operation_evidence=? WHERE thread_id='unverified-history'",
+            (json.dumps(["archive"]),),
+        )
+        self.db.conn.commit()
+
+        class Backend:
+            def list_tasks(self, **params):
+                return {"tasks": []}
+
+        result = reconcile_backend(self.db, "R1", Backend())
+
+        self.assertEqual("repair", result["decision"])
+        self.assertIn("registry_identity_index_missing", result["errors"])
+
     def test_duplicate_candidates_block(self):
         identity = TaskIdentity("T2", "R1", "01", "fedcba9876543210")
         self.db.add_thread("R1", "local-2", "spec", identity=identity, client_thread_id="same", owner_id="owner", cwd="C:/w", project_id="p", title_token=format_token(identity))

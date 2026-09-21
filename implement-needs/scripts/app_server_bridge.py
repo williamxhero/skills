@@ -251,21 +251,28 @@ class AppServerBridge:
             return {"tasks": []}
         tasks = []
         next_cursor = cursor
+        archived_mode = False
         for _page in range(100):
-            params: dict[str, Any] = {"cursor": next_cursor, "limit": 100, "searchTerm": title_prefix}
-            if formal_thread_id and formal_thread_id in metadata:
-                # App-server has no formal-thread filter. A cwd-scoped state-db
-                # query keeps the reconciliation inventory complete and bounded.
-                params["cwd"] = metadata[formal_thread_id]["cwd"]
-                params["useStateDbOnly"] = True
+            if archived_mode:
+                params = {"archived": True, "limit": 100}
+                if next_cursor is not None:
+                    params["cursor"] = next_cursor
+            else:
+                params = {"cursor": next_cursor, "limit": 100, "searchTerm": title_prefix}
+                if formal_thread_id and formal_thread_id in metadata:
+                    # App-server has no formal-thread filter. A cwd-scoped state-db
+                    # query keeps the reconciliation inventory complete and bounded.
+                    params["cwd"] = metadata[formal_thread_id]["cwd"]
+                    params["useStateDbOnly"] = True
             native = self._result("thread/list", params)
-            if formal_thread_id and not any(
-                    isinstance(item, Mapping) and item.get("id") == formal_thread_id
-                    for item in native.get("data", [])) and next_cursor is None:
-                # Archived managed threads are deliberately absent from the default
-                # inventory, but remain valid formal probe and reconciliation targets.
-                native = self._result("thread/list", {"archived": True, "limit": 100})
-            for item in native.get("data", []):
+            page_items = native.get("data", [])
+            if not isinstance(page_items, list):
+                raise BackendError("app-server thread/list returned a non-list data field")
+            page_has_target = any(
+                isinstance(item, Mapping) and item.get("id") == formal_thread_id
+                for item in page_items
+            ) if formal_thread_id else False
+            for item in page_items:
                 if not isinstance(item, Mapping) or item.get("id") not in metadata:
                     continue
                 task = self._normalize(item, metadata[item["id"]])
@@ -276,6 +283,13 @@ class AppServerBridge:
                 tasks.append(task)
             next_cursor = native.get("nextCursor")
             if not next_cursor:
+                if formal_thread_id and not archived_mode and not page_has_target:
+                    # Archived managed threads are deliberately absent from the
+                    # default inventory, but remain valid formal probe and
+                    # reconciliation targets. Drain every archived page as well.
+                    archived_mode = True
+                    next_cursor = None
+                    continue
                 return {"tasks": tasks, "next_cursor": None}
         return {"tasks": tasks, "next_cursor": next_cursor}
 

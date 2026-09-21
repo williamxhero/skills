@@ -29,6 +29,27 @@ def probe_and_record(db, run_id, transport):
     return capability
 
 
+def _verified_archived_audit_row(row):
+    """Return true only for a terminal row with persisted archive readback.
+
+    Native app-server inventories may age out archived thread ids. Such a row is
+    already terminal audit evidence, not a live recovery target. Malformed or
+    incomplete receipts deliberately remain live reconciliation blockers.
+    """
+    if row.get("lifecycle") not in {"archived", "completed"}:
+        return False
+    try:
+        operations = json.loads(row.get("archive_operation_evidence") or "[]")
+        readbacks = json.loads(row.get("archive_readback_evidence") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    # Historical controller ledgers predate structured archive payloads. A
+    # completed lifecycle is accepted only with both archive receipt lists;
+    # this also contains recovery from older reconciliation runs that replaced
+    # the local archived lifecycle with the backend's coarse completed status.
+    return isinstance(operations, list) and bool(operations) and isinstance(readbacks, list) and bool(readbacks)
+
+
 def reconcile_inventory(db, run_id, inventory):
     """Reconcile a backend inventory supplied by the selected task adapter.
 
@@ -45,7 +66,13 @@ def reconcile_inventory(db, run_id, inventory):
     errors=[]; matches=[]
     if inventory.get("reconciliation_status") != "complete":
         errors.append("backend_inventory_inconclusive")
-    registered=[dict(row) for row in db.conn.execute("SELECT * FROM threads WHERE run_id=? AND task_id IS NOT NULL",(run_id,))]
+    all_registered=[dict(row) for row in db.conn.execute("SELECT * FROM threads WHERE run_id=? AND task_id IS NOT NULL",(run_id,))]
+    # Terminal rows with both archive receipts remain durable audit evidence.
+    # Do not rebind or observe them when an app-server happens to retain a
+    # coarse historical record: that record cannot strengthen recovery identity
+    # and must not overwrite the controller's archived lifecycle.
+    archived_audit = [row for row in all_registered if _verified_archived_audit_row(row)]
+    registered = [row for row in all_registered if row not in archived_audit]
     for task in tasks:
         if not isinstance(task,dict):
             errors.append("invalid_backend_task"); continue
@@ -53,6 +80,11 @@ def reconcile_inventory(db, run_id, inventory):
         host=task.get("host_id") or task.get("hostId")
         client=task.get("client_thread_id") or task.get("clientThreadId")
         title=task.get("title")
+        if formal and host and any(
+            row.get("formal_thread_id") == formal and row.get("host_id") == host
+            for row in archived_audit
+        ):
+            continue
         candidates=[]
         if formal and host:
             candidates=[row for row in registered if row.get("formal_thread_id")==formal and row.get("host_id")==host]
@@ -181,11 +213,12 @@ def reconcile_backend(db, run_id, backend, *, page_limit=100):
     registered = [dict(row) for row in db.conn.execute(
         "SELECT * FROM threads WHERE run_id=? AND task_id IS NOT NULL", (run_id,)
     )]
-    if not registered:
+    live_registered = [row for row in registered if not _verified_archived_audit_row(row)]
+    if not live_registered:
         return {"decision": "allow", "status": "complete", "errors": [], "matches": []}
     discovered = {}
     errors = []
-    for row in registered:
+    for row in live_registered:
         queries = []
         if row.get("formal_thread_id") and row.get("host_id"):
             queries.append({"formal_thread_id": row["formal_thread_id"]})

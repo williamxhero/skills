@@ -18,6 +18,7 @@ MODEL_CAPACITY = "model_capacity"
 STREAM_DISCONNECTED = "stream_disconnected"
 TERMINAL_FAILURE = "terminal_failure"
 UNCERTAIN = "uncertain"
+NO_PROGRESS = "no_progress"
 BLOCKED = "blocked"
 
 DEFAULT_BUDGETS = {
@@ -122,6 +123,32 @@ def has_useful_turn_output(*, completion: Mapping[str, Any] | None = None,
     return False
 
 
+def empty_completed_turn_streak(*, history_readback: Mapping[str, Any] | None = None,
+                                turn_id: str | None = None) -> int:
+    """Return the trailing streak of completed turns with no persisted work.
+
+    History is treated as evidence only when it contains the current turn. The
+    normalized task backends expose turns oldest-first; reversing the sequence
+    also keeps this safe for the newest-first native readback shape.
+    """
+    history = history_readback if isinstance(history_readback, Mapping) else {}
+    turns = history.get("turns")
+    if not isinstance(turns, list) or not turns:
+        return 0
+    rows = [item for item in turns if isinstance(item, Mapping)]
+    if turn_id is not None and not any(item.get("id") == turn_id for item in rows):
+        return 0
+    streak = 0
+    for item in reversed(rows):
+        status = item.get("status")
+        if status not in {"completed", "succeeded", "success"}:
+            break
+        if has_useful_turn_output(history_readback={"turns": [item]}, turn_id=item.get("id")):
+            break
+        streak += 1
+    return streak
+
+
 def classify_turn_outcome(*, completion: Mapping[str, Any] | None = None,
                           error: Mapping[str, Any] | str | None = None,
                           transport_error: Mapping[str, Any] | str | None = None,
@@ -150,9 +177,11 @@ def classify_turn_outcome(*, completion: Mapping[str, Any] | None = None,
     if "stream disconnected" in text or "connection" in text and "lost" in text:
         return STREAM_DISCONNECTED
     if completion.get("status") in {"completed", "succeeded", "success"} and not error:
-        return COMPLETED if has_useful_turn_output(
-            completion=completion, history_readback=history_readback, turn_id=turn_id
-        ) else UNCERTAIN
+        if has_useful_turn_output(completion=completion, history_readback=history_readback, turn_id=turn_id):
+            return COMPLETED
+        if empty_completed_turn_streak(history_readback=history_readback, turn_id=turn_id) >= 3:
+            return NO_PROGRESS
+        return UNCERTAIN
     if error or transport_error or completion.get("status") in {"failed", "error"}:
         return TERMINAL_FAILURE
     return UNCERTAIN
@@ -232,6 +261,8 @@ def decide_recovery(failure_class: str, *, attempts: int = 0, budget: int | None
     budget = DEFAULT_BUDGETS.get(failure_class, 0) if budget is None else budget
     if failure_class == COMPLETED:
         return RecoveryDecision(COMPLETED, "accept_completed", "continue_controller", "terminal completion verified", 0, ("turn_completed",))
+    if failure_class == NO_PROGRESS:
+        return RecoveryDecision(NO_PROGRESS, "repair", "blocked", "repeated empty completion made no progress", 0, ("repeated_empty_completion", "no_progress"))
     if failure_class == MODEL_CAPACITY:
         if attempts >= budget:
             return RecoveryDecision(BLOCKED, "repair", "blocked", "fallback budget exhausted", budget, ("capacity_budget_exhausted",))
