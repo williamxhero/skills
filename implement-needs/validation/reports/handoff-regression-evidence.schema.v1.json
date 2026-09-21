@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/williamxhero/skills/blob/master/implement-needs/validation/reports/handoff-regression-evidence.schema.v1.json",
+  "title": "whole-spec-v1 successful child handoff regression evidence",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "evidence_kind",
+    "run_marker",
+    "scenario",
+    "backend",
+    "fixture_status",
+    "scope",
+    "parent_continuation",
+    "external_effect_reconciliation",
+    "controller_action",
+    "child_cleanup",
+    "successor_gate"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "evidence_kind": {"const": "successful_child_handoff_cleanup"},
+    "run_marker": {"const": "qualification-whole-spec-v1-20260921-handofffix"},
+    "scenario": {"const": "whole-spec-v1"},
+    "backend": {"const": "thread"},
+    "fixture_status": {"const": "contract_example"},
+    "scope": {
+      "type": "object",
+      "required": ["repository", "spec_issue", "ticket_issues"],
+      "properties": {
+        "repository": {"const": "williamxhero/skills"},
+        "spec_issue": {"const": 149},
+        "ticket_issues": {
+          "type": "array",
+          "prefixItems": [
+            {"const": 152},
+            {"const": 153},
+            {"const": 154}
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        }
+      },
+      "additionalProperties": false
+    },
+    "parent_continuation": {
+      "type": "object",
+      "required": ["turn_status", "persisted_output_count", "persisted_item_count", "classified_as_uncertain"],
+      "properties": {
+        "turn_status": {"const": "completed"},
+        "persisted_output_count": {"const": 0},
+        "persisted_item_count": {"const": 0},
+        "classified_as_uncertain": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "external_effect_reconciliation": {
+      "type": "object",
+      "required": ["github_effects_read_back", "pull_request_effects_read_back", "evidence_refs"],
+      "properties": {
+        "github_effects_read_back": {"const": true},
+        "pull_request_effects_read_back": {"const": true},
+        "evidence_refs": {"$ref": "#/$defs/evidenceRefs"}
+      },
+      "additionalProperties": false
+    },
+    "controller_action": {
+      "type": "object",
+      "required": ["pending_action_reconciled", "persisted_status", "evidence_refs"],
+      "properties": {
+        "pending_action_reconciled": {"const": true},
+        "persisted_status": {"const": "succeeded"},
+        "evidence_refs": {"$ref": "#/$defs/evidenceRefs"}
+      },
+      "additionalProperties": false
+    },
+    "child_cleanup": {
+      "type": "object",
+      "required": ["archive_requested", "archive_readback", "evidence_refs"],
+      "properties": {
+        "archive_requested": {"const": true},
+        "archive_readback": {"const": true},
+        "evidence_refs": {"$ref": "#/$defs/evidenceRefs"}
+      },
+      "additionalProperties": false
+    },
+    "successor_gate": {
+      "type": "object",
+      "required": ["child_archive_verified_before_next_spec", "next_spec_started"],
+      "properties": {
+        "child_archive_verified_before_next_spec": {"const": true},
+        "next_spec_started": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "evidenceRefs": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

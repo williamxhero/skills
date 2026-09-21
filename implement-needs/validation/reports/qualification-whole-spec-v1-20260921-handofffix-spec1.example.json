@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "evidence_kind": "successful_child_handoff_cleanup",
+  "run_marker": "qualification-whole-spec-v1-20260921-handofffix",
+  "scenario": "whole-spec-v1",
+  "backend": "thread",
+  "fixture_status": "contract_example",
+  "scope": {
+    "repository": "williamxhero/skills",
+    "spec_issue": 149,
+    "ticket_issues": [152, 153, 154]
+  },
+  "parent_continuation": {
+    "turn_status": "completed",
+    "persisted_output_count": 0,
+    "persisted_item_count": 0,
+    "classified_as_uncertain": true
+  },
+  "external_effect_reconciliation": {
+    "github_effects_read_back": true,
+    "pull_request_effects_read_back": true,
+    "evidence_refs": [
+      "https://github.com/williamxhero/skills/issues/149",
+      "https://github.com/williamxhero/skills/issues/152",
+      "https://github.com/williamxhero/skills/issues/153",
+      "https://github.com/williamxhero/skills/issues/154"
+    ]
+  },
+  "controller_action": {
+    "pending_action_reconciled": true,
+    "persisted_status": "succeeded",
+    "evidence_refs": [
+      "qualification://successful-child-handoff/pending-action/readback"
+    ]
+  },
+  "child_cleanup": {
+    "archive_requested": true,
+    "archive_readback": true,
+    "evidence_refs": [
+      "qualification://successful-child-handoff/archive/request",
+      "qualification://successful-child-handoff/archive/readback"
+    ]
+  },
+  "successor_gate": {
+    "child_archive_verified_before_next_spec": true,
+    "next_spec_started": false
+  }
+}
