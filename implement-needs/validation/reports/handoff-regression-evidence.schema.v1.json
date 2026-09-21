@@ -23,13 +23,13 @@
     "run_marker": {"const": "qualification-whole-spec-v1-20260921-handofffix"},
     "scenario": {"const": "whole-spec-v1"},
     "backend": {"const": "thread"},
-    "fixture_status": {"const": "contract_example"},
+    "fixture_status": {"enum": ["contract_example", "final_validation_contract"]},
     "scope": {
       "type": "object",
       "required": ["repository", "spec_issue", "ticket_issues"],
       "properties": {
         "repository": {"const": "williamxhero/skills"},
-        "spec_issue": {"enum": [149, 150]},
+        "spec_issue": {"enum": [149, 150, 151]},
         "ticket_issues": {
           "oneOf": [
             {
@@ -53,6 +53,16 @@
               "items": false,
               "minItems": 3,
               "maxItems": 3
+            },
+            {
+              "type": "array",
+              "prefixItems": [
+                {"const": 158},
+                {"const": 159}
+              ],
+              "items": false,
+              "minItems": 2,
+              "maxItems": 2
             }
           ]
         }
@@ -68,6 +78,12 @@
           "properties": {
             "spec_issue": {"const": 150},
             "ticket_issues": {"const": [155, 156, 157]}
+          }
+        },
+        {
+          "properties": {
+            "spec_issue": {"const": 151},
+            "ticket_issues": {"const": [158, 159]}
           }
         }
       ],
@@ -122,14 +138,52 @@
         "next_spec_started": {"const": false}
       },
       "additionalProperties": false
+    },
+    "finalization_evidence": {
+      "type": "object",
+      "required": ["cleanup", "release", "repository_sync"],
+      "properties": {
+        "cleanup": {"$ref": "#/$defs/pendingEvidence"},
+        "release": {"$ref": "#/$defs/pendingEvidence"},
+        "repository_sync": {"$ref": "#/$defs/pendingEvidence"}
+      },
+      "additionalProperties": false
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "scope": {
+            "properties": {"spec_issue": {"const": 151}},
+            "required": ["spec_issue"]
+          }
+        },
+        "required": ["scope"]
+      },
+      "then": {
+        "required": ["finalization_evidence"],
+        "properties": {
+          "fixture_status": {"const": "final_validation_contract"}
+        }
+      }
+    }
+  ],
   "$defs": {
     "evidenceRefs": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
       "minItems": 1,
       "uniqueItems": true
+    },
+    "pendingEvidence": {
+      "type": "object",
+      "required": ["status", "evidence_refs"],
+      "properties": {
+        "status": {"const": "pending_controller_readback"},
+        "evidence_refs": {"$ref": "#/$defs/evidenceRefs"}
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
