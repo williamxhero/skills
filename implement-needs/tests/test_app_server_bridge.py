@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from app_server_bridge import AppServerBridge
-from task_backend import BackendError, JsonRpcStdioTransport
+from task_backend import BackendError, JsonRpcStdioTransport, probe_connector
 
 
 class FakeRpc:
@@ -88,6 +88,45 @@ class AppServerBridgeTests(unittest.TestCase):
         self.assertEqual({"model": "gpt-5.6-sol", "effort": "high"}, {key: route[key] for key in ("model", "effort")})
         self.assertTrue(any(method == "thread/read" for method, _ in self.rpc.calls))
 
+    def test_capabilities_skips_stale_first_metadata_entry(self):
+        entries = [
+            {
+                "formal_thread_id": "stale-thread", "host_id": "local", "task_id": "STALE",
+                "run_id": "R-stale", "attempt_id": "01", "owner_id": "owner",
+                "cwd": "C:/work", "project_id": "project-1",
+            },
+            {
+                "formal_thread_id": "thread-1", "host_id": "local", "task_id": "T1",
+                "run_id": "R1", "attempt_id": "01", "owner_id": "owner",
+                "cwd": "C:/work", "project_id": "project-1",
+            },
+        ]
+        self.metadata.write_text(json.dumps({"threads": entries}), encoding="utf-8")
+        self.rpc.list_thread = lambda thread_id: self.rpc.thread("thread-1")
+
+        capabilities = self.bridge.request("capabilities")
+
+        self.assertEqual("thread-1", capabilities["probe_target"]["formal_thread_id"])
+
+    def test_list_tasks_drains_native_pages_before_returning_inventory(self):
+        original_request = self.rpc.request
+        calls = []
+
+        def paged_request(method, params):
+            calls.append((method, params))
+            if method == "thread/list" and params.get("archived", False) is False:
+                if params.get("cursor") is None:
+                    return {"result": {"data": [self.rpc.thread("thread-1")], "nextCursor": "page-2"}}
+                return {"result": {"data": [], "nextCursor": None}}
+            return original_request(method, params)
+
+        self.rpc.request = paged_request
+        result = self.bridge.request("list_tasks", {})
+
+        self.assertEqual(["thread-1"], [task["formal_thread_id"] for task in result["tasks"]])
+        self.assertIsNone(result["next_cursor"])
+        self.assertEqual("page-2", calls[2][1]["cursor"])
+
     def test_identity_rejects_native_metadata_disagreement(self):
         self.write_metadata(cwd="C:/other")
         with self.assertRaisesRegex(BackendError, "cwd disagrees"):
@@ -98,6 +137,22 @@ class AppServerBridgeTests(unittest.TestCase):
         result = self.bridge.request("read_archive_state", {"formal_thread_id": "thread-1", "host_id": "local"})
         self.assertTrue(result["archived"])
         self.assertIn(("thread/list", {"archived": True, "limit": 100}), self.rpc.calls)
+
+    def test_formal_target_inventory_falls_back_to_archived_thread_listing(self):
+        self.rpc.archived = True
+
+        result = self.bridge.request("list_tasks", {"formal_thread_id": "thread-1"})
+
+        self.assertEqual(["thread-1"], [task["formal_thread_id"] for task in result["tasks"]])
+        self.assertIn(("thread/list", {"archived": True, "limit": 100}), self.rpc.calls)
+
+    def test_capability_probe_accepts_an_archived_formal_target(self):
+        self.rpc.archived = True
+
+        receipt = probe_connector(self.bridge)
+
+        self.assertEqual("allow", receipt["decision"])
+        self.assertEqual("thread-1", receipt["probe_target"]["formal_thread_id"])
 
     def test_create_persists_complete_identity_metadata(self):
         result = self.bridge.request("create_thread", {

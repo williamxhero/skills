@@ -212,8 +212,7 @@ class AppServerBridge:
         metadata = self._metadata()
         if not metadata:
             raise BackendError("app-server identity metadata has no probe target")
-        formal, entry = next(iter(metadata.items()))
-        self._normalize(self._read_native_identity(formal), entry)
+        formal, entry = self._select_probe_target(metadata)
         return {
             "operations": [
                 "create_thread", "list_tasks", "read_thread", "read_applied_route",
@@ -225,29 +224,60 @@ class AppServerBridge:
             "evidence": ["app-server:initialize", f"app-server:metadata:{self.metadata_path}"],
         }
 
+    def _select_probe_target(self, metadata: Mapping[str, Mapping[str, Any]]) -> tuple[str, dict[str, Any]]:
+        """Choose a live metadata entry instead of assuming insertion order is live."""
+        failures: list[str] = []
+        for formal, entry in metadata.items():
+            try:
+                self._normalize(self._read_native_identity(formal), entry)
+                inventory = self.list_tasks(formal_thread_id=formal)
+                if any(
+                    isinstance(task, Mapping)
+                    and task.get("formal_thread_id") == formal
+                    and task.get("host_id") == entry["host_id"]
+                    for task in inventory.get("tasks", [])
+                ):
+                    return formal, dict(entry)
+                failures.append(f"{formal}:absent_from_list")
+            except BackendError as exc:
+                failures.append(f"{formal}:{exc}")
+        detail = "; ".join(failures) if failures else "no metadata entries"
+        raise BackendError("no live probe target found: " + detail)
+
     def list_tasks(self, *, formal_thread_id: str | None = None, title_prefix: str | None = None,
                    client_thread_id: str | None = None, cursor: str | None = None, **_: Any) -> dict[str, Any]:
         metadata = self._metadata()
         if formal_thread_id and formal_thread_id not in metadata:
             return {"tasks": []}
-        params: dict[str, Any] = {"cursor": cursor, "limit": 100, "searchTerm": title_prefix}
-        if formal_thread_id and formal_thread_id in metadata:
-            # App-server has no formal-thread filter. A cwd-scoped state-db
-            # query keeps the reconciliation inventory complete and bounded.
-            params["cwd"] = metadata[formal_thread_id]["cwd"]
-            params["useStateDbOnly"] = True
-        native = self._result("thread/list", params)
         tasks = []
-        for item in native.get("data", []):
-            if not isinstance(item, Mapping) or item.get("id") not in metadata:
-                continue
-            task = self._normalize(item, metadata[item["id"]])
-            if formal_thread_id and task["formal_thread_id"] != formal_thread_id:
-                continue
-            if client_thread_id and task.get("client_thread_id") != client_thread_id:
-                continue
-            tasks.append(task)
-        return {"tasks": tasks, "next_cursor": native.get("nextCursor")}
+        next_cursor = cursor
+        for _page in range(100):
+            params: dict[str, Any] = {"cursor": next_cursor, "limit": 100, "searchTerm": title_prefix}
+            if formal_thread_id and formal_thread_id in metadata:
+                # App-server has no formal-thread filter. A cwd-scoped state-db
+                # query keeps the reconciliation inventory complete and bounded.
+                params["cwd"] = metadata[formal_thread_id]["cwd"]
+                params["useStateDbOnly"] = True
+            native = self._result("thread/list", params)
+            if formal_thread_id and not any(
+                    isinstance(item, Mapping) and item.get("id") == formal_thread_id
+                    for item in native.get("data", [])) and next_cursor is None:
+                # Archived managed threads are deliberately absent from the default
+                # inventory, but remain valid formal probe and reconciliation targets.
+                native = self._result("thread/list", {"archived": True, "limit": 100})
+            for item in native.get("data", []):
+                if not isinstance(item, Mapping) or item.get("id") not in metadata:
+                    continue
+                task = self._normalize(item, metadata[item["id"]])
+                if formal_thread_id and task["formal_thread_id"] != formal_thread_id:
+                    continue
+                if client_thread_id and task.get("client_thread_id") != client_thread_id:
+                    continue
+                tasks.append(task)
+            next_cursor = native.get("nextCursor")
+            if not next_cursor:
+                return {"tasks": tasks, "next_cursor": None}
+        return {"tasks": tasks, "next_cursor": next_cursor}
 
     def read_thread(self, *, formal_thread_id: str, host_id: str, **_: Any) -> dict[str, Any]:
         metadata = self._metadata()
