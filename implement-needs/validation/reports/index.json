@@ -50,6 +50,16 @@
       "decision": "QUALIFIED",
       "run_id": "qualification-whole-spec-v1-20260921-takeover",
       "report": "qualification-whole-spec-v1-20260921-takeover/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "48632542389b40685b3d54660f5b7f0a7a98601fd50c746d9dc61092e4c6b2a5",
+      "harness_digest": "006e0566dd4c5b67ad947b9c14ed05ae6f73981772c2cf5003a1f9f58abd0eeb",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-takeover-final2",
+      "report": "qualification-whole-spec-v1-20260921-takeover-final2/qualification.json"
     }
   ]
 }
