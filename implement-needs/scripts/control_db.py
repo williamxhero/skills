@@ -211,6 +211,8 @@ _COMMIT_SCHEMES = frozenset(("commit", "git", "https", "pr", "sha"))
 _TEST_SCHEMES = frozenset(("check", "ci", "https", "pytest", "test"))
 _READBACK_SCHEMES = frozenset(("github", "https"))
 _ACCEPTANCE_SCHEMES = frozenset(("acceptance", "file", "github", "https"))
+_SPEC_LOCAL_ALIAS = re.compile(r"^(?P<spec>#[0-9]+)/(?P<position>[0-9]{2})$")
+_SPEC_LOCAL_ALIAS_PREFIX = re.compile(r"^#[0-9]+/")
 
 
 def _valid_evidence(value: object, schemes: frozenset[str]) -> bool:
@@ -222,6 +224,30 @@ def _valid_evidence(value: object, schemes: frozenset[str]) -> bool:
         if item.split(":", 1)[0].lower() not in schemes:
             return False
     return True
+
+
+def _normalize_spec_local_blockers(spec_id, blockers, local_ticket_ids):
+    """Resolve only verified, same-SPEC planning aliases to ticket IDs."""
+    normalized = []
+    for blocker in blockers:
+        if not isinstance(blocker, str) or "/" not in blocker:
+            normalized.append(blocker)
+            continue
+        match = _SPEC_LOCAL_ALIAS.fullmatch(blocker)
+        if match is None:
+            if _SPEC_LOCAL_ALIAS_PREFIX.match(blocker):
+                raise ValueError(f"malformed SPEC-local ticket alias: {blocker}")
+            normalized.append(blocker)
+            continue
+        alias_spec = match.group("spec")
+        if alias_spec != spec_id:
+            raise ValueError(f"cross-SPEC ticket alias: {blocker}")
+        local_position = int(match.group("position"))
+        target = local_ticket_ids.get(local_position)
+        if target is None:
+            raise ValueError(f"unknown SPEC-local ticket alias: {blocker}")
+        normalized.append(target)
+    return normalized
 
 class ControlDB:
     MODES = frozenset(("create", "open-existing", "read-only"))
@@ -1358,7 +1384,15 @@ class ControlDB:
                 queue_position=row[0]
             if self.conn.execute("SELECT 1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=? AND t.queue_position=?",(run_id,queue_position)).fetchone():
                 raise ValueError(f"queue_position already used in run: {queue_position}")
-            self.conn.execute("INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,issue_url,queue_position) VALUES(?,?,?,?,?,?,?)",(ticket_id,spec_id,title,"planned",json.dumps(blocked_by or []),issue_url,queue_position))
+            local_rows = self.conn.execute(
+                "SELECT ticket_id FROM tickets WHERE spec_id=? ORDER BY queue_position,ticket_id",
+                (spec_id,),
+            ).fetchall()
+            local_ticket_ids = {position: row[0] for position, row in enumerate(local_rows, 1)}
+            normalized_blockers = _normalize_spec_local_blockers(
+                spec_id, blocked_by or [], local_ticket_ids
+            )
+            self.conn.execute("INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,issue_url,queue_position) VALUES(?,?,?,?,?,?,?)",(ticket_id,spec_id,title,"planned",json.dumps(normalized_blockers),issue_url,queue_position))
             self._business_event(run_id,"ticket",ticket_id,"ticket_created",{"spec_id":spec_id,"queue_position":queue_position})
     def import_ticket_ledger(self, run_id, entries, expected_version=None):
         """Import an externally read-back ticket ledger without creating issues.
@@ -1425,6 +1459,17 @@ class ControlDB:
                 raise ValueError("run spec ledger is incomplete")
             if run[0] == "single-ticket-line" and self._is_issue_444_run(run_id) and len(queue) != 33:
                 raise ValueError("issue #444 requires exactly 33 queued tickets")
+            local_ticket_groups = {}
+            for position, ticket_id in enumerate(queue, 1):
+                entry = by_id[ticket_id]
+                local_ticket_groups.setdefault(entry.get("spec_id"), []).append((position, ticket_id))
+            local_ticket_ids = {
+                spec_id: {
+                    local_position: ticket_id
+                    for local_position, (_, ticket_id) in enumerate(items, 1)
+                }
+                for spec_id, items in local_ticket_groups.items()
+            }
             normalized = []
             allowed = {"planned", "ready", "implementing", "verified", "merged", "closed", "blocked", "cancelled"}
             for position, ticket_id in enumerate(queue, 1):
@@ -1442,7 +1487,12 @@ class ControlDB:
                     raise ValueError(f"ticket ledger entry {ticket_id} has invalid spec/title")
                 if queue_position != position or status not in allowed:
                     raise ValueError(f"ticket ledger entry {ticket_id} has invalid position/status")
-                if not isinstance(blockers, list) or any(item not in queue for item in blockers):
+                if not isinstance(blockers, list):
+                    raise ValueError(f"ticket ledger entry {ticket_id} has invalid blockers")
+                blockers = _normalize_spec_local_blockers(
+                    spec_id, blockers, local_ticket_ids.get(spec_id, {})
+                )
+                if any(item not in queue for item in blockers):
                     raise ValueError(f"ticket ledger entry {ticket_id} has invalid blockers")
                 if ticket_id in blockers:
                     raise ValueError(f"ticket ledger entry {ticket_id} blocks itself")

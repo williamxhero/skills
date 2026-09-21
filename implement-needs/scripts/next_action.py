@@ -141,7 +141,12 @@ def next_action(db: ControlDB, run_id: str, *, include_recovery: bool = True) ->
         actionable = []
         for item in dependency_errors:
             if item["code"] == "blocker_not_delivered":
-                blocker_row = db.conn.execute("SELECT status FROM specs WHERE spec_id=?", (item["blocker"],)).fetchone()
+                blocker_table = "tickets" if item.get("blocker_type") == "ticket" else "specs"
+                blocker_column = "ticket_id" if item.get("blocker_type") == "ticket" else "spec_id"
+                blocker_row = db.conn.execute(
+                    f"SELECT status FROM {blocker_table} WHERE {blocker_column}=?",
+                    (item["blocker"],),
+                ).fetchone()
                 if blocker_row is not None and blocker_row[0] not in {"cancelled", "blocked"}:
                     continue
             actionable.append(item)
