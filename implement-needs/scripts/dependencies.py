@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+from delivery_receipts import project
+
 
 ENTITY_TABLES = {"spec": "specs", "ticket": "tickets"}
 
@@ -17,7 +19,13 @@ def dependency_status(db, dependent_type, dependent_id, blocker_type, blocker_id
     ).fetchone()
     if waiver:
         return {"satisfied": True, "code": "waived", "waiver_id": waiver["waiver_id"]}
-    row = db.conn.execute(f"SELECT status FROM {ENTITY_TABLES[blocker_type]} WHERE {blocker_type}_id=?", (blocker_id,)).fetchone()
+    if blocker_type == "spec":
+        row = db.conn.execute("SELECT status,run_id FROM specs WHERE spec_id=?", (blocker_id,)).fetchone()
+    else:
+        row = db.conn.execute(
+            "SELECT t.status,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?",
+            (blocker_id,),
+        ).fetchone()
     if not row:
         return {"satisfied": False, "code": "unknown_blocker"}
     if row["status"] != "closed":
@@ -32,6 +40,9 @@ def dependency_status(db, dependent_type, dependent_id, blocker_type, blocker_id
             (blocker_type, blocker_id),
         ).fetchone()
     if not proof:
+        receipt = project(db, row["run_id"], blocker_type, blocker_id)
+        if receipt["decision"] == "allow":
+            return {"satisfied": True, "code": "delivered", "receipt_id": receipt["receipt"]["receipt_id"]}
         return {"satisfied": False, "code": "delivery_proof_missing"}
     return {"satisfied": True, "code": "delivered", "proof_id": proof["proof_id"]}
 
