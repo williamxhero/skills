@@ -27,6 +27,13 @@ assert REGISTER_MODULE_SPEC and REGISTER_MODULE_SPEC.loader
 register_qualification = importlib.util.module_from_spec(REGISTER_MODULE_SPEC)
 REGISTER_MODULE_SPEC.loader.exec_module(register_qualification)
 
+RUN_MODULE_SPEC = importlib.util.spec_from_file_location(
+    "run_qualification", ROOT / "validation/scripts/run_qualification.py"
+)
+assert RUN_MODULE_SPEC and RUN_MODULE_SPEC.loader
+run_qualification = importlib.util.module_from_spec(RUN_MODULE_SPEC)
+RUN_MODULE_SPEC.loader.exec_module(run_qualification)
+
 
 class QualificationContractTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -60,6 +67,15 @@ class QualificationContractTests(unittest.TestCase):
             "cleanup_receipt": {"complete": True, "receipts": [{"archive_readback": {"archived": True}, "registry_transition": "archived"}]},
             "route_visibility_receipt": {"planned": {"model": "gpt-5.6-sol", "effort": "high"}, "applied": {"model": "gpt-5.6-sol", "effort": "high"}, "executed": {"turn_id": "turn-1"}, "identity_consistent": True},
             "controller_lifecycle_receipt": {"continuation_persisted": True, "watchdog_tested": True, "cleanup_readback_verified": True},
+            "takeover_results": {
+                "all_stages_covered": True,
+                "resources_created": 0,
+                "stages": [
+                    "requirement", "planning", "ticketing", "implementation",
+                    "verification", "merge_cleanup", "final_verification",
+                    "release", "synchronization", "terminal", "managed_run",
+                ],
+            },
         }
 
     def test_complete_external_evidence_qualifies(self) -> None:
@@ -136,6 +152,41 @@ class QualificationContractTests(unittest.TestCase):
         self.assertEqual(REJECTED, result["decision"])
         self.assertIn("duplicate_task_identity", result["reasons"])
 
+    def test_incomplete_takeover_matrix_is_rejected(self) -> None:
+        report = self.valid_report()
+        report["takeover_results"]["stages"].remove("implementation")
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("takeover_stage_coverage_incomplete", result["reasons"])
+
+    def test_cross_run_live_evidence_requires_explicit_provenance(self) -> None:
+        report = self.valid_report()
+        report["run_id"] = "qualification-reverify"
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("cross_run_evidence_provenance_missing", result["reasons"])
+
+        report["evidence_provenance"] = {
+            "mode": "reverified_existing_live_run",
+            "source_run_id": "qualification-test",
+            "current_run_id": "qualification-reverify",
+            "evidence": ["qualification://qualification-test/live-readbacks"],
+        }
+        result = verify_report(report, self.scenario)
+        self.assertEqual(QUALIFIED, result["decision"])
+
+    def test_requalification_preserves_original_live_source_run(self) -> None:
+        report = self.valid_report()
+        report["run_id"] = "qualification-intermediate"
+        self.assertEqual("qualification-test", run_qualification._live_source_run_id(report))
+        report["evidence_provenance"] = {
+            "mode": "reverified_existing_live_run",
+            "source_run_id": "qualification-original",
+            "current_run_id": "qualification-intermediate",
+            "evidence": ["qualification://qualification-original/live-readbacks"],
+        }
+        self.assertEqual("qualification-original", run_qualification._live_source_run_id(report))
+
     def test_digest_excludes_report_output_but_not_subject_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -146,6 +197,16 @@ class QualificationContractTests(unittest.TestCase):
             self.assertEqual(before, digest_tree(root, exclude=(reports,)))
             (root / "subject.txt").write_text("two", encoding="utf-8")
             self.assertNotEqual(before, digest_tree(root, exclude=(reports,)))
+
+    def test_digest_excludes_python_bytecode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "subject.py").write_text("VALUE = 1\n", encoding="utf-8")
+            before = digest_tree(root)
+            cache = root / "__pycache__"
+            cache.mkdir()
+            (cache / "subject.cpython-313.pyc").write_bytes(b"volatile bytecode")
+            self.assertEqual(before, digest_tree(root))
 
     def test_cli_verifier_returns_nonzero_for_incomplete_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

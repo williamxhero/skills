@@ -23,11 +23,17 @@ REQUIRED_REPORT_FIELDS = (
     "recovery_evidence", "final_frontier",
     "release_train_receipts", "task_census", "repository_sync_receipt", "cleanup_receipt",
     "backend_capability_receipt", "route_visibility_receipt", "controller_lifecycle_receipt",
+    "takeover_results",
 )
 EXPECTED_COUNTS = {
     "umbrella_specs": 1, "child_specs": 3, "tickets": 8, "grill_tasks": 1,
     "planning_tasks": 1, "spec_tasks": 3, "spec_pull_requests": 3,
     "ticket_implementation_artifacts": 0,
+}
+EXPECTED_TAKEOVER_STAGES = {
+    "requirement", "planning", "ticketing", "implementation", "verification",
+    "merge_cleanup", "final_verification", "release", "synchronization",
+    "terminal", "managed_run",
 }
 
 
@@ -42,6 +48,8 @@ def digest_tree(root: Path, *, exclude: Iterable[Path] = ()) -> str:
     digest = hashlib.sha256()
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         if any(path == item or item in path.parents for item in excluded):
+            continue
+        if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
             continue
         relative = path.relative_to(root).as_posix().encode("utf-8")
         digest.update(len(relative).to_bytes(8, "big")); digest.update(relative)
@@ -94,7 +102,58 @@ def scenario_errors(scenario: dict[str, Any]) -> list[str]:
             errors.append(f"scenario_spec_{number}")
     if specs[1].get("blocked_by") != ["SPEC-1"] or specs[2].get("blocked_by") != ["SPEC-2"]:
         errors.append("scenario_dependencies")
+    if set(scenario.get("takeover_stages", [])) != EXPECTED_TAKEOVER_STAGES:
+        errors.append("scenario_takeover_stages")
     return errors
+
+
+def takeover_errors(results: Any) -> list[str]:
+    if not isinstance(results, dict):
+        return ["takeover_results_missing"]
+    errors: list[str] = []
+    stages = results.get("stages")
+    if not isinstance(stages, list) or set(stages) != EXPECTED_TAKEOVER_STAGES:
+        errors.append("takeover_stage_coverage_incomplete")
+    if results.get("all_stages_covered") is not True:
+        errors.append("takeover_matrix_incomplete")
+    if results.get("resources_created") != 0:
+        errors.append("takeover_created_duplicate_resources")
+    return errors
+
+
+def evidence_provenance_errors(report: dict[str, Any]) -> list[str]:
+    current_run_id = report.get("run_id")
+    source_run_ids: set[str] = set()
+    tasks = report.get("task_census")
+    if isinstance(tasks, dict) and isinstance(tasks.get("tasks"), list):
+        source_run_ids.update(
+            task.get("run_id") for task in tasks["tasks"]
+            if isinstance(task, dict) and isinstance(task.get("run_id"), str)
+        )
+    backend = report.get("backend_capability_receipt")
+    if isinstance(backend, dict):
+        identity = backend.get("identity_readback", backend.get("probe_target"))
+        if isinstance(identity, dict) and isinstance(identity.get("run_id"), str):
+            source_run_ids.add(identity["run_id"])
+    cleanup_run_id = report.get("cleanup_run_id")
+    if isinstance(cleanup_run_id, str):
+        source_run_ids.add(cleanup_run_id)
+    if not source_run_ids or source_run_ids == {current_run_id}:
+        return []
+    if len(source_run_ids) != 1:
+        return ["cross_run_evidence_inconsistent"]
+    source_run_id = next(iter(source_run_ids))
+    provenance = report.get("evidence_provenance")
+    if not isinstance(provenance, dict):
+        return ["cross_run_evidence_provenance_missing"]
+    valid = (
+        provenance.get("mode") == "reverified_existing_live_run"
+        and provenance.get("source_run_id") == source_run_id
+        and provenance.get("current_run_id") == current_run_id
+        and isinstance(provenance.get("evidence"), list)
+        and bool(provenance["evidence"])
+    )
+    return [] if valid else ["cross_run_evidence_provenance_invalid"]
 
 
 def project_identity_errors(receipt: Any) -> list[str]:
@@ -231,6 +290,8 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     reasons.extend(backend_errors(report.get("backend_capability_receipt")))
     reasons.extend(route_visibility_errors(report.get("route_visibility_receipt")))
     reasons.extend(lifecycle_errors(report.get("controller_lifecycle_receipt")))
+    reasons.extend(takeover_errors(report.get("takeover_results")))
+    reasons.extend(evidence_provenance_errors(report))
     counts = report.get("artifact_counts")
     if counts != EXPECTED_COUNTS:
         reasons.append("artifact_counts_mismatch")

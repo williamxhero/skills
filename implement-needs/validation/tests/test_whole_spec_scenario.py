@@ -22,6 +22,27 @@ class WholeSpecScenarioTests(unittest.TestCase):
         self.assertIsNotNone(backend.read_persisted_history(thread["formal_thread_id"], turn["turn_id"])["rollout"])
         self.assertFalse(result["live_external_evidence"])
 
+    def test_takeover_matrix_covers_every_supported_entry_stage(self):
+        result = module.run_takeover_matrix()
+        self.assertTrue(result["all_stages_covered"])
+        self.assertEqual(
+            {
+                "requirement",
+                "planning",
+                "ticketing",
+                "implementation",
+                "verification",
+                "merge_cleanup",
+                "final_verification",
+                "release",
+                "synchronization",
+                "terminal",
+                "managed_run",
+            },
+            {item["entry_stage"] for item in result["cases"]},
+        )
+        self.assertEqual(0, result["resources_created"])
+
 
 if __name__ == "__main__":
     unittest.main()

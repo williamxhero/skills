@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Implement Needs"
+  short_description: "Diagnose and repair a stalled implement-needs task"
+  default_prompt: "Use $debug-implement-needs with the target task/thread ID to reproduce the bug, fix it, requalify, and resume the task."

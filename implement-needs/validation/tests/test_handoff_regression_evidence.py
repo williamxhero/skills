@@ -11,10 +11,7 @@ from jsonschema import Draft202012Validator
 VALIDATION_ROOT = Path(__file__).resolve().parents[1]
 REPORTS_ROOT = VALIDATION_ROOT / "reports"
 SCHEMA_PATH = REPORTS_ROOT / "handoff-regression-evidence.schema.v1.json"
-EXAMPLE_PATH = (
-    REPORTS_ROOT
-    / "qualification-whole-spec-v1-20260921-handofffix-spec1.example.json"
-)
+EXAMPLE_PATH = REPORTS_ROOT / "qualification-whole-spec-v1-20260921-handofffix-spec1.example.json"
 
 
 class HandoffRegressionEvidenceTests(unittest.TestCase):
@@ -30,11 +27,7 @@ class HandoffRegressionEvidenceTests(unittest.TestCase):
 
     def test_scope_is_limited_to_spec_1_and_its_three_tickets(self) -> None:
         self.assertEqual(
-            {
-                "repository": "williamxhero/skills",
-                "spec_issue": 149,
-                "ticket_issues": [152, 153, 154],
-            },
+            {"repository": "williamxhero/skills", "spec_issue": 149, "ticket_issues": [152, 153, 154]},
             self.example["scope"],
         )
 

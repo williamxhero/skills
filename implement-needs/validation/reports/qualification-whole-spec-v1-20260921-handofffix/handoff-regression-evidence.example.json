@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "artifact_type": "whole-spec-handoff-regression",
+  "run_marker": "qualification-whole-spec-v1-20260921-handofffix",
+  "backend": "thread",
+  "spec_issue": {
+    "number": 149,
+    "url": "https://github.com/williamxhero/skills/issues/149",
+    "state": "OPEN",
+    "run_marker": "qualification-whole-spec-v1-20260921-handofffix"
+  },
+  "ticket_issues": [
+    {
+      "number": 152,
+      "url": "https://github.com/williamxhero/skills/issues/152",
+      "state": "OPEN",
+      "run_marker": "qualification-whole-spec-v1-20260921-handofffix"
+    },
+    {
+      "number": 153,
+      "url": "https://github.com/williamxhero/skills/issues/153",
+      "state": "OPEN",
+      "run_marker": "qualification-whole-spec-v1-20260921-handofffix"
+    },
+    {
+      "number": 154,
+      "url": "https://github.com/williamxhero/skills/issues/154",
+      "state": "OPEN",
+      "run_marker": "qualification-whole-spec-v1-20260921-handofffix"
+    }
+  ],
+  "excluded_issue_numbers": [
+    150,
+    151
+  ],
+  "handoff": {
+    "source_thread_id": "01a0c109-6ac2-7bb2-a325-0b7a2f76991d",
+    "implementation_thread_id": "01a0c1ff-3093-7140-926c-b2d0ff786ec3",
+    "assignment_received": true,
+    "assignment_scope": "whole-spec",
+    "evidence": [
+      "codex_delegation:source_thread_id",
+      "codex_delegation:whole-SPEC implementation task SPEC-1"
+    ]
+  },
+  "whole_spec_invariants": {
+    "implementation_task_count": 1,
+    "implementation_branch_count": 1,
+    "implementation_pr_count": 1,
+    "ticket_level_task_count": 0,
+    "ticket_level_branch_count": 0,
+    "ticket_level_pr_count": 0
+  }
+}
