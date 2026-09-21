@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/williamxhero/skills/implement-needs/validation/reports/qualification-whole-spec-v1-20260921-handofffix/handoff-regression-evidence.schema.json",
+  "title": "Whole-SPEC handoff regression evidence",
+  "description": "Run-scoped evidence that one implementation task received the complete SPEC-1 assignment without creating ticket-level tasks or pull requests.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "run_marker",
+    "backend",
+    "spec_issue",
+    "ticket_issues",
+    "excluded_issue_numbers",
+    "handoff",
+    "whole_spec_invariants"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "artifact_type": {
+      "const": "whole-spec-handoff-regression"
+    },
+    "run_marker": {
+      "const": "qualification-whole-spec-v1-20260921-handofffix"
+    },
+    "backend": {
+      "const": "thread"
+    },
+    "spec_issue": {
+      "$ref": "#/$defs/specIssue"
+    },
+    "ticket_issues": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/ticket152"
+        },
+        {
+          "$ref": "#/$defs/ticket153"
+        },
+        {
+          "$ref": "#/$defs/ticket154"
+        }
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "excluded_issue_numbers": {
+      "const": [
+        150,
+        151
+      ]
+    },
+    "handoff": {
+      "type": "object",
+      "required": [
+        "source_thread_id",
+        "implementation_thread_id",
+        "assignment_received",
+        "assignment_scope",
+        "evidence"
+      ],
+      "properties": {
+        "source_thread_id": {
+          "$ref": "#/$defs/threadId"
+        },
+        "implementation_thread_id": {
+          "$ref": "#/$defs/threadId"
+        },
+        "assignment_received": {
+          "const": true
+        },
+        "assignment_scope": {
+          "const": "whole-spec"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "whole_spec_invariants": {
+      "type": "object",
+      "required": [
+        "implementation_task_count",
+        "implementation_branch_count",
+        "implementation_pr_count",
+        "ticket_level_task_count",
+        "ticket_level_branch_count",
+        "ticket_level_pr_count"
+      ],
+      "properties": {
+        "implementation_task_count": {
+          "const": 1
+        },
+        "implementation_branch_count": {
+          "const": 1
+        },
+        "implementation_pr_count": {
+          "const": 1
+        },
+        "ticket_level_task_count": {
+          "const": 0
+        },
+        "ticket_level_branch_count": {
+          "const": 0
+        },
+        "ticket_level_pr_count": {
+          "const": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "threadId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "issueBase": {
+      "type": "object",
+      "required": [
+        "number",
+        "url",
+        "state",
+        "run_marker"
+      ],
+      "properties": {
+        "number": {
+          "type": "integer"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "state": {
+          "enum": [
+            "OPEN",
+            "CLOSED"
+          ]
+        },
+        "run_marker": {
+          "const": "qualification-whole-spec-v1-20260921-handofffix"
+        }
+      },
+      "additionalProperties": false
+    },
+    "specIssue": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/issueBase"
+        },
+        {
+          "properties": {
+            "number": {
+              "const": 149
+            },
+            "url": {
+              "const": "https://github.com/williamxhero/skills/issues/149"
+            }
+          }
+        }
+      ]
+    },
+    "ticket152": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/issueBase"
+        },
+        {
+          "properties": {
+            "number": {
+              "const": 152
+            },
+            "url": {
+              "const": "https://github.com/williamxhero/skills/issues/152"
+            }
+          }
+        }
+      ]
+    },
+    "ticket153": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/issueBase"
+        },
+        {
+          "properties": {
+            "number": {
+              "const": 153
+            },
+            "url": {
+              "const": "https://github.com/williamxhero/skills/issues/153"
+            }
+          }
+        }
+      ]
+    },
+    "ticket154": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/issueBase"
+        },
+        {
+          "properties": {
+            "number": {
+              "const": 154
+            },
+            "url": {
+              "const": "https://github.com/williamxhero/skills/issues/154"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}
