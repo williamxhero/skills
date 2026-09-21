@@ -50,6 +50,12 @@ reports a blocker, route it immediately; if it is complete, verify before archiv
 emit a controller final or leave the controller turn after merely reporting that the
 child is running.
 
+A `completed` turn with no persisted `items`, `output`, `message`, or `result` is
+`UNCERTAIN`, not a handoff. Re-read the same turn to exclude a persistence race, then
+use the managed recovery budget and checkpoint protocol. A repeated empty completion
+with no new progress marker is `no_progress`; do not send another untracked focused
+continuation or accept the turn as success.
+
 Before declaring the SPEC complete, perform a task-tool archival readback for its
 implementation task and store it beside the merge and test evidence. Closing the SPEC
 or tickets in GitHub does not close the Codex task; both states require independent

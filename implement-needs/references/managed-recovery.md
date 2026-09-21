@@ -16,10 +16,16 @@ the recovery decision and persists the turn receipt.
 7. On model capacity, archive the failed attempt and verify archive state before
    selecting and reading back a fallback route and creating a replacement.
 
-The controller never retries a completed turn, never replays an uncertain
+Terminal status is not completion evidence by itself. The matching persisted turn
+must contain non-empty work output in `items`, `output`, `message`, or `result`.
+An empty completed turn is `UNCERTAIN`; re-read it once for persistence lag, then
+apply the persisted budget. Repeated empty completion with no new progress marker
+is `no_progress` and cannot trigger another untracked continue.
+
+The controller never retries a verified completed turn, never replays an uncertain
 assignment, and never creates a replacement without an independently verified
 archive and applied route. Missing formal identity, project, authorization,
-history, or side-effect readback is `blocked`.
+history, useful output, or side-effect readback is `blocked`.
 
 The durable `managed_turns` table stores the formal identity, previous turn,
 failure class, terminal event, history readback, checkpoint, output evidence,

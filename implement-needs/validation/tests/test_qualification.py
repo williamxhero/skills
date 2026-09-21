@@ -47,7 +47,7 @@ class QualificationContractTests(unittest.TestCase):
             "project_identity_receipt": {"project_id": "project-1", "canonical_path": "C:/skills"},
             "logical_id_to_external_id_map": {f"item-{index}": f"external-{index}" for index in range(20)},
             "artifact_counts": EXPECTED_COUNTS,
-            "recovery_results": {key: {"detected": True, "executed": True} for key in ("planning_restart", "ticket_restart", "assignment_restart", "merge_before_archive_restart", "release_restart", "lost_response", "idempotency_retry", "controller_interrupted", "capacity_fallback", "stream_disconnect", "uncertain_side_effect")},
+            "recovery_results": {key: {"detected": True, "executed": True} for key in ("planning_restart", "ticket_restart", "assignment_restart", "merge_before_archive_restart", "release_restart", "lost_response", "idempotency_retry", "controller_interrupted", "capacity_fallback", "stream_disconnect", "uncertain_side_effect", "repeated_empty_completion")},
             "recovery_evidence": {"detection": ["recovery://detected"], "execution": ["recovery://executed"]},
             "final_frontier": {"successor_reached": True, "spec_id": "SPEC-3"},
             "release_train_receipts": {level: "passed" for level in ("L0", "L1", "L2", "L3", "L4", "L5")},
@@ -81,6 +81,13 @@ class QualificationContractTests(unittest.TestCase):
     def test_complete_external_evidence_qualifies(self) -> None:
         result = verify_report(self.valid_report(), self.scenario)
         self.assertEqual(QUALIFIED, result["decision"])
+
+    def test_missing_repeated_empty_completion_recovery_rejects(self) -> None:
+        report = self.valid_report()
+        del report["recovery_results"]["repeated_empty_completion"]
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("recovery_matrix_incomplete", result["reasons"])
 
     def test_missing_project_id_rejects_before_any_claim_of_success(self) -> None:
         report = self.valid_report()

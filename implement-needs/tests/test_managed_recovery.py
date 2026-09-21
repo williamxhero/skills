@@ -26,7 +26,20 @@ class ManagedRecoveryTests(unittest.TestCase):
         self.assertEqual(MODEL_CAPACITY, classify_turn_outcome(error={"code": "model_capacity"}, transport_error="connection lost"))
         self.assertEqual(STREAM_DISCONNECTED, classify_turn_outcome(transport_error={"code": "stream_disconnected"}))
         self.assertEqual(BLOCKED, classify_turn_outcome(error={"code": "project_not_found"}))
-        self.assertEqual(COMPLETED, classify_turn_outcome(completion={"status": "completed"}))
+        self.assertEqual(
+            UNCERTAIN,
+            classify_turn_outcome(
+                completion={"status": "completed", "items": []},
+                history_readback={"turns": [{"id": "turn-1", "items": []}]},
+            ),
+        )
+        self.assertEqual(
+            COMPLETED,
+            classify_turn_outcome(
+                completion={"status": "completed"},
+                history_readback={"turns": [{"id": "turn-1", "output": "verified handoff"}]},
+            ),
+        )
 
     def test_checkpointed_continue_is_identity_bound_and_not_a_replay(self):
         cp = checkpoint(identity=IDENTITY, previous_turn_id="turn-1", failure_class=STREAM_DISCONNECTED,
@@ -42,7 +55,7 @@ class ManagedRecoveryTests(unittest.TestCase):
     def test_reconnect_completed_wins_over_recovery(self):
         decision = decide_recovery(STREAM_DISCONNECTED, thread_readback={
             "requested_formal_thread_id": "thread-formal", "formal_thread_id": "thread-formal", "host_id": "local", "lifecycle": "working",
-        }, history_readback={"turn_completed": True})
+        }, history_readback={"turn_completed": True, "turns": [{"output": "verified"}]})
         self.assertEqual(COMPLETED, decision.failure_class)
         self.assertEqual("verify_completed_after_reconnect", decision.action)
 

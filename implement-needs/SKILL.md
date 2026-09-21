@@ -30,6 +30,11 @@ archive-state readback. The adapter contract is in `references/task-backend.md`.
 For managed turn failure classification, checkpointed continue, capacity
 replacement, and side-effect reconciliation, read `references/managed-recovery.md`
 and use `scripts/managed_recovery.py`.
+Never accept terminal status alone as a handoff. A completed turn must contain
+persisted work output in `items`, `output`, `message`, or `result`; otherwise classify
+it as `UNCERTAIN`, re-read once for persistence lag, and apply the bounded managed
+recovery policy. Repeated empty completion without a new progress marker is
+`no_progress`, not permission for another untracked continuation.
 Backend selection requires a live capability response. A command-line flag is not
 capability evidence.
 

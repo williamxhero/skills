@@ -35,6 +35,7 @@ EXPECTED_TAKEOVER_STAGES = {
     "merge_cleanup", "final_verification", "release", "synchronization",
     "terminal", "managed_run",
 }
+EXPECTED_RECOVERY_CASES = {"repeated_empty_completion"}
 
 
 def canonical_json(value: Any) -> str:
@@ -104,6 +105,8 @@ def scenario_errors(scenario: dict[str, Any]) -> list[str]:
         errors.append("scenario_dependencies")
     if set(scenario.get("takeover_stages", [])) != EXPECTED_TAKEOVER_STAGES:
         errors.append("scenario_takeover_stages")
+    if set(scenario.get("required_recovery_cases", [])) != EXPECTED_RECOVERY_CASES:
+        errors.append("scenario_recovery_cases")
     return errors
 
 
@@ -251,7 +254,8 @@ def recovery_errors(results: Any, evidence: Any, frontier: Any) -> list[str]:
     required = {"planning_restart", "ticket_restart", "assignment_restart",
                 "merge_before_archive_restart", "release_restart", "lost_response",
                 "idempotency_retry", "controller_interrupted", "capacity_fallback",
-                "stream_disconnect", "uncertain_side_effect"}
+                "stream_disconnect", "uncertain_side_effect",
+                "repeated_empty_completion"}
     errors: list[str] = []
     if not isinstance(results, dict) or not all(key in results for key in required):
         errors.append("recovery_matrix_incomplete")

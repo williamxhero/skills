@@ -26,6 +26,7 @@ class ManagedTurnBackendTests(unittest.TestCase):
         result = send_managed_turn(backend, "thread-1", "local", "continue", wait=True)
         self.assertEqual("turn-2", result["turn_id"])
         self.assertEqual("turn-2", result["completion"]["params"]["turnId"])
+        self.assertEqual("completed", result["outcome"])
         self.assertIn("persisted_history", result["execution_evidence"])
 
     def test_notification_or_history_identity_mismatch_fails_closed(self):
@@ -46,6 +47,17 @@ class ManagedTurnBackendTests(unittest.TestCase):
         result = read_persisted_history(backend, "thread-1", "local", "turn-2")
         self.assertEqual("turn-2", result["turns"][0]["id"])
         self.assertEqual("thread/read", direct.last[0])
+
+    def test_empty_completed_turn_is_not_accepted_as_a_handoff(self):
+        class EmptyCompletion(FakeTransport):
+            def read_history(self, thread_id, turn_id):
+                return {"turns": [{"id": turn_id, "status": "completed", "items": []}]}
+
+        result = send_managed_turn(
+            TaskBackend("fake", EmptyCompletion()), "thread-1", "local", "continue", wait=True
+        )
+        self.assertEqual("uncertain", result["outcome"])
+        self.assertNotIn("persisted_history", result["execution_evidence"])
 
 
 if __name__ == "__main__":

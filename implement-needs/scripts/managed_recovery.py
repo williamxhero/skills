@@ -83,9 +83,50 @@ def _error_text(value: Any) -> str:
     return str(value or "").lower()
 
 
+def _has_payload(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return any(_has_payload(value.get(field)) for field in ("text", "output", "message", "result", "content"))
+    if isinstance(value, list):
+        return any(_has_payload(item) for item in value)
+    return value is not None and value is not False
+
+
+def has_useful_turn_output(*, completion: Mapping[str, Any] | None = None,
+                           history_readback: Mapping[str, Any] | None = None,
+                           turn_id: str | None = None) -> bool:
+    """Require persisted work output, not a terminal status alone."""
+    candidates: list[Mapping[str, Any]] = []
+    if isinstance(completion, Mapping):
+        turn = completion.get("turn")
+        candidates.append(turn if isinstance(turn, Mapping) else completion)
+    history = history_readback if isinstance(history_readback, Mapping) else {}
+    turns = history.get("turns")
+    if isinstance(turns, list):
+        candidates.extend(
+            item for item in turns
+            if isinstance(item, Mapping) and (turn_id is None or item.get("id") == turn_id)
+        )
+    for candidate in candidates:
+        if any(_has_payload(candidate.get(field)) for field in ("output", "message", "result")):
+            return True
+        items = candidate.get("items")
+        if isinstance(items, list) and any(
+            isinstance(item, Mapping)
+            and item.get("type") not in {"userMessage", "reasoning"}
+            and _has_payload(item)
+            for item in items
+        ):
+            return True
+    return False
+
+
 def classify_turn_outcome(*, completion: Mapping[str, Any] | None = None,
                           error: Mapping[str, Any] | str | None = None,
-                          transport_error: Mapping[str, Any] | str | None = None) -> str:
+                          transport_error: Mapping[str, Any] | str | None = None,
+                          history_readback: Mapping[str, Any] | None = None,
+                          turn_id: str | None = None) -> str:
     """Classify structured fields first, with stable text only as fallback."""
     completion = completion if isinstance(completion, Mapping) else {}
     structured = error if isinstance(error, Mapping) else (
@@ -109,7 +150,9 @@ def classify_turn_outcome(*, completion: Mapping[str, Any] | None = None,
     if "stream disconnected" in text or "connection" in text and "lost" in text:
         return STREAM_DISCONNECTED
     if completion.get("status") in {"completed", "succeeded", "success"} and not error:
-        return COMPLETED
+        return COMPLETED if has_useful_turn_output(
+            completion=completion, history_readback=history_readback, turn_id=turn_id
+        ) else UNCERTAIN
     if error or transport_error or completion.get("status") in {"failed", "error"}:
         return TERMINAL_FAILURE
     return UNCERTAIN
@@ -201,7 +244,9 @@ def decide_recovery(failure_class: str, *, attempts: int = 0, budget: int | None
         if attempts >= budget:
             return RecoveryDecision(BLOCKED, "repair", "blocked", "stream recovery budget exhausted", budget, ("recovery_budget_exhausted",))
         history = history_readback or {}
-        if history.get("turn_completed") or history.get("terminal") == "completed":
+        if (history.get("turn_completed") or history.get("terminal") == "completed") and has_useful_turn_output(
+            completion={"status": "completed"}, history_readback=history
+        ):
             return RecoveryDecision(COMPLETED, "verify_completed_after_reconnect", "continue_controller", "reconnect found a completed original turn", budget, ("history_readback",))
         thread = thread_readback or {}
         if thread.get("formal_thread_id") != thread.get("requested_formal_thread_id") or not thread.get("host_id"):
@@ -322,7 +367,9 @@ def execute_managed_turn(db, backend, *, run_id: str, identity: Mapping[str, Any
         completion = wait_for_turn_completion(backend, identity["formal_thread_id"], identity["host_id"], turn_id, timeout)
         history = read_persisted_history(backend, identity["formal_thread_id"], identity["host_id"], turn_id)
         params = completion.get("params", completion)
-        classified = classify_turn_outcome(completion=params)
+        classified = classify_turn_outcome(
+            completion=params, history_readback=history, turn_id=turn_id
+        )
         if classified == COMPLETED:
             db.update_managed_turn(run_id, identity["formal_thread_id"], turn_id, failure_class=COMPLETED, status="completed", terminal_event=completion, history_readback=history, output_evidence=["turn_completion"], side_effect_evidence=["persisted_history"])
             db.record_intent_outcome(intent["intent_id"], "succeeded", {"status": "verified", "turn_id": turn_id}, {"status": "verified", "turn_id": turn_id, "history": history})
