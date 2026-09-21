@@ -70,6 +70,56 @@
       "decision": "QUALIFIED",
       "run_id": "qualification-whole-spec-v1-20260921-emptyturn-final2",
       "report": "qualification-whole-spec-v1-20260921-emptyturn-final2/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "0af6fcf6c00edff6492bf52dcc2af61b826aa6002ed83212006595cfac0085cc",
+      "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-debug-emptyturn-v2",
+      "report": "qualification-whole-spec-v1-20260921-debug-emptyturn-v2/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "e7c2f001641b19651015e1c6978fdab41603955c4aaf00fd6ec54c0f30e07e31",
+      "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-debug-emptyturn-v3",
+      "report": "qualification-whole-spec-v1-20260921-debug-emptyturn-v3/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "1409b4a720c75309a03e755285c5c286a2f9f5fb15fdc6431b9f2797c645b8a6",
+      "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-debug-emptyturn-v4",
+      "report": "qualification-whole-spec-v1-20260921-debug-emptyturn-v4/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "0289739a27be37ecddb001b75dd0d8e87833999e6b0c36b29f0e81a8bf34dc00",
+      "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-debug-emptyturn-v5",
+      "report": "qualification-whole-spec-v1-20260921-debug-emptyturn-v5/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "059db1a4e265b7d0773c8c8574f17e07bbcf0f3e07080108134fe83c6a9b0502",
+      "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-recoveryfrontier",
+      "report": "qualification-whole-spec-v1-20260921-recoveryfrontier/qualification.json"
     }
   ]
 }

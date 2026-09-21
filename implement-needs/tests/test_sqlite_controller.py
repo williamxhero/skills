@@ -95,6 +95,38 @@ class SQLiteControllerTests(unittest.TestCase):
             self.assertEqual("dispatch_ticket", next_action(db, "run-line")["kind"])
             db.close()
 
+    def test_reconcile_ticket_blockers_maps_legacy_identity_to_run_owned_ticket(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            try:
+                db.create_run("run-line", "initiative", "requirement", "single-ticket-line", "controller")
+                db.add_spec("run-line", "SPEC", "tickets", 1)
+                db.add_ticket("SPEC", "T-01", "first ticket", queue_position=1)
+                db.add_ticket("SPEC", "T-02", "second ticket", blocked_by=["SPEC/01"], queue_position=2)
+                result = db.reconcile_ticket_blockers("T-02", ["SPEC/01"], db.business_version("run-line"), ["github://issue/220"])
+                self.assertTrue(result["changed"])
+                self.assertEqual('["T-01"]', db.conn.execute("SELECT blocked_by FROM tickets WHERE ticket_id='T-02'").fetchone()[0])
+                self.assertEqual("ticket_dependencies_reconciled", db.conn.execute("SELECT event_type FROM events ORDER BY event_id DESC LIMIT 1").fetchone()[0])
+            finally:
+                db.close()
+
+    def test_reconcile_ticket_blockers_rejects_bad_aliases(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            try:
+                db.create_run("run-line", "initiative", "requirement", "single-ticket-line", "controller")
+                db.add_spec("run-line", "SPEC", "tickets", 1)
+                db.add_spec("run-line", "OTHER", "other tickets", 2)
+                db.add_ticket("SPEC", "T-01", "first ticket", queue_position=1)
+                db.add_ticket("SPEC", "T-02", "second ticket", queue_position=2)
+                db.add_ticket("OTHER", "T-03", "other ticket", queue_position=3)
+                for alias in ("SPEC/1", "SPEC/99", "OTHER/01", "SPEC/nope"):
+                    with self.subTest(alias=alias):
+                        with self.assertRaises(ValueError):
+                            db.reconcile_ticket_blockers("T-02", [alias], db.business_version("run-line"))
+            finally:
+                db.close()
+
     def test_single_ticket_line_does_not_skip_an_earlier_blocked_ticket(self):
         with tempfile.TemporaryDirectory() as d:
             db = ControlDB(Path(d) / "run.db")

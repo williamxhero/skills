@@ -135,7 +135,13 @@ def next_action(db: ControlDB, run_id: str, *, include_recovery: bool = True) ->
     structure = structure_from_db(db, run_id)
     if structure["status"] != "valid" and run[3] in {"implementing", "verifying", "release", "final_verification", "synchronization"}:
         return {"kind": "repair_spec", "target": structure["errors"][0].get("spec_id") or run_id, "reason": "structural_error", "errors": structure["errors"]}
-    has_dependency_edges = any(json.loads(spec["blocked_by"] or "[]") for spec in specs)
+    has_dependency_edges = any(json.loads(spec["blocked_by"] or "[]") for spec in specs) or bool(
+        db.conn.execute(
+            "SELECT 1 FROM tickets t JOIN specs s ON s.spec_id=t.spec_id "
+            "WHERE s.run_id=? AND COALESCE(t.blocked_by,'[]')!='[]' LIMIT 1",
+            (run_id,),
+        ).fetchone()
+    )
     if has_dependency_edges:
         dependency_errors = validation_errors(db, run_id)
         actionable = []

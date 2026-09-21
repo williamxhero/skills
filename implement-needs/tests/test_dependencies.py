@@ -127,6 +127,78 @@ class DependencyTests(unittest.TestCase):
         finally:
             db.close(); directory.cleanup()
 
+    def test_whole_spec_keeps_spec_dispatch_when_later_ticket_waits(self):
+        directory, db = self._db()
+        try:
+            db.add_spec("run-1", "#95", "first", 1)
+            db.add_spec("run-1", "#96", "second", 2, ["#95"])
+            db.add_ticket("#95", "#220", "first ticket", queue_position=1)
+            db.add_ticket("#95", "#221", "second ticket", blocked_by=["#220"], queue_position=2)
+            db.conn.execute("UPDATE runs SET run_phase='implementing' WHERE run_id='run-1'")
+            db.conn.execute("UPDATE specs SET status='ready' WHERE spec_id='#95'")
+
+            action = next_action(db, "run-1")
+
+            self.assertEqual("ticket_current_spec", action["kind"])
+            self.assertEqual("#95", action["target"])
+            db.update_spec("#95", "ticketing")
+            db.update_spec("#95", "tickets_ready")
+            self.assertEqual({"kind": "dispatch_spec", "target": "#95"}, next_action(db, "run-1"))
+        finally:
+            db.close(); directory.cleanup()
+
+    def test_invalid_ticket_dependency_graphs_fail_closed(self):
+        cases = {
+            "unknown": ("MISSING", "#95", 1),
+            "malformed_alias": ("#95/not-an-ordinal", "#95", 1),
+            "forward": ("#221", "#95", 1),
+        }
+        for name, (blocker_id, dependent_spec, dependent_position) in cases.items():
+            with self.subTest(name=name):
+                directory, db = self._db()
+                try:
+                    db.add_spec("run-1", "#95", "first", 1)
+                    db.add_spec("run-1", "#96", "second", 2, ["#95"])
+                    db.add_ticket("#95", "#220", "first ticket", queue_position=1)
+                    db.add_ticket("#95", "#221", "second ticket", queue_position=2)
+                    dependent_id = "#222"
+                    db.add_ticket(
+                        dependent_spec,
+                        dependent_id,
+                        "dependent ticket",
+                        blocked_by=[blocker_id],
+                        queue_position=3,
+                    )
+                    if name == "forward":
+                        db.conn.execute(
+                            "UPDATE tickets SET blocked_by='[\"#221\"]',queue_position=1 WHERE ticket_id=?",
+                            (dependent_id,),
+                        )
+                        db.conn.execute("UPDATE tickets SET queue_position=3 WHERE ticket_id='#220'")
+                    db.conn.execute("UPDATE runs SET run_phase='implementing' WHERE run_id='run-1'")
+
+                    action = next_action(db, "run-1")
+
+                    self.assertEqual("repair_dependency", action["kind"])
+                finally:
+                    db.close(); directory.cleanup()
+
+    def test_delivered_predecessor_ticket_in_earlier_spec_is_valid(self):
+        directory, db = self._db()
+        try:
+            db.add_spec("run-1", "S1", "first", 1)
+            db.add_spec("run-1", "S2", "second", 2, ["S1"])
+            db.add_ticket("S1", "T1", "first")
+            db.add_ticket("S2", "T2", "second", blocked_by=["T1"])
+            db.conn.execute("UPDATE specs SET status='closed' WHERE spec_id='S1'")
+            db.conn.execute("UPDATE tickets SET status='closed' WHERE ticket_id='T1'")
+            db.record_delivery_proof("spec", "S1", "delivery", "merge:abc", ["commit:abc", "test:passed"])
+            db.record_delivery_proof("ticket", "T1", "delivery", "merge:abc", ["commit:abc", "test:passed"])
+            self.assertEqual([], validation_errors(db, "run-1"))
+            self.assertEqual("advance_spec", next_action(db, "run-1", include_recovery=False)["kind"])
+        finally:
+            db.close(); directory.cleanup()
+
     def test_closed_ticket_creates_delivery_proof_and_rejects_evidence_free_close(self):
         directory, db = self._db()
         try:

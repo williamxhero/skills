@@ -34,6 +34,31 @@ class ControllerContinuationTests(unittest.TestCase):
         self.assertEqual("controller_interrupted:run", row[0])
         self.assertEqual("controller_interrupted", row[1])
 
+    def test_orphaned_interruption_marker_is_reconciled_before_retry(self):
+        self.db.add_spec("run", "S1", "closed", 1)
+        self.db.add_spec("run", "S2", "next", 2)
+        self.db.conn.execute("UPDATE specs SET status='closed' WHERE spec_id='S1'")
+        self.db.conn.execute("UPDATE specs SET status='planned' WHERE spec_id='S2'")
+        self.db.conn.execute(
+            "UPDATE runs SET run_phase='implementing',recovery_action='controller_interrupted' WHERE run_id='run'"
+        )
+
+        recovered = reconcile_controller_interruption(self.db, "run")
+
+        self.assertEqual("recovery_required", recovered["decision"])
+        self.assertEqual("controller_interrupted", recovered["action"]["kind"])
+        self.assertEqual("pending", recovered["action"]["status"])
+        row = self.db.conn.execute(
+            "SELECT current_action,recovery_action FROM runs WHERE run_id='run'"
+        ).fetchone()
+        self.assertEqual("controller_interrupted:run", row[0])
+        self.assertEqual("controller_interrupted", row[1])
+        self.assertIsNotNone(
+            self.db.conn.execute(
+                "SELECT 1 FROM events WHERE run_id='run' AND event_type='stale_recovery_intent_reconciled'"
+            ).fetchone()
+        )
+
     def test_watchdog_does_not_misclassify_fresh_or_terminal_run(self):
         fresh = watchdog(self.db, "run", now_value=datetime.now(timezone.utc), stale_after_seconds=60)
         self.assertEqual("no_action", fresh["decision"])
@@ -75,6 +100,18 @@ class ControllerContinuationTests(unittest.TestCase):
         self.assertTrue(first["changed"])
         self.assertFalse(second["changed"])
         self.assertEqual("recover_capacity", self.db.conn.execute("SELECT kind FROM actions").fetchone()[0])
+
+    def test_existing_ready_or_running_spec_is_not_a_lost_successor_wakeup(self):
+        self.db.add_spec("run", "S1", "closed", 1)
+        self.db.add_spec("run", "S2", "current", 2)
+        self.db.add_spec("run", "S3", "future", 3)
+        self.db.conn.execute("UPDATE specs SET status='closed' WHERE spec_id='S1'")
+        self.db.conn.execute("UPDATE runs SET run_phase='implementing' WHERE run_id='run'")
+        for status, expected in (("ready", "ticket_current_spec"), ("implementing", "wait_spec")):
+            with self.subTest(status=status):
+                self.db.conn.execute("UPDATE specs SET status=? WHERE spec_id='S2'", (status,))
+                self.assertEqual(expected, next_action(self.db, "run", include_recovery=False)["kind"])
+                self.assertEqual(expected, next_action(self.db, "run")["kind"])
 
 
 if __name__ == "__main__":

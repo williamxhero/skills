@@ -1360,6 +1360,48 @@ class ControlDB:
                 raise ValueError(f"queue_position already used in run: {queue_position}")
             self.conn.execute("INSERT INTO tickets(ticket_id,spec_id,title,status,blocked_by,issue_url,queue_position) VALUES(?,?,?,?,?,?,?)",(ticket_id,spec_id,title,"planned",json.dumps(blocked_by or []),issue_url,queue_position))
             self._business_event(run_id,"ticket",ticket_id,"ticket_created",{"spec_id":spec_id,"queue_position":queue_position})
+
+    def reconcile_ticket_blockers(self, ticket_id, blocked_by, expected_version=None, evidence=None):
+        """Replace legacy blocker identities with verified run-owned tickets."""
+        if not isinstance(blocked_by, list) or any(not isinstance(item, str) or not item.strip() for item in blocked_by):
+            raise ValueError("blocked_by must be a list of non-empty strings")
+        row = self.conn.execute(
+            "SELECT t.spec_id,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?",
+            (ticket_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("unknown ticket")
+        run_id = row[1]
+        if ticket_id in blocked_by:
+            raise ValueError("ticket cannot block itself")
+        from dependencies import resolve_ticket_alias
+        declared_blocked_by = list(blocked_by)
+        resolved_blocked_by = [
+            resolve_ticket_alias(self, ticket_id, item) if "/" in item else item
+            for item in declared_blocked_by
+        ]
+        placeholders = ",".join("?" for _ in blocked_by) or "NULL"
+        present = self.conn.execute(
+            f"SELECT t.ticket_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id "
+            f"WHERE s.run_id=? AND t.ticket_id IN ({placeholders})",
+            [run_id, *resolved_blocked_by],
+        ).fetchall()
+        known = {item[0] for item in present}
+        unknown = [item for item in resolved_blocked_by if item not in known]
+        if unknown:
+            raise ValueError(f"unknown run-owned blocker(s): {', '.join(unknown)}")
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            current = self.conn.execute("SELECT blocked_by FROM tickets WHERE ticket_id=?", (ticket_id,)).fetchone()
+            current_value = json.loads(current[0] or "[]")
+            if current_value == resolved_blocked_by:
+                return {"ticket_id": ticket_id, "changed": False, "business_version": self.business_version(run_id)}
+            self.conn.execute("UPDATE tickets SET blocked_by=? WHERE ticket_id=?", (json.dumps(resolved_blocked_by, ensure_ascii=False), ticket_id))
+            version = self._business_event(run_id, "ticket", ticket_id, "ticket_dependencies_reconciled", {
+                "previous": current_value, "declared_blocked_by": declared_blocked_by,
+                "blocked_by": resolved_blocked_by, "evidence": evidence or [],
+            })
+            return {"ticket_id": ticket_id, "changed": True, "business_version": version}
     def import_ticket_ledger(self, run_id, entries, expected_version=None):
         """Import an externally read-back ticket ledger without creating issues.
 

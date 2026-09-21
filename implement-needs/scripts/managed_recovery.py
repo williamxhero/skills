@@ -138,15 +138,24 @@ def empty_completed_turn_streak(*, history_readback: Mapping[str, Any] | None = 
     rows = [item for item in turns if isinstance(item, Mapping)]
     if turn_id is not None and not any(item.get("id") == turn_id for item in rows):
         return 0
-    streak = 0
-    for item in reversed(rows):
-        status = item.get("status")
-        if status not in {"completed", "succeeded", "success"}:
-            break
-        if has_useful_turn_output(history_readback={"turns": [item]}, turn_id=item.get("id")):
-            break
-        streak += 1
-    return streak
+    current = next((index for index, item in enumerate(rows) if item.get("id") == turn_id), len(rows) - 1)
+
+    def count(direction: int) -> int:
+        streak = 0
+        index = current
+        while 0 <= index < len(rows):
+            item = rows[index]
+            if item.get("status") not in {"completed", "succeeded", "success"}:
+                break
+            if has_useful_turn_output(history_readback={"turns": [item]}, turn_id=item.get("id")):
+                break
+            streak += 1
+            index += direction
+        return streak
+
+    # Native and normalized readers disagree on chronology. The current turn is
+    # the anchor; only the contiguous side can contribute to its empty streak.
+    return max(count(-1), count(1))
 
 
 def classify_turn_outcome(*, completion: Mapping[str, Any] | None = None,

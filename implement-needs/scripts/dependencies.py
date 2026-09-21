@@ -2,11 +2,58 @@
 from __future__ import annotations
 
 import json
+import re
 
 from delivery_receipts import project
 
 
 ENTITY_TABLES = {"spec": "specs", "ticket": "tickets"}
+_TICKET_ALIAS_RE = re.compile(r"^(?P<spec>[^/]+)/(?P<ordinal>[0-9]{2})$")
+_ACTIVE_TICKET_STATUSES = {"planned", "ready", "implementing", "verified", "merged"}
+
+
+def _decode_blockers(value):
+    try:
+        blockers = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(blockers, list) or any(not isinstance(item, str) or not item.strip() for item in blockers):
+        return None
+    return blockers
+
+
+def resolve_ticket_alias(db, dependent_ticket_id, blocker_id):
+    """Resolve a SPEC-local ticket alias to one run-owned ticket.
+
+    ``#95/01`` means the first ticket registered under SPEC ``#95``.  The
+    alias is only valid for a dependent ticket in that same SPEC.  Malformed,
+    unknown, cross-SPEC, and ambiguous aliases fail closed.
+    """
+    dependent = db.conn.execute(
+        "SELECT t.spec_id,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE t.ticket_id=?",
+        (dependent_ticket_id,),
+    ).fetchone()
+    if dependent is None:
+        raise ValueError("unknown dependent ticket")
+    match = _TICKET_ALIAS_RE.fullmatch(blocker_id) if isinstance(blocker_id, str) else None
+    if match is None:
+        raise ValueError(f"malformed ticket alias: {blocker_id}")
+    alias_spec = match.group("spec")
+    ordinal = int(match.group("ordinal"))
+    if ordinal < 1 or alias_spec != dependent["spec_id"]:
+        raise ValueError(f"cross-SPEC or invalid ticket alias: {blocker_id}")
+    rows = db.conn.execute(
+        "SELECT t.ticket_id,t.queue_position FROM tickets t WHERE t.spec_id=? AND "
+        "EXISTS (SELECT 1 FROM specs s WHERE s.spec_id=t.spec_id AND s.run_id=?) "
+        "ORDER BY t.queue_position,t.ticket_id",
+        (alias_spec, dependent["run_id"]),
+    ).fetchall()
+    if ordinal > len(rows):
+        raise ValueError(f"unknown ticket alias: {blocker_id}")
+    positions = [row["queue_position"] for row in rows]
+    if len(positions) != len(set(positions)):
+        raise ValueError(f"ambiguous ticket alias: {blocker_id}")
+    return rows[ordinal - 1]["ticket_id"]
 
 
 def dependency_status(db, dependent_type, dependent_id, blocker_type, blocker_id):
@@ -53,7 +100,11 @@ def validation_errors(db, run_id):
     specs = db.conn.execute("SELECT spec_id,position,blocked_by FROM specs WHERE run_id=?", (run_id,)).fetchall()
     spec_positions = {row["spec_id"]: row["position"] for row in specs}
     for spec in specs:
-        for blocker_id in json.loads(spec["blocked_by"] or "[]"):
+        blockers = _decode_blockers(spec["blocked_by"])
+        if blockers is None:
+            errors.append({"dependent": spec["spec_id"], "blocker": None, "code": "dependency_list_invalid"})
+            continue
+        for blocker_id in blockers:
             if blocker_id not in spec_positions:
                 errors.append({"dependent": spec["spec_id"], "blocker": blocker_id, "code": "unknown_blocker"})
             elif spec_positions[blocker_id] >= spec["position"]:
@@ -63,11 +114,60 @@ def validation_errors(db, run_id):
                 if not status["satisfied"]:
                     errors.append({"dependent": spec["spec_id"], "blocker": blocker_id, "code": status["code"]})
     tickets = db.conn.execute(
-        "SELECT t.ticket_id,t.blocked_by FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?", (run_id,)
+        "SELECT t.ticket_id,t.spec_id,t.queue_position,t.blocked_by,s.run_id "
+        "FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",
+        (run_id,),
     ).fetchall()
+    ticket_by_id = {ticket["ticket_id"]: ticket for ticket in tickets}
     for ticket in tickets:
-        for blocker_id in json.loads(ticket["blocked_by"] or "[]"):
+        blockers = _decode_blockers(ticket["blocked_by"])
+        if blockers is None:
+            errors.append({"dependent": ticket["ticket_id"], "blocker": None, "code": "dependency_list_invalid"})
+            continue
+        for blocker_id in blockers:
+            blocker = ticket_by_id.get(blocker_id)
+            if blocker is None:
+                outside_run = db.conn.execute(
+                    "SELECT t.spec_id,s.run_id FROM tickets t JOIN specs s ON s.spec_id=t.spec_id "
+                    "WHERE t.ticket_id=?",
+                    (blocker_id,),
+                ).fetchone()
+                errors.append({
+                    "dependent": ticket["ticket_id"],
+                    "blocker": blocker_id,
+                    "code": "cross_run_dependency" if outside_run is not None else "unknown_blocker",
+                })
+                continue
             status = dependency_status(db, "ticket", ticket["ticket_id"], "ticket", blocker_id)
+            if blocker["spec_id"] != ticket["spec_id"]:
+                if status["satisfied"]:
+                    continue
+                errors.append({
+                    "dependent": ticket["ticket_id"],
+                    "blocker": blocker_id,
+                    "code": "cross_spec_dependency",
+                })
+                continue
+            if (
+                ticket["queue_position"] is None
+                or blocker["queue_position"] is None
+                or blocker["queue_position"] >= ticket["queue_position"]
+            ):
+                errors.append({
+                    "dependent": ticket["ticket_id"],
+                    "blocker": blocker_id,
+                    "code": "forward_dependency",
+                })
+                continue
             if not status["satisfied"]:
+                # A same-SPEC edge to an earlier queue item is the normal
+                # sequential work graph.  Its undelivered state is handled by
+                # the planner when it reaches that earlier ticket; reporting
+                # it here would turn an ordinary queue wait into repair.
+                if (
+                    status["code"] == "blocker_not_delivered"
+                    and status.get("status") in _ACTIVE_TICKET_STATUSES
+                ):
+                    continue
                 errors.append({"dependent": ticket["ticket_id"], "blocker": blocker_id, "code": status["code"]})
     return errors

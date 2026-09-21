@@ -54,9 +54,19 @@ def lost_wakeup_candidate(db: ControlDB, run_id: str) -> bool:
         raise
     if state["state"] != "active_without_action" or state["run_phase"] not in {"implementing", "verifying"}:
         return False
-    closed = db.conn.execute("SELECT 1 FROM specs WHERE run_id=? AND status='closed' LIMIT 1", (run_id,)).fetchone()
-    planned = db.conn.execute("SELECT 1 FROM specs WHERE run_id=? AND status='planned' LIMIT 1", (run_id,)).fetchone()
-    return closed is not None and planned is not None
+    closed = db.conn.execute(
+        "SELECT 1 FROM specs WHERE run_id=? AND status='closed' LIMIT 1", (run_id,)
+    ).fetchone()
+    frontier = db.conn.execute(
+        "SELECT status FROM specs WHERE run_id=? AND status NOT IN ('closed','cancelled') "
+        "ORDER BY position LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    # A lost wake-up is only the boundary where the next SPEC is still planned.
+    # Once the frontier is ready or already running, the controller has a live
+    # semantic action and must let next_action render it instead of repeatedly
+    # inserting controller_interrupted recovery.
+    return closed is not None and frontier is not None and frontier["status"] == "planned"
 
 
 def reconcile_controller_interruption(db: ControlDB, run_id: str, *, reason: str = "controller_turn_interrupted") -> dict[str, Any]:
@@ -66,6 +76,28 @@ def reconcile_controller_interruption(db: ControlDB, run_id: str, *, reason: str
         return {"decision": "terminal", "action": None, "state": state}
     if state["pending_action"]:
         return {"decision": "existing_action", "action": state["pending_action"], "state": state}
+    # A controller turn can persist the run marker and then be interrupted
+    # before the action insert commits.  Treat that marker as an observed,
+    # recoverable side effect only when no matching pending action exists; a
+    # generic recovery intent must remain fail-closed until its owner reads it.
+    if state["recovery_action"] == "controller_interrupted":
+        key = f"{run_id}:controller_interrupted:{run_id}"
+        existing = db.conn.execute(
+            "SELECT * FROM actions WHERE idempotency_key=?", (key,)
+        ).fetchone()
+        if existing is None:
+            with db.transaction():
+                db.conn.execute(
+                    "UPDATE runs SET current_action=NULL,recovery_action=NULL,updated_at=? WHERE run_id=?",
+                    (now(), run_id),
+                )
+                db._business_event(run_id, "controller", run_id,
+                                   "stale_recovery_intent_reconciled", {
+                                       "recovery_action": "controller_interrupted",
+                                       "reason": reason,
+                                       "evidence": [f"sqlite://actions/{run_id}/missing"],
+                                   })
+            state = active_action_invariant(db, run_id)
     if state["current_action"] or state["recovery_action"]:
         return {"decision": "existing_intent", "action": {"kind": state["recovery_action"] or state["current_action"], "target": run_id}, "state": state}
     if state["status"] != "active":

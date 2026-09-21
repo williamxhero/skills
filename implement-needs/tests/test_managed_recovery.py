@@ -59,6 +59,22 @@ class ManagedRecoveryTests(unittest.TestCase):
         self.assertEqual("repair", decision.action)
         self.assertEqual("blocked", decision.next_action)
 
+    def test_repeated_empty_completion_handles_newest_first_history(self):
+        history = {"turns": [
+            {"id": "turn-3", "status": "completed", "items": []},
+            {"id": "turn-2", "status": "completed", "items": []},
+            {"id": "turn-1", "status": "completed", "items": []},
+            {"id": "turn-0", "status": "completed", "output": "useful handoff"},
+        ]}
+        self.assertEqual(
+            NO_PROGRESS,
+            classify_turn_outcome(
+                completion={"status": "completed"},
+                history_readback=history,
+                turn_id="turn-3",
+            ),
+        )
+
     def test_checkpointed_continue_is_identity_bound_and_not_a_replay(self):
         cp = checkpoint(identity=IDENTITY, previous_turn_id="turn-1", failure_class=STREAM_DISCONNECTED,
                         durable_state={"commit": "abc", "receipts": ["issue:123"]})
