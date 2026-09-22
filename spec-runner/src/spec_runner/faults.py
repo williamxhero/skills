@@ -117,6 +117,18 @@ def run_fault_matrix(*, seed: str = "sr-07-seed-1", keep_artifacts: bool = False
         cases.append({"id": "takeover_enters_normal_loop", "entrypoint": "public_cli", "exit_code": code, "expected": "completed", "actual": adopted.get("runner", {}).get("run", {}).get("state"), "passed": code == 0 and adopted.get("runner", {}).get("run", {}).get("state") == "completed"})
         code, adopted_again = _invoke(root, ["takeover", "apply", "--file", str(takeover_inventory), "--control-root", str(takeover_control), "--takeover-key", "fault-takeover", "--brief", str(brief), "--config", str(config)])
         cases.append({"id": "repeated_takeover_is_idempotent", "entrypoint": "public_cli", "exit_code": code, "expected": "same_run", "actual": adopted_again.get("runner", {}).get("run", {}).get("state"), "passed": code == 0 and adopted_again.get("created") is False and adopted_again.get("runner", {}).get("run", {}).get("state") == "completed"})
+
+        cleanup_inventory = root / "cleanup-only.json"
+        cleanup_inventory.write_text(json.dumps({"schema_version": "spec-runner-takeover-input/v1", "repository_path": str(repository), "source_threads": [], "artifacts": [], "facts": {"merged": True, "verification_receipt": {"candidate_sha": "historic"}}}), encoding="utf-8")
+        cleanup_control = root / "cleanup-only-control"
+        code, cleanup = _invoke(root, ["takeover", "apply", "--file", str(cleanup_inventory), "--control-root", str(cleanup_control), "--takeover-key", "cleanup-only"])
+        code_status, cleanup_status = _invoke(root, ["status", "--control-root", str(cleanup_control)])
+        cases.append({"id": "cleanup_only_takeover_has_no_worker", "entrypoint": "public_cli", "exit_code": code, "expected": "cleanup_pending_without_run", "actual": cleanup.get("action", {}).get("state"), "passed": code == 0 and code_status == 0 and cleanup.get("action", {}).get("state") == "cleanup_pending" and cleanup_status.get("runs") == []})
+
+        cyclic_plan = root / "cyclic-delivery.json"
+        cyclic_plan.write_text(json.dumps({"schema_version": "spec-runner-delivery-plan/v1", "specs": [{"key": "A", "blocked_by": ["B"], "acceptance_version": "a1", "acceptance": ["A1"], "implementation": [[sys.executable, "-c", "pass"]], "checks": [{"command": [sys.executable, "-c", "pass"], "acceptance": ["A1"]}], "review_file": "review-a.json"}, {"key": "B", "blocked_by": ["A"], "acceptance_version": "a1", "acceptance": ["B1"], "implementation": [[sys.executable, "-c", "pass"]], "checks": [{"command": [sys.executable, "-c", "pass"], "acceptance": ["B1"]}], "review_file": "review-b.json"}]}), encoding="utf-8")
+        code, cyclic = _invoke(root, ["delivery", "run", "--plan", str(cyclic_plan), "--repository", str(repository), "--workspace-root", str(root / "cyclic-workspaces"), "--control-root", str(root / "cyclic-control"), "--run-id", "cyclic-run", "--target-ref", "HEAD"])
+        cases.append({"id": "delivery_dependency_cycle_rejected", "entrypoint": "public_cli", "exit_code": code, "expected": "plan_cycle", "actual": cyclic.get("error", {}).get("code"), "passed": code != 0 and cyclic.get("error", {}).get("code") == "plan_cycle"})
         artifact_digest_before = _tree_digest(control)
         code, repeated = _invoke(root, ["drive", *common])
         artifact_digest_after = _tree_digest(control)
