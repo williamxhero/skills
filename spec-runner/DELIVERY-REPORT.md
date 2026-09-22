@@ -3,8 +3,9 @@
 Updated 2026-09-22. This is an evidence index, not a claim that every live
 acceptance gate is complete. The authoritative runtime delivery is on
 `origin/master` at merge commit
-`6cb6a695938df05d283a61c69082f40e4b75efa9`, incorporating the active-turn
-baseline at `28f57d1` and the restricted SDK approval hardening in PR #231.
+`13728164416de09807a96752cba68b397f3a7599`, incorporating the active-turn
+baseline at `28f57d1`, restricted SDK approval hardening in PR #231, and
+explicit SDK thread inspection in PR #235.
 
 ## Route and implementation order
 
@@ -52,6 +53,8 @@ PR #225 is merged at `0ab209a`, the follow-up evidence/CI change is merged at
 repository CI checks; `.github/workflows/spec-runner.yml` now adds Windows and
 Ubuntu contract jobs. The PR #228 hosted run passed both contract jobs.
 PR #231 is merged at `6cb6a69`; its hosted Ubuntu and Windows contract jobs
+also passed.
+PR #235 is merged at `1372816`; its hosted Ubuntu and Windows contract jobs
 also passed.
 
 ## Verified evidence
