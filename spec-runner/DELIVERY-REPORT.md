@@ -2,7 +2,7 @@
 
 Updated 2026-09-22. This is an evidence index, not a claim that every live
 acceptance gate is complete. The authoritative delivered code is on
-`origin/master` at `0ab209aca7677d3e43c70fc1bd9b9dea942331cf`.
+`origin/master` at `263a347982aa7256cce0af8c510e7fc2e21f0e30`.
 
 ## Route and implementation order
 
@@ -44,7 +44,8 @@ The Spec Runner implementation PR sequence currently includes #211–#225:
 - #224 deterministic fault expansion;
 - #225 thin `/implement-needs` entry and legacy compatibility boundary.
 
-PR #225 is merged at `0ab209a`. There were no pre-existing repository CI
+PR #225 is merged at `0ab209a`, and the follow-up evidence/CI change is merged
+at `263a347`. There were no pre-existing repository CI
 checks; `.github/workflows/spec-runner.yml` now adds Windows and Ubuntu
 contract jobs for future pushes and pull requests. Its first hosted run is
 still pending after this change is pushed.
