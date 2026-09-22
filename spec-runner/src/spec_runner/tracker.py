@@ -224,7 +224,10 @@ def _atomic_write(path: Path, content: bytes) -> None:
 
 
 def publish_local(snapshot: PlanSnapshot, target_root: Path, *, operation_id: str) -> dict[str, object]:
-    target_root = target_root.expanduser().resolve()
+    target_root = target_root.expanduser()
+    if target_root.exists() and target_root.is_symlink():
+        raise RunnerError("tracker_path_escape", "publish target cannot be a symbolic link")
+    target_root = target_root.resolve()
     target_root.mkdir(parents=True, exist_ok=True)
     receipt_path = target_root / ".spec-runner-tracker-receipts.json"
     receipts: dict[str, Any] = {}

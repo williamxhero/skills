@@ -230,6 +230,25 @@ def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunR
     return _verify_and_archive(control_root=control_root, config=config, run=second, store=store)
 
 
+def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief_digest: str, store: Store) -> dict[str, object] | None:
+    """Reconcile only evidence that can be proven locally; never replay an unknown SDK call."""
+    if config.execution_backend != "deterministic_test":
+        if run.state in {"starting", "failed", "cleanup_pending"}:
+            raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+        return None
+    directory = _safe_artifact_directory(control_root, config, run.run_id)
+    if run.current_step == "deterministic_example" and (directory / "handoff.json").is_file():
+        recovered = store.complete_deterministic_stage(run.run_id, f"start:{run.run_id}")
+        _verify_and_archive(control_root=control_root, config=config, run=recovered, store=store, final_state="ready_for_next")
+        current = store.find_by_run_id(run.run_id)
+        assert current is not None
+        return _advance_second_stage(control_root=control_root, config=config, run=current, brief_digest=brief_digest, store=store)
+    if run.current_step == "deterministic_second" and (directory / "final.json").is_file():
+        recovered = store.complete_mechanical_stage(run.run_id, f"second:{run.run_id}", step_name="deterministic_second")
+        return _verify_and_archive(control_root=control_root, config=config, run=recovered, store=store)
+    return None
+
+
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str, run_id: str | None = None) -> dict[str, object]:
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
@@ -242,6 +261,8 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         raise RunnerError("invalid_run_id", "run_id must be a UUID") from exc
 
     store = Store.open(control_root, create=True)
+    owner_token = f"{requested_run_id}:{os.getpid()}:{uuid.uuid4().hex}"
+    lease_scope = f"{config.repository_path.as_posix()}@{config.target_ref}"
     try:
         existing = store.find_by_launch_key(launch_key)
         if existing:
@@ -252,10 +273,16 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     details={"run_id": existing.run_id},
                 )
             if existing.state == "ready_for_next":
+                store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token)
                 final_status = _advance_second_stage(
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
                 )
                 return {"created": False, **final_status}
+            recovered_status = _recover_after_process_exit(
+                control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
+            )
+            if recovered_status is not None:
+                return {"created": False, **recovered_status}
             return {"created": False, **store.public_status(existing.run_id)}
         if store.find_by_run_id(requested_run_id):
             raise RunnerError("run_id_conflict", "run_id already exists; choose another UUID")
@@ -282,9 +309,10 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         store.register_runtime(
             requested_run_id,
             pid=os.getpid(),
-            owner_token=f"{requested_run_id}:{os.getpid()}",
+            owner_token=owner_token,
             log_path=os.fspath(control_root / record.log_path),
         )
+        store.acquire_lease(scope=lease_scope, run_id=requested_run_id, owner_token=owner_token)
         store.write_log(control_root, requested_run_id, {"event": "run_started", "backend_kind": config.execution_backend})
         try:
             if config.execution_backend == "deterministic_test":
@@ -314,6 +342,10 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         )
         return {"created": True, **final_status}
     finally:
+        try:
+            store.release_lease(scope=lease_scope, owner_token=owner_token)
+        except RunnerError:
+            pass
         store.close()
 
 

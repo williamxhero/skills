@@ -5,6 +5,20 @@ description: 'Start or take over a requirement at any lifecycle stage, reconcile
 
 # Implement Needs
 
+## Runner entry (SR-08 migration contract)
+
+`/implement-needs` remains the user-facing entry point, but new work and
+explicit takeover requests are handed to the independently installable
+`spec-runner` package. The Skill performs read-only requirement handoff and
+high-level authorization, then reports the Runner run ID; it does not maintain
+the cross-stage dispatch loop. The legacy controller below is retained as an
+audit and migration path for already-running legacy runs only. A legacy run and
+a Runner run never share a control database, writer lease, or execution.
+
+Use the Runner's public commands (`start`, `launch`, `intake`, `status`,
+`resume`, `pause`, `cancel`, and `takeover inspect`) for execution and recovery.
+Do not invoke this legacy controller to develop or upgrade the Runner itself.
+
 Before a normal run, require a matching `QUALIFIED` report from
 `validation/reports/index.json` for the current Skill and validation harness
 digests. Check this with

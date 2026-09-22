@@ -53,3 +53,32 @@ for a deliberately new run.
 The live SDK case is intentionally not run by ordinary tests because it requires
 the operator's existing Codex authentication. Set `execution_backend` to
 `codex_sdk` for that explicit run.
+
+## Delivery and takeover boundaries
+
+The package also contains the later vertical slices used by SR-02 through
+SR-09. They are explicit commands, so reading, planning, verification, review,
+merge, and takeover cannot be delegated to a model:
+
+```powershell
+spec-runner tracker read --root .\issues
+spec-runner intake local --root .\issues --entry SR-01
+spec-runner plan validate-spec --file .\spec-plan.json
+spec-runner plan validate-tickets --file .\ticket-plan.json --spec-key SR-01 --base-sha <sha>
+spec-runner workspace prepare --repository C:\work\repo --workspace-root C:\work\runner-workspaces --run-id <run> --spec-key SR-01
+spec-runner candidate verify --workspace C:\work\runner-workspaces\SR-01-1234 --candidate-sha <sha> --acceptance-version v1 --checks .\checks.json --acceptance .\acceptance.json
+spec-runner review validate --file .\review.json --candidate-sha <sha> --acceptance-version v1
+spec-runner merge local --repository C:\work\repo --workspace-root C:\work\runner-workspaces --candidate-branch spec-runner/SR-01-1234 --target-ref refs/heads/main --expected-target-sha <sha> --run-id <run>
+spec-runner takeover inspect --file .\takeover.json
+```
+
+`candidate verify` accepts only trusted argument-array commands and checks the
+Git SHA before and after execution. A worker's `passed` text is not a receipt.
+`merge local` uses a disposable managed worktree and expected-ref compare; it
+does not reset or overwrite a dirty user checkout. GitHub publication uses an
+operation receipt and is explicit about body-link versus native relation mode.
+
+The pinned adapter manifest is `dependencies.lock.json`. Its source digests are
+checked before prompt rendering. Live GitHub, live SDK, Windows-native and
+provider-specific capabilities are reported as `not_verified` unless they have
+their own real evidence; deterministic tests never fill those gaps.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import os
+import socket
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -130,6 +132,23 @@ class Store:
                     requested_state TEXT NOT NULL,
                     generation INTEGER NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS runner_leases (
+                    scope TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    owner_token TEXT NOT NULL,
+                    pid INTEGER NOT NULL,
+                    host TEXT NOT NULL,
+                    acquired_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    event_key TEXT NOT NULL UNIQUE,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL
                 );
                 """
             )
@@ -437,3 +456,62 @@ class Store:
         with log_path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps({"observed_at": now(), **event}, ensure_ascii=False, sort_keys=True) + "\n")
         return log_path
+
+    def acquire_lease(self, *, scope: str, run_id: str, owner_token: str, pid: int | None = None) -> dict[str, object]:
+        """Acquire a durable writer lease; an existing lease is never displaced silently."""
+        timestamp = now()
+        pid = pid or os.getpid()
+        with self.transaction():
+            existing = self.connection.execute("SELECT * FROM runner_leases WHERE scope = ?", (scope,)).fetchone()
+            if existing and existing["owner_token"] != owner_token:
+                raise RunnerError("writer_busy", "another Spec Runner writer owns this scope", details={"scope": scope, "run_id": existing["run_id"], "pid": existing["pid"]})
+            self.connection.execute(
+                "INSERT OR REPLACE INTO runner_leases(scope, run_id, owner_token, pid, host, acquired_at, heartbeat_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT acquired_at FROM runner_leases WHERE scope = ?), ?), ?)",
+                (scope, run_id, owner_token, pid, socket.gethostname(), scope, timestamp, timestamp),
+            )
+        return self.lease(scope)
+
+    def heartbeat_lease(self, *, scope: str, owner_token: str) -> None:
+        with self.transaction():
+            updated = self.connection.execute("UPDATE runner_leases SET heartbeat_at = ? WHERE scope = ? AND owner_token = ?", (now(), scope, owner_token)).rowcount
+            if not updated:
+                raise RunnerError("writer_lease_lost", "writer lease is no longer owned by this process")
+
+    def release_lease(self, *, scope: str, owner_token: str) -> None:
+        with self.transaction():
+            self.connection.execute("DELETE FROM runner_leases WHERE scope = ? AND owner_token = ?", (scope, owner_token))
+
+    def lease(self, scope: str) -> dict[str, object] | None:
+        row = self.connection.execute("SELECT * FROM runner_leases WHERE scope = ?", (scope,)).fetchone()
+        return dict(row) if row else None
+
+    def append_event(self, *, run_id: str, event_key: str, event_type: str, payload: dict[str, object]) -> bool:
+        with self.transaction():
+            cursor = self.connection.execute(
+                "INSERT OR IGNORE INTO events(run_id, event_key, event_type, payload_json, observed_at) VALUES (?, ?, ?, ?, ?)",
+                (run_id, event_key, event_type, json.dumps(payload, ensure_ascii=False, sort_keys=True), now()),
+            )
+        return cursor.rowcount == 1
+
+    def events_for_run(self, run_id: str) -> list[dict[str, object]]:
+        return [
+            {**dict(row), "payload": json.loads(row["payload_json"])}
+            for row in self.connection.execute("SELECT * FROM events WHERE run_id = ? ORDER BY event_id", (run_id,))
+        ]
+
+    def operation(self, operation_id: str) -> dict[str, object] | None:
+        row = self.connection.execute("SELECT * FROM operations WHERE operation_id = ?", (operation_id,)).fetchone()
+        return dict(row) if row else None
+
+    def upsert_operation(self, *, operation_id: str, run_id: str, operation_kind: str, input_digest: str, state: str = "prepared") -> dict[str, object]:
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute("SELECT * FROM operations WHERE operation_id = ?", (operation_id,)).fetchone()
+            if existing:
+                if existing["run_id"] != run_id or existing["input_digest"] != input_digest:
+                    raise RunnerError("operation_identity_conflict", "operation identity was reused with different input")
+            else:
+                self.connection.execute("INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)", (operation_id, run_id, operation_kind, state, input_digest, timestamp, timestamp))
+        result = self.operation(operation_id)
+        assert result is not None
+        return result
