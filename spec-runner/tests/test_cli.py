@@ -152,6 +152,40 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(status["runs"], [])
 
+    def test_release_build_writes_a_valid_report_from_evidence_files(self) -> None:
+        subject = self.root / "release-subject.json"
+        subject.write_text(json.dumps({
+            "runner_version": "0.1.0",
+            "build_digest": "build-1",
+            "config_contract": "spec-runner-config/v1",
+        }), encoding="utf-8")
+        deterministic = self.root / "deterministic-evidence.json"
+        deterministic.write_text(json.dumps({
+            "evidence_kind": "deterministic",
+            "verified": True,
+            "outcome": "passed",
+            "report_digest": "det-1",
+        }), encoding="utf-8")
+        local_git = self.root / "local-git-evidence.json"
+        local_git.write_text(json.dumps({
+            "evidence_kind": "local_git",
+            "verified": True,
+            "outcome": "passed",
+            "merge_sha": "merge-1",
+        }), encoding="utf-8")
+        output = self.root / "release-report.json"
+        code, result = self.invoke(
+            "diagnose", "release-build", "--subject", str(subject), "--evidence", str(deterministic),
+            "--evidence", str(local_git), "--output", str(output),
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(result["eligible"])
+        report = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(report["schema_version"], "spec-runner-release-report/v1")
+        code, validated = self.invoke("diagnose", "release-report", "--file", str(output))
+        self.assertEqual(code, 0)
+        self.assertTrue(validated["eligible"])
+
     def test_invalid_inputs_do_not_create_control_resources(self) -> None:
         self.write_config(repository_path=str(self.root / "not-a-repository"))
         code, result = self.start()

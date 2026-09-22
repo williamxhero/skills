@@ -5,12 +5,13 @@ import subprocess
 import tempfile
 import unittest
 import sqlite3
+import zipfile
 from pathlib import Path
 
 from spec_runner.errors import RunnerError
 
 from spec_runner.delivery import git_sha, merge_local, prepare_workspace, verify_candidate
-from spec_runner.diagnostics import validate_fault_matrix, validate_release_report
+from spec_runner.diagnostics import build_release_report, inspect_wheel, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import validate_spec_plan, validate_ticket_plan
 from spec_runner.takeover import completion_action, inspect_takeover, plan_frontier, write_takeover_record
@@ -178,6 +179,23 @@ class ProductBoundaryTests(unittest.TestCase):
                 "required_kinds": ["deterministic"],
                 "evidence": [{"kind": "deterministic", "body": body, "body_digest": "forged", "outcome": "passed"}],
             }, expected_runner_version="0.1.0")
+
+    def test_release_builder_and_wheel_inspector_use_real_bodies(self):
+        body = {"evidence_kind": "deterministic", "verified": True, "outcome": "passed", "cases": ["normal"]}
+        report = build_release_report(
+            runner_version="0.1.0",
+            subject={"runner_version": "0.1.0", "build_digest": "build", "config_contract": "spec-runner-config/v1"},
+            evidence_documents=[body, {"evidence_kind": "local_git", "verified": True, "outcome": "passed", "merge_sha": "abc"}],
+        )
+        self.assertTrue(report["report_digest"])
+        with tempfile.TemporaryDirectory() as temp:
+            wheel = Path(temp) / "spec_runner-0.1.0-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("spec_runner/cli.py", "")
+                archive.writestr("spec_runner/dependencies.lock.json", "{}")
+                archive.writestr("spec_runner-0.1.0.dist-info/METADATA", "Version: 0.1.0\n")
+            receipt = inspect_wheel(wheel, expected_runner_version="0.1.0")
+            self.assertEqual(receipt["outcome"], "verified")
 
     def test_legacy_database_is_observed_read_only(self):
         with tempfile.TemporaryDirectory() as temp:
