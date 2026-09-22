@@ -51,6 +51,11 @@ merges each candidate into the configured local ref, and persists a durable
 receipt. A failure stops the queue before the next SPEC; re-running reads the
 receipt/worktree and never blindly replays an unknown implementation command.
 
+After a durable local merge, the Runner removes only its managed candidate
+worktree and manifest. If Windows or another process still holds a managed
+file, the receipt remains `cleanup_pending`; the same run can be driven again
+to retry cleanup without re-running implementation or merge commands.
+
 ```powershell
 spec-runner start --brief .\brief.md --config .\runner.json `
   --control-root .\.spec-runner --launch-key example-001

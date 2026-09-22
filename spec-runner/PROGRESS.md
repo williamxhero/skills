@@ -32,7 +32,7 @@ Implemented slices in the isolated `spec-runner/` package:
   Runner CLI; the old controller remains available only for identified
   pre-SR-08 runs.
 
-Verified on 2026-09-22 in this branch: 58 `spec-runner` unit/integration tests
+Verified on 2026-09-23 in this branch: 61 `spec-runner` unit/integration tests
 plus 3 `/implement-needs` handoff isolation tests, with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
@@ -66,6 +66,12 @@ A native Windows Win32 share-denied probe also used a Chinese/space path and
 confirmed that replacement is blocked while an exact detached holder owns an
 artifact file, then succeeds after that holder is terminated. This is a
 single-file lock boundary, not the full DB/log/artifact cleanup matrix.
+
+Local delivery now persists cleanup separately from merge: a simulated locked
+managed worktree remains `cleanup_pending`, and the next drive retries only
+cleanup from the durable receipt without re-running implementation or merge.
+A native Windows probe then confirmed the same behavior through the installed
+public CLI on a Chinese/space path using a delete-denying file handle.
 
 The follow-up handover contract adds a public negative matrix for active source
 writers and raises the deterministic test count to 41 passed with one skipped.

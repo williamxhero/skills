@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
-from .delivery import git_sha, merge_local, prepare_workspace, verify_candidate, validate_review
+from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, verify_candidate, validate_review
 from .errors import RunnerError
 from .plans import digest, validate_delivery_plan
 
@@ -75,6 +76,32 @@ def _topological(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return ordered
 
 
+def _retry_merge_cleanup(*, repository: Path, workspace_root: Path, merge: dict[str, Any]) -> dict[str, Any]:
+    cleanup = merge.get("cleanup")
+    if not isinstance(cleanup, dict) or cleanup.get("outcome") == "cleaned" or not cleanup.get("workspace"):
+        return merge
+    merge["cleanup"] = cleanup_managed_workspace(
+        repository=repository,
+        workspace_root=workspace_root / "merge",
+        workspace=Path(str(cleanup["workspace"])),
+    )
+    return merge
+
+
+def _test_fault_pause_after_candidate_verified(*, control_root: Path, run_id: str, spec_key: str) -> None:
+    """Expose one public-CLI fault boundary without changing normal delivery."""
+    point = "after_candidate_verified"
+    if os.environ.get("SPEC_RUNNER_FAULT_POINT") != point:
+        return
+    fault_root = control_root / "faults"
+    fault_root.mkdir(parents=True, exist_ok=True)
+    ready = fault_root / f"{run_id}.{spec_key}.{point}.ready"
+    release = fault_root / f"{run_id}.{spec_key}.{point}.continue"
+    ready.write_text(json.dumps({"run_id": run_id, "spec_key": spec_key, "point": point}) + "\n", encoding="utf-8", newline="\n")
+    while not release.exists():
+        time.sleep(0.05)
+
+
 def run_local_delivery(
     *,
     plan: dict[str, Any],
@@ -93,11 +120,49 @@ def run_local_delivery(
     if prior and prior.get("plan_digest") != validated["digest"]:
         raise RunnerError("delivery_plan_changed", "delivery plan changed after this run started")
     receipt: dict[str, Any] = prior or {"schema_version": "spec-runner-delivery-receipt/v1", "run_id": run_id, "plan_digest": validated["digest"], "target_ref": target_ref, "specs": {}, "state": "running"}
-    completed: set[str] = {key for key, item in receipt["specs"].items() if isinstance(item, dict) and item.get("state") == "merged"}
+    completed: set[str] = {
+        key
+        for key, item in receipt["specs"].items()
+        if isinstance(item, dict) and item.get("state") in {"merged", "cleanup_pending"}
+    }
 
     for spec in _topological(list(validated["specs"])):
         key = str(spec["key"])
         if key in completed:
+            item = receipt["specs"].get(key)
+            if isinstance(item, dict) and isinstance(item.get("merge"), dict):
+                item["merge"] = _retry_merge_cleanup(
+                    repository=repository,
+                    workspace_root=workspace_root,
+                    merge=item["merge"],
+                )
+                merge_cleanup = item["merge"].get("cleanup")
+                if not isinstance(merge_cleanup, dict) or merge_cleanup.get("outcome") != "cleaned":
+                    receipt["specs"][key] = item
+                    receipt["state"] = "cleanup_pending"
+                    receipt["completed_specs"] = sorted(completed)
+                    _write_receipt(receipt_path, receipt)
+                    return receipt
+            cleanup_record = item.get("cleanup") if isinstance(item, dict) else None
+            cleanup_outcome = cleanup_record.get("outcome") if isinstance(cleanup_record, dict) else None
+            if isinstance(item, dict) and cleanup_outcome != "cleaned" and item.get("workspace"):
+                cleanup = cleanup_managed_workspace(
+                    repository=repository,
+                    workspace_root=workspace_root,
+                    workspace=Path(str(item["workspace"])),
+                    manifest=Path(str(item["manifest"])) if item.get("manifest") else None,
+                )
+                item["cleanup"] = cleanup
+                if cleanup.get("outcome") != "cleaned":
+                    item["state"] = "cleanup_pending"
+                    receipt["specs"][key] = item
+                    receipt["state"] = "cleanup_pending"
+                    receipt["completed_specs"] = sorted(completed)
+                    _write_receipt(receipt_path, receipt)
+                    return receipt
+                item["state"] = "merged"
+                receipt["specs"][key] = item
+                _write_receipt(receipt_path, receipt)
             continue
         blockers = set(spec.get("blocked_by", [])) - completed
         if blockers:
@@ -127,7 +192,7 @@ def run_local_delivery(
             continue
         workspace_info = prepare_workspace(repository=repository, workspace_root=workspace_root, run_id=run_id, spec_key=key, base_ref=target_ref)
         workspace = Path(str(workspace_info["workspace"]))
-        item = {**item, "spec_key": key, "base_sha": base_sha, "workspace": str(workspace), "branch": workspace_info["branch"], "state": "implementing"}
+        item = {**item, "spec_key": key, "base_sha": base_sha, "workspace": str(workspace), "manifest": str(workspace_info["manifest"]), "branch": workspace_info["branch"], "state": "implementing"}
         receipt["specs"][key] = item
         _write_receipt(receipt_path, receipt)
         if on_event:
@@ -164,6 +229,7 @@ def run_local_delivery(
             checks=list(spec["checks"]),
             acceptance=list(spec["acceptance"]),
         )
+        _test_fault_pause_after_candidate_verified(control_root=control_root, run_id=run_id, spec_key=key)
         review_path = (control_root / str(spec["review_file"])).resolve()
         if control_root.resolve() not in (review_path, *review_path.parents) or review_path.is_symlink():
             raise RunnerError("delivery_review_path_escape", f"SPEC {key} review file escaped control root")
@@ -178,6 +244,7 @@ def run_local_delivery(
         receipt["specs"][key] = item
         _write_receipt(receipt_path, receipt)
         merged = merge_local(repository=repository, candidate_branch=str(workspace_info["branch"]), target_ref=target_ref, expected_target_sha=base_sha, workspace_root=workspace_root, run_id=f"{key}-{run_id}")
+        merged = _retry_merge_cleanup(repository=repository, workspace_root=workspace_root, merge=merged)
         item.update({"state": "merged", "merge": merged})
         receipt["specs"][key] = item
         completed.add(key)
@@ -185,6 +252,23 @@ def run_local_delivery(
             on_verified({"schema_version": "spec-runner-spec-verification/v1", "stage": key, "run_id": run_id, "candidate_sha": candidate_sha, "merge_sha": merged["merge_sha"], "acceptance_version": spec["acceptance_version"], "outcome": "verified"})
         if on_event:
             on_event("spec_merged", {"spec_key": key, "candidate_sha": candidate_sha, "merge_sha": merged["merge_sha"]})
+        _write_receipt(receipt_path, receipt)
+        cleanup = cleanup_managed_workspace(
+            repository=repository,
+            workspace_root=workspace_root,
+            workspace=workspace,
+            manifest=Path(str(workspace_info["manifest"])),
+        )
+        item["cleanup"] = cleanup
+        merge_cleanup = merged.get("cleanup")
+        if cleanup.get("outcome") != "cleaned" or not isinstance(merge_cleanup, dict) or merge_cleanup.get("outcome") != "cleaned":
+            item["state"] = "cleanup_pending"
+            receipt["specs"][key] = item
+            receipt["state"] = "cleanup_pending"
+            receipt["completed_specs"] = sorted(completed)
+            _write_receipt(receipt_path, receipt)
+            return receipt
+        receipt["specs"][key] = item
         _write_receipt(receipt_path, receipt)
 
     receipt["state"] = "completed"

@@ -6,11 +6,12 @@ import tempfile
 import unittest
 import sqlite3
 import zipfile
+from unittest.mock import patch
 from pathlib import Path
 
 from spec_runner.errors import RunnerError
 
-from spec_runner.delivery import git_sha, merge_local, prepare_workspace, verify_candidate
+from spec_runner.delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, verify_candidate
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import validate_spec_plan, validate_ticket_plan
@@ -61,6 +62,8 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertIn("SR-03", result["specs"])
             target_contents = subprocess.check_output(["git", "-C", str(repo), "show", "refs/heads/main:state.txt"], text=True)
             self.assertEqual(target_contents, "base\nSR-01\nSR-02\nSR-03\n")
+            self.assertTrue(all(item["cleanup"]["outcome"] == "cleaned" for item in result["specs"].values()))
+            self.assertEqual(list((root / "workspaces").glob("*.manifest.json")), [])
             receipt_path = control / "delivery/delivery-run/delivery-receipt.json"
             interrupted = json.loads(receipt_path.read_text(encoding="utf-8"))
             interrupted["state"] = "running"
@@ -127,6 +130,97 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(merged["tested_head"], candidate_sha)
             self.assertEqual((repo / "README.md").read_text(encoding="utf-8"), "base\n")
             self.assertEqual(git_sha(repo, "refs/heads/main"), merged["merge_sha"])
+            self.assertEqual(merged["cleanup"]["outcome"], "cleaned")
+
+    def test_managed_workspace_cleanup_exposes_windows_lock_as_pending(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            workspace_root = root / "workspaces"
+            workspace = workspace_root / "SR-01-run"
+            workspace.mkdir(parents=True)
+            manifest = workspace_root / "SR-01-run.manifest.json"
+            manifest.write_text(json.dumps({"workspace": str(workspace), "repository": str(repository)}), encoding="utf-8")
+
+            def locked_remove(**kwargs: object) -> None:
+                raise RunnerError("workspace_cleanup_timeout", "simulated Windows file lock")
+
+            with patch("spec_runner.delivery._remove_managed_worktree", side_effect=locked_remove):
+                result = cleanup_managed_workspace(
+                    repository=repository,
+                    workspace_root=workspace_root,
+                    workspace=workspace,
+                    manifest=manifest,
+                )
+            self.assertEqual(result["outcome"], "pending")
+            self.assertEqual(result["reason"], "worktree_remove_failed")
+            self.assertTrue(workspace.exists())
+            self.assertTrue(manifest.exists())
+
+    def test_managed_workspace_cleanup_refuses_unowned_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            workspace_root = root / "workspaces"
+            workspace = workspace_root / "SR-01-run"
+            workspace.mkdir(parents=True)
+            manifest = workspace_root / "SR-01-run.manifest.json"
+            manifest.write_text(json.dumps({"workspace": str(workspace), "repository": str(root / "other")}), encoding="utf-8")
+            result = cleanup_managed_workspace(
+                repository=repository,
+                workspace_root=workspace_root,
+                workspace=workspace,
+                manifest=manifest,
+            )
+            self.assertEqual(result["outcome"], "pending")
+            self.assertEqual(result["reason"], "manifest_ownership_mismatch")
+            self.assertTrue(workspace.exists())
+
+    def test_delivery_retries_persisted_cleanup_pending_without_reimplementing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Spec Runner Test"], cwd=repo, check=True)
+            (repo / "state.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+            control = root / "control"
+            review_path = control / "review.json"
+            review_path.parent.mkdir(parents=True)
+            plan = {
+                "schema_version": "spec-runner-delivery-plan/v1",
+                "specs": [{
+                    "key": "SR-01",
+                    "blocked_by": [],
+                    "acceptance_version": "a1",
+                    "acceptance": ["A1"],
+                    "implementation": [["python", "-c", f"from pathlib import Path; p=Path('state.txt'); p.write_text(p.read_text()+'done\\n'); import subprocess,json; subprocess.run(['git','add','state.txt'],check=True); subprocess.run(['git','commit','-qm','done'],check=True); sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(); Path(r'{review_path}').write_text(json.dumps({{'schema_version':'spec-runner-review-result/v1','candidate_sha':sha,'acceptance_version':'a1','findings':[]}}))"]],
+                    "checks": [{"command": ["python", "-c", "from pathlib import Path; assert Path('state.txt').read_text().endswith('done\\n')"], "acceptance": ["A1"]}],
+                    "review_file": "review.json",
+                }],
+            }
+            real_cleanup = cleanup_managed_workspace
+            calls = {"count": 0}
+
+            def pending_once(**kwargs: object) -> dict[str, object]:
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return {"outcome": "pending", "reason": "worktree_remove_failed"}
+                return real_cleanup(**kwargs)  # type: ignore[arg-type]
+
+            with patch("spec_runner.multi_spec.cleanup_managed_workspace", side_effect=pending_once):
+                first = run_local_delivery(plan=plan, repository=repo, workspace_root=root / "workspaces", control_root=control, run_id="cleanup-run", target_ref="refs/heads/main")
+            self.assertEqual(first["state"], "cleanup_pending")
+            self.assertEqual(first["specs"]["SR-01"]["state"], "cleanup_pending")
+            second = run_local_delivery(plan=plan, repository=repo, workspace_root=root / "workspaces", control_root=control, run_id="cleanup-run", target_ref="refs/heads/main")
+            self.assertEqual(second["state"], "completed")
+            self.assertEqual(second["specs"]["SR-01"]["cleanup"]["outcome"], "cleaned")
+            self.assertEqual(calls["count"], 1)
 
     def test_takeover_distinguishes_cleanup_from_resume(self):
         with tempfile.TemporaryDirectory() as temp:

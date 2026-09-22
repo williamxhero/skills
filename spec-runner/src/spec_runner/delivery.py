@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -12,6 +13,8 @@ from typing import Any
 
 from .errors import RunnerError
 from .plans import digest
+
+WORKTREE_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 
 def _git(repository: Path, *args: str, check: bool = True) -> str:
@@ -32,6 +35,160 @@ def _safe_child(root: Path, child: Path) -> Path:
     if root not in (child, *child.parents):
         raise RunnerError("workspace_path_escape", "workspace escapes configured root")
     return child
+
+
+def _worktree_is_registered(*, repository: Path, workspace: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fspath(repository), "worktree", "list", "--porcelain"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        raise RunnerError("workspace_cleanup_failed", "could not inspect managed worktree registration") from exc
+    if result.returncode != 0:
+        raise RunnerError("workspace_cleanup_failed", "could not inspect managed worktree registration")
+    expected = workspace.resolve()
+    return any(
+        line.startswith("worktree ") and Path(line.removeprefix("worktree ")).resolve() == expected
+        for line in result.stdout.splitlines()
+    )
+
+
+def _remove_managed_worktree(*, repository: Path, workspace: Path) -> None:
+    """Bound one cleanup command so an exclusive Windows lock cannot hang a run."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", os.fspath(repository), "worktree", "remove", os.fspath(workspace)],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=WORKTREE_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "workspace_cleanup_timeout",
+            "managed worktree cleanup exceeded its bounded timeout",
+            details={"workspace": os.fspath(workspace), "timeout_seconds": WORKTREE_CLEANUP_TIMEOUT_SECONDS},
+        ) from exc
+    except OSError as exc:
+        raise RunnerError("workspace_cleanup_failed", "managed worktree cleanup could not start") from exc
+    if result.returncode != 0:
+        # Windows Git can unregister the worktree before it loses the final
+        # file handle. In that case the now-orphaned directory is still safe
+        # to remove only after the manifest check below has proven ownership.
+        if not _worktree_is_registered(repository=repository, workspace=workspace):
+            return
+        raise RunnerError(
+            "workspace_cleanup_failed",
+            "managed worktree cleanup was rejected",
+            details={
+                "workspace": os.fspath(workspace),
+                "exit_code": result.returncode,
+                "stderr_digest": hashlib.sha256(result.stderr.encode("utf-8", errors="replace")).hexdigest(),
+            },
+        )
+
+
+def cleanup_managed_workspace(*, repository: Path, workspace_root: Path, workspace: Path, manifest: Path | None = None) -> dict[str, object]:
+    """Remove one Runner-owned candidate worktree without touching user files.
+
+    A Windows process can keep a worktree file open after the merge is durable.
+    Cleanup is therefore a separately persisted operation: a lock returns a
+    structured ``pending`` result and the next drive/recovery pass retries it.
+    The caller must only pass paths recorded by ``prepare_workspace``.
+    """
+    repository = repository.resolve()
+    workspace_root = workspace_root.resolve()
+    safe_workspace = _safe_child(workspace_root, workspace)
+    if safe_workspace == workspace_root:
+        raise RunnerError("workspace_cleanup_unsafe", "managed cleanup cannot target the workspace root")
+    safe_manifest = _safe_child(
+        workspace_root,
+        manifest if manifest is not None else workspace_root / f"{safe_workspace.name}.manifest.json",
+    )
+    if safe_manifest.is_symlink():
+        raise RunnerError("workspace_cleanup_unsafe", "managed workspace manifest cannot be a symbolic link")
+    if not safe_manifest.is_file():
+        return {
+            "outcome": "pending",
+            "reason": "manifest_missing",
+            "workspace": os.fspath(safe_workspace),
+            "manifest": os.fspath(safe_manifest),
+        }
+    try:
+        manifest_document = json.loads(safe_manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {
+            "outcome": "pending",
+            "reason": "manifest_invalid",
+            "workspace": os.fspath(safe_workspace),
+            "manifest": os.fspath(safe_manifest),
+        }
+    if (
+        not isinstance(manifest_document, dict)
+        or Path(str(manifest_document.get("workspace", ""))).resolve() != safe_workspace
+        or Path(str(manifest_document.get("repository", ""))).resolve() != repository
+    ):
+        return {
+            "outcome": "pending",
+            "reason": "manifest_ownership_mismatch",
+            "workspace": os.fspath(safe_workspace),
+            "manifest": os.fspath(safe_manifest),
+        }
+
+    if safe_workspace.exists():
+        try:
+            _remove_managed_worktree(repository=repository, workspace=safe_workspace)
+        except RunnerError as exc:
+            return {
+                "outcome": "pending",
+                "reason": "worktree_remove_failed",
+                "error_code": exc.code,
+                "error_details": exc.details,
+                "workspace": os.fspath(safe_workspace),
+                "manifest": os.fspath(safe_manifest),
+            }
+        if safe_workspace.exists():
+            try:
+                shutil.rmtree(safe_workspace)
+            except OSError as exc:
+                return {
+                    "outcome": "pending",
+                    "reason": "workspace_directory_remove_failed",
+                    "error_type": type(exc).__name__,
+                    "workspace": os.fspath(safe_workspace),
+                    "manifest": os.fspath(safe_manifest),
+                }
+            if safe_workspace.exists():
+                return {
+                    "outcome": "pending",
+                    "reason": "worktree_still_exists",
+                    "workspace": os.fspath(safe_workspace),
+                    "manifest": os.fspath(safe_manifest),
+                }
+
+    if safe_manifest.exists():
+        try:
+            safe_manifest.unlink()
+        except OSError as exc:
+            return {
+                "outcome": "pending",
+                "reason": "manifest_remove_failed",
+                "error_type": type(exc).__name__,
+                "workspace": os.fspath(safe_workspace),
+                "manifest": os.fspath(safe_manifest),
+            }
+    return {
+        "outcome": "cleaned",
+        "workspace": os.fspath(safe_workspace),
+        "manifest": os.fspath(safe_manifest),
+    }
 
 
 def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, spec_key: str, base_ref: str, branch: str | None = None) -> dict[str, object]:
@@ -131,14 +288,25 @@ def merge_local(*, repository: Path, candidate_branch: str, target_ref: str, exp
     if workspace.exists():
         raise RunnerError("workspace_path_conflict", "merge workspace already exists")
     _git(repository, "worktree", "add", "--detach", os.fspath(workspace), expected_target_sha)
+    cleanup: dict[str, object] = {"outcome": "not_attempted"}
+    merged = False
     try:
         _git(workspace, "merge", "--no-ff", "--no-edit", candidate_branch)
         merge_sha = git_sha(workspace)
         _git(repository, "update-ref", target_ref, merge_sha, expected_target_sha)
+        merged = True
     except RunnerError:
         raise
     finally:
-        # Preserve a conflicted/dirty workspace for diagnosis; only a clean completed merge is removable.
-        if workspace.is_dir() and not _git(workspace, "status", "--porcelain"):
-            _git(repository, "worktree", "remove", os.fspath(workspace))
-    return {"schema_version": "spec-runner-local-merge/v1", "target_ref": target_ref, "tested_head": _git(repository, "rev-parse", candidate_branch), "previous_target_sha": expected_target_sha, "merge_sha": git_sha(repository, target_ref), "outcome": "merged"}
+        # Preserve a conflicted/dirty workspace for diagnosis. A cleanup lock
+        # must not turn a durable merge into an unknown external outcome.
+        if merged and workspace.is_dir():
+            try:
+                if not _git(workspace, "status", "--porcelain"):
+                    _remove_managed_worktree(repository=repository, workspace=workspace)
+                    cleanup = {"outcome": "cleaned", "workspace": os.fspath(workspace)}
+                else:
+                    cleanup = {"outcome": "pending", "reason": "merge_workspace_dirty", "workspace": os.fspath(workspace)}
+            except RunnerError as exc:
+                cleanup = {"outcome": "pending", "reason": "merge_workspace_remove_failed", "error_code": exc.code, "workspace": os.fspath(workspace)}
+    return {"schema_version": "spec-runner-local-merge/v1", "target_ref": target_ref, "tested_head": _git(repository, "rev-parse", candidate_branch), "previous_target_sha": expected_target_sha, "merge_sha": git_sha(repository, target_ref), "outcome": "merged", "cleanup": cleanup}

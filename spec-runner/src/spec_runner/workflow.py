@@ -381,6 +381,15 @@ def _run_delivery_plan(*, control_root: Path, config: RunnerConfig, run: RunReco
         on_verified=on_verified,
         on_event=on_event,
     )
+    if receipt.get("state") == "cleanup_pending":
+        store.mark_cleanup_pending(run.run_id)
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"delivery:{run.run_id}:cleanup_pending",
+            event_type="cleanup_pending",
+            payload={"completed_specs": receipt.get("completed_specs", [])},
+        )
+        return store.public_status(run.run_id)
     store.append_event(
         run_id=run.run_id,
         event_key=f"delivery:{run.run_id}:completed",
