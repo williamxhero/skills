@@ -165,6 +165,12 @@ class SpecRunnerCliTests(unittest.TestCase):
             "runner_version": "0.1.0",
             "build_digest": "build-1",
             "config_contract": "spec-runner-config/v1",
+            "sdk_runtime": {"package": "openai-codex", "version": "0.155.1"},
+            "matt_lock_digest": "matt-lock",
+            "contract_digests": {"prompt_templates": "prompts", "schemas": "schemas", "validators": "validators"},
+            "os": "windows-11",
+            "trust_mode": "deny_all",
+            "scenario_version": "sr-07/v1",
         }), encoding="utf-8")
         deterministic = self.root / "deterministic-evidence.json"
         deterministic.write_text(json.dumps({
@@ -192,6 +198,35 @@ class SpecRunnerCliTests(unittest.TestCase):
         code, validated = self.invoke("diagnose", "release-report", "--file", str(output))
         self.assertEqual(code, 0)
         self.assertTrue(validated["eligible"])
+
+    def test_release_build_marks_required_unverified_evidence_ineligible(self) -> None:
+        subject = self.root / "release-subject.json"
+        subject.write_text(json.dumps({
+            "runner_version": "0.1.0",
+            "build_digest": "build-1",
+            "config_contract": "spec-runner-config/v1",
+            "sdk_runtime": {"package": "openai-codex", "version": "0.155.1"},
+            "matt_lock_digest": "matt-lock",
+            "contract_digests": {"prompt_templates": "prompts", "schemas": "schemas", "validators": "validators"},
+            "os": "windows-11",
+            "trust_mode": "deny_all",
+            "scenario_version": "sr-07/v1",
+        }), encoding="utf-8")
+        github = self.root / "github-evidence.json"
+        github.write_text(json.dumps({
+            "evidence_kind": "live_github",
+            "verified": False,
+            "outcome": "not_verified",
+            "reason": "no authorized sandbox",
+        }), encoding="utf-8")
+        output = self.root / "release-report.json"
+        code, result = self.invoke(
+            "diagnose", "release-build", "--subject", str(subject), "--evidence", str(github),
+            "--required-kind", "live_github", "--output", str(output),
+        )
+        self.assertEqual(code, 0)
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["required_not_passed"], ["live_github"])
 
     def test_public_cli_runs_a_local_delivery_spec(self) -> None:
         subprocess.run(["git", "config", "user.email", "runner@example.invalid"], cwd=self.repository, check=True)

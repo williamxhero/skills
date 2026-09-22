@@ -14,10 +14,24 @@ from spec_runner.errors import RunnerError
 from spec_runner.delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, verify_candidate
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
-from spec_runner.plans import validate_spec_plan, validate_ticket_plan
+from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
 from spec_runner.takeover import completion_action, inspect_takeover, plan_frontier, write_takeover_record
 from spec_runner.legacy import legacy_takeover_inventory, read_legacy_database
 from spec_runner.multi_spec import run_local_delivery
+
+
+def release_subject() -> dict[str, object]:
+    return {
+        "runner_version": "0.1.0",
+        "build_digest": "build",
+        "config_contract": "spec-runner-config/v1",
+        "sdk_runtime": {"package": "openai-codex", "version": "0.155.1"},
+        "matt_lock_digest": "matt-lock",
+        "contract_digests": {"prompt_templates": "prompts", "schemas": "schemas", "validators": "validators"},
+        "os": "windows-11",
+        "trust_mode": "deny_all",
+        "scenario_version": "sr-07/v1",
+    }
 
 
 class ProductBoundaryTests(unittest.TestCase):
@@ -305,12 +319,13 @@ class ProductBoundaryTests(unittest.TestCase):
         fault = validate_fault_matrix({"schema_version": "spec-runner-fault-matrix/v1", "scenarios": [{"id": "s1", "entrypoint": "public_cli", "expected": {"state": "blocked"}, "evidence_kind": "deterministic"}]})
         self.assertEqual(fault["outcome"], "validated")
         body = {"evidence_kind": "deterministic", "verified": True, "report": "fixture"}
-        from spec_runner.plans import digest
+        subject = release_subject()
 
         release = validate_release_report({
             "schema_version": "spec-runner-release-report/v1",
             "runner_version": "0.1.0",
-            "subject": {"runner_version": "0.1.0", "build_digest": "build", "config_contract": "spec-runner-config/v1"},
+            "subject": subject,
+            "subject_digest": digest(subject),
             "required_kinds": ["deterministic"],
             "evidence": [{"kind": "deterministic", "body": body, "body_digest": digest(body), "outcome": "passed"}],
         }, expected_runner_version="0.1.0")
@@ -320,7 +335,8 @@ class ProductBoundaryTests(unittest.TestCase):
             validate_release_report({
                 "schema_version": "spec-runner-release-report/v1",
                 "runner_version": "0.1.0",
-                "subject": {"runner_version": "0.1.0", "build_digest": "build", "config_contract": "spec-runner-config/v1"},
+                "subject": subject,
+                "subject_digest": digest(subject),
                 "required_kinds": ["deterministic"],
                 "evidence": [{"kind": "deterministic", "body": body, "body_digest": "forged", "outcome": "passed"}],
             }, expected_runner_version="0.1.0")
@@ -329,10 +345,32 @@ class ProductBoundaryTests(unittest.TestCase):
         body = {"evidence_kind": "deterministic", "verified": True, "outcome": "passed", "cases": ["normal"]}
         report = build_release_report(
             runner_version="0.1.0",
-            subject={"runner_version": "0.1.0", "build_digest": "build", "config_contract": "spec-runner-config/v1"},
+            subject=release_subject(),
             evidence_documents=[body, {"evidence_kind": "local_git", "verified": True, "outcome": "passed", "merge_sha": "abc"}],
         )
         self.assertTrue(report["report_digest"])
+        self.assertTrue(report["subject_digest"])
+        tampered = {**report, "subject": {**report["subject"], "trust_mode": "interactive"}}
+        with self.assertRaisesRegex(RunnerError, "subject digest"):
+            validate_release_report(tampered, expected_runner_version="0.1.0")
+        for missing in ("sdk_runtime", "matt_lock_digest", "contract_digests", "os", "trust_mode", "scenario_version"):
+            invalid = release_subject()
+            invalid.pop(missing)
+            with self.assertRaisesRegex(RunnerError, "release subject"):
+                build_release_report(
+                    runner_version="0.1.0",
+                    subject=invalid,
+                    evidence_documents=[body, {"evidence_kind": "local_git", "verified": True, "outcome": "passed", "merge_sha": "abc"}],
+                )
+        incomplete_live = build_release_report(
+            runner_version="0.1.0",
+            subject=release_subject(),
+            evidence_documents=[{"evidence_kind": "live_github", "verified": False, "outcome": "not_verified", "reason": "no authorized sandbox"}],
+            required_kinds={"live_github"},
+        )
+        qualification = validate_release_report(incomplete_live, expected_runner_version="0.1.0")
+        self.assertFalse(qualification["eligible"])
+        self.assertEqual(qualification["required_not_passed"], ["live_github"])
         with tempfile.TemporaryDirectory() as temp:
             wheel = Path(temp) / "spec_runner-0.1.0-py3-none-any.whl"
             with zipfile.ZipFile(wheel, "w") as archive:

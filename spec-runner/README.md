@@ -146,9 +146,18 @@ the handover evidence required by `takeover apply`.
 
 `diagnose package` checks the actual wheel contents for the CLI, dependency
 lock, metadata, and forbidden runtime data. `diagnose release-build` constructs
-a version-bound report from complete evidence bodies; `release-report` then
-re-reads and validates that report. A release index or a manually supplied
-digest is not sufficient evidence.
+a version-bound report from complete evidence bodies. Its subject must bind the
+build, SDK package/version, Matt lock, prompt/schema/validator digests,
+configuration contract, OS, trust mode, and scenario version; `release-report`
+re-reads both that canonical subject and its digest. A release index or a
+manually supplied digest is not sufficient evidence.
+
+The `--subject` file is UTF-8 JSON and must contain `runner_version`,
+`build_digest`, `config_contract`, `sdk_runtime` (`package` and `version`),
+`matt_lock_digest`, `contract_digests` (`prompt_templates`, `schemas`, and
+`validators`), `os`, `trust_mode`, and `scenario_version`. Pass each live
+qualification kind through `--required-kind`: an unavailable required probe is
+recorded as `not_verified` and makes the returned `eligible` field false.
 
 `fault run` invokes the public CLI against a temporary Git repository and
 reports replayable deterministic cases for normal completion, process restart

@@ -60,9 +60,10 @@ also passed.
 
 ## Verified evidence
 
-- 61 `spec-runner` tests passed with one authentication-dependent test skipped.
-- 427 existing `implement-needs` tests passed; 3 thin-entry isolation tests
-  passed.
+- 62 `spec-runner` tests were collected: 61 passed and one
+  authentication-dependent test was skipped.
+- 477 existing `implement-needs` tests passed, including the thin-entry
+  isolation coverage.
 - compile and whitespace checks passed.
 - local Git candidate/review/merge and a three-SPEC dependency-ordered replay
   passed, including merge-before-receipt crash reconciliation.

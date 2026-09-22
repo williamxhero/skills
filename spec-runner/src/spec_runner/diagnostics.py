@@ -12,6 +12,15 @@ from .errors import RunnerError
 from .plans import digest
 
 EVIDENCE_KINDS = {"deterministic", "local_git", "live_sdk", "live_github", "windows"}
+_RELEASE_SUBJECT_SCALAR_FIELDS = {
+    "build_digest",
+    "config_contract",
+    "matt_lock_digest",
+    "os",
+    "trust_mode",
+    "scenario_version",
+}
+_RELEASE_CONTRACT_DIGEST_FIELDS = {"prompt_templates", "schemas", "validators"}
 
 
 def load_json(path: Path, *, code: str) -> dict[str, Any]:
@@ -66,16 +75,44 @@ def runtime_report(*, runner_version: str, store_status: dict[str, Any] | None =
     }
 
 
+def canonical_release_subject(subject: dict[str, Any], *, expected_runner_version: str) -> dict[str, object]:
+    """Validate the immutable identity that a release report qualifies."""
+    if not isinstance(subject, dict) or subject.get("runner_version") != expected_runner_version:
+        raise RunnerError("release_subject_missing", "release report must bind a subject with the current Runner version")
+    for field in _RELEASE_SUBJECT_SCALAR_FIELDS:
+        if not isinstance(subject.get(field), str) or not subject[field].strip():
+            raise RunnerError("release_subject_missing", f"release subject needs a non-empty {field}")
+    sdk_runtime = subject.get("sdk_runtime")
+    if not isinstance(sdk_runtime, dict) or not all(
+        isinstance(sdk_runtime.get(field), str) and sdk_runtime[field].strip()
+        for field in ("package", "version")
+    ):
+        raise RunnerError("release_subject_missing", "release subject needs sdk_runtime package and version")
+    contract_digests = subject.get("contract_digests")
+    if not isinstance(contract_digests, dict) or not all(
+        isinstance(contract_digests.get(field), str) and contract_digests[field].strip()
+        for field in _RELEASE_CONTRACT_DIGEST_FIELDS
+    ):
+        raise RunnerError(
+            "release_subject_missing",
+            "release subject needs prompt_templates, schemas, and validators contract digests",
+        )
+    return {
+        "runner_version": expected_runner_version,
+        **{field: subject[field].strip() for field in sorted(_RELEASE_SUBJECT_SCALAR_FIELDS)},
+        "sdk_runtime": {field: sdk_runtime[field].strip() for field in ("package", "version")},
+        "contract_digests": {field: contract_digests[field].strip() for field in sorted(_RELEASE_CONTRACT_DIGEST_FIELDS)},
+    }
+
+
 def validate_release_report(document: dict[str, Any], *, expected_runner_version: str) -> dict[str, object]:
     if document.get("schema_version") != "spec-runner-release-report/v1":
         raise RunnerError("invalid_release_report", "unexpected release report schema")
     if document.get("runner_version") != expected_runner_version:
         raise RunnerError("release_version_mismatch", "release report describes a different Runner version")
-    subject = document.get("subject")
-    if not isinstance(subject, dict) or subject.get("runner_version") != expected_runner_version:
-        raise RunnerError("release_subject_missing", "release report must bind a subject with the current Runner version")
-    if not subject.get("build_digest") or not subject.get("config_contract"):
-        raise RunnerError("release_subject_missing", "release subject needs build_digest and config_contract")
+    subject = canonical_release_subject(document.get("subject"), expected_runner_version=expected_runner_version)
+    if document.get("subject_digest") != digest(subject):
+        raise RunnerError("release_subject_digest_mismatch", "release subject digest does not match the supplied subject")
     evidence = document.get("evidence")
     if not isinstance(evidence, list) or not evidence:
         raise RunnerError("release_evidence_missing", "release report needs evidence bodies")
@@ -103,13 +140,22 @@ def validate_release_report(document: dict[str, Any], *, expected_runner_version
     failed = [item for item in evidence if item["outcome"] == "failed"]
     if failed:
         raise RunnerError("release_evidence_failed", "release evidence contains failures")
-    return {"schema_version": "spec-runner-release-qualification/v1", "eligible": True, "evidence_digest": digest(evidence), "unverified": [item["kind"] for item in evidence if item["outcome"] in {"not_verified", "skipped"}]}
+    required_not_passed = sorted(
+        item["kind"] for item in evidence if item["kind"] in required and item["outcome"] != "passed"
+    )
+    return {
+        "schema_version": "spec-runner-release-qualification/v1",
+        "eligible": not required_not_passed,
+        "subject_digest": digest(subject),
+        "evidence_digest": digest(evidence),
+        "unverified": [item["kind"] for item in evidence if item["outcome"] in {"not_verified", "skipped"}],
+        "required_not_passed": required_not_passed,
+    }
 
 
 def build_release_report(*, runner_version: str, subject: dict[str, Any], evidence_documents: list[dict[str, Any]], required_kinds: set[str] | None = None) -> dict[str, object]:
     """Build a release report from complete evidence bodies."""
-    if not isinstance(subject, dict):
-        raise RunnerError("release_subject_missing", "release subject must be an object")
+    canonical_subject = canonical_release_subject(subject, expected_runner_version=runner_version)
     envelopes: list[dict[str, object]] = []
     for body in evidence_documents:
         if not isinstance(body, dict) or body.get("evidence_kind") not in EVIDENCE_KINDS:
@@ -123,7 +169,8 @@ def build_release_report(*, runner_version: str, subject: dict[str, Any], eviden
     report = {
         "schema_version": "spec-runner-release-report/v1",
         "runner_version": runner_version,
-        "subject": subject,
+        "subject": canonical_subject,
+        "subject_digest": digest(canonical_subject),
         "required_kinds": sorted(required_kinds or {"deterministic", "local_git"}),
         "evidence": envelopes,
     }
