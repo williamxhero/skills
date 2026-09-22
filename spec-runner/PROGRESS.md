@@ -29,7 +29,7 @@ Implemented slices in the isolated `spec-runner/` package:
 - SR-08: read-only legacy database observation and the thin
   `/implement-needs` handoff script.
 
-Verified on 2026-09-22 in this branch: 47 unit/integration tests with one
+Verified on 2026-09-22 in this branch: 49 unit/integration tests with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
 matrix, public-CLI process restart recovery after both artifact boundaries,
@@ -45,15 +45,15 @@ second merge. The same plan also passed through the public `start` entry.
 The current `0.1.0` wheel was rebuilt from merged `master`, installed into a
 fresh isolated target without source `PYTHONPATH`, and verified through the
 installed public CLI: `--version` returned `0.1.0`, `diagnose package` passed,
-and all eight deterministic fault cases passed. The wheel contained no
+and all ten deterministic fault cases passed. The wheel contained no
 database, log, token, secret, or environment members.
 
 The follow-up handover contract adds a public negative matrix for active source
 writers and raises the deterministic test count to 41 passed with one skipped.
 
 The deterministic evidence is not final whole-route qualification. Remaining
-acceptance gaps are the real three-SPEC delivery loop, arbitrary-stage mixed
-progress with actual issue/PR/cleanup side effects, live SDK active-turn
+acceptance gaps are GitHub-mode three-SPEC issue/PR/cleanup side effects,
+arbitrary-stage mixed progress with actual issue/PR/cleanup side effects, live SDK active-turn
 handoff, live GitHub sandbox/merge-queue behavior, upstream Matt Skill
 invocation, and a native Windows kill/restart matrix. These are explicitly
 `not_verified`; no deterministic receipt is promoted to live evidence.
