@@ -605,6 +605,12 @@ class Store:
     def workers_for_run(self, run_id: str) -> list[dict[str, object]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM workers WHERE run_id = ?", (run_id,))]
 
+    def steps_for_run(self, run_id: str) -> list[dict[str, object]]:
+        return [dict(row) for row in self.connection.execute("SELECT * FROM steps WHERE run_id = ? ORDER BY created_at, step_name", (run_id,))]
+
+    def operations_for_run(self, run_id: str) -> list[dict[str, object]]:
+        return [dict(row) for row in self.connection.execute("SELECT * FROM operations WHERE run_id = ? ORDER BY created_at, operation_id", (run_id,))]
+
     def public_status(self, run_id: str) -> dict[str, object]:
         record = self.find_by_run_id(run_id)
         if record is None:
@@ -615,6 +621,8 @@ class Store:
         return {
             "run": record.public(),
             "step": dict(step) if step else None,
+            "steps": self.steps_for_run(run_id),
+            "operations": self.operations_for_run(run_id),
             "workers": self.workers_for_run(run_id),
             "verification": self.verification_for_run(run_id),
             "runtime": self.runtime_for_run(run_id),

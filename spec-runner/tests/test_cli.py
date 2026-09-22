@@ -93,6 +93,8 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(len(first["verification"]), 2)
         self.assertEqual(first["verification"][-1]["stage"], "deterministic_second")
         self.assertEqual(first["verification"][-1]["outcome"], "verified")
+        self.assertTrue(first["operations"])
+        self.assertTrue(first["steps"])
         event_types = [event["event_type"] for event in first["events"]]
         for expected in ("run_created", "step_completed", "step_verified", "cleanup_readback"):
             self.assertIn(expected, event_types)
@@ -106,6 +108,11 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertFalse(second["created"])
         self.assertEqual(second["run"]["run_id"], run["run_id"])
+
+        code, status = self.invoke("status", "--control-root", str(self.control_root), "--run-id", run["run_id"])
+        self.assertEqual(code, 0)
+        self.assertEqual(status["run"]["state"], "completed")
+        self.assertEqual(status["verification"], first["verification"])
 
     def test_same_launch_key_with_changed_input_is_rejected_and_new_key_is_allowed(self) -> None:
         self.assertEqual(self.start()[0], 0)

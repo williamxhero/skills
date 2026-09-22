@@ -47,7 +47,23 @@ def validate_fault_matrix(document: dict[str, Any]) -> dict[str, object]:
 
 def runtime_report(*, runner_version: str, store_status: dict[str, Any] | None = None) -> dict[str, object]:
     runs = (store_status or {}).get("runs", [])
-    return {"schema_version": "spec-runner-runtime-report/v1", "runner_version": runner_version, "environment": {"os": platform.platform(), "python": platform.python_version(), "pid": os.getpid()}, "runs_observed": len(runs) if isinstance(runs, list) else 0, "token_cost": "unknown", "telemetry_is_business_progress": False}
+    states: dict[str, int] = {}
+    if isinstance(runs, list):
+        for run in runs:
+            if isinstance(run, dict):
+                state = str(run.get("state", "unknown"))
+                states[state] = states.get(state, 0) + 1
+    return {
+        "schema_version": "spec-runner-runtime-report/v1",
+        "runner_version": runner_version,
+        "environment": {"os": platform.platform(), "python": platform.python_version(), "pid": os.getpid()},
+        "runs_observed": len(runs) if isinstance(runs, list) else 0,
+        "states": states,
+        "progress_basis": "verified_step_events_and_receipts",
+        "token_cost": "unknown",
+        "cost_coverage": "unknown",
+        "telemetry_is_business_progress": False,
+    }
 
 
 def validate_release_report(document: dict[str, Any], *, expected_runner_version: str) -> dict[str, object]:
