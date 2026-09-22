@@ -88,6 +88,10 @@ also passed.
   only that exact Runner PID at the first durable artifact boundary, and used
   public `drive` to recover the same run. The recovered run reached
   `completed` with two verification receipts and archive readbacks.
+- the public GitHub read entrypoint read the real `williamxhero/skills` root
+  issue #164, SR-01 issues #165–#169, and takeover issue #205 with complete
+  pagination. It classified the observed links as body relations and reported
+  native relations as absent; no GitHub write was performed by this probe.
 
 ## Not verified / external blockers
 
