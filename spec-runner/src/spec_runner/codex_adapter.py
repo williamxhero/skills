@@ -235,10 +235,13 @@ class CodexAdapter:
 
     def archive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
         """Archive one SDK thread and prove it appears in every required page."""
-        try:
-            import openai_codex as sdk_module
-        except ImportError as exc:
-            raise RunnerError("sdk_unavailable", f"openai-codex=={SDK_VERSION} is not installed") from exc
+        if self._sdk_module is None:
+            try:
+                import openai_codex as sdk_module
+            except ImportError as exc:
+                raise RunnerError("sdk_unavailable", f"openai-codex=={SDK_VERSION} is not installed") from exc
+        else:
+            sdk_module = self._sdk_module
         Codex = sdk_module.Codex
         CodexConfig = sdk_module.CodexConfig
         factory = self._codex_factory or (lambda config: Codex(config))
@@ -269,3 +272,78 @@ class CodexAdapter:
                 details={"exception_type": type(exc).__name__},
             ) from exc
         raise RunnerError("archive_readback_failed", "archived thread was not found in the complete page walk")
+
+    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+        """Read one explicitly supplied SDK thread without starting a turn.
+
+        The published SDK exposes thread history through a ``Thread`` handle;
+        obtaining that handle requires ``thread_resume``. This method records
+        that boundary explicitly and only calls ``Thread.read`` afterwards. It
+        never calls ``turn``, ``run``, ``steer``, ``interrupt``, or archive.
+        It is therefore suitable for an explicit takeover inspection, not an
+        ownership transfer of an active external writer.
+        """
+        if not thread_id.strip():
+            raise RunnerError("invalid_thread_id", "thread_id must be non-empty")
+        if self._sdk_module is None:
+            try:
+                import openai_codex as sdk_module
+            except ImportError as exc:
+                raise RunnerError("sdk_unavailable", f"openai-codex=={SDK_VERSION} is not installed") from exc
+        else:
+            sdk_module = self._sdk_module
+        Codex = sdk_module.Codex
+        CodexConfig = sdk_module.CodexConfig
+        Sandbox = sdk_module.Sandbox
+        approval_modes = getattr(sdk_module, "ApprovalMode", None)
+        approval_mode = getattr(approval_modes, APPROVAL_MODE, None)
+        if approval_mode is None:
+            raise RunnerError(
+                "sdk_approval_policy_unsupported",
+                f"openai-codex=={SDK_VERSION} does not expose the required {APPROVAL_MODE} approval policy",
+            )
+        factory = self._codex_factory or (lambda config: Codex(config))
+        try:
+            with factory(CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)) as codex:
+                thread = codex.thread_resume(
+                    thread_id,
+                    cwd=str(repository_path),
+                    sandbox=Sandbox.workspace_write,
+                    approval_mode=approval_mode,
+                )
+                response = thread.read(include_turns=True)
+                source = getattr(response, "thread", None)
+                if source is None:
+                    raise RunnerError("sdk_thread_read_invalid", "Codex SDK returned no thread in read response")
+                status = getattr(source, "status", None)
+                status_root = getattr(status, "root", status)
+                flags = getattr(status_root, "active_flags", []) or []
+                turns = getattr(source, "turns", []) or []
+                return {
+                    "schema_version": "spec-runner-sdk-thread-inspection/v1",
+                    "thread_id": str(getattr(source, "id", thread_id)),
+                    "repository_path": str(repository_path),
+                    "read_via": "thread_resume_then_thread_read",
+                    "started_turn": False,
+                    "approval_mode": APPROVAL_MODE,
+                    "thread_status": str(getattr(getattr(status_root, "type", None), "value", getattr(status_root, "type", "unknown"))),
+                    "active_flags": [str(getattr(flag, "value", flag)) for flag in flags],
+                    "turns": [
+                        {
+                            "turn_id": str(getattr(turn, "id", "")),
+                            "status": str(getattr(getattr(turn, "status", None), "value", getattr(turn, "status", "unknown"))),
+                            "started_at": getattr(turn, "started_at", None),
+                            "completed_at": getattr(turn, "completed_at", None),
+                        }
+                        for turn in turns
+                    ],
+                    "turn_count": len(turns),
+                }
+        except RunnerError:
+            raise
+        except Exception as exc:
+            raise RunnerError(
+                "sdk_thread_read_failed",
+                "Codex SDK failed while reading the explicitly supplied thread",
+                details={"exception_type": type(exc).__name__},
+            ) from exc
