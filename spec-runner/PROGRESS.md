@@ -32,8 +32,8 @@ Implemented slices in the isolated `spec-runner/` package:
   Runner CLI; the old controller remains available only for identified
   pre-SR-08 runs.
 
-Verified on 2026-09-23 in this branch: 62 collected `spec-runner`
-unit/integration tests (61 passed, one skipped) plus 3 `/implement-needs`
+Verified on 2026-09-23 in this branch: 63 collected `spec-runner`
+unit/integration tests (62 passed, one skipped) plus 3 `/implement-needs`
 handoff isolation tests, with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
@@ -79,6 +79,12 @@ managed worktree remains `cleanup_pending`, and the next drive retries only
 cleanup from the durable receipt without re-running implementation or merge.
 A native Windows probe then confirmed the same behavior through the installed
 public CLI on a Chinese/space path using a delete-denying file handle.
+
+Native cleanup regressions now hold Win32 delete-denying handles on tracked
+SQLite, log, and artifact-directory resources in a Chinese/space path. Each
+returns `pending` while locked and reaches `cleaned` through the same retry
+path after the exact handle is released. This narrows, but does not erase, the
+remaining cross-process Windows cleanup qualification gap.
 
 The follow-up handover contract adds a public negative matrix for active source
 writers and raises the deterministic test count to 41 passed with one skipped.
