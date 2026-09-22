@@ -114,3 +114,40 @@ class CodexAdapter:
             started_at=getattr(result, "started_at", None),
             completed_at=getattr(result, "completed_at", None),
         )
+
+    def archive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+        """Archive one SDK thread and prove it appears in every required page."""
+        try:
+            import openai_codex as sdk_module
+        except ImportError as exc:
+            raise RunnerError("sdk_unavailable", f"openai-codex=={SDK_VERSION} is not installed") from exc
+        Codex = sdk_module.Codex
+        CodexConfig = sdk_module.CodexConfig
+        factory = self._codex_factory or (lambda config: Codex(config))
+        pages = 0
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        try:
+            with factory(CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)) as codex:
+                codex.thread_archive(thread_id)
+                while True:
+                    response = codex.thread_list(archived=True, cursor=cursor, limit=100)
+                    pages += 1
+                    if any(str(getattr(item, "id", "")) == thread_id for item in (getattr(response, "data", []) or [])):
+                        return {"thread_id": thread_id, "archived": True, "pages_read": pages}
+                    next_cursor = getattr(response, "next_cursor", None)
+                    if not next_cursor:
+                        break
+                    if next_cursor in seen_cursors:
+                        raise RunnerError("archive_readback_failed", "Codex archive pagination repeated a cursor")
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+        except RunnerError:
+            raise
+        except Exception as exc:
+            raise RunnerError(
+                "archive_failed",
+                "Codex SDK archive or archive readback failed",
+                details={"exception_type": type(exc).__name__},
+            ) from exc
+        raise RunnerError("archive_readback_failed", "archived thread was not found in the complete page walk")

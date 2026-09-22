@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import uuid
 from pathlib import Path
@@ -9,6 +10,7 @@ from .config import RunnerConfig, read_brief
 from .codex_adapter import CodexAdapter, CodexWorkerResult
 from .errors import RunnerError
 from .store import RunRecord, Store, now
+from .verification import verify_run
 
 
 def _validate_launch_key(value: str) -> str:
@@ -52,11 +54,34 @@ def _execute_deterministic_example(
     return store.complete_deterministic_stage(run.run_id, f"start:{run.run_id}")
 
 
+def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stage: str) -> dict[str, object]:
+    declared: dict[str, object] = {}
+    if result.final_response:
+        try:
+            parsed = json.loads(result.final_response)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            declared = parsed
+    return {
+        "schema_version": "spec-runner-worker-result/v1",
+        "stage": stage,
+        "input_digest": brief_digest,
+        "outcome": declared.get("outcome", "completed" if result.status == "completed" else result.status),
+        "artifacts": declared.get("artifacts", []),
+        "blockers": declared.get("blockers", [result.error] if result.error else []),
+        **result.public(),
+    }
+
+
 def _execute_codex_example(
     *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store
 ) -> RunRecord:
     prompt = (
-        "You are a bounded Spec Runner worker. Read the supplied brief and produce a concise structured response. "
+        "You are a bounded Spec Runner worker. Read the supplied brief, create exactly one handoff file at "
+        f"spec-runner-output/{run.run_id}/handoff.md inside the repository, and return only a JSON object with keys "
+        "outcome, artifacts, and blockers. The handoff must contain the brief digest and stage name. "
+        "Do not claim an artifact unless it is real. "
         "Do not publish issues, create a PR, or modify files outside the configured repository.\n\n"
         f"Brief digest: {brief_digest}\n\n{brief}"
     )
@@ -69,12 +94,7 @@ def _execute_codex_example(
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=False)
     (artifact_directory / "worker-result.json").write_text(
-        json.dumps(
-            {"schema_version": "spec-runner-worker-result/v1", "stage": "example", **result.public()},
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
+        json.dumps(_declared_model_result(result, brief_digest=brief_digest, stage="example"), ensure_ascii=False, indent=2, sort_keys=True)
         + "\n",
         encoding="utf-8",
         newline="\n",
@@ -91,6 +111,115 @@ def _execute_codex_example(
         turn_id=result.turn_id,
         state="turn_completed",
     )
+
+
+def _execute_second_codex(
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, brief_digest: str, store: Store
+) -> RunRecord:
+    step_name = "codex_second"
+    operation_id = f"second:{run.run_id}"
+    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="codex_sdk")
+    prompt = (
+        "You are the second bounded Spec Runner worker. Consume the first-stage handoff directly. "
+        f"Create exactly one final file at spec-runner-output/{run.run_id}/final.md inside the repository, "
+        "then return only JSON with outcome, artifacts, and blockers. Do not publish issues or create a PR.\n\n"
+        f"First-stage handoff: spec-runner-output/{run.run_id}/handoff.md\nBrief digest: {brief_digest}"
+    )
+    result = CodexAdapter().run(
+        prompt=prompt,
+        repository_path=config.repository_path,
+        model=config.model_name,
+        effort=config.effort,
+    )
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    (artifact_directory / "worker-result-second.json").write_text(
+        json.dumps(_declared_model_result(result, brief_digest=brief_digest, stage=step_name), ensure_ascii=False, indent=2, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    store.write_log(
+        control_root,
+        run.run_id,
+        {"event": "codex_second_turn_completed", "thread_id": result.thread_id, "turn_id": result.turn_id, "status": result.status},
+    )
+    return store.complete_codex_stage(
+        run.run_id,
+        operation_id,
+        thread_id=result.thread_id,
+        turn_id=result.turn_id,
+        state="turn_completed",
+        step_name=step_name,
+        worker_id=f"codex_sdk:{run.run_id}:{step_name}",
+    )
+
+
+def _verify_and_archive(
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store, final_state: str = "completed"
+) -> dict[str, object]:
+    worker = store.workers_for_run(run.run_id)[-1]
+    try:
+        receipt = verify_run(control_root=control_root, run=run, worker=worker)
+        store.record_verification(run.run_id, receipt)
+    except RunnerError:
+        if run.backend_kind == "codex_sdk" and worker.get("external_thread_id"):
+            try:
+                CodexAdapter().archive_and_readback(
+                    thread_id=str(worker["external_thread_id"]), repository_path=config.repository_path
+                )
+                store.mark_archived(run.run_id, state="verification_failed")
+            except RunnerError:
+                store.mark_cleanup_pending(run.run_id)
+        raise
+
+    if run.backend_kind == "codex_sdk":
+        try:
+            CodexAdapter().archive_and_readback(
+                thread_id=str(worker["external_thread_id"]), repository_path=config.repository_path
+            )
+        except RunnerError:
+            store.mark_cleanup_pending(run.run_id)
+            raise
+    store.mark_archived(run.run_id, state=final_state)
+    return store.public_status(run.run_id)
+
+
+def _execute_second_deterministic(*, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store) -> RunRecord:
+    step_name = "deterministic_second"
+    operation_id = f"second:{run.run_id}"
+    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="deterministic_test")
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    handoff_path = artifact_directory / "handoff.json"
+    if not handoff_path.is_file() or handoff_path.is_symlink():
+        raise RunnerError("missing_handoff", "second stage cannot start without the verified first-stage handoff")
+    handoff_digest = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
+    (artifact_directory / "final.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "spec-runner-deterministic-final/v1",
+                "run_id": run.run_id,
+                "consumed_stage": "deterministic_example",
+                "handoff_digest": handoff_digest,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return store.complete_mechanical_stage(run.run_id, operation_id, step_name=step_name)
+
+
+def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief_digest: str, store: Store) -> dict[str, object]:
+    if config.execution_backend == "deterministic_test":
+        second = _execute_second_deterministic(control_root=control_root, config=config, run=run, store=store)
+    else:
+        second = _execute_second_codex(
+            control_root=control_root, config=config, run=run, brief_digest=brief_digest, store=store
+        )
+    return _verify_and_archive(control_root=control_root, config=config, run=second, store=store)
 
 
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str, run_id: str | None = None) -> dict[str, object]:
@@ -114,6 +243,11 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     "launch_key already belongs to different normalized input",
                     details={"run_id": existing.run_id},
                 )
+            if existing.state == "ready_for_next":
+                final_status = _advance_second_stage(
+                    control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
+                )
+                return {"created": False, **final_status}
             return {"created": False, **store.public_status(existing.run_id)}
         if store.find_by_run_id(requested_run_id):
             raise RunnerError("run_id_conflict", "run_id already exists; choose another UUID")
@@ -150,7 +284,21 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         except RunnerError:
             store.fail_run(record.run_id, operation_id)
             raise
-        return {"created": True, **store.public_status(finished.run_id)}
+        _verify_and_archive(
+            control_root=control_root,
+            config=config,
+            run=finished,
+            store=store,
+            final_state="ready_for_next",
+        )
+        final_status = _advance_second_stage(
+            control_root=control_root,
+            config=config,
+            run=store.find_by_run_id(finished.run_id) or finished,
+            brief_digest=brief_digest,
+            store=store,
+        )
+        return {"created": True, **final_status}
     finally:
         store.close()
 

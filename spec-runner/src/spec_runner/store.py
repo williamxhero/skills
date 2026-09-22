@@ -109,8 +109,21 @@ class Store:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS verifications (
+                    receipt_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    stage_name TEXT NOT NULL DEFAULT '',
+                    receipt_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, stage_name)
+                );
                 """
             )
+            verification_sql = self.connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'verifications'"
+            ).fetchone()[0]
+            if "run_id TEXT NOT NULL UNIQUE" in verification_sql or "stage_name" not in verification_sql:
+                self._migrate_verifications_v1()
             self.connection.execute(
                 "INSERT OR IGNORE INTO metadata(key, value) VALUES('schema_version', ?)",
                 (SCHEMA_VERSION,),
@@ -126,6 +139,48 @@ class Store:
             raise
         else:
             self.connection.commit()
+
+    def _migrate_verifications_v1(self) -> None:
+        """Preserve the one-stage table as audit data before adding stage receipts."""
+        legacy_table = "verifications_legacy_v1"
+        if self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (legacy_table,)
+        ).fetchone():
+            raise RunnerError("store_migration_failed", "existing legacy verification table prevents safe migration")
+        self.connection.execute(f"ALTER TABLE verifications RENAME TO {legacy_table}")
+        self.connection.execute(
+            """CREATE TABLE verifications (
+                receipt_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                stage_name TEXT NOT NULL,
+                receipt_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(run_id, stage_name)
+            )"""
+        )
+        legacy_rows = self.connection.execute(f"SELECT * FROM {legacy_table}").fetchall()
+        for row in legacy_rows:
+            values = dict(row)
+            receipt_json = values.get("receipt_json", "")
+            stage_name = values.get("stage_name", "")
+            # A pre-release build wrote values by ordinal after adding a column
+            # with ALTER TABLE. Recover the JSON without inventing timestamps.
+            if not receipt_json.lstrip().startswith("{") and str(values.get("created_at", "")).lstrip().startswith("{"):
+                stage_name = receipt_json
+                receipt_json = values["created_at"]
+            try:
+                receipt = json.loads(receipt_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            stage_name = str(receipt.get("stage") or stage_name or "legacy")
+            created_at = values.get("created_at")
+            if not isinstance(created_at, str) or created_at.lstrip().startswith("{"):
+                created_at = now()
+            self.connection.execute(
+                """INSERT OR IGNORE INTO verifications(receipt_id, run_id, stage_name, receipt_json, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (f"migration:{values['run_id']}:{stage_name}", values["run_id"], stage_name, json.dumps(receipt, ensure_ascii=False, sort_keys=True), created_at),
+            )
 
     @staticmethod
     def _record(row: sqlite3.Row | None) -> RunRecord | None:
@@ -182,7 +237,8 @@ class Store:
         return record
 
     def complete_codex_stage(
-        self, run_id: str, operation_id: str, *, thread_id: str, turn_id: str, state: str
+        self, run_id: str, operation_id: str, *, thread_id: str, turn_id: str, state: str,
+        step_name: str = "codex_example", worker_id: str | None = None
     ) -> RunRecord:
         timestamp = now()
         with self.transaction():
@@ -193,11 +249,11 @@ class Store:
             self.connection.execute(
                 """UPDATE workers SET external_thread_id = ?, external_turn_id = ?, state = ?, updated_at = ?
                    WHERE worker_id = ?""",
-                (thread_id, turn_id, state, timestamp, f"codex_sdk:{run_id}"),
+                (thread_id, turn_id, state, timestamp, worker_id or f"codex_sdk:{run_id}"),
             )
             self.connection.execute(
                 "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
-                (state, timestamp, run_id, "codex_example"),
+                (state, timestamp, run_id, step_name),
             )
             self.connection.execute(
                 "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
@@ -206,6 +262,87 @@ class Store:
         record = self.find_by_run_id(run_id)
         assert record is not None
         return record
+
+    def begin_stage(self, run_id: str, *, step_name: str, operation_id: str, backend_kind: str) -> None:
+        timestamp = now()
+        with self.transaction():
+            self.connection.execute(
+                "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
+                (run_id, step_name, "pending", timestamp, timestamp),
+            )
+            self.connection.execute(
+                "INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (operation_id, run_id, f"{backend_kind}_stage", "intent", "", timestamp, timestamp),
+            )
+            self.connection.execute(
+                "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (f"{backend_kind}:{run_id}:{step_name}", run_id, backend_kind, None, None, "pending", timestamp, timestamp),
+            )
+            self.connection.execute(
+                "UPDATE runs SET current_step = ?, state = ?, updated_at = ? WHERE run_id = ?",
+                (step_name, "starting", timestamp, run_id),
+            )
+
+    def complete_mechanical_stage(self, run_id: str, operation_id: str, *, step_name: str) -> RunRecord:
+        timestamp = now()
+        with self.transaction():
+            self.connection.execute("UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ?", ("completed", timestamp, operation_id))
+            self.connection.execute(
+                "UPDATE workers SET state = ?, updated_at = ? WHERE worker_id = ?",
+                ("completed", timestamp, f"deterministic_test:{run_id}:{step_name}"),
+            )
+            self.connection.execute("UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?", ("turn_completed", timestamp, run_id, step_name))
+            self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", ("turn_completed", timestamp, run_id))
+        record = self.find_by_run_id(run_id)
+        assert record is not None
+        return record
+
+    def record_verification(self, run_id: str, receipt: dict[str, object]) -> None:
+        timestamp = now()
+        stage_name = str(receipt.get("stage", ""))
+        with self.transaction():
+            self.connection.execute(
+                """INSERT OR REPLACE INTO verifications(receipt_id, run_id, stage_name, receipt_json, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (f"verification:{run_id}:{stage_name}", run_id, stage_name, json.dumps(receipt, ensure_ascii=False, sort_keys=True), timestamp),
+            )
+            self.connection.execute(
+                "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ?",
+                ("verified", timestamp, run_id),
+            )
+            self.connection.execute(
+                "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
+                ("verified", timestamp, run_id),
+            )
+
+    def mark_archived(self, run_id: str, *, state: str = "completed") -> None:
+        timestamp = now()
+        with self.transaction():
+            self.connection.execute("UPDATE workers SET state = ?, updated_at = ? WHERE run_id = ?", ("archived", timestamp, run_id))
+            self.connection.execute("UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ?", ("archived", timestamp, run_id))
+            self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
+
+    def mark_cleanup_pending(self, run_id: str) -> None:
+        timestamp = now()
+        with self.transaction():
+            self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", ("cleanup_pending", timestamp, run_id))
+
+    def verification_for_run(self, run_id: str) -> list[dict[str, object]]:
+        receipts: list[dict[str, object]] = []
+        for row in self.connection.execute("SELECT * FROM verifications WHERE run_id = ? ORDER BY created_at", (run_id,)):
+            values = dict(row)
+            receipt_json = values.get("receipt_json", "")
+            if not str(receipt_json).lstrip().startswith("{") and str(values.get("created_at", "")).lstrip().startswith("{"):
+                # Read-only compatibility for the pre-migration ordinal-write
+                # layout. A normal status query must never repair the database.
+                receipt_json = values["created_at"]
+            try:
+                receipt = json.loads(receipt_json)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(receipt, dict):
+                receipts.append(receipt)
+        return receipts
 
     def fail_run(self, run_id: str, operation_id: str, *, state: str = "failed") -> None:
         timestamp = now()
@@ -232,6 +369,7 @@ class Store:
             "run": record.public(),
             "step": dict(step) if step else None,
             "workers": self.workers_for_run(run_id),
+            "verification": self.verification_for_run(run_id),
         }
 
     def list_status(self) -> list[dict[str, str]]:

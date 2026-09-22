@@ -78,7 +78,12 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertTrue(first["created"])
         run = first["run"]
         self.assertEqual(run["backend_kind"], "deterministic_test")
-        self.assertEqual(run["state"], "completed_test_backend")
+        self.assertEqual(run["state"], "completed")
+        self.assertEqual(first["step"]["state"], "archived")
+        self.assertEqual(len(first["verification"]), 2)
+        self.assertEqual(first["verification"][-1]["stage"], "deterministic_second")
+        self.assertEqual(first["verification"][-1]["outcome"], "verified")
+        self.assertTrue((self.control_root / "artifacts" / run["run_id"] / "final.json").is_file())
         artifact = self.control_root / "artifacts" / run["run_id"] / "handoff.json"
         self.assertTrue(artifact.is_file())
         self.assertEqual(json.loads(artifact.read_text(encoding="utf-8"))["backend_kind"], "deterministic_test")
