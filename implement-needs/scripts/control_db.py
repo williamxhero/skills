@@ -1990,6 +1990,86 @@ class ControlDB:
             raise ValueError("current task attempt is not terminal")
         from task_identity import next_attempt_id
         return next_attempt_id(attempt_id)
+    def recover_unregistered_bootstrap(
+        self, run_id, thread_id, kind, identity, *, host_id, owner_id, cwd,
+        project_id, title_token, creation_evidence, absence_evidence,
+        no_execution_evidence, expected_version=None,
+    ):
+        """Retain an absent, never-assigned bootstrap as a non-archive tombstone."""
+        if identity.run_id != run_id:
+            raise ValueError("bootstrap identity run does not match recovery run")
+        required_strings = {
+            "thread_id": thread_id, "kind": kind, "host_id": host_id,
+            "owner_id": owner_id, "cwd": cwd, "project_id": project_id,
+            "title_token": title_token,
+        }
+        if any(not isinstance(value, str) or not value.strip()
+               for value in required_strings.values()):
+            raise ValueError("bootstrap tombstone identity is incomplete")
+
+        def evidence_list(value, label, minimum=1):
+            if (not isinstance(value, list) or len(value) < minimum
+                    or any(not isinstance(item, str) or not item.strip() for item in value)):
+                raise ValueError(f"bootstrap tombstone requires {label} evidence")
+            return value
+
+        creation_evidence = evidence_list(creation_evidence, "creation")
+        absence_evidence = evidence_list(absence_evidence, "backend-absence", minimum=2)
+        no_execution_evidence = evidence_list(
+            no_execution_evidence, "no-execution", minimum=2
+        )
+        if not any("assignment_absent" in item for item in no_execution_evidence):
+            raise ValueError("bootstrap tombstone requires assignment-absence evidence")
+        if not any("managed_turn_absent" in item for item in no_execution_evidence):
+            raise ValueError("bootstrap tombstone requires managed-turn-absence evidence")
+
+        with self.transaction():
+            self._check_version(run_id, expected_version)
+            duplicate = self.conn.execute(
+                "SELECT thread_id FROM threads WHERE thread_id=? OR formal_thread_id=? "
+                "OR (run_id=? AND task_id=? AND attempt_id=?)",
+                (thread_id, thread_id, run_id, identity.task_id, identity.attempt_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("bootstrap tombstone conflicts with an existing registry row")
+            stamp = now()
+            readback = {
+                "classification": "backend_absent_after_create",
+                "creation_evidence": creation_evidence,
+                "absence_evidence": absence_evidence,
+                "no_execution_evidence": no_execution_evidence,
+                "archived": False,
+            }
+            self.conn.execute(
+                "INSERT INTO threads(thread_id,run_id,kind,lifecycle,outcome,last_observed_at,"
+                "task_id,attempt_id,nonce,formal_thread_id,host_id,owner_id,cwd,project_id,"
+                "title_token,identity_readback) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (thread_id, run_id, kind, "tombstoned", "backend_absent_after_create",
+                 stamp, identity.task_id, identity.attempt_id, identity.nonce, thread_id,
+                 host_id, owner_id, cwd, project_id, title_token,
+                 json.dumps(readback, ensure_ascii=False, sort_keys=True)),
+            )
+            cancellation = {
+                "status": "verified",
+                "classification": "backend_absent_after_create",
+                "archived": False,
+                "evidence": creation_evidence + absence_evidence + no_execution_evidence,
+            }
+            self.conn.execute(
+                "INSERT INTO thread_bootstraps(thread_id,run_id,state,budget,attempts,"
+                "cancellation_receipt,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (thread_id, run_id, "cancelled", 3, 0,
+                 json.dumps(cancellation, ensure_ascii=False, sort_keys=True), stamp, stamp),
+            )
+            version = self._business_event(
+                run_id, "thread", thread_id, "unregistered_bootstrap_tombstoned",
+                {"task_id": identity.task_id, "attempt_id": identity.attempt_id,
+                 "classification": "backend_absent_after_create", "archived": False,
+                 "evidence": readback},
+            )
+            return {"thread_id": thread_id, "lifecycle": "tombstoned",
+                    "outcome": "backend_absent_after_create",
+                    "business_version": version}
     def untracked_threads(self,run_id):
         """Rows retained for audit that carry no task identity."""
         return [dict(row) for row in self.conn.execute("SELECT * FROM threads WHERE run_id=? AND task_id IS NULL",(run_id,))]
@@ -2037,9 +2117,15 @@ class ControlDB:
             raise ValueError("controller applied route is incomplete")
         if not isinstance(next_action, dict) or not next_action.get("kind") or not next_action.get("target"):
             raise ValueError("controller next action is incomplete")
-        ledger = self.ticket_ledger_status(run_id)
-        if not ledger["allow"]:
-            raise ValueError("controller recovery ledger gate failed: " + ", ".join(ledger["errors"]))
+        run_mode = self.conn.execute(
+            "SELECT execution_mode FROM runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if run_mode is None:
+            raise ValueError("controller recovery run is missing")
+        if run_mode[0] == "single-ticket-line":
+            ledger = self.ticket_ledger_status(run_id)
+            if not ledger["allow"]:
+                raise ValueError("controller recovery ledger gate failed: " + ", ".join(ledger["errors"]))
         identity_json = json.dumps(identity, ensure_ascii=False, sort_keys=True)
         route_json = json.dumps(route_readback, ensure_ascii=False, sort_keys=True)
         with self.transaction():
@@ -2064,9 +2150,12 @@ class ControlDB:
                 (identity["formal_thread_id"], identity["host_id"], identity_json,
                  route_json, now(), thread_id, run_id),
             )
+            gates = ["formal_identity", "applied_route"]
+            if run_mode[0] == "single-ticket-line":
+                gates.insert(0, "ticket_ledger")
             self._business_event(run_id, "thread", thread_id, "controller_recovery_committed", {
                 "identity": identity, "route": route_readback, "next_action": next_action,
-                "gates": ["ticket_ledger", "formal_identity", "applied_route"],
+                "gates": gates,
             })
             self._business_event(run_id, "run", run_id, "controller_next_action_recomputed", next_action)
     def add_observation(self,run_id,entity_type,entity_id,observation):

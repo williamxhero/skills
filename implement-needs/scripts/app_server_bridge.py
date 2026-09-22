@@ -173,7 +173,8 @@ class AppServerBridge:
     def _read_native(self, formal_thread_id: str) -> dict[str, Any]:
         return self._thread(self._result("thread/read", {"threadId": formal_thread_id, "includeTurns": False}))
 
-    def _read_native_identity(self, formal_thread_id: str) -> dict[str, Any]:
+    def _read_native_identity(self, formal_thread_id: str, *,
+                              saved_project_readback: bool = False) -> dict[str, Any]:
         """Read identity from thread/read, enriching only from a live list readback.
 
         Some app-server versions omit projectId from thread/read while exposing
@@ -186,8 +187,9 @@ class AppServerBridge:
         metadata = self._metadata()
         entry = metadata.get(formal_thread_id)
         if (thread.get("cwd") is not None
-                and entry is not None
-                and entry.get("project_id_source") == "saved_project_readback"):
+                and ((entry is not None
+                      and entry.get("project_id_source") == "saved_project_readback")
+                     or saved_project_readback)):
             return thread
         if thread.get("projectId") is not None and thread.get("cwd") is not None:
             return thread
@@ -390,6 +392,9 @@ class AppServerBridge:
     def adopt_thread(self, *, formal_thread_id: str, host_id: str, task_id: str,
                      run_id: str, attempt_id: str, owner_id: str, cwd: str,
                      project_id: str, identity_evidence: list[str] | None = None,
+                     project_id_source: str | None = None,
+                     project_canonical_path: str | None = None,
+                     project_identity_evidence: list[str] | None = None,
                      **_: Any) -> dict[str, Any]:
         """Enroll one pre-existing thread after a native readback.
 
@@ -397,11 +402,25 @@ class AppServerBridge:
         provide the controller identity and the bridge verifies native fields
         before writing the sidecar.
         """
-        native = self._read_native_identity(formal_thread_id)
+        saved_project = project_id_source == "saved_project_readback"
+        if saved_project and project_canonical_path != cwd:
+            raise BackendError("adoption project canonical path disagrees with cwd")
+        if saved_project and (
+                not isinstance(project_identity_evidence, list)
+                or not project_identity_evidence
+                or any(not isinstance(item, str) or not item.strip()
+                       for item in project_identity_evidence)):
+            raise BackendError("adoption saved-project readback evidence is incomplete")
+        native = self._read_native_identity(
+            formal_thread_id, saved_project_readback=saved_project,
+        )
         thread = native
-        if thread.get("projectId") is None:
+        if thread.get("projectId") is None and not saved_project:
             raise BackendError("app-server projectId is unavailable; adoption cannot be verified")
-        if thread.get("id") != formal_thread_id or thread.get("cwd") != cwd or thread.get("projectId") != project_id:
+        if (thread.get("id") != formal_thread_id
+                or thread.get("cwd") != cwd
+                or (thread.get("projectId") is not None
+                    and thread.get("projectId") != project_id)):
             raise BackendError("adoption metadata disagrees with native thread readback")
         entry = {
             "formal_thread_id": formal_thread_id, "host_id": host_id,
@@ -409,6 +428,12 @@ class AppServerBridge:
             "owner_id": owner_id, "cwd": cwd, "project_id": project_id,
             "identity_evidence": identity_evidence,
         }
+        if saved_project:
+            entry.update({
+                "project_id_source": project_id_source,
+                "project_canonical_path": project_canonical_path,
+                "project_identity_evidence": project_identity_evidence,
+            })
         if any(not isinstance(entry[field], str) or not entry[field] for field in REQUIRED_IDENTITY):
             raise BackendError("adoption requires complete controller identity")
         if (not isinstance(identity_evidence, list) or not identity_evidence

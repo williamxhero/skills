@@ -50,6 +50,45 @@ def _verified_archived_audit_row(row):
     return isinstance(operations, list) and bool(operations) and isinstance(readbacks, list) and bool(readbacks)
 
 
+def _missing_registry_recovery(db, run_id, missing):
+    """Classify a missing registry row without authorizing an external replay.
+
+    An assigned bootstrap has already crossed the route and assignment
+    barriers.  If a reconnect cannot find its formal backend record, the
+    controller must preserve that boundary and ask for assignment
+    reconciliation; treating the row as an unstarted create would permit a
+    duplicate assignment.  Other missing rows retain the historical generic
+    mismatch classification.
+    """
+    assigned = []
+    for thread_id in missing:
+        row = db.conn.execute(
+            "SELECT state,assignment_receipt FROM thread_bootstraps "
+            "WHERE run_id=? AND thread_id=?",
+            (run_id, thread_id),
+        ).fetchone()
+        if row is None:
+            continue
+        if row[0] == "assigned" or row[1] is not None:
+            assigned.append(thread_id)
+    if not assigned:
+        return {
+            "errors": ["registry_threads_absent_from_backend"],
+            "recovery": None,
+        }
+    recovery = {
+        "classification": "assigned_backend_absent_after_reconnect",
+        "missing_thread_ids": assigned,
+        "local_action": "assignment_reconciliation_required",
+        "assignment_replay_allowed": False,
+        "evidence": ["controller:bootstrap:assigned", "backend:formal_identity_absent"],
+    }
+    errors = ["registry_assigned_thread_absent_from_backend"]
+    if len(assigned) != len(missing):
+        errors.append("registry_threads_absent_from_backend")
+    return {"errors": errors, "recovery": recovery}
+
+
 def reconcile_inventory(db, run_id, inventory):
     """Reconcile a backend inventory supplied by the selected task adapter.
 
@@ -106,8 +145,17 @@ def reconcile_inventory(db, run_id, inventory):
         else:
             errors.append(decision.status)
     missing=[row["thread_id"] for row in registered if not any(item.get("thread_id")==row["thread_id"] for item in matches)]
-    if missing: errors.append("registry_threads_absent_from_backend")
-    return {"decision":"allow" if not errors else "repair","status":"complete" if not errors else ("inconclusive" if "backend_inventory_inconclusive" in errors else "mismatch"),"errors":sorted(set(errors)),"matches":matches}
+    recovery = None
+    if missing:
+        classified = _missing_registry_recovery(db, run_id, missing)
+        errors.extend(classified["errors"])
+        recovery = classified["recovery"]
+    result = {"decision":"allow" if not errors else "repair",
+              "status":"complete" if not errors else ("inconclusive" if "backend_inventory_inconclusive" in errors else "mismatch"),
+              "errors":sorted(set(errors)),"matches":matches}
+    if recovery is not None:
+        result["recovery"] = recovery
+    return result
 
 
 def reconcile_backend(db, run_id, backend, *, page_limit=100):
@@ -264,6 +312,9 @@ def reconcile_backend(db, run_id, backend, *, page_limit=100):
 def adopt_controller(db, run_id, backend, *, thread_id: str, formal_thread_id: str,
                       host_id: str, task_id: str, attempt_id: str, owner_id: str,
                       cwd: str, project_id: str, identity_evidence: list[str] | None = None,
+                      project_id_source: str | None = None,
+                      project_canonical_path: str | None = None,
+                      project_identity_evidence: list[str] | None = None,
                       expected_version: int | None = None):
     """Enroll an existing native thread, then cross the normal recovery barrier.
 
@@ -282,6 +333,9 @@ def adopt_controller(db, run_id, backend, *, thread_id: str, formal_thread_id: s
         "formal_thread_id": formal_thread_id, "host_id": host_id, "task_id": task_id,
         "run_id": run_id, "attempt_id": attempt_id, "owner_id": owner_id,
         "cwd": cwd, "project_id": project_id, "identity_evidence": identity_evidence,
+        "project_id_source": project_id_source,
+        "project_canonical_path": project_canonical_path,
+        "project_identity_evidence": project_identity_evidence,
     }
     if hasattr(backend, "call"):
         adopted = backend.call("adopt_thread", params)

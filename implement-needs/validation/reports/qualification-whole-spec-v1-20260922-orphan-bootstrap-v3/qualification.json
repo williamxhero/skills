@@ -1,0 +1,719 @@
+{
+  "run_id": "qualification-whole-spec-v1-20260922-orphan-bootstrap-v3",
+  "scenario_version": "whole-spec-v1",
+  "backend_kind": "thread",
+  "backend_contract_version": 1,
+  "github_readbacks": {
+    "repository": "https://github.com/williamxhero/skills",
+    "issues": [
+      {
+        "number": 148,
+        "title": "正规测试 umbrella SPEC [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": null,
+        "children": [
+          149,
+          150,
+          151
+        ]
+      },
+      {
+        "number": 149,
+        "title": "正规测试 child SPEC-1 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 148,
+        "children": [
+          152,
+          153,
+          154
+        ]
+      },
+      {
+        "number": 150,
+        "title": "正规测试 child SPEC-2 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 148,
+        "blocked_by": [
+          149
+        ],
+        "children": [
+          155,
+          156,
+          157
+        ]
+      },
+      {
+        "number": 151,
+        "title": "正规测试 child SPEC-3 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 148,
+        "blocked_by": [
+          150
+        ],
+        "children": [
+          158,
+          159
+        ]
+      },
+      {
+        "number": 152,
+        "title": "正规测试 ticket-1-1 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 149
+      },
+      {
+        "number": 153,
+        "title": "正规测试 ticket-1-2 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 149
+      },
+      {
+        "number": 154,
+        "title": "正规测试 ticket-1-3 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 149
+      },
+      {
+        "number": 155,
+        "title": "正规测试 ticket-2-1 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 150
+      },
+      {
+        "number": 156,
+        "title": "正规测试 ticket-2-2 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 150
+      },
+      {
+        "number": 157,
+        "title": "正规测试 ticket-2-3 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 150
+      },
+      {
+        "number": 158,
+        "title": "正规测试 ticket-3-1 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 151
+      },
+      {
+        "number": 159,
+        "title": "正规测试 ticket-3-2 [qualification-whole-spec-v1-20260921-handofffix]",
+        "state": "CLOSED",
+        "parent": 151
+      }
+    ],
+    "pull_requests": [
+      {
+        "number": 160,
+        "url": "https://github.com/williamxhero/skills/pull/160",
+        "state": "MERGED",
+        "headRefName": "codex/qualification-whole-spec-v1-20260921-handofffix-spec1",
+        "baseRefName": "master",
+        "mergeCommit": "254cda9fddd177faf9902c7ec28fc8de6744487b"
+      },
+      {
+        "number": 162,
+        "url": "https://github.com/williamxhero/skills/pull/162",
+        "state": "MERGED",
+        "headRefName": "codex/qualification-whole-spec-v1-20260921-handofffix-spec2",
+        "baseRefName": "master",
+        "mergeCommit": "969fedd45c026673a86d1ca544ec1da9c278726c"
+      },
+      {
+        "number": 163,
+        "url": "https://github.com/williamxhero/skills/pull/163",
+        "state": "MERGED",
+        "headRefName": "codex/qualification-whole-spec-v1-20260921-handofffix-spec3",
+        "baseRefName": "master",
+        "mergeCommit": "cdae5493fd56edd7bc72b143cfc20d9bcf04284b"
+      }
+    ],
+    "relationship_evidence": [
+      "github:graphql:repository/issues:148-159",
+      "github:graphql:addSubIssue",
+      "github:graphql:addBlockedBy",
+      "gh:issue:view:state-readbacks"
+    ]
+  },
+  "artifact_counts": {
+    "umbrella_specs": 1,
+    "child_specs": 3,
+    "tickets": 8,
+    "grill_tasks": 1,
+    "planning_tasks": 1,
+    "spec_tasks": 3,
+    "spec_pull_requests": 3,
+    "ticket_implementation_artifacts": 0
+  },
+  "task_census": {
+    "all_archived": true,
+    "no_orphans": true,
+    "tasks": [
+      {
+        "kind": "grill",
+        "formal_thread_id": "01a0c1e1-7172-7093-a044-aabccffdc7a7",
+        "host_id": "local",
+        "task_id": "qualification-whole-spec-v1-20260921-handofffix-grill",
+        "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+        "attempt_id": "01",
+        "owner_id": "test-imp-needs",
+        "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+        "cwd": "C:\\Users\\will\\.codex\\skills",
+        "archive_readback": {
+          "archived": true
+        }
+      },
+      {
+        "kind": "planning",
+        "formal_thread_id": "01a0c1f9-a60d-70a1-b548-034a087d75a0",
+        "host_id": "local",
+        "task_id": "qualification-whole-spec-v1-20260921-handofffix-planning",
+        "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+        "attempt_id": "01",
+        "owner_id": "test-imp-needs",
+        "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+        "cwd": "C:\\Users\\will\\.codex\\skills",
+        "archive_readback": {
+          "archived": true
+        }
+      },
+      {
+        "kind": "spec",
+        "formal_thread_id": "01a0c1ff-831f-7040-971c-8472c2f5fcc4",
+        "host_id": "local",
+        "task_id": "qualification-whole-spec-v1-20260921-handofffix-spec1",
+        "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+        "attempt_id": "01",
+        "owner_id": "test-imp-needs",
+        "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+        "cwd": "C:\\Users\\will\\.codex\\skills",
+        "archive_readback": {
+          "archived": true
+        }
+      },
+      {
+        "kind": "spec",
+        "formal_thread_id": "01a0c21e-6a7c-75d3-8d8f-18d87a523166",
+        "host_id": "local",
+        "task_id": "qualification-whole-spec-v1-20260921-handofffix-spec2",
+        "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+        "attempt_id": "01",
+        "owner_id": "test-imp-needs",
+        "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+        "cwd": "C:\\Users\\will\\.codex\\skills",
+        "archive_readback": {
+          "archived": true
+        }
+      },
+      {
+        "kind": "spec",
+        "formal_thread_id": "01a0c223-bfe7-7fa2-9621-67572b2dc790",
+        "host_id": "local",
+        "task_id": "qualification-whole-spec-v1-20260921-handofffix-spec3",
+        "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+        "attempt_id": "01",
+        "owner_id": "test-imp-needs",
+        "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+        "cwd": "C:\\Users\\will\\.codex\\skills",
+        "archive_readback": {
+          "archived": true
+        }
+      }
+    ]
+  },
+  "project_identity_receipt": {
+    "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+    "canonical_path": "C:\\Users\\will\\.codex\\skills",
+    "label": "skills",
+    "host_id": "local",
+    "is_git_repository": true,
+    "evidence": [
+      "codex-app:list_projects:skills:2026-09-21"
+    ]
+  },
+  "logical_id_to_external_id_map": {
+    "umbrella": "#148",
+    "child1": "#149",
+    "child2": "#150",
+    "child3": "#151",
+    "ticket1": "#152",
+    "ticket2": "#153",
+    "ticket3": "#154",
+    "ticket4": "#155",
+    "ticket5": "#156",
+    "ticket6": "#157",
+    "ticket7": "#158",
+    "ticket8": "#159",
+    "pr1": "#160",
+    "pr2": "#162",
+    "pr3": "#163",
+    "grill": "01a0c1e1-7172-7093-a044-aabccffdc7a7",
+    "planning": "01a0c1f9-a60d-70a1-b548-034a087d75a0",
+    "spec1": "01a0c1ff-831f-7040-971c-8472c2f5fcc4",
+    "spec2": "01a0c21e-6a7c-75d3-8d8f-18d87a523166",
+    "spec3": "01a0c223-bfe7-7fa2-9621-67572b2dc790"
+  },
+  "recovery_results": {
+    "planning_restart": {
+      "detected": true,
+      "executed": true
+    },
+    "ticket_restart": {
+      "detected": true,
+      "executed": true
+    },
+    "assignment_restart": {
+      "detected": true,
+      "executed": true
+    },
+    "merge_before_archive_restart": {
+      "detected": true,
+      "executed": true
+    },
+    "release_restart": {
+      "detected": true,
+      "executed": true
+    },
+    "lost_response": {
+      "detected": true,
+      "executed": true
+    },
+    "idempotency_retry": {
+      "detected": true,
+      "executed": true
+    },
+    "controller_interrupted": {
+      "detected": true,
+      "executed": true
+    },
+    "capacity_fallback": {
+      "detected": true,
+      "executed": true
+    },
+    "stream_disconnect": {
+      "detected": true,
+      "executed": true
+    },
+    "uncertain_side_effect": {
+      "detected": true,
+      "executed": true
+    },
+    "repeated_empty_completion": {
+      "detected": true,
+      "executed": true,
+      "source_incident": "validation/reports/incident-01a0c2c2-repeated-empty-completion.json",
+      "replay": "tests/test_managed_recovery.py and tests/test_managed_turn_backend.py"
+    },
+    "replacement_attempt_cleanup": {
+      "detected": true,
+      "executed": true,
+      "all_created_attempts_archived": true,
+      "archive_readback_verified": true,
+      "attempts": [
+        {
+          "formal_thread_id": "thread-2",
+          "archived": true
+        }
+      ]
+    },
+    "successful_child_handoff_cleanup": {
+      "detected": true,
+      "executed": true,
+      "parent_empty_completed_turn": true,
+      "external_side_effects_reconciled": true,
+      "controller_action_reconciled": true,
+      "child_archived": true,
+      "archive_readback_verified": true,
+      "source_incident_thread": "01a0bf64-26cb-7b23-849a-ca51fa8dc0bd",
+      "source_child_thread": "01a0c174-fd26-78c0-89c2-2c02ea05085b",
+      "source_pr": "https://github.com/williamxhero/stock_advisor/pull/280",
+      "post_fix_guard": "empty completed turn classified UNCERTAIN"
+    }
+  },
+  "recovery_evidence": {
+    "detection": [
+      "live:parent-turn:completed-items-empty",
+      "live:capacity-replacement",
+      "validation:recovery_scenario",
+      "live:01a0c2c2:three-consecutive-completed-items-empty"
+    ],
+    "execution": [
+      "live:controller-action-9-reconciled",
+      "live:child-archive-readback",
+      "validation:managed-recovery-tests",
+      "validation:empty-completed-turn-replay-green"
+    ]
+  },
+  "final_frontier": {
+    "successor_reached": true,
+    "spec_id": "SPEC-3",
+    "status": "closed"
+  },
+  "release_train_receipts": {
+    "L0": "passed",
+    "L1": "passed",
+    "L2": "passed",
+    "L3": "passed",
+    "L4": "passed",
+    "L5": "passed"
+  },
+  "repository_sync_receipt": {
+    "repository": "https://github.com/williamxhero/skills",
+    "local_remote_head_equal": true,
+    "readback": [
+      "git:merge-commit-readbacks",
+      "git:ls-remote:master"
+    ]
+  },
+  "cleanup_receipt": {
+    "complete": true,
+    "receipts": [
+      {
+        "issue_numbers": [
+          148,
+          149,
+          150,
+          151,
+          152,
+          153,
+          154,
+          155,
+          156,
+          157,
+          158,
+          159
+        ],
+        "issues_closed": true,
+        "archive_readback": {
+          "archived": true
+        },
+        "threads": [
+          "01a0c1e1-7172-7093-a044-aabccffdc7a7",
+          "01a0c1f9-a60d-70a1-b548-034a087d75a0",
+          "01a0c1ff-831f-7040-971c-8472c2f5fcc4",
+          "01a0c21e-6a7c-75d3-8d8f-18d87a523166",
+          "01a0c223-bfe7-7fa2-9621-67572b2dc790"
+        ]
+      }
+    ]
+  },
+  "backend_capability_receipt": {
+    "schema_version": 2,
+    "decision": "allow",
+    "backend": "mcp-task-connector",
+    "operations": [
+      "create_thread",
+      "list_tasks",
+      "read_thread",
+      "read_applied_route",
+      "send_message_to_thread",
+      "set_thread_archived",
+      "read_archive_state"
+    ],
+    "identity_readback": {
+      "formal_thread_id": "01a0c1e1-7172-7093-a044-aabccffdc7a7",
+      "host_id": "local",
+      "task_id": "qualification-whole-spec-v1-20260921-handofffix-grill",
+      "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+      "attempt_id": "01",
+      "owner_id": "test-imp-needs",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e"
+    },
+    "route_readback": {
+      "model": "configured-default",
+      "effort": "configured-default"
+    },
+    "archive_readback": {
+      "archived": true
+    },
+    "evidence": [
+      "live:create_thread",
+      "live:formal_identity_readback",
+      "live:route_readback",
+      "live:turn",
+      "live:archive_readback"
+    ]
+  },
+  "route_visibility_receipt": {
+    "planned": {
+      "model": "configured-default",
+      "effort": "configured-default"
+    },
+    "applied": {
+      "model": "configured-default",
+      "effort": "configured-default"
+    },
+    "executed": {
+      "turn_id": "01a0c1e1-74c6-72b1-891d-e85d9123cc0b"
+    },
+    "identity_consistent": true
+  },
+  "controller_lifecycle_receipt": {
+    "continuation_persisted": true,
+    "watchdog_tested": true,
+    "cleanup_readback_verified": true
+  },
+  "tests": {
+    "targeted": "29 passed",
+    "validation": "39 passed",
+    "python_compile": "passed"
+  },
+  "git_readbacks": [
+    "254cda9fddd177faf9902c7ec28fc8de6744487b",
+    "969fedd45c026673a86d1ca544ec1da9c278726c",
+    "cdae5493fd56edd7bc72b143cfc20d9bcf04284b"
+  ],
+  "cleanup_run_id": "qualification-whole-spec-v1-20260921-handofffix",
+  "skill_digest": "159ae8c0a38691f0c859b0dd172d8f70eead3369b810d30f5ee6065227f99cad",
+  "harness_digest": "9bf9c9e26feb68f40204f03aa786423c6e22b1dc29a83c3c43b00b6f71267637",
+  "qualification_key": {
+    "scenario_version": "whole-spec-v1",
+    "skill_digest": "159ae8c0a38691f0c859b0dd172d8f70eead3369b810d30f5ee6065227f99cad",
+    "harness_digest": "9bf9c9e26feb68f40204f03aa786423c6e22b1dc29a83c3c43b00b6f71267637",
+    "backend_kind": "thread",
+    "backend_contract_version": 1
+  },
+  "verification": {
+    "schema_version": 1,
+    "run_id": "qualification-whole-spec-v1-20260922-orphan-bootstrap-v3",
+    "decision": "QUALIFIED",
+    "reasons": [],
+    "scenario_version": "whole-spec-v1",
+    "skill_digest": "159ae8c0a38691f0c859b0dd172d8f70eead3369b810d30f5ee6065227f99cad",
+    "harness_digest": "9bf9c9e26feb68f40204f03aa786423c6e22b1dc29a83c3c43b00b6f71267637"
+  },
+  "takeover_results": {
+    "all_stages_covered": true,
+    "stages": [
+      "final_verification",
+      "implementation",
+      "managed_run",
+      "merge_cleanup",
+      "planning",
+      "release",
+      "requirement",
+      "synchronization",
+      "terminal",
+      "ticketing",
+      "verification"
+    ],
+    "cases": [
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "requirement",
+        "next_action": "run_grill",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "planning",
+        "next_action": "reconcile_planning",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "ticketing",
+        "next_action": "reconcile_tickets",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "implementation",
+        "next_action": "dispatch_spec",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "implementation",
+        "next_action": "reconcile_implementation",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "verification",
+        "next_action": "verify_and_merge",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "merge_cleanup",
+        "next_action": "reconcile_cleanup",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "final_verification",
+        "next_action": "run_final_verification",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "release",
+        "next_action": "advance_release",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "synchronization",
+        "next_action": "synchronize_repository",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "adopt",
+        "entry_stage": "terminal",
+        "next_action": "terminal_readback",
+        "resources_to_create": [],
+        "reconciliation_required": true
+      },
+      {
+        "decision": "allow",
+        "mode": "resume",
+        "entry_stage": "managed_run",
+        "next_action": "resume_managed_run",
+        "controller_next_action": {
+          "kind": "wait_spec",
+          "target": "SPEC-2"
+        },
+        "resources_to_create": [],
+        "reconciliation_required": true
+      }
+    ],
+    "resources_created": 0,
+    "live_external_evidence": false
+  },
+  "evidence_provenance": {
+    "mode": "reverified_existing_live_run",
+    "source_run_id": "qualification-whole-spec-v1-20260921-handofffix",
+    "current_run_id": "qualification-whole-spec-v1-20260922-orphan-bootstrap-v3",
+    "evidence": [
+      "qualification://qualification-whole-spec-v1-20260921-handofffix/live-readbacks"
+    ]
+  },
+  "continuation_results": {
+    "evidence_kind": "local_deterministic_replay",
+    "resources_created": 0,
+    "cases": {
+      "active_only": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_not_completed"
+        ]
+      },
+      "capability_probe_only": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_business_progress_missing"
+        ]
+      },
+      "counter_only": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_business_progress_missing"
+        ]
+      },
+      "orphan_task": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_cleanup_unreconciled"
+        ]
+      },
+      "progress": {
+        "expected": "verified",
+        "actual": "verified",
+        "reasons": []
+      },
+      "stale_recovery": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_recovery_unreconciled"
+        ]
+      },
+      "stale_turn": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_turn_not_fresh"
+        ]
+      },
+      "text_only": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_execution_missing"
+        ]
+      },
+      "wrong_thread": {
+        "expected": "blocked",
+        "actual": "blocked",
+        "reasons": [
+          "continuation_identity_mismatch:formal_thread_id"
+        ]
+      }
+    }
+  },
+  "orphan_bootstrap_results": {
+    "evidence_kind": "local_deterministic_replay",
+    "resources_created": 0,
+    "cases": {
+      "archived": {
+        "lifecycle": "archived",
+        "outcome": "unknown",
+        "expected": true,
+        "actual": true
+      },
+      "broad_tombstone": {
+        "lifecycle": "tombstoned",
+        "outcome": "completed",
+        "expected": false,
+        "actual": false
+      },
+      "narrow_tombstone": {
+        "lifecycle": "tombstoned",
+        "outcome": "backend_absent_after_create",
+        "expected": true,
+        "actual": true
+      },
+      "outcome_only": {
+        "lifecycle": "working",
+        "outcome": "abandoned_after_bootstrap",
+        "expected": false,
+        "actual": false
+      },
+      "verified_without_archive": {
+        "lifecycle": "verified",
+        "outcome": "completed",
+        "expected": false,
+        "actual": false
+      }
+    }
+  }
+}

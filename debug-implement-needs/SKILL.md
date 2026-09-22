@@ -48,6 +48,12 @@ Do not infer the cause from the title. Separate:
 3. a Skill/qualification defect (a state is incorrectly classified or a cleanup gate
    is missing).
 
+An empty Desktop `items` projection is not proof of empty persisted history.
+Read the matching native turn or persisted rollout before classifying it. If the
+assistant claims tools are unavailable, distinguish an actual failed call from
+prose without a call. A successful capability-only probe fulfills its own bounded
+assignment; follow it with the qualified continuation instead of reporting repair.
+
 Completion criterion: a written incident record identifies the target formal thread
 ID, the observed stop symptom, the relevant run/spec/action, and a falsifiable
 hypothesis. If the target cannot be read back, stop with a blocker; never replace it
@@ -164,13 +170,27 @@ the recovery loop while progress is possible.
 
 The target is repaired only when:
 
-- the target is active or has completed a useful continuation turn;
+- the target has completed a fresh continuation turn with successful tool-result
+  evidence and a changed business frontier in the original run;
 - the controller's `next-action` is a valid unblocked action or the run has reached a
   verified terminal state;
 - the parent/child handoff, external side effects, and archive state reconcile;
 - no stale recovery action or orphan run-owned task remains; and
 - the final task readback proves the continuation belongs to the original formal
   thread/run.
+
+Capture before/after public controller snapshots and the executed turn in a UTF-8
+receipt, then run `implement-needs/scripts/continuation_gate.py --receipt <file>`.
+The receipt has `before`, `after`, and `turn` objects, each carrying the same
+`formal_thread_id`, `host_id`, `run_id`, `project_id`, and `cwd`. Snapshots carry
+`turn_id`, `business_version`, a business `frontier` object, and source `evidence`.
+The turn carries its fresh `turn_id`, `status`, `successful_tool_calls`, and
+`execution_evidence` referencing actual successful results. The after snapshot
+also carries `next_action`, `recovery_action`, `lost_wakeup`, `handoff_reconciled`,
+and `no_orphans`, established by readback. Require `decision: verified`; active
+status, text-only output, capability probes, and counter-only changes cannot
+satisfy this gate. The qualification continuation matrix exercises these rejection
+paths as local fixtures, separately from live delivery evidence.
 
 ## Final report
 

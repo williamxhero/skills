@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "run_id": "qualification-whole-spec-v1-20260921-recoveryfrontier",
+  "decision": "REJECTED",
+  "reasons": [
+    "continuation_matrix_incomplete",
+    "report_continuation_results_missing"
+  ],
+  "scenario_version": "whole-spec-v1",
+  "skill_digest": "059db1a4e265b7d0773c8c8574f17e07bbcf0f3e07080108134fe83c6a9b0502",
+  "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755"
+}

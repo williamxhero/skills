@@ -61,6 +61,34 @@ class ReconcileBackendTests(unittest.TestCase):
         self.assertEqual("repair", result["decision"])
         self.assertIn("backend_inventory_inconclusive", result["errors"])
 
+    def test_assigned_thread_absent_after_backend_reconnect_is_explicit_and_no_replay(self):
+        route = self.db.advance_bootstrap(
+            "R1", "local-1", "route_verifying",
+            {"status": "verified", "model": "gpt-5.6-sol", "effort": "high"},
+            self.db.business_version("R1"),
+        )
+        self.db.advance_bootstrap(
+            "R1", "local-1", "assigned",
+            {"status": "verified", "assignment_id": "assignment-1"},
+            route["business_version"],
+        )
+
+        class ReconnectedBackend:
+            def list_tasks(self, **params):
+                return {"reconciliation_status": "complete", "tasks": []}
+
+        result = reconcile_backend(self.db, "R1", ReconnectedBackend())
+
+        self.assertEqual("repair", result["decision"])
+        self.assertIn("registry_assigned_thread_absent_from_backend", result["errors"])
+        self.assertNotIn("registry_threads_absent_from_backend", result["errors"])
+        self.assertEqual(
+            "assignment_reconciliation_required",
+            result["recovery"]["local_action"],
+        )
+        self.assertFalse(result["recovery"]["assignment_replay_allowed"])
+        self.assertEqual("assigned", self.db.bootstrap("R1", "local-1")["state"])
+
     def test_archived_attempt_with_verified_archive_evidence_is_audit_only_when_backend_forgets_it(self):
         self.db.conn.execute(
             "UPDATE threads SET formal_thread_id='formal-1', host_id='host-1', lifecycle='archived', outcome='completed', "

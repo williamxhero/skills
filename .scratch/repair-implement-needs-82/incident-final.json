@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "formal_thread_id": "01a0bf64-26cb-7b23-849a-ca51fa8dc0bd",
+  "host_id": "local",
+  "cwd": "D:/WILL/STOCK/stock_advisor",
+  "run_id": "implement-needs-82-20260919",
+  "symptom": "fresh continuation completed with empty persisted projection and no tool marker; controller frontier unchanged",
+  "observed_turn": "01a0c47f-139e-7472-a757-82d64dcc1b2b",
+  "before": {
+    "business_version": 461,
+    "action": "ticket_current_spec:#95",
+    "status": "active"
+  },
+  "after": {
+    "business_version": 461,
+    "action": "ticket_current_spec:#95",
+    "status": "active",
+    "formal_advance_boundary": "needs_llm",
+    "formal_advance_reason": "semantic_or_external_operation"
+  },
+  "hypotheses": [
+    {
+      "rank": 1,
+      "hypothesis": "target continuation accepted text-only completion without executing controller tools",
+      "prediction": "turn has no successful tool result and DB frontier remains unchanged"
+    },
+    {
+      "rank": 2,
+      "hypothesis": "Desktop readback omitted persisted useful output",
+      "prediction": "native/persisted turn history contains tool execution or output"
+    },
+    {
+      "rank": 3,
+      "hypothesis": "qualification digest drift blocks the controller before dispatch",
+      "prediction": "controller emits explicit qualification gate error and preserves an evidence receipt"
+    }
+  ],
+  "red_evidence": [
+    ".scratch/repair-implement-needs-82/continuation-red-current.json",
+    ".scratch/repair-implement-needs-82/independent-rejected-after-gate.json"
+  ],
+  "green_evidence": [
+    ".scratch/repair-implement-needs-82/qualification-green.txt",
+    "implement-needs/validation/tests (54 passed)",
+    "implement-needs/tests (426 passed)"
+  ],
+  "conclusion": "repeated empty/no-progress continuation; no further untracked continue permitted",
+  "qualification": "REJECTED: continuation_matrix_incomplete and report_continuation_results_missing"
+}

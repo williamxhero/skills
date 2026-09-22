@@ -24,6 +24,8 @@ from validation.qualification import (
     qualification_key, scenario_errors, verify_report, write_json,
 )
 from validation.scripts.whole_spec_scenario import run_takeover_matrix
+from validation.scripts.continuation_scenario import run_continuation_matrix
+from validation.scripts.orphan_bootstrap_scenario import run_orphan_bootstrap_matrix
 
 
 def _receipt(path: Path | None) -> dict[str, Any] | None:
@@ -124,6 +126,8 @@ def main() -> int:
                        "project_identity_receipt": preflight["project_identity_receipt"],
                        "backend_capability_receipt": preflight["backend_receipt"],
                        "takeover_results": run_takeover_matrix(),
+                       "continuation_results": run_continuation_matrix(),
+                       "orphan_bootstrap_results": run_orphan_bootstrap_matrix(),
                        "backend_contract_version": report.get("backend_contract_version", 1)})
         if source_run_id != run_id:
             report["evidence_provenance"] = {

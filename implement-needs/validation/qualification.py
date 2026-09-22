@@ -23,7 +23,7 @@ REQUIRED_REPORT_FIELDS = (
     "recovery_evidence", "final_frontier",
     "release_train_receipts", "task_census", "repository_sync_receipt", "cleanup_receipt",
     "backend_capability_receipt", "route_visibility_receipt", "controller_lifecycle_receipt",
-    "takeover_results",
+    "takeover_results", "continuation_results", "orphan_bootstrap_results",
 )
 EXPECTED_COUNTS = {
     "umbrella_specs": 1, "child_specs": 3, "tickets": 8, "grill_tasks": 1,
@@ -295,6 +295,30 @@ def verify_report(report: dict[str, Any], scenario: dict[str, Any]) -> dict[str,
     reasons.extend(route_visibility_errors(report.get("route_visibility_receipt")))
     reasons.extend(lifecycle_errors(report.get("controller_lifecycle_receipt")))
     reasons.extend(takeover_errors(report.get("takeover_results")))
+    from validation.scripts.continuation_scenario import CASES
+    continuation = report.get("continuation_results")
+    cases = continuation.get("cases") if isinstance(continuation, dict) else None
+    if (not isinstance(cases, dict) or set(cases) != CASES
+            or continuation.get("evidence_kind") != "local_deterministic_replay"
+            or continuation.get("resources_created") != 0):
+        reasons.append("continuation_matrix_incomplete")
+    else:
+        for name, result in cases.items():
+            expected = "verified" if name == "progress" else "blocked"
+            if not isinstance(result, dict) or result.get("actual") != expected or result.get("expected") != expected:
+                reasons.append(f"continuation_matrix_failed:{name}")
+    from validation.scripts.orphan_bootstrap_scenario import CASES as ORPHAN_CASES
+    orphan = report.get("orphan_bootstrap_results")
+    orphan_cases = orphan.get("cases") if isinstance(orphan, dict) else None
+    if (not isinstance(orphan_cases, dict) or set(orphan_cases) != set(ORPHAN_CASES)
+            or orphan.get("evidence_kind") != "local_deterministic_replay"
+            or orphan.get("resources_created") != 0):
+        reasons.append("orphan_bootstrap_matrix_incomplete")
+    else:
+        for name, result in orphan_cases.items():
+            if (not isinstance(result, dict)
+                    or result.get("actual") is not result.get("expected")):
+                reasons.append(f"orphan_bootstrap_matrix_failed:{name}")
     reasons.extend(evidence_provenance_errors(report))
     counts = report.get("artifact_counts")
     if counts != EXPECTED_COUNTS:

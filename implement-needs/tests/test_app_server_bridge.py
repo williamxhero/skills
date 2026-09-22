@@ -287,6 +287,32 @@ class AppServerBridgeTests(unittest.TestCase):
                 "cwd": "C:/work", "project_id": "project-1",
             })
 
+    def test_existing_thread_can_be_enrolled_with_saved_project_readback(self):
+        self.metadata.write_text(json.dumps({"threads": []}), encoding="utf-8")
+        self.rpc.thread = staticmethod(lambda thread_id: {
+            "id": thread_id, "sessionId": "session-1", "cwd": "C:/work",
+            "projectId": None, "model": "gpt-5.6-sol", "reasoningEffort": "high",
+            "status": {"type": "idle"},
+        })
+
+        result = self.bridge.request("adopt_thread", {
+            "formal_thread_id": "thread-1", "host_id": "local", "task_id": "T2",
+            "run_id": "R1", "attempt_id": "01", "owner_id": "owner",
+            "cwd": "C:/work", "project_id": "project-1",
+            "identity_evidence": ["codex-app:read_thread:thread-1"],
+            "project_id_source": "saved_project_readback",
+            "project_canonical_path": "C:/work",
+            "project_identity_evidence": ["codex-app:list_projects:skills"],
+        })
+
+        self.assertEqual("thread-1", result["formal_thread_id"])
+        entry = next(
+            entry for entry in json.loads(self.metadata.read_text(encoding="utf-8"))["threads"]
+            if entry["formal_thread_id"] == "thread-1"
+        )
+        self.assertEqual("saved_project_readback", entry["project_id_source"])
+        self.assertEqual("C:/work", entry["project_canonical_path"])
+
     def test_json_rpc_transport_skips_notifications_until_matching_response(self):
         class Process:
             def poll(self): return None

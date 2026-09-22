@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "expected": {
+    "run_id": "implement-needs-82-20260919",
+    "target_id": "9",
+    "candidate_sha": "live-reconcile-pr-280",
+    "environment": "controller",
+    "business_version": 296
+  },
+  "actor": {"id": "implement-needs-supervisor", "authorized": true},
+  "source": {"kind": "live-github-and-thread-readback", "trust": "verified"},
+  "readback": {
+    "status": "verified",
+    "run_id": "implement-needs-82-20260919",
+    "target_id": "9",
+    "candidate_sha": "live-reconcile-pr-280",
+    "environment": "controller"
+  },
+  "action_readback": true
+}

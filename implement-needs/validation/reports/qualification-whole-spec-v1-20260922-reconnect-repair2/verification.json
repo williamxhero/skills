@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "run_id": "qualification-whole-spec-v1-20260922-reconnect-repair2",
+  "decision": "QUALIFIED",
+  "reasons": [],
+  "scenario_version": "whole-spec-v1",
+  "skill_digest": "440bf761c6479dbfc700fbf3c4c6e49fc474a9acdc4e7aaf6d195d562d10bbb6",
+  "harness_digest": "9bf9c9e26feb68f40204f03aa786423c6e22b1dc29a83c3c43b00b6f71267637"
+}

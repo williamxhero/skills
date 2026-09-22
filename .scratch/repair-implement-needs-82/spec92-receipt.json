@@ -1,0 +1,10 @@
+{
+  "spec_id": "#92",
+  "pr": "https://github.com/williamxhero/stock_advisor/pull/280",
+  "merge_commit": "05a8e005dda5e3e5a5c9328defc38471de101803",
+  "tickets_closed": ["#278", "#279"],
+  "thread_formal_id": "01a0c174-fd26-78b3-962a-16c047b8bea9",
+  "thread_archive": {"operation": "set_thread_archived", "archived": true, "readback": "list_archived_threads"},
+  "tests": ["live PR merge readback", "GitHub issue closure readback"],
+  "source": "live external reconciliation"
+}

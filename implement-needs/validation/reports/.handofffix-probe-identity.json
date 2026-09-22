@@ -1,0 +1,19 @@
+{
+  "threads": [
+    {
+      "formal_thread_id": "01a0c1e1-7172-7093-a044-aabccffdc7a7",
+      "host_id": "local",
+      "task_id": "qualification-whole-spec-v1-20260921-handofffix-grill",
+      "run_id": "qualification-whole-spec-v1-20260921-handofffix",
+      "attempt_id": "01",
+      "owner_id": "test-imp-needs",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ]
+    }
+  ]
+}

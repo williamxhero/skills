@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "route_id": "controller-82-capability-recovery-20260921",
+  "target": "implement-needs-82-20260919",
+  "host_capability_readback": {
+    "host_id": "local",
+    "readback_evidence": [
+      "codex-app:send_message_to_thread:host-supported-models:2026-09-21"
+    ],
+    "supported_routes": [
+      {
+        "model": "gpt-5.6-sol",
+        "thinking": [
+          "high",
+          "xhigh"
+        ]
+      }
+    ]
+  },
+  "route": {
+    "recommended": {
+      "model": "gpt-5.6-sol",
+      "thinking": "high"
+    },
+    "fallbacks": [
+      {
+        "model": "gpt-5.6-sol",
+        "thinking": "xhigh"
+      }
+    ],
+    "rationale": "Recover existing controller after repeated no-tool turns and self-monitoring; complex identity, state and backend verification. High effort retained."
+  },
+  "xhigh_evidence": []
+}

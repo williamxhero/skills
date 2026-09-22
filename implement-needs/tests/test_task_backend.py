@@ -50,18 +50,56 @@ class TaskBackendTests(unittest.TestCase):
 
     def test_create_reads_formal_identity(self):
         backend = FakeBackend()
+        registrations = []
         result = create_bootstrap_task(
             backend, "R1", self.identity(), "Implement issue", "gpt-5.6-terra", "high",
             owner_id="o", cwd="C:/w", project_id="p",
             project_id_source="saved_project_readback",
             project_canonical_path="C:/w",
             project_identity_evidence=["codex-app:list_projects:skills"],
+            creation_intent={
+                "status": "prepared", "operation": "create_thread",
+                "run_id": "R1", "task_id": "T1", "attempt_id": "01",
+                "evidence": ["controller:intent:1"],
+            },
+            register=lambda payload: registrations.append(payload) or {
+                "status": "verified", "thread_id": "t-1",
+                "evidence": ["controller:thread_registered:t-1"],
+            },
         )
         self.assertEqual(result["formal_thread_id"], "t-1")
         self.assertEqual(result["identity_readback"]["lifecycle"], "queued")
         self.assertTrue(result["title"].startswith("[INN v=1 task=T1 run=R1 attempt=01"))
         create_params = backend.calls[0][1]
         self.assertEqual("saved_project_readback", create_params["project_id_source"])
+        self.assertEqual("t-1", registrations[0]["formal_thread_id"])
+        self.assertEqual("verified", result["registration_receipt"]["status"])
+
+    def test_create_requires_persisted_intent_before_external_call(self):
+        backend = FakeBackend()
+        with self.assertRaises(BackendError):
+            create_bootstrap_task(
+                backend, "R1", self.identity(), "Implement issue",
+                "gpt-5.6-terra", "high", owner_id="o", cwd="C:/w",
+                project_id="p", creation_intent=None, register=lambda _: {},
+            )
+        self.assertEqual([], backend.calls)
+
+    def test_create_fails_closed_when_registration_barrier_is_unverified(self):
+        backend = FakeBackend()
+        with self.assertRaises(BackendError):
+            create_bootstrap_task(
+                backend, "R1", self.identity(), "Implement issue",
+                "gpt-5.6-terra", "high", owner_id="o", cwd="C:/w",
+                project_id="p",
+                creation_intent={
+                    "status": "prepared", "operation": "create_thread",
+                    "run_id": "R1", "task_id": "T1", "attempt_id": "01",
+                    "evidence": ["controller:intent:1"],
+                },
+                register=lambda _: {"status": "failed", "evidence": []},
+            )
+        self.assertEqual("create_thread", backend.calls[0][0])
 
     def test_app_server_requires_confirmed_method_map(self):
         backend = TaskBackend("codex-app-server-jsonrpc", object(), {})

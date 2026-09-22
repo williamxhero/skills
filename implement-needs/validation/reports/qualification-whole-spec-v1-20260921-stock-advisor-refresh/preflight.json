@@ -1,0 +1,68 @@
+{
+  "decision": "allow",
+  "reasons": [],
+  "project_identity_receipt": {
+    "project_id": "8aa02092-881c-493c-9617-86ce52e0cae9",
+    "canonical_path": "D:\\WILL\\STOCK\\stock_advisor",
+    "label": "stock_advisor",
+    "host_id": "local",
+    "is_git_repository": true,
+    "evidence": [
+      "codex-app:list_projects:stock_advisor"
+    ]
+  },
+  "backend_receipt": {
+    "schema_version": 2,
+    "decision": "allow",
+    "backend": "app-server-bridge",
+    "operations": [
+      "create_thread",
+      "list_tasks",
+      "read_thread",
+      "read_applied_route",
+      "send_message_to_thread",
+      "set_thread_archived",
+      "read_archive_state"
+    ],
+    "identity_readback": {
+      "formal_thread_id": "01a0c10b-b2ad-7973-bb65-21ca6e8a9308",
+      "host_id": "local",
+      "task_id": "v3-cwd-probe-live",
+      "run_id": "qualification-v3-cwd-1789945158",
+      "attempt_id": "01",
+      "owner_id": "qualification-controller",
+      "cwd": "D:\\WILL\\STOCK\\stock_advisor",
+      "project_id": "8aa02092-881c-493c-9617-86ce52e0cae9"
+    },
+    "route_readback": {
+      "model": "gpt-5.6-sol",
+      "effort": "high"
+    },
+    "archive_readback": {
+      "archived": true,
+      "required": true
+    },
+    "capability_evidence": [
+      "app-server:initialize",
+      "app-server:thread/start",
+      "app-server:thread/read",
+      "app-server:thread/list",
+      "app-server:turn/start",
+      "turn/completed",
+      "app-server:thread/archive",
+      "app-server:thread/list:archived",
+      "dry-run:create",
+      "dry-run:send",
+      "dry-run:archive"
+    ]
+  },
+  "skill_digest": "8756970385488bb7a64f46b7739bd1295d6e6207c8a0d713cd7a5beac3699fca",
+  "harness_digest": "f017bc4d72a0d6a34ab9827018acdcfa17a0a4f815a7f03dcacf3cb2cb9b335f",
+  "run_id": "qualification-whole-spec-v1-20260921-stock-advisor-refresh",
+  "scenario": "whole-spec-v1",
+  "backend": "thread",
+  "git": {
+    "checked": true,
+    "worktree_clean": false
+  }
+}

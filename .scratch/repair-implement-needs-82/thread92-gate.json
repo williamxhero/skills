@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "expected": {"run_id":"implement-needs-82-20260919","target_id":"implement-needs-82-spec92","candidate_sha":"01a0c174-fd26-78c0-89c2-2c02ea05085b","environment":"controller","business_version":300},
+  "actor":{"id":"implement-needs-supervisor","authorized":true},
+  "source":{"kind":"codex-app-live-archive-readback","trust":"verified"},
+  "readback":{"status":"verified","run_id":"implement-needs-82-20260919","target_id":"implement-needs-82-spec92","candidate_sha":"01a0c174-fd26-78c0-89c2-2c02ea05085b","environment":"controller","archived":true},
+  "archive_operation":true,
+  "archive_readback":true
+}

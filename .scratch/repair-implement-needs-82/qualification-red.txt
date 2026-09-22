@@ -1,0 +1,17 @@
+F
+======================================================================
+FAIL: test_missing_continuation_acceptance_matrix_rejects (test_qualification.QualificationContractTests.test_missing_continuation_acceptance_matrix_rejects)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\will\.codex\skills\implement-needs\validation\tests\test_qualification.py", line 89, in test_missing_continuation_acceptance_matrix_rejects
+    self.assertEqual(REJECTED, result["decision"])
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'REJECTED' != 'QUALIFIED'
+- REJECTED
++ QUALIFIED
+
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=1)

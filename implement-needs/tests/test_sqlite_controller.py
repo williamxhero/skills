@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 from control_db import ActionConflict, ControlDB
 from next_action import next_action
+from task_identity import TaskIdentity
 from transitions import SPEC_TRANSITIONS, THREAD_TRANSITIONS, transition
 
 
@@ -48,6 +49,97 @@ class SQLiteControllerTests(unittest.TestCase):
             self.assertEqual("wal", db.conn.execute("PRAGMA journal_mode").fetchone()[0])
             self.assertEqual(1, db.conn.execute("SELECT COUNT(*) FROM actions").fetchone()[0])
             self.assertEqual(2, db.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0])
+            db.close()
+
+    def test_whole_spec_controller_recovery_does_not_require_ticket_line_ledger(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            db.create_run("run-whole", "initiative", "requirement")
+            identity = TaskIdentity(
+                task_id="controller-task", run_id="run-whole",
+                attempt_id="01", nonce="0123456789abcdef",
+            )
+            db.add_thread(
+                "run-whole", "thread-1", "controller", identity=identity,
+                host_id="local", cwd="C:/work", project_id="project-1",
+                formal_thread_id="thread-1",
+            )
+            readback = {
+                "formal_thread_id": "thread-1", "host_id": "local",
+                "task_id": "controller-task", "run_id": "run-whole",
+                "attempt_id": "01", "owner_id": "owner", "cwd": "C:/work",
+                "project_id": "project-1", "lifecycle": "completed",
+            }
+            db.persist_controller_recovery(
+                "run-whole", "thread-1", readback,
+                {"model": "gpt-5.6-sol", "effort": "high"},
+                {"kind": "advance_spec", "target": "S1"},
+                db.business_version("run-whole"),
+            )
+            payload = db.conn.execute(
+                "SELECT payload FROM events WHERE run_id='run-whole' "
+                "AND event_type='controller_recovery_committed'"
+            ).fetchone()[0]
+            self.assertNotIn("ticket_ledger", json.loads(payload)["gates"])
+            db.close()
+
+    def test_recover_unregistered_bootstrap_records_distinct_tombstone(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            db.create_run("run-orphan", "initiative", "requirement")
+            identity = TaskIdentity(
+                task_id="spec-task", run_id="run-orphan",
+                attempt_id="01", nonce="0123456789abcdef",
+            )
+            result = db.recover_unregistered_bootstrap(
+                "run-orphan", "missing-thread", "repair", identity,
+                host_id="local", owner_id="controller", cwd="C:/work",
+                project_id="project-1", title_token="[INN test]",
+                creation_evidence=["backend:create_thread:accepted"],
+                absence_evidence=[
+                    "backend:read_thread:not_found",
+                    "backend:list_tasks:absent",
+                ],
+                no_execution_evidence=[
+                    "controller:assignment_absent",
+                    "controller:managed_turn_absent",
+                ],
+                expected_version=db.business_version("run-orphan"),
+            )
+            self.assertEqual("tombstoned", result["lifecycle"])
+            row = db.conn.execute(
+                "SELECT lifecycle,outcome FROM threads WHERE thread_id='missing-thread'"
+            ).fetchone()
+            self.assertEqual(("tombstoned", "backend_absent_after_create"), tuple(row))
+            self.assertEqual(
+                "02", db.next_attempt_id("run-orphan", "spec-task", "01")
+            )
+            db.close()
+
+    def test_recover_unregistered_bootstrap_requires_all_evidence_classes(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            db.create_run("run-orphan", "initiative", "requirement")
+            identity = TaskIdentity(
+                task_id="spec-task", run_id="run-orphan",
+                attempt_id="01", nonce="0123456789abcdef",
+            )
+            with self.assertRaisesRegex(ValueError, "no-execution evidence"):
+                db.recover_unregistered_bootstrap(
+                    "run-orphan", "missing-thread", "repair", identity,
+                    host_id="local", owner_id="controller", cwd="C:/work",
+                    project_id="project-1", title_token="[INN test]",
+                    creation_evidence=["backend:create_thread:accepted"],
+                    absence_evidence=[
+                        "backend:read_thread:not_found",
+                        "backend:list_tasks:absent",
+                    ],
+                    no_execution_evidence=[],
+                    expected_version=db.business_version("run-orphan"),
+                )
+            self.assertEqual(
+                0, db.conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0]
+            )
             db.close()
 
     def test_decision_is_audited(self):

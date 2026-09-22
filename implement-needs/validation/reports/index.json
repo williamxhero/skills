@@ -120,6 +120,46 @@
       "decision": "QUALIFIED",
       "run_id": "qualification-whole-spec-v1-20260921-recoveryfrontier",
       "report": "qualification-whole-spec-v1-20260921-recoveryfrontier/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "817cd7f83f7b8d98f4406c43139221a3feb3870ac7954c3be8d5d2b8cdafa381",
+      "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-adoptionfix-v3",
+      "report": "qualification-whole-spec-v1-20260921-adoptionfix-v3/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "8f2f9b6ff62d421282c67cfeb6d44334fad4fbe6dcba70abeeb5027290ac1255",
+      "harness_digest": "8b9e582f987105c1c16af1c46ec60883b9121dd94684428e77debe2d1875ef95",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260921-current-requalification2",
+      "report": "qualification-whole-spec-v1-20260921-current-requalification2/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "159ae8c0a38691f0c859b0dd172d8f70eead3369b810d30f5ee6065227f99cad",
+      "harness_digest": "9bf9c9e26feb68f40204f03aa786423c6e22b1dc29a83c3c43b00b6f71267637",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260922-orphan-bootstrap-v3",
+      "report": "qualification-whole-spec-v1-20260922-orphan-bootstrap-v3/qualification.json"
+    },
+    {
+      "scenario_version": "whole-spec-v1",
+      "skill_digest": "440bf761c6479dbfc700fbf3c4c6e49fc474a9acdc4e7aaf6d195d562d10bbb6",
+      "harness_digest": "9bf9c9e26feb68f40204f03aa786423c6e22b1dc29a83c3c43b00b6f71267637",
+      "backend_kind": "thread",
+      "backend_contract_version": 1,
+      "decision": "QUALIFIED",
+      "run_id": "qualification-whole-spec-v1-20260922-reconnect-repair2",
+      "report": "qualification-whole-spec-v1-20260922-reconnect-repair2/qualification.json"
     }
   ]
 }

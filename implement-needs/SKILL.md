@@ -110,6 +110,11 @@ token. The title token is only a candidate index. Rebind only one candidate whos
 formal readback matches identity, owner, cwd, project, and retained evidence.
 Ambiguous or incomplete discovery blocks replacement creation. Advance an attempt
 only after its previous backend task is terminal and archived.
+The sole non-archive exception is a controller-recorded `tombstoned` attempt with
+outcome `backend_absent_after_create`. It requires retained creation evidence, at
+least two independent backend-absence readbacks, and evidence that neither an
+assignment nor a managed turn existed. A terminal-looking outcome by itself never
+permits replacement.
 For single-ticket recovery, ledger completeness, full formal identity, and live
 applied-route readback are one barrier: persist the controller binding only after
 all three pass.
@@ -134,6 +139,9 @@ Register every thread before sending work. A new thread must receive route readb
 its assignment in the same controller turn. If that cannot happen, record
 `cancelled_before_start` or `abandoned_after_bootstrap`, archive it, and read back the
 archive before dispatching anything else. Never wait on an idle bootstrap thread.
+Persist the create operation intent before calling `create_bootstrap_task`; its
+registration callback must cross the Controller registry barrier before the call
+returns. Never call a raw backend create and register afterward as a separate step.
 Capability selection only reads an existing target and exercises mutations as dry runs.
 An explicitly requested live lifecycle probe is a managed `probe` thread: successful,
 failed, and interrupted probe paths all archive it and require `archived: true` readback;

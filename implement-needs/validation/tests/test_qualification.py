@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from validation.qualification import EXPECTED_COUNTS, QUALIFIED, REJECTED, digest_tree, verify_report
+from validation.scripts.continuation_scenario import run_continuation_matrix
+from validation.scripts.orphan_bootstrap_scenario import run_orphan_bootstrap_matrix
 
 CLEANUP_MODULE_SPEC = importlib.util.spec_from_file_location(
     "cleanup_qualification", ROOT / "validation/scripts/cleanup_qualification.py"
@@ -42,6 +44,8 @@ class QualificationContractTests(unittest.TestCase):
     def valid_report(self) -> dict:
         return {
             "run_id": "qualification-test", "scenario_version": "whole-spec-v1",
+            "continuation_results": run_continuation_matrix(),
+            "orphan_bootstrap_results": run_orphan_bootstrap_matrix(),
             "skill_digest": "a" * 64, "harness_digest": "b" * 64,
             "backend_kind": "thread", "backend_contract_version": 1,
             "project_identity_receipt": {"project_id": "project-1", "canonical_path": "C:/skills"},
@@ -81,6 +85,34 @@ class QualificationContractTests(unittest.TestCase):
     def test_complete_external_evidence_qualifies(self) -> None:
         result = verify_report(self.valid_report(), self.scenario)
         self.assertEqual(QUALIFIED, result["decision"])
+
+    def test_missing_continuation_acceptance_matrix_rejects(self) -> None:
+        report = self.valid_report()
+        report.pop("continuation_results", None)
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("continuation_matrix_incomplete", result["reasons"])
+
+    def test_accepting_probe_only_as_progress_rejects(self) -> None:
+        report = self.valid_report()
+        report["continuation_results"]["cases"]["capability_probe_only"]["actual"] = "verified"
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("continuation_matrix_failed:capability_probe_only", result["reasons"])
+
+    def test_missing_orphan_bootstrap_matrix_rejects(self) -> None:
+        report = self.valid_report()
+        report.pop("orphan_bootstrap_results", None)
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("orphan_bootstrap_matrix_incomplete", result["reasons"])
+
+    def test_outcome_only_attempt_advance_rejects(self) -> None:
+        report = self.valid_report()
+        report["orphan_bootstrap_results"]["cases"]["outcome_only"]["actual"] = True
+        result = verify_report(report, self.scenario)
+        self.assertEqual(REJECTED, result["decision"])
+        self.assertIn("orphan_bootstrap_matrix_failed:outcome_only", result["reasons"])
 
     def test_missing_repeated_empty_completion_recovery_rejects(self) -> None:
         report = self.valid_report()

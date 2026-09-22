@@ -262,8 +262,12 @@ class BindingTests(unittest.TestCase):
         self.assertFalse(may_advance_attempt("created", "working"))
         self.assertFalse(may_advance_attempt("working", "unknown"))
         self.assertTrue(may_advance_attempt("archived", "unknown"))
-        self.assertTrue(may_advance_attempt("verified", "unknown"))
-        self.assertTrue(may_advance_attempt("working", "abandoned_after_bootstrap"))
+        self.assertFalse(may_advance_attempt("verified", "unknown"))
+        self.assertFalse(may_advance_attempt("working", "abandoned_after_bootstrap"))
+        self.assertTrue(
+            may_advance_attempt("tombstoned", "backend_absent_after_create")
+        )
+        self.assertFalse(may_advance_attempt("tombstoned", "completed"))
 
 
 class RegistryTests(unittest.TestCase):

@@ -151,6 +151,7 @@ def bind_candidates(registered: dict, candidates: list[Candidate]) -> BindingDec
 
 
 def may_advance_attempt(lifecycle: str, outcome: str) -> bool:
-    """Attempts may only advance after the previous attempt reached terminal state."""
-    terminal_outcomes = {"completed", "cancelled_before_start", "abandoned_after_bootstrap", "identity_unresolved"}
-    return lifecycle in {"archived", "verified"} or outcome in terminal_outcomes
+    """Advance only after archive readback or the narrow absence tombstone."""
+    return lifecycle == "archived" or (
+        lifecycle == "tombstoned" and outcome == "backend_absent_after_create"
+    )

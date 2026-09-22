@@ -1,0 +1,102 @@
+{
+  "decision": "allow",
+  "reasons": [],
+  "project_identity_receipt": {
+    "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+    "canonical_path": "C:\\Users\\will\\.codex\\skills",
+    "label": "skills",
+    "host_id": "local",
+    "is_git_repository": true,
+    "evidence": [
+      "codex-app:list_projects:skills:2026-09-21"
+    ]
+  },
+  "backend_receipt": {
+    "schema_version": 2,
+    "decision": "allow",
+    "backend": "mcp-task-connector",
+    "operations": [
+      "create_thread",
+      "list_tasks",
+      "read_thread",
+      "read_applied_route",
+      "send_message_to_thread",
+      "set_thread_archived",
+      "read_archive_state"
+    ],
+    "probe_target": {
+      "formal_thread_id": "01a0b7aa-f2c8-75a0-82ad-78809b75a4f5",
+      "host_id": "local"
+    },
+    "identity_readback": {
+      "formal_thread_id": "01a0b7aa-f2c8-75a0-82ad-78809b75a4f5",
+      "host_id": "local",
+      "task_id": "qualification-v3-probe",
+      "run_id": "qualification-v3-readonly",
+      "attempt_id": "01",
+      "owner_id": "qualification-runner",
+      "cwd": "C:\\Users\\will\\.codex\\skills",
+      "project_id": "b4d7d27c-f84b-4d87-90b0-4c15f4d55a8e",
+      "project_id_source": "saved_project_readback",
+      "project_canonical_path": "C:\\Users\\will\\.codex\\skills",
+      "project_identity_evidence": [
+        "codex-app:list_projects:skills"
+      ],
+      "client_thread_id": "01a0b7aa-f2c8-75a0-82ad-78809b75a4f5",
+      "title": "评估 implement-needs 子SPEC架构",
+      "lifecycle": "completed",
+      "readback_evidence": [
+        "app-server:thread/read:01a0b7aa-f2c8-75a0-82ad-78809b75a4f5",
+        "formal_thread_readback"
+      ]
+    },
+    "route_readback": {
+      "model": "gpt-5.6-terra",
+      "effort": "high",
+      "evidence": [
+        "app-server:thread/read:01a0b7aa-f2c8-75a0-82ad-78809b75a4f5:route",
+        "configured_route_readback"
+      ]
+    },
+    "archive_readback": {
+      "archived": true,
+      "readback_evidence": [
+        "app-server:thread/list:archived:01a0b7aa-f2c8-75a0-82ad-78809b75a4f5",
+        "archive_readback"
+      ]
+    },
+    "capability_evidence": [
+      "app-server:initialize",
+      "app-server:metadata:C:\\Users\\will\\.codex\\skills\\implement-needs\\validation\\reports\\.v3-probe-identity.json",
+      "live_capabilities",
+      "probe:list_tasks",
+      "probe:read_thread",
+      "probe:read_applied_route",
+      "probe:read_archive_state",
+      "probe:create_thread:dry_run",
+      "probe:send_message_to_thread:dry_run",
+      "probe:set_thread_archived:dry_run"
+    ],
+    "evidence": [
+      "app-server:initialize",
+      "app-server:metadata:C:\\Users\\will\\.codex\\skills\\implement-needs\\validation\\reports\\.v3-probe-identity.json",
+      "live_capabilities",
+      "probe:list_tasks",
+      "probe:read_thread",
+      "probe:read_applied_route",
+      "probe:read_archive_state",
+      "probe:create_thread:dry_run",
+      "probe:send_message_to_thread:dry_run",
+      "probe:set_thread_archived:dry_run"
+    ]
+  },
+  "skill_digest": "8f2f9b6ff62d421282c67cfeb6d44334fad4fbe6dcba70abeeb5027290ac1255",
+  "harness_digest": "8b9e582f987105c1c16af1c46ec60883b9121dd94684428e77debe2d1875ef95",
+  "run_id": "qualification-whole-spec-v1-20260921-current-requalification",
+  "scenario": "whole-spec-v1",
+  "backend": "thread",
+  "git": {
+    "checked": true,
+    "worktree_clean": false
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "run_id": "qualification-whole-spec-v1-20260921-adoptionfix-v3",
+  "decision": "QUALIFIED",
+  "reasons": [],
+  "scenario_version": "whole-spec-v1",
+  "skill_digest": "817cd7f83f7b8d98f4406c43139221a3feb3870ac7954c3be8d5d2b8cdafa381",
+  "harness_digest": "0d28a44042b2b3534c83e7def00680f734e3f589c37ecdab225d594de0c5a755"
+}

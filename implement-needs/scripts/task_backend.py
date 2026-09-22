@@ -526,13 +526,31 @@ def create_bootstrap_task(
     project_id_source: str | None = None,
     project_canonical_path: str | None = None,
     project_identity_evidence: list[str] | None = None,
+    creation_intent: Mapping[str, Any] | None = None,
+    register: Any = None,
 ) -> dict[str, Any]:
-    """Create a task and return creation plus formal identity evidence.
+    """Create a task only behind a persisted intent and registration barrier.
 
     A create response is never treated as route or identity proof.  Callers
-    must perform the returned formal readback before crossing the bootstrap
-    barrier.
+    must persist the create intent before this call.  The supplied registration
+    callback is invoked with the formal readback before this function returns,
+    so callers cannot accidentally dispatch an unregistered bootstrap task.
     """
+    intent = dict(creation_intent) if isinstance(creation_intent, Mapping) else {}
+    intent_evidence = intent.get("evidence")
+    if (
+        intent.get("status") not in {"prepared", "executing"}
+        or intent.get("operation") != "create_thread"
+        or intent.get("run_id") != run_id
+        or intent.get("task_id") != task_identity.task_id
+        or intent.get("attempt_id") != task_identity.attempt_id
+        or not isinstance(intent_evidence, list)
+        or not intent_evidence
+        or any(not isinstance(item, str) or not item.strip() for item in intent_evidence)
+    ):
+        raise BackendError("bootstrap creation requires a matching persisted create intent")
+    if not callable(register):
+        raise BackendError("bootstrap creation requires a controller registration callback")
     title = format_title(task_identity, description)
     adapter = _adapter(backend)
     result = _mapping(adapter.call("create_thread", {
@@ -557,10 +575,42 @@ def create_bootstrap_task(
         evidence.extend(identity_readback.get("readback_evidence", []))
     else:
         evidence.append("formal_identity_unavailable")
+    if identity_readback is None:
+        raise BackendError("bootstrap registration requires formal identity readback")
+    registration_payload = {
+        "run_id": run_id,
+        "task_id": task_identity.task_id,
+        "attempt_id": task_identity.attempt_id,
+        "nonce": task_identity.nonce,
+        "client_thread_id": client,
+        "formal_thread_id": formal,
+        "host_id": host,
+        "title": title,
+        "identity_readback": identity_readback,
+        "creation_intent": intent,
+        "creation_evidence": evidence,
+    }
+    try:
+        registration_receipt = register(registration_payload)
+    except Exception as exc:
+        raise BackendError("bootstrap controller registration failed") from exc
+    if not isinstance(registration_receipt, Mapping):
+        raise BackendError("bootstrap registration returned no receipt")
+    registration_evidence = registration_receipt.get("evidence")
+    registered_id = registration_receipt.get("thread_id") or registration_receipt.get("formal_thread_id")
+    if (
+        registration_receipt.get("status") != "verified"
+        or registered_id != formal
+        or not isinstance(registration_evidence, list)
+        or not registration_evidence
+    ):
+        raise BackendError("bootstrap registration barrier is unverified")
     return {"client_thread_id": client, "formal_thread_id": formal,
             "host_id": host, "title": title,
             "readback_evidence": evidence, "identity_readback": identity_readback,
-            "creation_response": result}
+            "creation_response": result,
+            "creation_intent": intent,
+            "registration_receipt": dict(registration_receipt)}
 
 
 def list_tasks(

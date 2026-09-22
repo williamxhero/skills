@@ -1,0 +1,123 @@
+{
+  "formal_thread_id": "01a0bf64-26cb-7b23-849a-ca51fa8dc0bd",
+  "host_id": "local",
+  "run_id": "implement-needs-82-20260919",
+  "project_id": "8aa02092-881c-493c-9617-86ce52e0cae9",
+  "cwd": "D:\\WILL\\STOCK\\stock_advisor",
+  "turn_id": "01a0c3d3-634a-7ad0-afd7-65dce3a26ca0",
+  "source_rollout": "C:\\Users\\will\\.codex\\sessions\\2026\\09\\20\\rollout-2026-09-20T23-16-47-01a0bf64-26cb-7b23-849a-ca51fa8dc0bd.jsonl",
+  "source_kind": "live_persisted_rollout",
+  "symptom": "repair/controller mutual waiting then controller self-monitoring; action 12 never attempted",
+  "desktop_readback_items": [],
+  "persisted_response_item_counts": {
+    "function_call_output": 6,
+    "message": 6,
+    "custom_tool_call": 19,
+    "custom_tool_call_output": 19,
+    "function_call": 5,
+    "reasoning": 12
+  },
+  "action_before": {
+    "action_id": 12,
+    "kind": "advance_spec",
+    "target": "#95",
+    "status": "succeeded",
+    "attempts": 1,
+    "error": null
+  },
+  "evidence": [
+    {
+      "line": 6241,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__wait_threads({targets:[{threadId:\"01a0c3c5-1e45-7792-8f07-f272e4f82bf1\",hostId:\"local\"}],timeoutMs:60000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6250,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__wait_threads({targets:[{threadId:\"01a0c3c5-1e45-7792-8f07-f272e4f82bf1\",hostId:\"local\",afterCursor:\"7f953c10-a511-4532-8487-8c9b186b9a3d:8\"}],timeoutMs:60000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6259,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__wait_threads({targets:[{threadId:\"01a0c3c5-1e45-7792-8f07-f272e4f82bf1\",hostId:\"local\",afterCursor:\"7f953c10-a511-4532-8487-8c9b186b9a3d:10\"}],timeoutMs:60000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6270,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__wait_threads({targets:[{threadId:\"01a0c3c5-1e45-7792-8f07-f272e4f82bf1\",hostId:\"local\",afterCursor:\"7f953c10-a511-4532-8487-8c9b186b9a3d:12\"}],timeoutMs:60000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6279,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__wait_threads({targets:[{threadId:\"01a0c3c5-1e45-7792-8f07-f272e4f82bf1\",hostId:\"local\",afterCursor:\"7f953c10-a511-4532-8487-8c9b186b9a3d:15\"}],timeoutMs:60000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6292,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__wait_threads({targets:[{threadId:\"01a0bf64-26cb-7b23-849a-ca51fa8dc0bd\",hostId:\"local\"}],timeoutMs:60000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6295,
+      "type": "custom_tool_call_output",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Script completed\nWall time 0.0 seconds\nOutput:\n"
+        },
+        {
+          "type": "input_text",
+          "text": "wait_threads cannot wait on the calling thread."
+        }
+      ]
+    },
+    {
+      "line": 6299,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__read_thread({threadId:\"01a0bf64-26cb-7b23-849a-ca51fa8dc0bd\",hostId:\"local\",turnLimit:2,includeOutputs:true,maxOutputCharsPerItem:12000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6320,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__read_thread({threadId:\"01a0bf64-26cb-7b23-849a-ca51fa8dc0bd\",hostId:\"local\",turnLimit:2,includeOutputs:true,maxOutputCharsPerItem:8000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6333,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__read_thread({threadId:\"01a0bf64-26cb-7b23-849a-ca51fa8dc0bd\",hostId:\"local\",turnLimit:3,includeOutputs:true,maxOutputCharsPerItem:10000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6341,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.codex_app__read_thread_terminal({});\ntext(r);\n"
+    },
+    {
+      "line": 6348,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__read_thread_terminal({});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6359,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__read_thread({threadId:\"01a0bf64-26cb-7b23-849a-ca51fa8dc0bd\",hostId:\"local\",turnLimit:2,includeOutputs:true,maxOutputCharsPerItem:12000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6373,
+      "type": "custom_tool_call",
+      "input": "const r = await tools.mcp__codex_app__read_thread({threadId:\"01a0bf64-26cb-7b23-849a-ca51fa8dc0bd\",hostId:\"local\",turnLimit:2,includeOutputs:true,maxOutputCharsPerItem:12000});\ntext(r.content.map(x=>x.text||\"\").join(\"\\n\"));\n"
+    },
+    {
+      "line": 6392,
+      "type": "task_complete",
+      "turn_id": "01a0c3d3-634a-7ad0-afd7-65dce3a26ca0",
+      "last_agent_message": "已继续推进并修复资格与恢复链路：\n\n- 资格门已恢复为 `allow`\n- #94 保持已完成，不重做\n- action `#12: advance_spec:#95` 仍是唯一待执行动作\n- 原正式线程正在执行，未创建替代任务\n- 当前控制器状态：`active`，business version `453`\n- `#95` 尚未开始产生代码变更\n\n目前原线程持续 `inProgress`，尚无新的业务输出或外部任务回读；我没有绕过控制器继续派发。"
+    }
+  ],
+  "repair": "explicit owner-bound continuation to original controller; no role delegation to repair task",
+  "acceptance": "action 12 succeeded and SPEC #95 advanced by original controller, plus downstream controller progress",
+  "qualification_note": "v5 gate currently allows; reports reused historical evidence, no new full live qualification was performed in this repair",
+  "corrections": [
+    "Prior active status did not prove recovery.",
+    "Prior empty-items summary did not prove empty persisted turn.",
+    "Earlier v4 to v5 digest change was caused by this repair task editing controller_recovery.py after registration."
+  ]
+}

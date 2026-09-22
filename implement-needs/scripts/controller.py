@@ -40,6 +40,7 @@ def main() -> int:
     reconcile_ticket=sub.add_parser("reconcile-ticket-dependencies"); reconcile_ticket.add_argument("--ticket-id",required=True); reconcile_ticket.add_argument("--blocked-by",required=True); reconcile_ticket.add_argument("--evidence",default="[]")
     thread=sub.add_parser("register-thread"); thread.add_argument("--run-id",required=True); thread.add_argument("--thread-id",required=True); thread.add_argument("--kind",required=True); thread.add_argument("--spec-id"); thread.add_argument("--identity"); thread.add_argument("--client-thread-id"); thread.add_argument("--formal-thread-id"); thread.add_argument("--host-id"); thread.add_argument("--owner-id"); thread.add_argument("--cwd"); thread.add_argument("--project-id"); thread.add_argument("--title-token")
     thread_state=sub.add_parser("thread-state"); thread_state.add_argument("--run-id",required=True); thread_state.add_argument("--thread-id",required=True); thread_state.add_argument("--lifecycle",required=True); thread_state.add_argument("--outcome",default="unknown"); thread_state.add_argument("--next-action"); thread_state.add_argument("--archive-operation"); thread_state.add_argument("--archive-readback"); thread_state.add_argument("--gate")
+    recover_bootstrap=sub.add_parser("recover-unregistered-bootstrap"); recover_bootstrap.add_argument("--run-id",required=True); recover_bootstrap.add_argument("--thread-id",required=True); recover_bootstrap.add_argument("--kind",required=True); recover_bootstrap.add_argument("--identity",required=True); recover_bootstrap.add_argument("--host-id",required=True); recover_bootstrap.add_argument("--owner-id",required=True); recover_bootstrap.add_argument("--cwd",required=True); recover_bootstrap.add_argument("--project-id",required=True); recover_bootstrap.add_argument("--title-token",required=True); recover_bootstrap.add_argument("--creation-evidence",required=True); recover_bootstrap.add_argument("--absence-evidence",required=True); recover_bootstrap.add_argument("--no-execution-evidence",required=True)
     spec_state=sub.add_parser("spec-state"); spec_state.add_argument("--spec-id",required=True); spec_state.add_argument("--status",required=True); spec_state.add_argument("--gate"); spec_state.add_argument("--context")
     ticket_state=sub.add_parser("ticket-state"); ticket_state.add_argument("--ticket-id",required=True); ticket_state.add_argument("--status",required=True); ticket_state.add_argument("--commits"); ticket_state.add_argument("--tests"); ticket_state.add_argument("--acceptance"); ticket_state.add_argument("--gate"); ticket_state.add_argument("--context")
     observation=sub.add_parser("record-observation"); observation.add_argument("--run-id",required=True); observation.add_argument("--entity-type",required=True); observation.add_argument("--entity-id",required=True); observation.add_argument("--operation",required=True); observation.add_argument("--status",required=True); observation.add_argument("--evidence",default="[]"); observation.add_argument("--observation-key"); observation.add_argument("--phase"); observation.add_argument("--scope",default="run"); observation.add_argument("--unit",default="count"); observation.add_argument("--started-at"); observation.add_argument("--ended-at"); observation.add_argument("--duration-ms",type=float); observation.add_argument("--source",default="controller"); observation.add_argument("--usage",default="{}"); observation.add_argument("--metadata",default="{}")
@@ -116,7 +117,7 @@ def main() -> int:
     # Every direct state-changing controller command carries the version read
     # with its input.  Observation and reconciliation commands deliberately do
     # not use this flag because they write the separate telemetry stream.
-    for versioned in (thread, thread_state, spec_state, ticket_state, action, complete_child, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile, reconcile_ticket):
+    for versioned in (thread, thread_state, recover_bootstrap, spec_state, ticket_state, action, complete_child, finish, migrate, ledger, adopt, run_phase, run_result, resume, configure_auth, freeze, candidate_evidence, invalidate, record_sync, startup_contract, decide, prepare_intent, intent_outcome, reconcile_intent, claim_intent, recovery, bootstrap_state, train_init, test_gate, checkpoint, pin_policy, backup_manifest, begin_restore, restore_reconcile, reconcile_ticket):
         versioned.add_argument("--expected-version", type=int, required=True)
     args=parser.parse_args()
     db=ControlDB(args.db, mode="create" if args.command == "init" else ("read-only" if args.command in {"snapshot", "auth-check", "sync-plan", "startup-check", "dependency-check", "dependency-readiness", "test-train-status", "verify-policy", "validate-backup-manifest", "context-history", "context-measurements", "context-budget", "context-budget-gate", "action-contract", "action-contract-check", "safety-metrics", "benchmark-manifest", "compare-safety-metrics"} else "open-existing"))
@@ -131,6 +132,17 @@ def main() -> int:
             inserted=db.add_thread(args.run_id,args.thread_id,args.kind,args.spec_id,identity=identity,client_thread_id=args.client_thread_id,host_id=args.host_id,owner_id=args.owner_id,cwd=args.cwd,project_id=args.project_id,title_token=args.title_token,formal_thread_id=args.formal_thread_id,expected_version=args.expected_version)
             result={"thread_id":args.thread_id,"lifecycle":"created","inserted":inserted}
         elif args.command=="thread-state": db.update_thread(args.run_id,args.thread_id,args.lifecycle,args.outcome,args.next_action,args.archive_operation,args.archive_readback,args.expected_version,json.loads(args.gate) if args.gate else None); result={"thread_id":args.thread_id,"lifecycle":args.lifecycle}
+        elif args.command=="recover-unregistered-bootstrap":
+            from task_identity import TaskIdentity
+            result=db.recover_unregistered_bootstrap(
+                args.run_id,args.thread_id,args.kind,TaskIdentity(**json.loads(args.identity)),
+                host_id=args.host_id,owner_id=args.owner_id,cwd=args.cwd,
+                project_id=args.project_id,title_token=args.title_token,
+                creation_evidence=json.loads(args.creation_evidence),
+                absence_evidence=json.loads(args.absence_evidence),
+                no_execution_evidence=json.loads(args.no_execution_evidence),
+                expected_version=args.expected_version,
+            )
         elif args.command=="spec-state":
             if args.context:
                 db.update_spec_from_context(args.spec_id, args.status, json.loads(args.context), json.loads(args.gate) if args.gate else None)
@@ -408,9 +420,21 @@ def main() -> int:
             identity=json.loads(args.identity.read_text(encoding="utf-8"))
             if not isinstance(identity, dict):
                 raise ValueError("controller identity must be an object")
-            required=("formal_thread_id", "host_id", "task_id", "run_id", "attempt_id", "owner_id", "cwd", "project_id", "identity_evidence")
+            required=("formal_thread_id", "host_id", "task_id", "run_id", "attempt_id", "owner_id", "cwd", "project_id")
             if any(not isinstance(identity.get(field), str) or not identity[field] for field in required):
                 raise ValueError("controller identity enrollment requires all identity fields")
+            identity_evidence = identity.get("identity_evidence")
+            if (not isinstance(identity_evidence, list) or not identity_evidence
+                    or any(not isinstance(item, str) or not item.strip() for item in identity_evidence)):
+                raise ValueError("controller identity enrollment requires identity evidence")
+            if identity.get("project_id_source") == "saved_project_readback":
+                if identity.get("project_canonical_path") != identity["cwd"]:
+                    raise ValueError("controller identity project canonical path disagrees with cwd")
+                project_evidence = identity.get("project_identity_evidence")
+                if (not isinstance(project_evidence, list) or not project_evidence
+                        or any(not isinstance(item, str) or not item.strip()
+                               for item in project_evidence)):
+                    raise ValueError("controller identity project readback evidence is incomplete")
             if identity["run_id"] != args.run_id:
                 raise ValueError("controller identity run_id does not match --run-id")
             bridge=AppServerBridge(shlex.split(args.backend_command, posix=False), args.app_server_metadata)
@@ -420,9 +444,19 @@ def main() -> int:
                 # identity for an existing thread. Probe immediately afterward.
                 bridge.request("adopt_thread", identity)
                 capability=probe_and_record(db, args.run_id, bridge)
+                adoption_fields = {
+                    field: identity[field] for field in required
+                    if field != "run_id"
+                }
+                adoption_fields.update({
+                    "identity_evidence": identity_evidence,
+                    "project_id_source": identity.get("project_id_source"),
+                    "project_canonical_path": identity.get("project_canonical_path"),
+                    "project_identity_evidence": identity.get("project_identity_evidence"),
+                })
                 result=adopt_controller(
                     db, args.run_id, transport, thread_id=args.thread_id,
-                    **{field: identity[field] for field in required}, expected_version=args.expected_version,
+                    **adoption_fields, expected_version=args.expected_version,
                 )
                 result["capability_evidence"]=capability["capability_evidence"]
             finally:

@@ -16,6 +16,14 @@ the recovery decision and persists the turn receipt.
 7. On model capacity, archive the failed attempt and verify archive state before
    selecting and reading back a fallback route and creating a replacement.
 
+An external create can fail between backend acceptance and Controller registration.
+Recover that exact case with `recover-unregistered-bootstrap`, never with fabricated
+archive evidence. The recovery records a distinct `tombstoned` lifecycle and
+`backend_absent_after_create` outcome only when retained creation evidence, two
+independent backend-absence readbacks, assignment absence, and managed-turn absence
+are all present. This narrow tombstone may advance the attempt; no other outcome-only
+claim may do so.
+
 Terminal status is not completion evidence by itself. The matching persisted turn
 must contain non-empty work output in `items`, `output`, `message`, or `result`.
 An empty completed turn is `UNCERTAIN`; re-read it once for persistence lag, then
@@ -31,3 +39,9 @@ The durable `managed_turns` table stores the formal identity, previous turn,
 failure class, terminal event, history readback, checkpoint, output evidence,
 side-effect evidence, and operation-intent link. Its unique formal thread/turn
 key makes repeated reconciliation idempotent across controller restarts.
+
+For controller repair acceptance, use `scripts/continuation_gate.py` with the
+before/after public controller snapshots and matching executed turn. Useful turn
+output alone is insufficient: require a fresh completed turn, successful tool
+results, a changed business frontier and version, and reconciled recovery and
+cleanup readbacks. A capability-only probe is a valid probe, not a repaired run.

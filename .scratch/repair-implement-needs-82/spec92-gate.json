@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "expected": {"run_id":"implement-needs-82-20260919","target_id":"#92","candidate_sha":"05a8e005dda5e3e5a5c9328defc38471de101803","environment":"controller","business_version":306},
+  "actor":{"id":"implement-needs-supervisor","authorized":true},
+  "source":{"kind":"live-github-and-thread-readback","trust":"verified"},
+  "readback":{"status":"verified","run_id":"implement-needs-82-20260919","target_id":"#92","candidate_sha":"05a8e005dda5e3e5a5c9328defc38471de101803","environment":"controller","merged":true,"tickets_closed":true,"thread_archived":true}
+}
