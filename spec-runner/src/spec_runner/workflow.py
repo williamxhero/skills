@@ -272,12 +272,17 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     "launch_key already belongs to different normalized input",
                     details={"run_id": existing.run_id},
                 )
+            if existing.state in {"completed", "cancelled", "paused", "blocked_writer_busy"}:
+                return {"created": False, **store.public_status(existing.run_id)}
             if existing.state == "ready_for_next":
                 store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token)
-                final_status = _advance_second_stage(
-                    control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
-                )
-                return {"created": False, **final_status}
+                try:
+                    final_status = _advance_second_stage(
+                        control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
+                    )
+                    return {"created": False, **final_status}
+                finally:
+                    store.release_lease(scope=lease_scope, owner_token=owner_token)
             recovered_status = _recover_after_process_exit(
                 control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
             )

@@ -10,12 +10,13 @@ from . import __version__
 from .errors import RunnerError
 from .github_tracker import GitHubTracker
 from .github_delivery import GitHubDelivery
+from .faults import run_fault_matrix
 from .delivery import merge_local, prepare_workspace, validate_review, verify_candidate
 from .diagnostics import load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
 from .matt import load_lock, render_prompt, resolve_grill
 from .legacy import read_legacy_database
 from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
-from .takeover import completion_action, inspect_takeover, load_inventory
+from .takeover import completion_action, inspect_takeover, load_inventory, plan_frontier, write_takeover_record
 from .tracker import publish_local, read_local
 from .workflow import control, doctor, launch, resume, start, status
 
@@ -150,16 +151,27 @@ def _parser() -> argparse.ArgumentParser:
     takeover_sub = takeover_parser.add_subparsers(dest="takeover_command", required=True)
     takeover_inspect = takeover_sub.add_parser("inspect")
     takeover_inspect.add_argument("--file", required=True, type=Path)
+    takeover_apply = takeover_sub.add_parser("apply")
+    takeover_apply.add_argument("--file", required=True, type=Path)
+    takeover_apply.add_argument("--control-root", required=True, type=Path)
+    takeover_apply.add_argument("--takeover-key", required=True)
     diagnostic_parser = subparsers.add_parser("diagnose", help="validate fault and release evidence without LLM calls")
     diagnostic_sub = diagnostic_parser.add_subparsers(dest="diagnostic_command", required=True)
     for name in ("fault-matrix", "release-report"):
         item = diagnostic_sub.add_parser(name)
         item.add_argument("--file", required=True, type=Path)
     diagnostic_sub.choices["release-report"].add_argument("--runner-version", default=__version__)
+    runtime_diagnostic = diagnostic_sub.add_parser("runtime")
+    runtime_diagnostic.add_argument("--control-root", required=True, type=Path)
     legacy_parser = subparsers.add_parser("legacy", help="read an old control DB without migrating or writing it")
     legacy_sub = legacy_parser.add_subparsers(dest="legacy_command", required=True)
     legacy_read = legacy_sub.add_parser("read")
     legacy_read.add_argument("--db", required=True, type=Path)
+    fault_parser = subparsers.add_parser("fault", help="run deterministic public-CLI fault scenarios")
+    fault_sub = fault_parser.add_subparsers(dest="fault_command", required=True)
+    fault_run = fault_sub.add_parser("run")
+    fault_run.add_argument("--seed", default="sr-07-seed-1")
+    fault_run.add_argument("--keep-artifacts", action="store_true")
     doctor_parser = subparsers.add_parser("doctor", help="read-only configuration checks")
     doctor_parser.add_argument("--config", type=Path)
     doctor_parser.add_argument("--control-root", required=True, type=Path)
@@ -259,12 +271,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = merge_local(repository=arguments.repository, candidate_branch=arguments.candidate_branch, target_ref=arguments.target_ref, expected_target_sha=arguments.expected_target_sha, workspace_root=arguments.workspace_root, run_id=arguments.run_id)
         elif arguments.command == "takeover":
             report = inspect_takeover(load_inventory(arguments.file))
-            result = {"report": report, "action": completion_action(report)}
+            frontier = plan_frontier(report)
+            if arguments.takeover_command == "apply":
+                result = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
+            else:
+                result = {"report": report, "frontier": frontier, "action": completion_action(report)}
         elif arguments.command == "diagnose":
-            document = diagnostic_json(arguments.file, code="invalid_diagnostic_input")
-            result = validate_fault_matrix(document) if arguments.diagnostic_command == "fault-matrix" else validate_release_report(document, expected_runner_version=arguments.runner_version)
+            if arguments.diagnostic_command == "runtime":
+                result = runtime_report(runner_version=__version__, store_status=status(control_root=arguments.control_root, run_id=None))
+            else:
+                document = diagnostic_json(arguments.file, code="invalid_diagnostic_input")
+                result = validate_fault_matrix(document) if arguments.diagnostic_command == "fault-matrix" else validate_release_report(document, expected_runner_version=arguments.runner_version)
         elif arguments.command == "legacy":
             result = read_legacy_database(arguments.db)
+        elif arguments.command == "fault":
+            result = run_fault_matrix(seed=arguments.seed, keep_artifacts=arguments.keep_artifacts)
         else:
             result = doctor(config_file=arguments.config, control_root=arguments.control_root)
     except RunnerError as exc:

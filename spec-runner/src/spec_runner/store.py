@@ -150,6 +150,15 @@ class Store:
                     payload_json TEXT NOT NULL,
                     observed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS takeover_records (
+                    takeover_key TEXT PRIMARY KEY,
+                    report_digest TEXT NOT NULL,
+                    frontier_digest TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    record_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             verification_sql = self.connection.execute(
@@ -445,6 +454,8 @@ class Store:
             "verification": self.verification_for_run(run_id),
             "runtime": self.runtime_for_run(run_id),
             "control": self.control_for_run(run_id),
+            "events": self.events_for_run(run_id),
+            "writer_leases": [dict(row) for row in self.connection.execute("SELECT * FROM runner_leases WHERE run_id = ?", (run_id,))],
         }
 
     def list_status(self) -> list[dict[str, str]]:
@@ -515,3 +526,23 @@ class Store:
         result = self.operation(operation_id)
         assert result is not None
         return result
+
+    def record_takeover(self, *, takeover_key: str, report: dict[str, object], frontier: dict[str, object]) -> dict[str, object]:
+        report_digest = str(report.get("digest", ""))
+        frontier_digest = str(frontier.get("digest", ""))
+        state = str(frontier.get("state", ""))
+        if not takeover_key or not report_digest or not frontier_digest or not state:
+            raise RunnerError("invalid_takeover_record", "takeover key, report digest, frontier digest, and state are required")
+        record = {"schema_version": "spec-runner-takeover-record/v1", "takeover_key": takeover_key, "report_digest": report_digest, "frontier_digest": frontier_digest, "state": state, "report": report, "frontier": frontier}
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute("SELECT * FROM takeover_records WHERE takeover_key = ?", (takeover_key,)).fetchone()
+            if existing:
+                if existing["report_digest"] != report_digest:
+                    raise RunnerError("takeover_source_changed", "takeover key was reused after the source inventory changed")
+                return {"created": False, "record": json.loads(existing["record_json"])}
+            self.connection.execute(
+                "INSERT INTO takeover_records(takeover_key, report_digest, frontier_digest, state, record_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (takeover_key, report_digest, frontier_digest, state, json.dumps(record, ensure_ascii=False, sort_keys=True), timestamp, timestamp),
+            )
+        return {"created": True, "record": record}

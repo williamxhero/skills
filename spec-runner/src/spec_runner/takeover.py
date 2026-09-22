@@ -9,6 +9,7 @@ from typing import Any
 
 from .errors import RunnerError
 from .plans import digest
+from .store import Store
 
 
 def _git(path: Path, *args: str) -> str:
@@ -34,7 +35,16 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
     if not isinstance(repo_value, str):
         raise RunnerError("invalid_takeover_inventory", "repository_path is required")
     repository = Path(repo_value).expanduser().resolve()
-    head = _git(repository, "rev-parse", "HEAD")
+    try:
+        head = _git(repository, "rev-parse", "HEAD")
+    except RunnerError:
+        # A valid newly initialized repository may not have its first commit.
+        # Keep that fact explicit; it is different from a non-Git directory.
+        try:
+            _git(repository, "rev-parse", "--git-dir")
+        except RunnerError:
+            raise
+        head = "unborn"
     status = _git(repository, "status", "--porcelain=v1")
     source_threads = inventory.get("source_threads", [])
     if not isinstance(source_threads, list) or any(not isinstance(thread, dict) for thread in source_threads):
@@ -94,3 +104,58 @@ def completion_action(report: dict[str, Any]) -> dict[str, object]:
     if isinstance(facts, dict) and facts.get("merged") and facts.get("verification_receipt"):
         return {"state": "cleanup_pending", "implementation_calls": 0, "merge_calls": 0}
     return {"state": "resume_delivery", "implementation_calls": 0, "merge_calls": 0, "requires": "normal Runner stage loop"}
+
+
+def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
+    """Derive a deterministic remaining-work frontier from observed facts.
+
+    This is intentionally mechanical.  It never treats a missing historical
+    receipt as success and never chooses a model/tool on behalf of the runner.
+    """
+    if report.get("schema_version") != "spec-runner-takeover-report/v1":
+        raise RunnerError("invalid_takeover_report", "frontier planning requires a takeover report")
+    if report.get("next_state") == "blocked":
+        return {"schema_version": "spec-runner-frontier/v1", "state": "blocked", "steps": [{"kind": "handover", "status": "blocked", "reason": "ownership or active-writer evidence is incomplete"}], "digest": digest(report)}
+    facts = report.get("historical_facts", {})
+    if not isinstance(facts, dict):
+        raise RunnerError("invalid_takeover_report", "historical_facts must be an object")
+    steps: list[dict[str, object]] = []
+    categories = {"adopted": [], "backfilled": [], "reverified": [], "new_work": [], "remaining": [], "cleanup": []}
+
+    has_verified_delivery = bool(facts.get("merged") and facts.get("verification_receipt"))
+    if not facts.get("requirements") and not has_verified_delivery:
+        categories["backfilled"].append("requirement_scope")
+        steps.append({"kind": "backfill", "target": "requirement_scope", "status": "needs_input", "reason": "original requirement scope is not present in the inventory"})
+    if not facts.get("tracker"):
+        categories["backfilled"].append("tracker_plan")
+        steps.append({"kind": "backfill", "target": "tracker_plan", "status": "planned", "reason": "create the minimum local or GitHub tracker objects after source scope is confirmed"})
+    if facts.get("working_tree") or facts.get("partial_code"):
+        categories["adopted"].append("working_tree")
+        categories["reverified"].append("candidate")
+        steps.extend([
+            {"kind": "adopt", "target": "working_tree", "status": "adopted", "reason": "preserve existing source, index, and untracked files"},
+            {"kind": "reverify", "target": "candidate", "status": "planned", "reason": "existing code is evidence of files, not a passed acceptance receipt"},
+        ])
+    if facts.get("merged") and facts.get("verification_receipt"):
+        categories["cleanup"].extend(["threads", "workspace"])
+        steps.append({"kind": "cleanup", "target": "threads_and_workspace", "status": "planned", "implementation_calls": 0, "merge_calls": 0})
+    elif facts.get("merged"):
+        categories["reverified"].append("merged_candidate")
+        steps.append({"kind": "reverify", "target": "merged_candidate", "status": "planned", "reason": "merge exists but delivery evidence is missing"})
+    else:
+        categories["new_work"].append("remaining_acceptance")
+        steps.append({"kind": "resume", "target": "remaining_acceptance", "status": "planned", "reason": "continue the normal Runner delivery loop after backfill and reverify"})
+    state = "needs_input" if any(step.get("status") == "needs_input" for step in steps) else "planned"
+    return {"schema_version": "spec-runner-frontier/v1", "state": state, "categories": categories, "steps": steps, "digest": digest({"report": report.get("digest"), "steps": steps})}
+
+
+def write_takeover_record(*, control_root: Path, takeover_key: str, report: dict[str, Any], frontier: dict[str, Any]) -> dict[str, object]:
+    """Persist takeover intent and observation before any later mutable action."""
+    if not takeover_key or any(character.isspace() for character in takeover_key):
+        raise RunnerError("invalid_takeover_key", "takeover_key must be non-empty and contain no whitespace")
+    control_root = control_root.expanduser().resolve()
+    store = Store.open(control_root, create=True)
+    try:
+        return store.record_takeover(takeover_key=takeover_key, report=report, frontier=frontier)
+    finally:
+        store.close()

@@ -70,6 +70,9 @@ spec-runner candidate verify --workspace C:\work\runner-workspaces\SR-01-1234 --
 spec-runner review validate --file .\review.json --candidate-sha <sha> --acceptance-version v1
 spec-runner merge local --repository C:\work\repo --workspace-root C:\work\runner-workspaces --candidate-branch spec-runner/SR-01-1234 --target-ref refs/heads/main --expected-target-sha <sha> --run-id <run>
 spec-runner takeover inspect --file .\takeover.json
+spec-runner takeover apply --file .\takeover.json --control-root .\.spec-runner --takeover-key <stable-key>
+spec-runner fault run --seed sr-07-seed-1
+spec-runner diagnose runtime --control-root .\.spec-runner
 ```
 
 `candidate verify` accepts only trusted argument-array commands and checks the
@@ -82,3 +85,8 @@ The pinned adapter manifest is `dependencies.lock.json`. Its source digests are
 checked before prompt rendering. Live GitHub, live SDK, Windows-native and
 provider-specific capabilities are reported as `not_verified` unless they have
 their own real evidence; deterministic tests never fill those gaps.
+
+`fault run` invokes the public CLI against a temporary Git repository and
+reports replayable deterministic cases for normal completion, completed-run
+idempotency, input drift, and late cancellation. It also lists live SDK,
+Windows-native, and GitHub merge-queue cases separately as `not_verified`.
