@@ -71,6 +71,20 @@ class GitHubTrackerTests(unittest.TestCase):
             )
         self.assertEqual(calls, [])
 
+    def test_malformed_issue_and_comments_responses_are_structured_read_errors(self) -> None:
+        with self.assertRaisesRegex(RunnerError, "not valid JSON") as issue_error:
+            GitHubTracker(runner=lambda arguments: "not-json").read_issue(repository="acme/demo", number=1)
+        self.assertEqual(issue_error.exception.code, "github_issue_read_failed")
+
+        def comments_only(arguments: list[str]) -> str:
+            if "comments" in arguments[-1]:
+                return "not-json"
+            return json.dumps({"repository_url": "https://api.github.com/repos/acme/demo", "title": "Issue", "body": "", "updated_at": "r1"})
+
+        with self.assertRaisesRegex(RunnerError, "not valid JSON") as comments_error:
+            GitHubTracker(runner=comments_only).read_issue(repository="acme/demo", number=1)
+        self.assertEqual(comments_error.exception.code, "github_pagination_incomplete")
+
     def test_partial_publish_and_lost_response_reconcile_by_marker(self) -> None:
         calls: list[list[str]] = []
         umbrella = {"number": 9, "node_id": "I9", "repository_url": "https://api.github.com/repos/acme/demo", "title": "Umbrella", "body": "<!-- spec-runner-key:ROOT operation:op-1 -->\nroot"}
