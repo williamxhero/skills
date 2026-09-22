@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -87,3 +88,53 @@ def validate_release_report(document: dict[str, Any], *, expected_runner_version
     if failed:
         raise RunnerError("release_evidence_failed", "release evidence contains failures")
     return {"schema_version": "spec-runner-release-qualification/v1", "eligible": True, "evidence_digest": digest(evidence), "unverified": [item["kind"] for item in evidence if item["outcome"] in {"not_verified", "skipped"}]}
+
+
+def build_release_report(*, runner_version: str, subject: dict[str, Any], evidence_documents: list[dict[str, Any]], required_kinds: set[str] | None = None) -> dict[str, object]:
+    """Build a release report from complete evidence bodies."""
+    if not isinstance(subject, dict):
+        raise RunnerError("release_subject_missing", "release subject must be an object")
+    envelopes: list[dict[str, object]] = []
+    for body in evidence_documents:
+        if not isinstance(body, dict) or body.get("evidence_kind") not in EVIDENCE_KINDS:
+            raise RunnerError("release_evidence_missing", "each evidence file needs a supported evidence_kind")
+        outcome = body.get("outcome")
+        if outcome not in {"passed", "not_verified", "skipped", "failed"}:
+            raise RunnerError("invalid_release_report", "each evidence body needs a valid outcome")
+        if outcome == "passed" and body.get("verified") is not True:
+            raise RunnerError("release_evidence_unverified", "passed evidence must declare verified=true")
+        envelopes.append({"kind": body["evidence_kind"], "body": body, "body_digest": digest(body), "outcome": outcome})
+    report = {
+        "schema_version": "spec-runner-release-report/v1",
+        "runner_version": runner_version,
+        "subject": subject,
+        "required_kinds": sorted(required_kinds or {"deterministic", "local_git"}),
+        "evidence": envelopes,
+    }
+    validate_release_report(report, expected_runner_version=runner_version)
+    return {**report, "report_digest": digest(report)}
+
+
+def inspect_wheel(path: Path, *, expected_runner_version: str) -> dict[str, object]:
+    """Inspect an install artifact without installing or executing it."""
+    if not path.is_file() or path.suffix != ".whl":
+        raise RunnerError("invalid_wheel", "package inspection requires an existing .whl file")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            if archive.testzip() is not None:
+                raise RunnerError("invalid_wheel", "wheel contains a corrupt member")
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise RunnerError("invalid_wheel", "wheel is not a readable zip archive") from exc
+    forbidden = [name for name in names if any(token in name.lower() for token in (".sqlite", ".db", ".log", "token", "secret", ".env"))]
+    required = {
+        "spec_runner/cli.py": any(name.endswith("spec_runner/cli.py") for name in names),
+        "dependencies.lock.json": any(name.endswith("dependencies.lock.json") for name in names),
+        "metadata": any(".dist-info/METADATA" in name for name in names),
+    }
+    missing = [key for key, present in required.items() if not present]
+    if forbidden:
+        raise RunnerError("wheel_contains_runtime_data", "wheel contains forbidden runtime data", details={"members": forbidden})
+    if missing:
+        raise RunnerError("wheel_missing_required_member", "wheel is missing required install members", details={"members": missing})
+    return {"schema_version": "spec-runner-wheel-inspection/v1", "path": str(path.resolve()), "runner_version": expected_runner_version, "member_count": len(names), "required_members": required, "forbidden_members": [], "outcome": "verified", "archive_digest": digest(names)}

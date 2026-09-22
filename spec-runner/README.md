@@ -75,6 +75,9 @@ spec-runner merge local --repository C:\work\repo --workspace-root C:\work\runne
 spec-runner takeover inspect --file .\takeover.json
 spec-runner takeover apply --file .\takeover.json --control-root .\.spec-runner --takeover-key <stable-key>
 spec-runner legacy inspect --db .\old-control.sqlite3 --repository C:\work\repo
+spec-runner diagnose package --wheel .\dist\spec_runner-0.1.0-py3-none-any.whl
+spec-runner diagnose release-build --subject .\release-subject.json --evidence .\deterministic-evidence.json --evidence .\local-git-evidence.json --output .\release-report.json
+spec-runner diagnose release-report --file .\release-report.json
 spec-runner fault run --seed sr-07-seed-1
 spec-runner diagnose runtime --control-root .\.spec-runner
 ```
@@ -95,6 +98,12 @@ inventory. It does not migrate, repair, or delete the old database. The
 inventory keeps old rows as historical evidence; missing thread identity,
 verification, and requirements remain unknown and are handled by the normal
 takeover planner.
+
+`diagnose package` checks the actual wheel contents for the CLI, dependency
+lock, metadata, and forbidden runtime data. `diagnose release-build` constructs
+a version-bound report from complete evidence bodies; `release-report` then
+re-reads and validates that report. A release index or a manually supplied
+digest is not sufficient evidence.
 
 `fault run` invokes the public CLI against a temporary Git repository and
 reports replayable deterministic cases for normal completion, process restart

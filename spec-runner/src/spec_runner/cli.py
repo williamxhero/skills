@@ -12,7 +12,7 @@ from .github_tracker import GitHubTracker
 from .github_delivery import GitHubDelivery
 from .faults import run_fault_matrix
 from .delivery import merge_local, prepare_workspace, validate_review, verify_candidate
-from .diagnostics import load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
+from .diagnostics import build_release_report, inspect_wheel, load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
 from .matt import load_lock, render_prompt, resolve_grill
 from .legacy import legacy_takeover_inventory, read_legacy_database
 from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
@@ -170,6 +170,14 @@ def _parser() -> argparse.ArgumentParser:
         item = diagnostic_sub.add_parser(name)
         item.add_argument("--file", required=True, type=Path)
     diagnostic_sub.choices["release-report"].add_argument("--runner-version", default=__version__)
+    release_build = diagnostic_sub.add_parser("release-build")
+    release_build.add_argument("--subject", required=True, type=Path)
+    release_build.add_argument("--evidence", required=True, action="append", type=Path)
+    release_build.add_argument("--output", required=True, type=Path)
+    release_build.add_argument("--required-kind", action="append", default=[])
+    package_diagnostic = diagnostic_sub.add_parser("package")
+    package_diagnostic.add_argument("--wheel", required=True, type=Path)
+    package_diagnostic.add_argument("--runner-version", default=__version__)
     runtime_diagnostic = diagnostic_sub.add_parser("runtime")
     runtime_diagnostic.add_argument("--control-root", required=True, type=Path)
     legacy_parser = subparsers.add_parser("legacy", help="read an old control DB without migrating or writing it")
@@ -316,6 +324,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "diagnose":
             if arguments.diagnostic_command == "runtime":
                 result = runtime_report(runner_version=__version__, store_status=status(control_root=arguments.control_root, run_id=None))
+            elif arguments.diagnostic_command == "release-build":
+                subject = diagnostic_json(arguments.subject, code="invalid_release_subject")
+                bodies = [diagnostic_json(path, code="invalid_release_evidence") for path in arguments.evidence]
+                result = build_release_report(runner_version=__version__, subject=subject, evidence_documents=bodies, required_kinds=set(arguments.required_kind) or None)
+                arguments.output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+                result = {"output": str(arguments.output.resolve()), "report_digest": result["report_digest"], "eligible": True}
+            elif arguments.diagnostic_command == "package":
+                result = inspect_wheel(arguments.wheel, expected_runner_version=arguments.runner_version)
             else:
                 document = diagnostic_json(arguments.file, code="invalid_diagnostic_input")
                 result = validate_fault_matrix(document) if arguments.diagnostic_command == "fault-matrix" else validate_release_report(document, expected_runner_version=arguments.runner_version)
