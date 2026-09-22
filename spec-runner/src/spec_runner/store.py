@@ -474,6 +474,46 @@ class Store:
         assert record is not None
         return record
 
+    def record_codex_turn_started(
+        self,
+        run_id: str,
+        operation_id: str,
+        *,
+        thread_id: str,
+        turn_id: str,
+        step_name: str,
+        worker_id: str,
+    ) -> None:
+        """Persist formal SDK identities before waiting for the turn result."""
+        timestamp = now()
+        with self.transaction():
+            updated = self.connection.execute(
+                """UPDATE workers
+                   SET external_thread_id = ?, external_turn_id = ?, state = ?, updated_at = ?
+                   WHERE worker_id = ? AND run_id = ?""",
+                (thread_id, turn_id, "running", timestamp, worker_id, run_id),
+            ).rowcount
+            if updated != 1:
+                raise RunnerError("worker_identity_missing", "cannot record an SDK turn for an unknown worker")
+            self.connection.execute(
+                "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ? AND run_id = ?",
+                ("running", timestamp, operation_id, run_id),
+            )
+            self.connection.execute(
+                "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
+                ("running", timestamp, run_id, step_name),
+            )
+            self.connection.execute(
+                "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
+                ("running", timestamp, run_id),
+            )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"operation:{operation_id}:turn-started:{turn_id}",
+                event_type="worker_turn_started",
+                payload={"operation_id": operation_id, "step_name": step_name, "thread_id": thread_id, "turn_id": turn_id},
+            )
+
     def begin_stage(self, run_id: str, *, step_name: str, operation_id: str, backend_kind: str) -> None:
         timestamp = now()
         with self.transaction():

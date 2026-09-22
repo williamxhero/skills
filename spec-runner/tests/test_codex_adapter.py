@@ -30,6 +30,20 @@ class FakeThread:
         return FakeResult()
 
 
+class FakeTurn:
+    id = "turn-started-123"
+
+    def run(self) -> FakeResult:
+        return FakeResult()
+
+
+class FakeThreadWithTurn(FakeThread):
+    def turn(self, prompt: str, **kwargs: object) -> FakeTurn:
+        self.prompt = prompt
+        self.turn_kwargs = kwargs
+        return FakeTurn()
+
+
 class FakeCodex:
     def __init__(self, config: object):
         self.config = config
@@ -71,6 +85,32 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(holder["codex"].start_kwargs["model"], "gpt-test")
         self.assertEqual(holder["codex"].thread.run_kwargs["effort"], "high")
+
+    def test_published_turn_boundary_reports_identity_before_result(self) -> None:
+        holder: dict[str, FakeCodex] = {}
+
+        def factory(config: object) -> FakeCodex:
+            codex = FakeCodex(config)
+            codex.thread = FakeThreadWithTurn()
+            holder["codex"] = codex
+            return codex
+
+        started: list[tuple[str, str]] = []
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+        )
+        result = CodexAdapter(codex_factory=factory, sdk_module=sdk).run(
+            prompt="do the bounded task",
+            repository_path=Path("C:/repo"),
+            model="gpt-test",
+            effort="high",
+            on_turn_started=lambda thread_id, turn_id: started.append((thread_id, turn_id)),
+        )
+        self.assertEqual(started, [("thread-123", "turn-started-123")])
+        self.assertEqual(result.turn_id, "turn-123")
+        self.assertEqual(holder["codex"].thread.turn_kwargs["effort"], "high")
 
     def test_missing_published_sdk_is_a_structured_error(self) -> None:
         with self.assertRaises(RunnerError) as context:

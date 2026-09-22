@@ -54,6 +54,7 @@ class CodexAdapter:
         model: str,
         effort: str,
         thread_id: str | None = None,
+        on_turn_started: Callable[[str, str], None] | None = None,
     ) -> CodexWorkerResult:
         if self._sdk_module is None:
             try:
@@ -83,13 +84,38 @@ class CodexAdapter:
                     )
                 else:
                     thread = codex.thread_start(model=model, cwd=str(repository_path), sandbox=Sandbox.workspace_write)
-                result = thread.run(
-                    prompt,
-                    cwd=str(repository_path),
-                    model=model,
-                    effort=effort,
-                    sandbox=Sandbox.workspace_write,
-                )
+                result_thread_id = str(getattr(thread, "id", ""))
+                if not result_thread_id or result_thread_id == "None":
+                    raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal thread identifier")
+                # The published SDK exposes Thread.turn() as the boundary at
+                # which the formal turn identity becomes durable. Persist it
+                # before waiting for model work so status/recovery can inspect
+                # an active worker instead of guessing from a pending row.
+                if hasattr(thread, "turn"):
+                    turn = thread.turn(
+                        prompt,
+                        cwd=str(repository_path),
+                        model=model,
+                        effort=effort,
+                        sandbox=Sandbox.workspace_write,
+                    )
+                    result_turn_id = str(getattr(turn, "id", ""))
+                    if not result_turn_id or result_turn_id == "None":
+                        raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal turn identifier")
+                    if on_turn_started is not None:
+                        on_turn_started(result_thread_id, result_turn_id)
+                    result = turn.run()
+                else:
+                    # Keep the fake adapter contract useful for isolated unit
+                    # tests and older test doubles; the published SDK path
+                    # above is the production boundary.
+                    result = thread.run(
+                        prompt,
+                        cwd=str(repository_path),
+                        model=model,
+                        effort=effort,
+                        sandbox=Sandbox.workspace_write,
+                    )
         except RunnerError:
             raise
         except Exception as exc:
@@ -99,7 +125,7 @@ class CodexAdapter:
                 details={"exception_type": type(exc).__name__},
             ) from exc
 
-        result_thread_id = str(getattr(thread, "id", ""))
+        result_thread_id = str(getattr(thread, "id", result_thread_id if "result_thread_id" in locals() else ""))
         result_turn_id = str(getattr(result, "id", ""))
         if not result_thread_id or result_thread_id == "None" or not result_turn_id or result_turn_id == "None":
             raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal thread or turn identifier")
