@@ -296,8 +296,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             frontier = plan_frontier(report)
             if arguments.takeover_command == "apply":
                 record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
-                result = {**record, "frontier": frontier, "action": completion_action(report)}
-                if frontier["state"] == "planned" and arguments.brief and arguments.config:
+                action = completion_action(report)
+                result = {**record, "frontier": frontier, "action": action}
+                # A cleanup-only takeover has no remaining implementation
+                # authority. Persist the adoption record but do not create a
+                # generic worker run merely to make status look active.
+                if action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:
                     launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
                     result["runner"] = start(
                         brief_file=arguments.brief,
@@ -305,7 +309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         control_root=arguments.control_root,
                         launch_key=launch_key,
                     )
-                elif arguments.brief or arguments.config:
+                elif action["state"] == "resume_delivery" and (arguments.brief or arguments.config):
                     raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
             else:
                 result = {"report": report, "frontier": frontier, "action": completion_action(report)}
