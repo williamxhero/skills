@@ -1,0 +1,11 @@
+{
+  "schema_version": "spec-runner-skills-lock/v1",
+  "adapter_version": "spec-runner-matt-adapter/v1",
+  "skills": [
+    {"alias": "grill", "name": "grilling", "repository": "local-adapter", "commit": "spec-runner-0.1.0", "path": "locked-skills/grilling.md", "sha256": "c163796d32527412a28c81133ef18164de27c5ee196caef842262d062968c546", "license": "MIT", "dependencies": []},
+    {"alias": "to-spec", "name": "to-spec", "repository": "local-adapter", "commit": "spec-runner-0.1.0", "path": "locked-skills/to-spec.md", "sha256": "1f02777882077506726c407f990ddc85d1e209b1524920009b32f77933b54b3b", "license": "MIT", "dependencies": ["grill"]},
+    {"alias": "to-tickets", "name": "to-tickets", "repository": "local-adapter", "commit": "spec-runner-0.1.0", "path": "locked-skills/to-tickets.md", "sha256": "6aac4c047537da6d547330f0991b7087e3ebddc72227d90fdd15f6308e38876f", "license": "MIT", "dependencies": ["to-spec"]},
+    {"alias": "implement", "name": "implement-spec", "repository": "local-adapter", "commit": "spec-runner-0.1.0", "path": "locked-skills/implement-spec.md", "sha256": "a89041bddb2b566fc5b552979486fe9edf1404f1156ea766e7615e8c225b42c7", "license": "MIT", "dependencies": ["to-tickets"]},
+    {"alias": "review", "name": "code-review", "repository": "local-adapter", "commit": "spec-runner-0.1.0", "path": "locked-skills/code-review.md", "sha256": "3fe6559c68d128a53c556e0a8ebe6bef1f32d47f039d4833785eed39c8939c79", "license": "MIT", "dependencies": ["implement"]}
+  ]
+}
