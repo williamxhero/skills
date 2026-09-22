@@ -5,6 +5,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -22,12 +23,45 @@ def _validate_launch_key(value: str) -> str:
     return value
 
 
+def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str) -> tuple[threading.Event, threading.Thread]:
+    """Keep a long-running SDK call from looking stale to a recovery process."""
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(5.0):
+            try:
+                heartbeat_store = Store.open(control_root, create=False)
+                try:
+                    heartbeat_store.heartbeat_lease(scope=scope, owner_token=owner_token)
+                finally:
+                    heartbeat_store.close()
+            except (OSError, RunnerError):
+                return
+
+    thread = threading.Thread(target=beat, name="spec-runner-lease-heartbeat", daemon=True)
+    thread.start()
+    return stop, thread
+
+
 def _safe_artifact_directory(control_root: Path, config: RunnerConfig, run_id: str) -> Path:
     root = (control_root / config.artifact_root).resolve()
     directory = (root / run_id).resolve()
     if root not in (directory, *directory.parents):
         raise RunnerError("artifact_path_escape", "run artifact directory escaped artifact_root")
     return directory
+
+
+def _test_fault_pause(*, control_root: Path, run_id: str, point: str) -> None:
+    """Pause only when an explicit deterministic fault test asks for it."""
+    if os.environ.get("SPEC_RUNNER_FAULT_POINT") != point:
+        return
+    fault_root = control_root / "faults"
+    fault_root.mkdir(parents=True, exist_ok=True)
+    ready = fault_root / f"{run_id}.{point}.ready"
+    release = fault_root / f"{run_id}.{point}.continue"
+    ready.write_text(json.dumps({"run_id": run_id, "point": point}) + "\n", encoding="utf-8", newline="\n")
+    while not release.exists():
+        time.sleep(0.05)
 
 
 def _execute_deterministic_example(
@@ -49,6 +83,7 @@ def _execute_deterministic_example(
     (artifact_directory / "handoff.json").write_text(
         json.dumps(handoff, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
     )
+    _test_fault_pause(control_root=control_root, run_id=run.run_id, point="after_first_artifact")
     store.write_log(
         control_root,
         run.run_id,
@@ -212,6 +247,7 @@ def _execute_second_deterministic(*, control_root: Path, config: RunnerConfig, r
         encoding="utf-8",
         newline="\n",
     )
+    _test_fault_pause(control_root=control_root, run_id=run.run_id, point="after_second_artifact")
     return store.complete_mechanical_stage(run.run_id, operation_id, step_name=step_name)
 
 
@@ -263,6 +299,14 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
     store = Store.open(control_root, create=True)
     owner_token = f"{requested_run_id}:{os.getpid()}:{uuid.uuid4().hex}"
     lease_scope = f"{os.path.normcase(os.fspath(config.repository_path))}@{config.target_ref}"
+    stale_after_seconds = 5.0
+    if config.execution_backend == "deterministic_test" and os.environ.get("SPEC_RUNNER_TEST_LEASE_STALE_AFTER_SECONDS"):
+        try:
+            stale_after_seconds = max(0.0, float(os.environ["SPEC_RUNNER_TEST_LEASE_STALE_AFTER_SECONDS"]))
+        except ValueError as exc:
+            raise RunnerError("invalid_test_fault_config", "test lease stale timeout must be numeric") from exc
+    heartbeat_stop: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
     try:
         existing = store.find_by_launch_key(launch_key)
         if existing:
@@ -274,15 +318,13 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 )
             if existing.state in {"completed", "cancelled", "paused", "blocked_writer_busy"}:
                 return {"created": False, **store.public_status(existing.run_id)}
+            store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
+            heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token)
             if existing.state == "ready_for_next":
-                store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token)
-                try:
-                    final_status = _advance_second_stage(
-                        control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
-                    )
-                    return {"created": False, **final_status}
-                finally:
-                    store.release_lease(scope=lease_scope, owner_token=owner_token)
+                final_status = _advance_second_stage(
+                    control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
+                )
+                return {"created": False, **final_status}
             recovered_status = _recover_after_process_exit(
                 control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
             )
@@ -318,13 +360,15 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             log_path=os.fspath(control_root / record.log_path),
         )
         try:
-            store.acquire_lease(scope=lease_scope, run_id=requested_run_id, owner_token=owner_token)
+            store.acquire_lease(scope=lease_scope, run_id=requested_run_id, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
         except RunnerError:
             # Keep the attempted run as an explicit blocker instead of leaving
             # a second starting writer that a later process might adopt.
             store.fail_run(requested_run_id, operation_id, state="blocked_writer_busy")
             raise
+        heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token)
         store.write_log(control_root, requested_run_id, {"event": "run_started", "backend_kind": config.execution_backend})
+        _test_fault_pause(control_root=control_root, run_id=requested_run_id, point="after_first_intent")
         try:
             if config.execution_backend == "deterministic_test":
                 finished = _execute_deterministic_example(
@@ -353,6 +397,10 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         )
         return {"created": True, **final_status}
     finally:
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1.0)
         try:
             store.release_lease(scope=lease_scope, owner_token=owner_token)
         except RunnerError:

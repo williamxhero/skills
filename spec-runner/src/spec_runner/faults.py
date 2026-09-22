@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,17 +20,52 @@ from . import __version__
 from .errors import RunnerError
 
 
-def _invoke(root: Path, args: list[str]) -> tuple[int, dict[str, Any]]:
+def _invoke(root: Path, args: list[str], *, env_overrides: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
     source_root = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
     existing_path = environment.get("PYTHONPATH")
     environment["PYTHONPATH"] = os.fspath(source_root) + (os.pathsep + existing_path if existing_path else "")
+    environment.update(env_overrides or {})
     process = subprocess.run([sys.executable, "-m", "spec_runner.cli", *args], cwd=root, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace")
     try:
         payload = json.loads(process.stdout)
     except json.JSONDecodeError as exc:
         raise RunnerError("fault_harness_output_invalid", "public CLI did not return JSON", details={"stderr": process.stderr[-1000:]}) from exc
     return process.returncode, payload
+
+
+def _interrupt_at_fault(root: Path, args: list[str], *, control: Path, run_id: str, point: str) -> int:
+    """Run the public CLI in a child process and terminate it at a durable fault point."""
+    source_root = Path(__file__).resolve().parents[1]
+    environment = os.environ.copy()
+    existing_path = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = os.fspath(source_root) + (os.pathsep + existing_path if existing_path else "")
+    environment["SPEC_RUNNER_FAULT_POINT"] = point
+    environment["SPEC_RUNNER_TEST_LEASE_STALE_AFTER_SECONDS"] = "0"
+    process = subprocess.Popen(
+        [sys.executable, "-m", "spec_runner.cli", *args],
+        cwd=root,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    ready = control / "faults" / f"{run_id}.{point}.ready"
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not ready.exists():
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            raise RunnerError("fault_injection_failed", "fault child exited before reaching the requested point", details={"stdout": stdout[-1000:], "stderr": stderr[-1000:]})
+        time.sleep(0.05)
+    if not ready.exists():
+        process.terminate()
+        process.communicate(timeout=5)
+        raise RunnerError("fault_injection_timeout", "fault child did not reach the requested point")
+    process.terminate()
+    stdout, stderr = process.communicate(timeout=5)
+    return process.returncode
 
 
 def _tree_digest(root: Path) -> str:
@@ -57,6 +93,22 @@ def run_fault_matrix(*, seed: str = "sr-07-seed-1", keep_artifacts: bool = False
 
         code, first = _invoke(root, ["start", *common])
         cases.append({"id": "normal_two_stage", "entrypoint": "public_cli", "exit_code": code, "expected": "completed", "actual": first.get("run", {}).get("state"), "passed": code == 0 and first.get("run", {}).get("state") == "completed"})
+
+        restart_run_id = "11111111-1111-1111-1111-111111111111"
+        restart_control = root / "restart-control"
+        restart_common = ["--brief", str(brief), "--config", str(config), "--control-root", str(restart_control), "--launch-key", "restart-run", "--run-id", restart_run_id]
+        interrupted = _interrupt_at_fault(root, ["start", *restart_common], control=restart_control, run_id=restart_run_id, point="after_first_artifact")
+        code, recovered = _invoke(root, ["drive", *restart_common[:-2]], env_overrides={"SPEC_RUNNER_TEST_LEASE_STALE_AFTER_SECONDS": "0"})
+        recovered_state = recovered.get("run", {}).get("state")
+        cases.append({"id": "process_restart_after_first_artifact", "entrypoint": "public_cli", "exit_code": code, "child_exit_code": interrupted, "expected": "completed", "actual": recovered_state, "error": recovered.get("error"), "evidence": ["recovery_detected", "step_verified", "next_stage_started"], "passed": code == 0 and recovered_state == "completed"})
+
+        second_run_id = "22222222-2222-2222-2222-222222222222"
+        second_control = root / "second-restart-control"
+        second_common = ["--brief", str(brief), "--config", str(config), "--control-root", str(second_control), "--launch-key", "second-restart-run", "--run-id", second_run_id]
+        interrupted = _interrupt_at_fault(root, ["start", *second_common], control=second_control, run_id=second_run_id, point="after_second_artifact")
+        code, recovered = _invoke(root, ["drive", *second_common[:-2]], env_overrides={"SPEC_RUNNER_TEST_LEASE_STALE_AFTER_SECONDS": "0"})
+        recovered_state = recovered.get("run", {}).get("state")
+        cases.append({"id": "process_restart_after_second_artifact", "entrypoint": "public_cli", "exit_code": code, "child_exit_code": interrupted, "expected": "completed", "actual": recovered_state, "error": recovered.get("error"), "evidence": ["recovery_detected", "step_verified", "cleanup_readback"], "passed": code == 0 and recovered_state == "completed"})
 
         takeover_inventory = root / "takeover.json"
         takeover_inventory.write_text(json.dumps({"schema_version": "spec-runner-takeover-input/v1", "repository_path": str(repository), "source_threads": [], "artifacts": [], "facts": {"requirements": ["R1"], "tracker": True, "partial_code": True}}, ensure_ascii=False), encoding="utf-8")

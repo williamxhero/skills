@@ -13,7 +13,7 @@ Implemented in the isolated `spec-runner/` package:
 - SR-07: public-CLI deterministic fault matrix, runtime diagnostics, release-evidence validation.
 - SR-08: legacy database read-only observation and `/implement-needs` handoff script.
 
-Verified locally: 28 unit/integration tests, compile checks, wheel build, fresh-venv CLI install, Chinese/space paths, temporary Git candidate/merge, and deterministic fault matrix.
+Verified locally: 36 unit/integration tests, compile checks, wheel build, fresh-venv CLI install, Chinese/space paths, temporary Git candidate/merge, deterministic fault matrix, and public-CLI process restart recovery after both artifact boundaries.
 
 Live SDK evidence: on 2026-09-22, isolated run `9b794cea-606d-4511-afe4-3e1772b649ed` using pinned `openai-codex==0.155.1` completed two real stages. It persisted formal thread/turn IDs, generated and verified both workspace artifacts, and archive-read back both threads before reaching `completed`.
 

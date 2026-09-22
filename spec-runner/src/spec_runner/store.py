@@ -4,6 +4,7 @@ import json
 import sqlite3
 import os
 import socket
+import ctypes
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -17,6 +18,40 @@ SCHEMA_VERSION = "spec-runner-store/v1"
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        # Windows accepts os.kill(pid, 0) without reliably proving that the
+        # process still exists. Query the kernel handle and exit code instead.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+        if not handle:
+            return False
+        exit_code = ctypes.c_ulong()
+        try:
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))) and exit_code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _lease_age_seconds(value: str) -> float | None:
+    try:
+        observed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, (datetime.now(UTC) - observed).total_seconds())
 
 
 @dataclass(frozen=True)
@@ -468,14 +503,19 @@ class Store:
             handle.write(json.dumps({"observed_at": now(), **event}, ensure_ascii=False, sort_keys=True) + "\n")
         return log_path
 
-    def acquire_lease(self, *, scope: str, run_id: str, owner_token: str, pid: int | None = None) -> dict[str, object]:
-        """Acquire a durable writer lease; an existing lease is never displaced silently."""
+    def acquire_lease(self, *, scope: str, run_id: str, owner_token: str, pid: int | None = None, stale_after_seconds: float = 30.0) -> dict[str, object]:
+        """Acquire a durable writer lease, reclaiming only proven local stale owners."""
         timestamp = now()
         pid = pid or os.getpid()
         with self.transaction():
             existing = self.connection.execute("SELECT * FROM runner_leases WHERE scope = ?", (scope,)).fetchone()
             if existing and existing["owner_token"] != owner_token:
-                raise RunnerError("writer_busy", "another Spec Runner writer owns this scope", details={"scope": scope, "run_id": existing["run_id"], "pid": existing["pid"]})
+                same_host = existing["host"] == socket.gethostname()
+                age = _lease_age_seconds(str(existing["heartbeat_at"]))
+                reclaimable = same_host and age is not None and age >= stale_after_seconds and not _process_alive(int(existing["pid"]))
+                if not reclaimable:
+                    raise RunnerError("writer_busy", "another Spec Runner writer owns this scope", details={"scope": scope, "run_id": existing["run_id"], "pid": existing["pid"], "same_host": same_host, "heartbeat_age_seconds": age})
+                self.connection.execute("DELETE FROM runner_leases WHERE scope = ? AND owner_token = ?", (scope, existing["owner_token"]))
             self.connection.execute(
                 "INSERT OR REPLACE INTO runner_leases(scope, run_id, owner_token, pid, host, acquired_at, heartbeat_at) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT acquired_at FROM runner_leases WHERE scope = ?), ?), ?)",
                 (scope, run_id, owner_token, pid, socket.gethostname(), scope, timestamp, timestamp),
