@@ -75,6 +75,7 @@ class RunnerConfig:
     model_name: str
     effort: str
     authorization_roots: tuple[Path, ...]
+    delivery_plan: Path | None
     digest: str
 
     @classmethod
@@ -123,6 +124,14 @@ class RunnerConfig:
         authorization_roots = tuple(_normalise_relative_path(root, "authorization.artifact_roots") for root in roots)
         if not any(_is_within(artifact_root, root) for root in authorization_roots):
             raise RunnerError("invalid_config", "artifact_root is outside authorization.artifact_roots")
+        delivery = document.get("delivery")
+        delivery_plan: Path | None = None
+        if delivery is not None:
+            if not isinstance(delivery, dict) or "plan" not in delivery:
+                raise RunnerError("invalid_config", "delivery.plan is required when delivery is configured")
+            delivery_plan = _normalise_relative_path(delivery.get("plan"), "delivery.plan")
+            if not (control_root / delivery_plan).is_file():
+                raise RunnerError("invalid_config", "delivery.plan does not exist below control_root")
 
         normalized = {
             "schema_version": CONFIG_SCHEMA_VERSION,
@@ -133,6 +142,7 @@ class RunnerConfig:
             "allowed_stages": stages,
             "model": {"name": model["name"], "effort": model["effort"]},
             "authorization": {"artifact_roots": [root.as_posix() for root in authorization_roots]},
+            "delivery": {"plan": delivery_plan.as_posix()} if delivery_plan else None,
         }
         return cls(
             repository_path=repository_path,
@@ -143,6 +153,7 @@ class RunnerConfig:
             model_name=model["name"],
             effort=model["effort"],
             authorization_roots=authorization_roots,
+            delivery_plan=delivery_plan,
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
         )
 

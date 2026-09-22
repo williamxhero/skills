@@ -14,6 +14,7 @@ from .faults import run_fault_matrix
 from .delivery import merge_local, prepare_workspace, validate_review, verify_candidate
 from .diagnostics import build_release_report, inspect_wheel, load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
 from .matt import load_lock, render_prompt, resolve_grill
+from .multi_spec import run_local_delivery
 from .legacy import legacy_takeover_inventory, read_legacy_database
 from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
 from .takeover import completion_action, inspect_takeover, load_inventory, plan_frontier, write_takeover_record
@@ -153,6 +154,15 @@ def _parser() -> argparse.ArgumentParser:
     merge_local_parser.add_argument("--target-ref", required=True)
     merge_local_parser.add_argument("--expected-target-sha", required=True)
     merge_local_parser.add_argument("--run-id", required=True)
+    delivery_parser = subparsers.add_parser("delivery", help="run a trusted local multi-SPEC delivery plan")
+    delivery_sub = delivery_parser.add_subparsers(dest="delivery_command", required=True)
+    delivery_run = delivery_sub.add_parser("run")
+    delivery_run.add_argument("--plan", required=True, type=Path)
+    delivery_run.add_argument("--repository", required=True, type=Path)
+    delivery_run.add_argument("--workspace-root", required=True, type=Path)
+    delivery_run.add_argument("--control-root", required=True, type=Path)
+    delivery_run.add_argument("--run-id", required=True)
+    delivery_run.add_argument("--target-ref", default="HEAD")
     takeover_parser = subparsers.add_parser("takeover", help="inventory and safely adopt an arbitrary-stage delivery")
     takeover_sub = takeover_parser.add_subparsers(dest="takeover_command", required=True)
     takeover_inspect = takeover_sub.add_parser("inspect")
@@ -299,6 +309,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = validate_review(result=plan_json(arguments.file), candidate_sha=arguments.candidate_sha, acceptance_version=arguments.acceptance_version)
         elif arguments.command == "merge":
             result = merge_local(repository=arguments.repository, candidate_branch=arguments.candidate_branch, target_ref=arguments.target_ref, expected_target_sha=arguments.expected_target_sha, workspace_root=arguments.workspace_root, run_id=arguments.run_id)
+        elif arguments.command == "delivery":
+            plan = plan_json(arguments.plan)
+            result = run_local_delivery(
+                plan=plan,
+                repository=arguments.repository,
+                workspace_root=arguments.workspace_root,
+                control_root=arguments.control_root,
+                run_id=arguments.run_id,
+                target_ref=arguments.target_ref,
+            )
         elif arguments.command == "takeover":
             report = inspect_takeover(load_inventory(arguments.file))
             frontier = plan_frontier(report)

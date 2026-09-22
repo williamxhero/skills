@@ -37,6 +37,20 @@ Git repository):
 }
 ```
 
+For an explicit local whole-SPEC run, add a trusted delivery plan below the
+control root. Each SPEC declares `blocked_by`, argument-array implementation
+commands, acceptance/check mappings, and a review receipt path:
+
+```json
+{"delivery": {"plan": "delivery-plan.json"}}
+```
+
+The plan schema is `spec-runner-delivery-plan/v1`. It runs dependency-ordered
+SPECs in isolated worktrees, binds checks and review to the candidate SHA,
+merges each candidate into the configured local ref, and persists a durable
+receipt. A failure stops the queue before the next SPEC; re-running reads the
+receipt/worktree and never blindly replays an unknown implementation command.
+
 ```powershell
 spec-runner start --brief .\brief.md --config .\runner.json `
   --control-root .\.spec-runner --launch-key example-001
@@ -45,6 +59,7 @@ spec-runner doctor --config .\runner.json --control-root .\.spec-runner
 spec-runner pause --control-root .\.spec-runner --run-id <run_id>
 spec-runner resume --brief .\brief.md --config .\runner.json --control-root .\.spec-runner --launch-key example-001
 spec-runner answer --control-root .\.spec-runner --run-id <run_id> --question-id Q1 --value '"approved"'
+spec-runner delivery run --plan .\.spec-runner\delivery-plan.json --repository C:\work\repo --workspace-root C:\work\runner-workspaces --control-root .\.spec-runner --run-id <run_id> --target-ref refs/heads/main
 ```
 
 All commands write versioned JSON to stdout. `status` and `doctor` are read-only:

@@ -17,6 +17,7 @@ from .tracker import PlanSnapshot
 
 SPEC_PLAN_SCHEMA = "spec-runner-spec-plan/v1"
 TICKET_PLAN_SCHEMA = "spec-runner-ticket-plan/v1"
+DELIVERY_PLAN_SCHEMA = "spec-runner-delivery-plan/v1"
 
 
 def canonical(value: object) -> str:
@@ -163,3 +164,35 @@ def intake_snapshot(snapshot: PlanSnapshot, *, entry_key: str) -> dict[str, Any]
 
 def detect_source_change(previous_digest: str, current: PlanSnapshot) -> dict[str, object]:
     return {"changed": previous_digest != current.digest, "previous_digest": previous_digest, "current_digest": current.digest, "action": "change_request" if previous_digest != current.digest else "none"}
+
+
+def validate_delivery_plan(document: dict[str, Any]) -> dict[str, Any]:
+    """Validate the trusted, mechanical whole-SPEC delivery contract."""
+    if document.get("schema_version") != DELIVERY_PLAN_SCHEMA:
+        raise RunnerError("invalid_delivery_plan", f"schema_version must be {DELIVERY_PLAN_SCHEMA}")
+    specs = _list(document.get("specs"), "specs")
+    keys = _keys(specs, "specs")
+    _acyclic(specs, keys)
+    for spec in specs:
+        if not isinstance(spec.get("acceptance_version"), str) or not spec["acceptance_version"]:
+            raise RunnerError("invalid_delivery_plan", "each SPEC needs acceptance_version")
+        acceptance = spec.get("acceptance")
+        if not isinstance(acceptance, list) or not acceptance or any(not isinstance(value, str) or not value for value in acceptance):
+            raise RunnerError("invalid_delivery_plan", "each SPEC needs acceptance IDs")
+        implementation = spec.get("implementation", [])
+        if not isinstance(implementation, list) or any(not isinstance(command, list) or not command or any(not isinstance(part, str) or not part for part in command) for command in implementation):
+            raise RunnerError("invalid_delivery_plan", "implementation must contain argument arrays")
+        checks = spec.get("checks")
+        if not isinstance(checks, list) or not checks:
+            raise RunnerError("invalid_delivery_plan", "each SPEC needs trusted checks")
+        for check in checks:
+            if not isinstance(check, dict) or not isinstance(check.get("command"), list) or not check["command"]:
+                raise RunnerError("invalid_delivery_plan", "checks need command arrays")
+            if not isinstance(check.get("acceptance"), list) or not check["acceptance"]:
+                raise RunnerError("invalid_delivery_plan", "checks need acceptance mappings")
+        review_file = spec.get("review_file")
+        if not isinstance(review_file, str) or not review_file or Path(review_file).is_absolute() or ".." in Path(review_file).parts:
+            raise RunnerError("invalid_delivery_plan", "review_file must be a safe relative path")
+    result = dict(document)
+    result["digest"] = digest({key: value for key, value in document.items() if key != "digest"})
+    return result
