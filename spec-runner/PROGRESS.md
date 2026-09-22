@@ -15,4 +15,6 @@ Implemented in the isolated `spec-runner/` package:
 
 Verified locally: 28 unit/integration tests, compile checks, wheel build, fresh-venv CLI install, Chinese/space paths, temporary Git candidate/merge, and deterministic fault matrix.
 
+Live SDK evidence: on 2026-09-22, isolated run `9b794cea-606d-4511-afe4-3e1772b649ed` using pinned `openai-codex==0.155.1` completed two real stages. It persisted formal thread/turn IDs, generated and verified both workspace artifacts, and archive-read back both threads before reaching `completed`.
+
 Not verified in this environment: live SDK process restart/active-turn handoff, live GitHub sandbox writes/merge, Windows native kill/restart matrix, and upstream Matt Skill invocation. These remain explicitly `not_verified`; deterministic evidence does not substitute for them.
