@@ -159,7 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_file=arguments.config,
                 control_root=arguments.control_root,
                 launch_key=arguments.launch_key,
-                run_id=arguments.run_id,
+                run_id=getattr(arguments, "run_id", None),
             )
         elif arguments.command == "status":
             result = status(control_root=arguments.control_root, run_id=arguments.run_id)
