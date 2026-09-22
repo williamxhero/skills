@@ -51,6 +51,9 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         raise RunnerError("invalid_takeover_inventory", "source_threads must be a list of objects")
     adopted: list[dict[str, object]] = []
     unresolved: list[dict[str, object]] = []
+    handover_policy = inventory.get("handover_policy", "require_stop_confirmation")
+    if handover_policy not in {"require_stop_confirmation", "wait_then_takeover", "interrupt_then_takeover"}:
+        raise RunnerError("invalid_takeover_inventory", "handover_policy is not supported")
     for thread in source_threads:
         identifier = thread.get("id")
         if not isinstance(identifier, str) or not identifier:
@@ -63,7 +66,13 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         if ownership != "confirmed":
             unresolved.append({"thread_id": identifier, "reason": "thread_ownership_unconfirmed"})
         elif active and not stop_confirmed:
-            unresolved.append({"thread_id": identifier, "reason": "active_writer_not_stopped"})
+            unresolved.append(
+                {
+                    "thread_id": identifier,
+                    "reason": "waiting_handover" if handover_policy == "wait_then_takeover" else "active_writer_not_stopped",
+                    "policy": handover_policy,
+                }
+            )
         else:
             adopted.append({"thread_id": identifier, "lineage": thread.get("lineage"), "action": "continue_or_archive"})
     artifacts = inventory.get("artifacts", [])
@@ -91,13 +100,20 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         "unresolved": unresolved,
         "artifacts": classifications,
         "historical_facts": facts,
-        "next_state": "blocked" if unresolved else "adopted_ready",
-        "digest": digest({"repo": os.fspath(repository), "head": head, "threads": source_threads, "artifacts": classifications, "facts": facts}),
+        "handover": {
+            "policy": handover_policy,
+            "state": "waiting_handover" if any(item.get("reason") == "waiting_handover" for item in unresolved) else ("blocked" if unresolved else "released"),
+            "active_threads": [str(thread.get("id")) for thread in source_threads if bool(thread.get("active", False))],
+        },
+        "next_state": "waiting_handover" if any(item.get("reason") == "waiting_handover" for item in unresolved) else ("blocked" if unresolved else "adopted_ready"),
+        "digest": digest({"repo": os.fspath(repository), "head": head, "threads": source_threads, "artifacts": classifications, "facts": facts, "handover_policy": handover_policy}),
     }
 
 
 def completion_action(report: dict[str, Any]) -> dict[str, object]:
     """Choose only a mechanical next category; no hidden LLM control loop."""
+    if report.get("next_state") == "waiting_handover":
+        return {"state": "waiting_handover", "reason": "the selected handover policy requires a real stop confirmation before a new writer starts"}
     if report.get("next_state") == "blocked":
         return {"state": "blocked", "reason": "takeover ownership or active-writer evidence is incomplete"}
     facts = report.get("historical_facts", {})
@@ -114,8 +130,10 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
     """
     if report.get("schema_version") != "spec-runner-takeover-report/v1":
         raise RunnerError("invalid_takeover_report", "frontier planning requires a takeover report")
-    if report.get("next_state") == "blocked":
-        return {"schema_version": "spec-runner-frontier/v1", "state": "blocked", "steps": [{"kind": "handover", "status": "blocked", "reason": "ownership or active-writer evidence is incomplete"}], "digest": digest(report)}
+    if report.get("next_state") in {"blocked", "waiting_handover"}:
+        state = str(report.get("next_state"))
+        reason = "wait for a real source stop confirmation before starting a new writer" if state == "waiting_handover" else "ownership or active-writer evidence is incomplete"
+        return {"schema_version": "spec-runner-frontier/v1", "state": state, "steps": [{"kind": "handover", "status": state, "reason": reason}], "digest": digest(report)}
     facts = report.get("historical_facts", {})
     if not isinstance(facts, dict):
         raise RunnerError("invalid_takeover_report", "historical_facts must be an object")

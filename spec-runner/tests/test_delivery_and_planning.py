@@ -105,6 +105,30 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(frontier["state"], "needs_input")
             self.assertTrue(any(step["target"] == "requirement_scope" for step in frontier["steps"]))
 
+    def test_takeover_wait_policy_does_not_start_a_competing_writer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            inventory = {
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repo),
+                "handover_policy": "wait_then_takeover",
+                "source_threads": [{"id": "source-1", "ownership": "confirmed", "active": True, "stop_confirmed": False}],
+                "artifacts": [],
+                "facts": {"requirements": ["R1"]},
+            }
+            report = inspect_takeover(inventory)
+            self.assertEqual(report["next_state"], "waiting_handover")
+            self.assertEqual(completion_action(report)["state"], "waiting_handover")
+            frontier = plan_frontier(report)
+            self.assertEqual(frontier["state"], "waiting_handover")
+
+            inventory["handover_policy"] = "interrupt_then_takeover"
+            blocked = inspect_takeover(inventory)
+            self.assertEqual(blocked["next_state"], "blocked")
+            self.assertEqual(completion_action(blocked)["state"], "blocked")
+
     def test_release_and_fault_reports_reject_unverified_shape(self):
         fault = validate_fault_matrix({"schema_version": "spec-runner-fault-matrix/v1", "scenarios": [{"id": "s1", "entrypoint": "public_cli", "expected": {"state": "blocked"}, "evidence_kind": "deterministic"}]})
         self.assertEqual(fault["outcome"], "validated")

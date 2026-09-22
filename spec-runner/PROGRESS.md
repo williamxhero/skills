@@ -20,8 +20,9 @@ Implemented slices in the isolated `spec-runner/` package:
 - SR-05/06: isolated Git workspaces, candidate receipts, review validation,
   guarded local merge, and GitHub PR/check/merge adapters.
 - SR-09: read-only arbitrary-stage inventory, deterministic frontier planning,
-  SQLite takeover records, and a continuation entry into the normal Runner
-  loop.
+  SQLite takeover records, explicit `wait_then_takeover` /
+  `interrupt_then_takeover` handover states, and a continuation entry into the
+  normal Runner loop.
 - SR-07: public-CLI deterministic fault matrix, runtime diagnostics, and
   release-evidence validation.
 - SR-08: read-only legacy database observation and the thin
@@ -33,6 +34,9 @@ isolated target installation (`spec-runner --version` / `0.1.0`), Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
 matrix, public-CLI process restart recovery after both artifact boundaries,
 and public-CLI pause/resume at a stage boundary.
+
+The follow-up handover contract adds a public negative matrix for active source
+writers and raises the deterministic test count to 41 passed with one skipped.
 
 The deterministic evidence is not final whole-route qualification. Remaining
 acceptance gaps are the real three-SPEC delivery loop, arbitrary-stage mixed
