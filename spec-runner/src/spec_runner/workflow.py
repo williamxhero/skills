@@ -262,7 +262,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
 
     store = Store.open(control_root, create=True)
     owner_token = f"{requested_run_id}:{os.getpid()}:{uuid.uuid4().hex}"
-    lease_scope = f"{config.repository_path.as_posix()}@{config.target_ref}"
+    lease_scope = f"{os.path.normcase(os.fspath(config.repository_path))}@{config.target_ref}"
     try:
         existing = store.find_by_launch_key(launch_key)
         if existing:
@@ -312,7 +312,13 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             owner_token=owner_token,
             log_path=os.fspath(control_root / record.log_path),
         )
-        store.acquire_lease(scope=lease_scope, run_id=requested_run_id, owner_token=owner_token)
+        try:
+            store.acquire_lease(scope=lease_scope, run_id=requested_run_id, owner_token=owner_token)
+        except RunnerError:
+            # Keep the attempted run as an explicit blocker instead of leaving
+            # a second starting writer that a later process might adopt.
+            store.fail_run(requested_run_id, operation_id, state="blocked_writer_busy")
+            raise
         store.write_log(control_root, requested_run_id, {"event": "run_started", "backend_kind": config.execution_backend})
         try:
             if config.execution_backend == "deterministic_test":

@@ -20,3 +20,13 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"spec-runner" = ["dependencies.lock.json"]
+"spec-runner/locked-skills" = [
+  "locked-skills/grilling.md",
+  "locked-skills/to-spec.md",
+  "locked-skills/to-tickets.md",
+  "locked-skills/implement-spec.md",
+  "locked-skills/code-review.md",
+]

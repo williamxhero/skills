@@ -19,6 +19,17 @@ Use the Runner's public commands (`start`, `launch`, `intake`, `status`,
 `resume`, `pause`, `cancel`, and `takeover inspect`) for execution and recovery.
 Do not invoke this legacy controller to develop or upgrade the Runner itself.
 
+### New-run routing rule
+
+For a new request or an explicit takeover, the Skill MUST hand off to the
+installed `spec-runner` package through `scripts/spec_runner_handoff.py`. It
+must not run the qualification gate, `dispatch.py`, `advance_runtime`,
+`managed_recovery`, or any other legacy controller loop for that request. The
+Runner's control root is separate from any legacy `.scratch` database and its
+writer lease is the only execution owner. The instructions below are retained
+for legacy runs that were already created by this Skill before SR-08; they do
+not govern Runner development or new Runner runs.
+
 Before a normal run, require a matching `QUALIFIED` report from
 `validation/reports/index.json` for the current Skill and validation harness
 digests. Check this with

@@ -9,6 +9,7 @@ from typing import Sequence
 from . import __version__
 from .errors import RunnerError
 from .github_tracker import GitHubTracker
+from .github_delivery import GitHubDelivery
 from .delivery import merge_local, prepare_workspace, validate_review, verify_candidate
 from .diagnostics import load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
 from .matt import load_lock, render_prompt, resolve_grill
@@ -72,6 +73,25 @@ def _parser() -> argparse.ArgumentParser:
     tracker_github_publish.add_argument("--receipt-root", required=True, type=Path)
     tracker_github_publish.add_argument("--operation-id", required=True)
     tracker_github_publish.add_argument("--relation-mode", choices=["body_links", "native"], default="body_links")
+    github_delivery_parser = subparsers.add_parser("github-delivery", help="guarded GitHub PR/check/merge operations")
+    github_delivery_sub = github_delivery_parser.add_subparsers(dest="github_delivery_command", required=True)
+    pr_parser = github_delivery_sub.add_parser("pr")
+    pr_parser.add_argument("--repository", required=True)
+    pr_parser.add_argument("--head", required=True)
+    pr_parser.add_argument("--base", required=True)
+    pr_parser.add_argument("--candidate-sha", required=True)
+    pr_parser.add_argument("--body", required=True, type=Path)
+    pr_parser.add_argument("--operation-id", required=True)
+    pr_parser.add_argument("--receipt-root", required=True, type=Path)
+    checks_parser = github_delivery_sub.add_parser("checks")
+    checks_parser.add_argument("--repository", required=True)
+    checks_parser.add_argument("--candidate-sha", required=True)
+    checks_parser.add_argument("--required", action="append", required=True)
+    merge_parser = github_delivery_sub.add_parser("merge")
+    merge_parser.add_argument("--repository", required=True)
+    merge_parser.add_argument("--number", required=True, type=int)
+    merge_parser.add_argument("--expected-head", required=True)
+    merge_parser.add_argument("--authorize", action="store_true")
     intake_parser = subparsers.add_parser("intake", help="adopt an explicit existing plan without regenerating tickets")
     intake_sub = intake_parser.add_subparsers(dest="intake_command", required=True)
     intake_local = intake_sub.add_parser("local")
@@ -208,6 +228,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     receipt_root=arguments.receipt_root,
                     relation_mode=arguments.relation_mode,
                 )
+        elif arguments.command == "github-delivery":
+            adapter = GitHubDelivery()
+            if arguments.github_delivery_command == "pr":
+                result = adapter.create_or_adopt_pr(repository=arguments.repository, head=arguments.head, base=arguments.base, candidate_sha=arguments.candidate_sha, body=arguments.body.read_text(encoding="utf-8"), operation_id=arguments.operation_id, receipt_root=arguments.receipt_root)
+            elif arguments.github_delivery_command == "checks":
+                result = adapter.checks(repository=arguments.repository, candidate_sha=arguments.candidate_sha, required=arguments.required)
+            else:
+                result = adapter.merge(repository=arguments.repository, number=arguments.number, expected_head=arguments.expected_head, allow=arguments.authorize)
         elif arguments.command == "intake":
             result = intake_snapshot(read_local(arguments.root), entry_key=arguments.entry)
         elif arguments.command == "plan":
