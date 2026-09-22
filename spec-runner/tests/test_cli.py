@@ -132,6 +132,26 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(conflict["error"]["code"], "answer_conflict")
 
+    def test_cleanup_only_takeover_does_not_create_an_implementation_run(self) -> None:
+        inventory = self.root / "cleanup-takeover.json"
+        inventory.write_text(json.dumps({
+            "schema_version": "spec-runner-takeover-input/v1",
+            "repository_path": str(self.repository),
+            "source_threads": [],
+            "artifacts": [],
+            "facts": {"merged": True, "verification_receipt": {"candidate_sha": "known"}},
+        }), encoding="utf-8")
+        code, result = self.invoke(
+            "takeover", "apply", "--file", str(inventory), "--control-root", str(self.control_root),
+            "--takeover-key", "cleanup-only", "--brief", str(self.brief), "--config", str(self.config),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(result["action"]["state"], "cleanup_pending")
+        self.assertNotIn("runner", result)
+        code, status = self.invoke("status", "--control-root", str(self.control_root))
+        self.assertEqual(code, 0)
+        self.assertEqual(status["runs"], [])
+
     def test_invalid_inputs_do_not_create_control_resources(self) -> None:
         self.write_config(repository_path=str(self.root / "not-a-repository"))
         code, result = self.start()
