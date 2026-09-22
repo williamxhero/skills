@@ -1,7 +1,7 @@
 # Spec Runner Progress
 
-The implementation branch is `codex/spec-runner-delivery-hardening`, based on
-the merged SR-01 through SR-09 implementation commits. This file records
+The implementation branch is `codex/spec-runner-fault-expansion`, based on the
+merged SR-01 through SR-09 implementation commits. This file records
 implementation and evidence separately; a completed code slice is not treated
 as final release qualification.
 
@@ -26,17 +26,22 @@ Implemented slices in the isolated `spec-runner/` package:
   normal Runner loop.
 - SR-07: public-CLI deterministic fault matrix, evidence-backed runtime
   diagnostics, release report construction/validation, and wheel inspection.
-- SR-08: read-only legacy database observation and the thin
-  `/implement-needs` handoff script.
+- SR-08: read-only legacy database observation, the thin
+  `/implement-needs` handoff script, and an explicit legacy compatibility
+  boundary. New requests and explicit takeovers route only through the public
+  Runner CLI; the old controller remains available only for identified
+  pre-SR-08 runs.
 
-Verified on 2026-09-22 in this branch: 49 unit/integration tests with one
+Verified on 2026-09-22 in this branch: 49 `spec-runner` unit/integration tests
+plus 3 `/implement-needs` handoff isolation tests, with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
 matrix, public-CLI process restart recovery after both artifact boundaries,
 public-CLI pause/resume at a stage boundary, structured GitHub read failures,
 and release-report negative cases.
 
-The multi-SPEC loop raises the deterministic suite to 49 passed with one
+The multi-SPEC loop and SR-08 handoff isolation tests raise the combined
+deterministic suite to 52 passed with one
 skipped. A temporary three-SPEC chain was delivered through real local Git
 worktrees and merges, then replayed after simulating a crash after merge but
 before receipt finalization; ancestor reconciliation completed without a
