@@ -39,14 +39,20 @@ class GitHubTracker:
         return result.stdout
 
     def _issue(self, repository: str, number: int) -> dict[str, Any]:
-        value = json.loads(self._runner(["api", f"repos/{repository}/issues/{number}"]))
+        try:
+            value = json.loads(self._runner(["api", f"repos/{repository}/issues/{number}"]))
+        except json.JSONDecodeError as exc:
+            raise RunnerError("github_issue_read_failed", "GitHub issue response was not valid JSON") from exc
         if not isinstance(value, dict) or value.get("repository_url", "").split("/repos/")[-1] != repository:
             raise RunnerError("github_identity_mismatch", "GitHub response repository does not match configured repository")
         return value
 
     def _comments(self, repository: str, number: int) -> list[dict[str, Any]]:
         raw = self._runner(["api", "--paginate", "--slurp", f"repos/{repository}/issues/{number}/comments"])
-        pages = json.loads(raw)
+        try:
+            pages = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RunnerError("github_pagination_incomplete", "GitHub comments response was not valid JSON") from exc
         if not isinstance(pages, list):
             raise RunnerError("github_pagination_incomplete", "GitHub comments response was not a page list")
         comments: list[dict[str, Any]] = []
