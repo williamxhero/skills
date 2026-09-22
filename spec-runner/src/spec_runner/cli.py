@@ -21,6 +21,7 @@ from .takeover import completion_action, inspect_takeover, load_inventory, plan_
 from .tracker import publish_local, read_local
 from .store import Store
 from .workflow import control, doctor, launch, resume, start, status
+from .codex_adapter import CodexAdapter
 
 CLI_SCHEMA_VERSION = "spec-runner-cli/v1"
 
@@ -167,6 +168,9 @@ def _parser() -> argparse.ArgumentParser:
     takeover_sub = takeover_parser.add_subparsers(dest="takeover_command", required=True)
     takeover_inspect = takeover_sub.add_parser("inspect")
     takeover_inspect.add_argument("--file", required=True, type=Path)
+    takeover_sdk_read = takeover_sub.add_parser("sdk-read", help="read one explicitly supplied SDK thread without starting a turn")
+    takeover_sdk_read.add_argument("--thread-id", required=True)
+    takeover_sdk_read.add_argument("--repository", required=True, type=Path)
     takeover_apply = takeover_sub.add_parser("apply")
     takeover_apply.add_argument("--file", required=True, type=Path)
     takeover_apply.add_argument("--control-root", required=True, type=Path)
@@ -320,27 +324,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 target_ref=arguments.target_ref,
             )
         elif arguments.command == "takeover":
-            report = inspect_takeover(load_inventory(arguments.file))
-            frontier = plan_frontier(report)
-            if arguments.takeover_command == "apply":
-                record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
-                action = completion_action(report)
-                result = {**record, "frontier": frontier, "action": action}
-                # A cleanup-only takeover has no remaining implementation
-                # authority. Persist the adoption record but do not create a
-                # generic worker run merely to make status look active.
-                if action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:
-                    launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
-                    result["runner"] = start(
-                        brief_file=arguments.brief,
-                        config_file=arguments.config,
-                        control_root=arguments.control_root,
-                        launch_key=launch_key,
-                    )
-                elif action["state"] == "resume_delivery" and (arguments.brief or arguments.config):
-                    raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
+            if arguments.takeover_command == "sdk-read":
+                result = CodexAdapter().read_thread(thread_id=arguments.thread_id, repository_path=arguments.repository.resolve())
             else:
-                result = {"report": report, "frontier": frontier, "action": completion_action(report)}
+                report = inspect_takeover(load_inventory(arguments.file))
+                frontier = plan_frontier(report)
+                if arguments.takeover_command == "apply":
+                    record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
+                    action = completion_action(report)
+                    result = {**record, "frontier": frontier, "action": action}
+                    # A cleanup-only takeover has no remaining implementation
+                    # authority. Persist the adoption record but do not create a
+                    # generic worker run merely to make status look active.
+                    if action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:
+                        launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
+                        result["runner"] = start(
+                            brief_file=arguments.brief,
+                            config_file=arguments.config,
+                            control_root=arguments.control_root,
+                            launch_key=launch_key,
+                        )
+                    elif action["state"] == "resume_delivery" and (arguments.brief or arguments.config):
+                        raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
+                else:
+                    result = {"report": report, "frontier": frontier, "action": completion_action(report)}
         elif arguments.command == "diagnose":
             if arguments.diagnostic_command == "runtime":
                 result = runtime_report(runner_version=__version__, store_status=status(control_root=arguments.control_root, run_id=None))

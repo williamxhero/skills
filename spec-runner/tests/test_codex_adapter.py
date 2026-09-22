@@ -30,6 +30,12 @@ class FakeThread:
         self.run_kwargs = kwargs
         return FakeResult()
 
+    def read(self, *, include_turns: bool = False) -> object:
+        status = types.SimpleNamespace(root=types.SimpleNamespace(type=types.SimpleNamespace(value="idle"), active_flags=[]))
+        turn = types.SimpleNamespace(id="turn-read-1", status=types.SimpleNamespace(value="completed"), started_at=1, completed_at=2)
+        source = types.SimpleNamespace(id=self.id, status=status, turns=[turn] if include_turns else [])
+        return types.SimpleNamespace(thread=source)
+
 
 class FakeTurn:
     id = "turn-started-123"
@@ -160,6 +166,27 @@ class CodexAdapterTests(unittest.TestCase):
             thread_id="thread-existing",
         )
         self.assertEqual(holder["codex"].resume_thread_id, "thread-existing")
+        self.assertEqual(holder["codex"].resume_kwargs["approval_mode"], "deny_all")
+
+    def test_explicit_thread_read_does_not_start_a_turn(self) -> None:
+        holder: dict[str, FakeCodex] = {}
+
+        def factory(config: object) -> FakeCodex:
+            holder["codex"] = FakeCodex(config)
+            return holder["codex"]
+
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
+        )
+        inspected = CodexAdapter(codex_factory=factory, sdk_module=sdk).read_thread(
+            thread_id="thread-existing", repository_path=Path("C:/repo")
+        )
+        self.assertFalse(inspected["started_turn"])
+        self.assertEqual(inspected["thread_status"], "idle")
+        self.assertEqual(inspected["turns"][0]["turn_id"], "turn-read-1")
         self.assertEqual(holder["codex"].resume_kwargs["approval_mode"], "deny_all")
 
     def test_missing_published_sdk_is_a_structured_error(self) -> None:

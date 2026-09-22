@@ -106,6 +106,7 @@ spec-runner candidate verify --workspace C:\work\runner-workspaces\SR-01-1234 --
 spec-runner review validate --file .\review.json --candidate-sha <sha> --acceptance-version v1
 spec-runner merge local --repository C:\work\repo --workspace-root C:\work\runner-workspaces --candidate-branch spec-runner/SR-01-1234 --target-ref refs/heads/main --expected-target-sha <sha> --run-id <run>
 spec-runner takeover inspect --file .\takeover.json
+spec-runner takeover sdk-read --thread-id <thread_id> --repository C:\work\repo
 spec-runner takeover apply --file .\takeover.json --control-root .\.spec-runner --takeover-key <stable-key>
 spec-runner legacy inspect --db .\old-control.sqlite3 --repository C:\work\repo
 spec-runner diagnose package --wheel .\dist\spec_runner-0.1.0-py3-none-any.whl
@@ -131,6 +132,12 @@ inventory. It does not migrate, repair, or delete the old database. The
 inventory keeps old rows as historical evidence; missing thread identity,
 verification, and requirements remain unknown and are handled by the normal
 takeover planner.
+
+`takeover sdk-read` is an explicit read-only source-thread probe. It records
+thread status, active flags, and returned turn identities without starting,
+steering, interrupting, or archiving a turn. It does not prove ownership
+transfer or that another host has stopped writing; those facts remain part of
+the handover evidence required by `takeover apply`.
 
 `diagnose package` checks the actual wheel contents for the CLI, dependency
 lock, metadata, and forbidden runtime data. `diagnose release-build` constructs

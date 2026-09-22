@@ -92,6 +92,13 @@ also passed.
   issue #164, SR-01 issues #165–#169, and takeover issue #205 with complete
   pagination. It classified the observed links as body relations and reported
   native relations as absent; no GitHub write was performed by this probe.
+- the explicit `takeover sdk-read` entrypoint read a real, completed but
+  unarchived SDK thread (`01a0c9c6-a679-75c0-8903-31cf43972981`) using
+  `thread_resume` plus `thread.read`: it returned `idle`, one completed turn,
+  no active flags, and `started_turn=false`; the probe then archived that
+  thread explicitly. The same SDK rejects reading an unmaterialized idle
+  thread or an already archived thread, so those cases remain visible
+  capability boundaries rather than inferred history.
 
 ## Not verified / external blockers
 
