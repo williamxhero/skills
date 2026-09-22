@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import threading
 from typing import Any, Callable
 
 from .errors import RunnerError
@@ -55,6 +56,8 @@ class CodexAdapter:
         effort: str,
         thread_id: str | None = None,
         on_turn_started: Callable[[str, str], None] | None = None,
+        control_state: Callable[[], str | None] | None = None,
+        on_control_applied: Callable[[str], None] | None = None,
     ) -> CodexWorkerResult:
         if self._sdk_module is None:
             try:
@@ -104,7 +107,11 @@ class CodexAdapter:
                         raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal turn identifier")
                     if on_turn_started is not None:
                         on_turn_started(result_thread_id, result_turn_id)
-                    result = turn.run()
+                    result = self._run_turn_with_control(
+                        turn,
+                        control_state=control_state,
+                        on_control_applied=on_control_applied,
+                    )
                 else:
                     # Keep the fake adapter contract useful for isolated unit
                     # tests and older test doubles; the published SDK path
@@ -140,6 +147,71 @@ class CodexAdapter:
             started_at=getattr(result, "started_at", None),
             completed_at=getattr(result, "completed_at", None),
         )
+
+    @staticmethod
+    def _run_turn_with_control(
+        turn: Any,
+        *,
+        control_state: Callable[[], str | None] | None,
+        on_control_applied: Callable[[str], None] | None,
+    ) -> Any:
+        """Run a published TurnHandle while honoring durable stop requests.
+
+        The SDK keeps ``run`` synchronous, while ``TurnHandle.interrupt`` is a
+        separate request. A small watcher is therefore required to bridge the
+        Runner's SQLite control plane to the SDK without implementing a second
+        transport or a parent-model scheduling loop. The watcher is only
+        active for the lifetime of this turn and never advances a stage.
+        """
+        if control_state is None:
+            return turn.run()
+        interrupt = getattr(turn, "interrupt", None)
+        if not callable(interrupt):
+            raise RunnerError(
+                "sdk_control_unsupported",
+                "the installed Codex SDK turn handle does not expose interrupt()",
+            )
+
+        stop = threading.Event()
+        finished = threading.Event()
+        interrupt_error: list[Exception] = []
+
+        def watch() -> None:
+            while not finished.is_set():
+                try:
+                    requested = control_state()
+                except Exception as exc:  # pragma: no cover - transport-specific
+                    interrupt_error.append(exc)
+                    return
+                if requested in {"pause_requested", "cancel_requested"}:
+                    try:
+                        interrupt()
+                    except Exception as exc:  # pragma: no cover - SDK-specific
+                        interrupt_error.append(exc)
+                    else:
+                        if on_control_applied is not None:
+                            try:
+                                on_control_applied(requested)
+                            except Exception as exc:  # pragma: no cover - callback-specific
+                                interrupt_error.append(exc)
+                    return
+                stop.wait(0.1)
+
+        watcher = threading.Thread(target=watch, name="spec-runner-turn-control", daemon=True)
+        watcher.start()
+        try:
+            result = turn.run()
+        finally:
+            finished.set()
+            stop.set()
+            watcher.join(timeout=1.0)
+        if interrupt_error:
+            raise RunnerError(
+                "sdk_interrupt_failed",
+                "the Runner could not reconcile a Codex turn control request",
+                details={"exception_type": type(interrupt_error[0]).__name__},
+            ) from interrupt_error[0]
+        return result
 
     def archive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
         """Archive one SDK thread and prove it appears in every required page."""

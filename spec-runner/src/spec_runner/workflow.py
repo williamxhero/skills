@@ -45,6 +45,22 @@ def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str) 
     return stop, thread
 
 
+def _read_control_state(*, control_root: Path, run_id: str) -> str | None:
+    """Read a control request from a short-lived connection.
+
+    The SDK adapter's turn-control watcher runs in a background thread, so it
+    must not share the Runner's SQLite connection. Each poll uses a read-only
+    logical access path and leaves all state transitions to the owning Runner
+    connection after the SDK result is returned.
+    """
+    control_store = Store.open(control_root, create=False)
+    try:
+        control = control_store.control_for_run(run_id)
+        return str(control["requested_state"]) if control else None
+    finally:
+        control_store.close()
+
+
 def _safe_artifact_directory(control_root: Path, config: RunnerConfig, run_id: str) -> Path:
     root = (control_root / config.artifact_root).resolve()
     directory = (root / run_id).resolve()
@@ -138,7 +154,8 @@ def _record_codex_turn_started(
 
 
 def _execute_codex_example(
-    *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store
+    *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store,
+    thread_id: str | None = None,
 ) -> RunRecord:
     operation_id = f"start:{run.run_id}"
     worker_id = f"codex_sdk:{run.run_id}"
@@ -155,6 +172,8 @@ def _execute_codex_example(
         repository_path=config.repository_path,
         model=config.model_name,
         effort=config.effort,
+        thread_id=thread_id,
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(
             store,
             run_id=run.run_id,
@@ -166,7 +185,7 @@ def _execute_codex_example(
         ),
     )
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
-    artifact_directory.mkdir(parents=True, exist_ok=False)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / "worker-result.json").write_text(
         json.dumps(_declared_model_result(result, brief_digest=brief_digest, stage="example"), ensure_ascii=False, indent=2, sort_keys=True)
         + "\n",
@@ -178,17 +197,35 @@ def _execute_codex_example(
         run.run_id,
         {"event": "codex_turn_completed", "thread_id": result.thread_id, "turn_id": result.turn_id, "status": result.status},
     )
-    return store.complete_codex_stage(
+    interrupted = result.status == "interrupted"
+    control = store.control_for_run(run.run_id) if interrupted else None
+    if interrupted and (
+        not control or control["requested_state"] not in {"pause_requested", "cancel_requested"}
+    ):
+        raise RunnerError("unexpected_sdk_interrupt", "Codex interrupted without a durable pause or cancel request")
+    state = "paused" if control and control["requested_state"] == "pause_requested" else (
+        "cancelled" if interrupted else "turn_completed"
+    )
+    completed = store.complete_codex_stage(
         run.run_id,
         f"start:{run.run_id}",
         thread_id=result.thread_id,
         turn_id=result.turn_id,
-        state="turn_completed",
+        state=state,
     )
+    if interrupted and control:
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"control:{run.run_id}:{control['generation']}:applied",
+            event_type="control_applied",
+            payload={"requested_state": control["requested_state"], "generation": control["generation"], "turn_id": result.turn_id},
+        )
+    return completed
 
 
 def _execute_second_codex(
-    *, control_root: Path, config: RunnerConfig, run: RunRecord, brief_digest: str, store: Store
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, brief_digest: str, store: Store,
+    thread_id: str | None = None,
 ) -> RunRecord:
     step_name = "codex_second"
     operation_id = f"second:{run.run_id}"
@@ -204,6 +241,8 @@ def _execute_second_codex(
         repository_path=config.repository_path,
         model=config.model_name,
         effort=config.effort,
+        thread_id=thread_id,
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(
             store,
             run_id=run.run_id,
@@ -226,15 +265,32 @@ def _execute_second_codex(
         run.run_id,
         {"event": "codex_second_turn_completed", "thread_id": result.thread_id, "turn_id": result.turn_id, "status": result.status},
     )
-    return store.complete_codex_stage(
+    interrupted = result.status == "interrupted"
+    control = store.control_for_run(run.run_id) if interrupted else None
+    if interrupted and (
+        not control or control["requested_state"] not in {"pause_requested", "cancel_requested"}
+    ):
+        raise RunnerError("unexpected_sdk_interrupt", "Codex interrupted without a durable pause or cancel request")
+    state = "paused" if control and control["requested_state"] == "pause_requested" else (
+        "cancelled" if interrupted else "turn_completed"
+    )
+    completed = store.complete_codex_stage(
         run.run_id,
         operation_id,
         thread_id=result.thread_id,
         turn_id=result.turn_id,
-        state="turn_completed",
+        state=state,
         step_name=step_name,
         worker_id=f"codex_sdk:{run.run_id}:{step_name}",
     )
+    if interrupted and control:
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"control:{run.run_id}:{control['generation']}:applied",
+            event_type="control_applied",
+            payload={"requested_state": control["requested_state"], "generation": control["generation"], "turn_id": result.turn_id},
+        )
+    return completed
 
 
 def _verify_and_archive(
@@ -276,6 +332,30 @@ def _verify_and_archive(
         payload={"step": run.current_step, "backend_kind": run.backend_kind},
     )
     store.mark_archived(run.run_id, state=final_state)
+    return store.public_status(run.run_id)
+
+
+def _finalize_cancelled_codex(*, config: RunnerConfig, run: RunRecord, store: Store) -> dict[str, object]:
+    """Archive a cancelled SDK thread without treating cancellation as success."""
+    if run.state != "cancelled" or run.backend_kind != "codex_sdk":
+        return store.public_status(run.run_id)
+    worker = store.workers_for_run(run.run_id)[-1]
+    thread_id = str(worker.get("external_thread_id") or "")
+    if not thread_id:
+        store.mark_cleanup_pending(run.run_id)
+        return store.public_status(run.run_id)
+    try:
+        CodexAdapter().archive_and_readback(thread_id=thread_id, repository_path=config.repository_path)
+    except RunnerError:
+        store.mark_cleanup_pending(run.run_id)
+        return store.public_status(run.run_id)
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"cleanup:{run.run_id}:cancelled-thread-readback",
+        event_type="cleanup_readback",
+        payload={"thread_id": thread_id, "cancelled": True},
+    )
+    store.mark_archived(run.run_id, state="cancelled")
     return store.public_status(run.run_id)
 
 
@@ -358,7 +438,77 @@ def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunR
         second = _execute_second_codex(
             control_root=control_root, config=config, run=run, brief_digest=brief_digest, store=store
         )
+    if second.state in {"paused", "cancelled"}:
+        if second.state == "cancelled":
+            return _finalize_cancelled_codex(config=config, run=second, store=store)
+        return store.public_status(second.run_id)
     return _verify_and_archive(control_root=control_root, config=config, run=second, store=store)
+
+
+def _resume_codex_stage(
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store
+) -> dict[str, object]:
+    """Resume the interrupted SDK turn on its persisted thread.
+
+    A paused run is a stage boundary, not permission to start a competing
+    thread. The formal thread identity persisted by ``Thread.turn()`` is the
+    only identity accepted for this continuation.
+    """
+    worker = store.workers_for_run(run.run_id)[-1]
+    thread_id = str(worker.get("external_thread_id") or "")
+    if not thread_id:
+        raise RunnerError("resume_thread_missing", "paused Codex run has no persisted thread identity")
+    if run.current_step == "codex_example":
+        resumed = _execute_codex_example(
+            control_root=control_root,
+            config=config,
+            brief=brief,
+            brief_digest=brief_digest,
+            run=run,
+            store=store,
+            thread_id=thread_id,
+        )
+        if resumed.state in {"paused", "cancelled"}:
+            if resumed.state == "cancelled":
+                return _finalize_cancelled_codex(config=config, run=resumed, store=store)
+            return store.public_status(resumed.run_id)
+        _verify_and_archive(
+            control_root=control_root,
+            config=config,
+            run=resumed,
+            store=store,
+            final_state="ready_for_next",
+        )
+        current = store.find_by_run_id(run.run_id)
+        assert current is not None
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"resume:{run.run_id}:next-stage",
+            event_type="next_stage_started",
+            payload={"from_step": "codex_example", "to_step": "codex_second"},
+        )
+        return _advance_second_stage(
+            control_root=control_root,
+            config=config,
+            run=current,
+            brief_digest=brief_digest,
+            store=store,
+        )
+    if run.current_step == "codex_second":
+        resumed = _execute_second_codex(
+            control_root=control_root,
+            config=config,
+            run=run,
+            brief_digest=brief_digest,
+            store=store,
+            thread_id=thread_id,
+        )
+        if resumed.state in {"paused", "cancelled"}:
+            if resumed.state == "cancelled":
+                return _finalize_cancelled_codex(config=config, run=resumed, store=store)
+            return store.public_status(resumed.run_id)
+        return _verify_and_archive(control_root=control_root, config=config, run=resumed, store=store)
+    raise RunnerError("resume_stage_unknown", f"paused Codex run has unsupported step: {run.current_step}")
 
 
 def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
@@ -478,6 +628,16 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 )
                 return {"created": False, **final_status}
             if existing.state == "paused" and not store.control_for_run(existing.run_id):
+                if config.execution_backend == "codex_sdk":
+                    resumed = _resume_codex_stage(
+                        control_root=control_root,
+                        config=config,
+                        run=existing,
+                        brief=brief,
+                        brief_digest=brief_digest,
+                        store=store,
+                    )
+                    return {"created": False, **resumed}
                 resumed = _advance_second_stage(
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
                 )
@@ -550,6 +710,10 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         except RunnerError:
             store.fail_run(record.run_id, operation_id)
             raise
+        if finished.state in {"paused", "cancelled"}:
+            if finished.state == "cancelled":
+                return {"created": True, **_finalize_cancelled_codex(config=config, run=finished, store=store)}
+            return {"created": True, **store.public_status(finished.run_id)}
         _verify_and_archive(
             control_root=control_root,
             config=config,

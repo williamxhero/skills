@@ -32,7 +32,7 @@ Implemented slices in the isolated `spec-runner/` package:
   Runner CLI; the old controller remains available only for identified
   pre-SR-08 runs.
 
-Verified on 2026-09-22 in this branch: 51 `spec-runner` unit/integration tests
+Verified on 2026-09-22 in this branch: 55 `spec-runner` unit/integration tests
 plus 3 `/implement-needs` handoff isolation tests, with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
@@ -48,8 +48,9 @@ cross-platform GitHub Actions contract workflow was added for the two supported
 OS families; it runs the tests, builds the wheel, installs that wheel without
 source `PYTHONPATH`, and executes the public fault matrix.
 
-The multi-SPEC loop, SR-08 handoff isolation tests, and live-turn identity
-boundary raise the combined deterministic suite to 54 passed with one
+The multi-SPEC loop, SR-08 handoff isolation tests, live-turn identity
+boundary, and active-control workflow contract raise the combined deterministic
+suite to 58 passed with one
 skipped. A temporary three-SPEC chain was delivered through real local Git
 worktrees and merges, then replayed after simulating a crash after merge but
 before receipt finalization; ancestor reconciliation completed without a
@@ -64,9 +65,11 @@ database, log, token, secret, or environment members.
 The follow-up handover contract adds a public negative matrix for active source
 writers and raises the deterministic test count to 41 passed with one skipped.
 
-The deterministic evidence is not final whole-route qualification. Remaining
-acceptance gaps are GitHub-mode three-SPEC issue/PR/cleanup side effects,
-arbitrary-stage mixed progress with actual issue/PR/cleanup side effects, live SDK active-turn
-handoff, live GitHub sandbox/merge-queue behavior, upstream Matt Skill
+The deterministic evidence is not final whole-route qualification. A live
+public SDK probe now completed both stages after active pause/resume, and a
+separate live cancellation probe archived an interrupted second-stage worker.
+Remaining acceptance gaps are GitHub-mode three-SPEC issue/PR/cleanup side
+effects, arbitrary-stage mixed progress with actual issue/PR/cleanup side
+effects, live GitHub sandbox/merge-queue behavior, upstream Matt Skill
 invocation, and a native Windows kill/restart matrix. These are explicitly
 `not_verified`; no deterministic receipt is promoted to live evidence.
