@@ -70,7 +70,10 @@ def _execute_deterministic_example(
     if "example" not in config.allowed_stages:
         raise RunnerError("stage_not_allowed", "deterministic_test requires the example stage to be allowed")
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
-    artifact_directory.mkdir(parents=True, exist_ok=False)
+    # A process can exit after the directory is created but before the durable
+    # handoff is written. Reusing that directory is safe because the handoff
+    # digest and run identity are checked by verification.
+    artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / "brief.md").write_text(brief, encoding="utf-8", newline="\n")
     handoff = {
         "schema_version": "spec-runner-deterministic-handoff/v1",
@@ -199,6 +202,12 @@ def _verify_and_archive(
     try:
         receipt = verify_run(control_root=control_root, run=run, worker=worker)
         store.record_verification(run.run_id, receipt)
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"verification:{run.run_id}:{receipt.get('stage')}:observed",
+            event_type="step_verified",
+            payload={"stage": receipt.get("stage"), "evidence_kind": receipt.get("evidence_kind", "local")},
+        )
     except RunnerError:
         if run.backend_kind == "codex_sdk" and worker.get("external_thread_id"):
             try:
@@ -218,6 +227,12 @@ def _verify_and_archive(
         except RunnerError:
             store.mark_cleanup_pending(run.run_id)
             raise
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"cleanup:{run.run_id}:{run.current_step}:readback",
+        event_type="cleanup_readback",
+        payload={"step": run.current_step, "backend_kind": run.backend_kind},
+    )
     store.mark_archived(run.run_id, state=final_state)
     return store.public_status(run.run_id)
 
@@ -256,6 +271,12 @@ def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunR
     if control and control["requested_state"] in {"pause_requested", "cancel_requested"}:
         stop_state = "paused" if control["requested_state"] == "pause_requested" else "cancelled"
         store.set_run_state(run.run_id, stop_state)
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"control:{run.run_id}:{control['generation']}:applied",
+            event_type="control_applied",
+            payload={"requested_state": control["requested_state"], "generation": control["generation"]},
+        )
         return store.public_status(run.run_id)
     if config.execution_backend == "deterministic_test":
         second = _execute_second_deterministic(control_root=control_root, config=config, run=run, store=store)
@@ -266,20 +287,69 @@ def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunR
     return _verify_and_archive(control_root=control_root, config=config, run=second, store=store)
 
 
-def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief_digest: str, store: Store) -> dict[str, object] | None:
+def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
     """Reconcile only evidence that can be proven locally; never replay an unknown SDK call."""
     if config.execution_backend != "deterministic_test":
         if run.state in {"starting", "failed", "cleanup_pending"}:
             raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
         return None
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:{run.current_step}:detected",
+        event_type="recovery_detected",
+        payload={"step": run.current_step, "state": run.state, "backend_kind": run.backend_kind},
+    )
     directory = _safe_artifact_directory(control_root, config, run.run_id)
     if run.current_step == "deterministic_example" and (directory / "handoff.json").is_file():
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:deterministic_example:resumed",
+            event_type="step_resumed",
+            payload={"step": "deterministic_example", "evidence": "handoff.json"},
+        )
         recovered = store.complete_deterministic_stage(run.run_id, f"start:{run.run_id}")
         _verify_and_archive(control_root=control_root, config=config, run=recovered, store=store, final_state="ready_for_next")
         current = store.find_by_run_id(run.run_id)
         assert current is not None
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:next-stage",
+            event_type="next_stage_started",
+            payload={"from_step": "deterministic_example", "to_step": "deterministic_second"},
+        )
+        return _advance_second_stage(control_root=control_root, config=config, run=current, brief_digest=brief_digest, store=store)
+    if run.current_step == "deterministic_example":
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:deterministic_example:reexecute",
+            event_type="step_resumed",
+            payload={"step": "deterministic_example", "evidence": "no_completed_artifact"},
+        )
+        resumed = _execute_deterministic_example(
+            control_root=control_root,
+            config=config,
+            brief=brief,
+            brief_digest=brief_digest,
+            run=run,
+            store=store,
+        )
+        _verify_and_archive(control_root=control_root, config=config, run=resumed, store=store, final_state="ready_for_next")
+        current = store.find_by_run_id(run.run_id)
+        assert current is not None
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:next-stage",
+            event_type="next_stage_started",
+            payload={"from_step": "deterministic_example", "to_step": "deterministic_second"},
+        )
         return _advance_second_stage(control_root=control_root, config=config, run=current, brief_digest=brief_digest, store=store)
     if run.current_step == "deterministic_second" and (directory / "final.json").is_file():
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:deterministic_second:resumed",
+            event_type="step_resumed",
+            payload={"step": "deterministic_second", "evidence": "final.json"},
+        )
         recovered = store.complete_mechanical_stage(run.run_id, f"second:{run.run_id}", step_name="deterministic_second")
         return _verify_and_archive(control_root=control_root, config=config, run=recovered, store=store)
     return None
@@ -316,7 +386,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     "launch_key already belongs to different normalized input",
                     details={"run_id": existing.run_id},
                 )
-            if existing.state in {"completed", "cancelled", "paused", "blocked_writer_busy"}:
+            if existing.state in {"completed", "cancelled", "blocked_writer_busy"}:
                 return {"created": False, **store.public_status(existing.run_id)}
             store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
             heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token)
@@ -325,8 +395,13 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
                 )
                 return {"created": False, **final_status}
+            if existing.state == "paused" and not store.control_for_run(existing.run_id):
+                resumed = _advance_second_stage(
+                    control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
+                )
+                return {"created": False, **resumed}
             recovered_status = _recover_after_process_exit(
-                control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
+                control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
             )
             if recovered_status is not None:
                 return {"created": False, **recovered_status}
@@ -387,6 +462,12 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             run=finished,
             store=store,
             final_state="ready_for_next",
+        )
+        store.append_event(
+            run_id=finished.run_id,
+            event_key=f"normal:{finished.run_id}:next-stage",
+            event_type="next_stage_started",
+            payload={"from_step": finished.current_step, "to_step": "deterministic_second" if config.execution_backend == "deterministic_test" else "codex_second"},
         )
         final_status = _advance_second_stage(
             control_root=control_root,

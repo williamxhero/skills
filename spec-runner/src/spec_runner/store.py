@@ -91,6 +91,16 @@ class Store:
         store = cls(database_path, connection)
         if create:
             store._initialize()
+        else:
+            # A detached child creates the SQLite file before its schema
+            # transaction commits. Treat that short window as not-ready so a
+            # launcher can retry instead of surfacing a raw sqlite error.
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+            ).fetchone()
+            if table is None:
+                connection.close()
+                raise RunnerError("control_not_ready", "Spec Runner control database schema is not ready")
         return store
 
     def close(self) -> None:
@@ -193,6 +203,15 @@ class Store:
                     record_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS run_answers (
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    question_id TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    value_digest TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_id, question_id)
                 );
                 """
             )
@@ -297,11 +316,62 @@ class Store:
                 "INSERT OR REPLACE INTO run_controls VALUES (?, ?, ?, ?)",
                 (run_id, requested_state, generation, timestamp),
             )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"control:{run_id}:{generation}",
+                event_type="control_requested",
+                payload={"requested_state": requested_state, "generation": generation},
+            )
         return {"run_id": run_id, "requested_state": requested_state, "generation": generation, "updated_at": timestamp}
 
     def control_for_run(self, run_id: str) -> dict[str, object] | None:
         row = self.connection.execute("SELECT * FROM run_controls WHERE run_id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
+
+    def submit_answer(self, *, run_id: str, question_id: str, value: object) -> dict[str, object]:
+        if not question_id or any(character.isspace() for character in question_id):
+            raise RunnerError("invalid_answer", "question_id must be non-empty and contain no whitespace")
+        if self.find_by_run_id(run_id) is None:
+            raise RunnerError("unknown_run", f"run does not exist: {run_id}")
+        value_json = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        import hashlib
+
+        value_digest = hashlib.sha256(value_json.encode("utf-8")).hexdigest()
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT * FROM run_answers WHERE run_id = ? AND question_id = ?", (run_id, question_id)
+            ).fetchone()
+            if existing:
+                if existing["value_digest"] != value_digest:
+                    raise RunnerError("answer_conflict", "question already has a different answer")
+                return dict(existing)
+            self.connection.execute(
+                "INSERT INTO run_answers VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, question_id, value_json, value_digest, timestamp, timestamp),
+            )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"answer:{run_id}:{question_id}:{value_digest}",
+                event_type="answer_submitted",
+                payload={"question_id": question_id, "value_digest": value_digest},
+            )
+        return {
+            "run_id": run_id,
+            "question_id": question_id,
+            "value": value,
+            "value_digest": value_digest,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+
+    def answers_for_run(self, run_id: str) -> list[dict[str, object]]:
+        answers = []
+        for row in self.connection.execute("SELECT * FROM run_answers WHERE run_id = ? ORDER BY question_id", (run_id,)):
+            item = dict(row)
+            item["value"] = json.loads(str(item.pop("value_json")))
+            answers.append(item)
+        return answers
 
     def clear_control(self, run_id: str) -> None:
         with self.transaction():
@@ -310,6 +380,12 @@ class Store:
     def set_run_state(self, run_id: str, state: str) -> None:
         with self.transaction():
             self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", (state, now(), run_id))
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"state:{run_id}:{state}:{now()}",
+                event_type="state_changed",
+                payload={"state": state},
+            )
 
     def create_run(self, run: RunRecord, operation_id: str) -> None:
         with self.transaction():
@@ -328,6 +404,12 @@ class Store:
             self.connection.execute(
                 "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (f"{run.backend_kind}:{run.run_id}", run.run_id, run.backend_kind, None, None, "pending", run.created_at, run.updated_at),
+            )
+            self._insert_event(
+                run_id=run.run_id,
+                event_key=f"run:{run.run_id}:created",
+                event_type="run_created",
+                payload={"backend_kind": run.backend_kind, "operation_id": operation_id},
             )
 
     def complete_deterministic_stage(self, run_id: str, operation_id: str) -> RunRecord:
@@ -348,6 +430,12 @@ class Store:
             self.connection.execute(
                 "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
                 ("completed_test_backend", timestamp, run_id),
+            )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"operation:{operation_id}:completed",
+                event_type="step_completed",
+                payload={"operation_id": operation_id, "state": "completed_test_backend"},
             )
         record = self.find_by_run_id(run_id)
         assert record is not None
@@ -376,6 +464,12 @@ class Store:
                 "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
                 (state, timestamp, run_id),
             )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"operation:{operation_id}:completed",
+                event_type="step_completed",
+                payload={"operation_id": operation_id, "state": state, "thread_id": thread_id, "turn_id": turn_id},
+            )
         record = self.find_by_run_id(run_id)
         assert record is not None
         return record
@@ -384,20 +478,26 @@ class Store:
         timestamp = now()
         with self.transaction():
             self.connection.execute(
-                "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO steps VALUES (?, ?, ?, ?, ?)",
                 (run_id, step_name, "pending", timestamp, timestamp),
             )
             self.connection.execute(
-                "INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (operation_id, run_id, f"{backend_kind}_stage", "intent", "", timestamp, timestamp),
             )
             self.connection.execute(
-                "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO workers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (f"{backend_kind}:{run_id}:{step_name}", run_id, backend_kind, None, None, "pending", timestamp, timestamp),
             )
             self.connection.execute(
                 "UPDATE runs SET current_step = ?, state = ?, updated_at = ? WHERE run_id = ?",
                 (step_name, "starting", timestamp, run_id),
+            )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"operation:{operation_id}:intent",
+                event_type="step_intent_recorded",
+                payload={"operation_id": operation_id, "step_name": step_name, "backend_kind": backend_kind},
             )
 
     def complete_mechanical_stage(self, run_id: str, operation_id: str, *, step_name: str) -> RunRecord:
@@ -410,6 +510,12 @@ class Store:
             )
             self.connection.execute("UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?", ("turn_completed", timestamp, run_id, step_name))
             self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", ("turn_completed", timestamp, run_id))
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"operation:{operation_id}:completed",
+                event_type="step_completed",
+                payload={"operation_id": operation_id, "step_name": step_name, "state": "turn_completed"},
+            )
         record = self.find_by_run_id(run_id)
         assert record is not None
         return record
@@ -431,6 +537,12 @@ class Store:
                 "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
                 ("verified", timestamp, run_id),
             )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"verification:{run_id}:{stage_name}",
+                event_type="step_verified",
+                payload={"stage_name": stage_name, "receipt_id": f"verification:{run_id}:{stage_name}"},
+            )
 
     def mark_archived(self, run_id: str, *, state: str = "completed") -> None:
         timestamp = now()
@@ -438,11 +550,23 @@ class Store:
             self.connection.execute("UPDATE workers SET state = ?, updated_at = ? WHERE run_id = ?", ("archived", timestamp, run_id))
             self.connection.execute("UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ?", ("archived", timestamp, run_id))
             self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"archive:{run_id}:{state}",
+                event_type="cleanup_readback",
+                payload={"state": state, "archived": True},
+            )
 
     def mark_cleanup_pending(self, run_id: str) -> None:
         timestamp = now()
         with self.transaction():
             self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", ("cleanup_pending", timestamp, run_id))
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"cleanup:{run_id}:pending",
+                event_type="cleanup_pending",
+                payload={"state": "cleanup_pending"},
+            )
 
     def verification_for_run(self, run_id: str) -> list[dict[str, object]]:
         receipts: list[dict[str, object]] = []
@@ -471,6 +595,12 @@ class Store:
             self.connection.execute("UPDATE workers SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
             self.connection.execute("UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
             self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"operation:{operation_id}:failed:{state}",
+                event_type="run_failed",
+                payload={"operation_id": operation_id, "state": state},
+            )
 
     def workers_for_run(self, run_id: str) -> list[dict[str, object]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM workers WHERE run_id = ?", (run_id,))]
@@ -489,6 +619,7 @@ class Store:
             "verification": self.verification_for_run(run_id),
             "runtime": self.runtime_for_run(run_id),
             "control": self.control_for_run(run_id),
+            "answers": self.answers_for_run(run_id),
             "events": self.events_for_run(run_id),
             "writer_leases": [dict(row) for row in self.connection.execute("SELECT * FROM runner_leases WHERE run_id = ?", (run_id,))],
         }
@@ -536,13 +667,16 @@ class Store:
         row = self.connection.execute("SELECT * FROM runner_leases WHERE scope = ?", (scope,)).fetchone()
         return dict(row) if row else None
 
+    def _insert_event(self, *, run_id: str, event_key: str, event_type: str, payload: dict[str, object]) -> bool:
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO events(run_id, event_key, event_type, payload_json, observed_at) VALUES (?, ?, ?, ?, ?)",
+            (run_id, event_key, event_type, json.dumps(payload, ensure_ascii=False, sort_keys=True), now()),
+        )
+        return cursor.rowcount == 1
+
     def append_event(self, *, run_id: str, event_key: str, event_type: str, payload: dict[str, object]) -> bool:
         with self.transaction():
-            cursor = self.connection.execute(
-                "INSERT OR IGNORE INTO events(run_id, event_key, event_type, payload_json, observed_at) VALUES (?, ?, ?, ?, ?)",
-                (run_id, event_key, event_type, json.dumps(payload, ensure_ascii=False, sort_keys=True), now()),
-            )
-        return cursor.rowcount == 1
+            return self._insert_event(run_id=run_id, event_key=event_key, event_type=event_type, payload=payload)
 
     def events_for_run(self, run_id: str) -> list[dict[str, object]]:
         return [

@@ -54,13 +54,28 @@ def validate_release_report(document: dict[str, Any], *, expected_runner_version
         raise RunnerError("invalid_release_report", "unexpected release report schema")
     if document.get("runner_version") != expected_runner_version:
         raise RunnerError("release_version_mismatch", "release report describes a different Runner version")
+    subject = document.get("subject")
+    if not isinstance(subject, dict) or subject.get("runner_version") != expected_runner_version:
+        raise RunnerError("release_subject_missing", "release report must bind a subject with the current Runner version")
+    if not subject.get("build_digest") or not subject.get("config_contract"):
+        raise RunnerError("release_subject_missing", "release subject needs build_digest and config_contract")
     evidence = document.get("evidence")
     if not isinstance(evidence, list) or not evidence:
         raise RunnerError("release_evidence_missing", "release report needs evidence bodies")
     kinds: set[str] = set()
     for item in evidence:
-        if not isinstance(item, dict) or item.get("kind") not in EVIDENCE_KINDS or not item.get("body_digest"):
-            raise RunnerError("release_evidence_missing", "evidence must contain kind and body digest")
+        if not isinstance(item, dict) or item.get("kind") not in EVIDENCE_KINDS:
+            raise RunnerError("release_evidence_missing", "evidence must contain a supported kind")
+        body = item.get("body")
+        if not isinstance(body, dict):
+            raise RunnerError("release_evidence_missing", "evidence must include its complete body")
+        expected_digest = digest(body)
+        if item.get("body_digest") != expected_digest:
+            raise RunnerError("release_evidence_digest_mismatch", "evidence body digest does not match the supplied body")
+        if body.get("evidence_kind") != item.get("kind"):
+            raise RunnerError("release_evidence_kind_mismatch", "evidence body kind does not match its envelope")
+        if body.get("verified") is not True and item.get("outcome") == "passed":
+            raise RunnerError("release_evidence_unverified", "passed evidence must contain a verified body")
         if item.get("outcome") not in {"passed", "not_verified", "skipped", "failed"}:
             raise RunnerError("invalid_release_report", "invalid evidence outcome")
         kinds.add(item["kind"])

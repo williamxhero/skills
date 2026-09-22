@@ -42,6 +42,9 @@ spec-runner start --brief .\brief.md --config .\runner.json `
   --control-root .\.spec-runner --launch-key example-001
 spec-runner status --control-root .\.spec-runner --run-id <run_id>
 spec-runner doctor --config .\runner.json --control-root .\.spec-runner
+spec-runner pause --control-root .\.spec-runner --run-id <run_id>
+spec-runner resume --brief .\brief.md --config .\runner.json --control-root .\.spec-runner --launch-key example-001
+spec-runner answer --control-root .\.spec-runner --run-id <run_id> --question-id Q1 --value '"approved"'
 ```
 
 All commands write versioned JSON to stdout. `status` and `doctor` are read-only:
@@ -71,6 +74,7 @@ spec-runner review validate --file .\review.json --candidate-sha <sha> --accepta
 spec-runner merge local --repository C:\work\repo --workspace-root C:\work\runner-workspaces --candidate-branch spec-runner/SR-01-1234 --target-ref refs/heads/main --expected-target-sha <sha> --run-id <run>
 spec-runner takeover inspect --file .\takeover.json
 spec-runner takeover apply --file .\takeover.json --control-root .\.spec-runner --takeover-key <stable-key>
+spec-runner legacy inspect --db .\old-control.sqlite3 --repository C:\work\repo
 spec-runner fault run --seed sr-07-seed-1
 spec-runner diagnose runtime --control-root .\.spec-runner
 ```
@@ -85,6 +89,12 @@ The pinned adapter manifest is `dependencies.lock.json`. Its source digests are
 checked before prompt rendering. Live GitHub, live SDK, Windows-native and
 provider-specific capabilities are reported as `not_verified` unless they have
 their own real evidence; deterministic tests never fill those gaps.
+
+`legacy inspect` opens the old database read-only and emits a common takeover
+inventory. It does not migrate, repair, or delete the old database. The
+inventory keeps old rows as historical evidence; missing thread identity,
+verification, and requirements remain unknown and are handled by the normal
+takeover planner.
 
 `fault run` invokes the public CLI against a temporary Git repository and
 reports replayable deterministic cases for normal completion, process restart
