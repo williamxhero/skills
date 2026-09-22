@@ -57,6 +57,14 @@ def run_fault_matrix(*, seed: str = "sr-07-seed-1", keep_artifacts: bool = False
 
         code, first = _invoke(root, ["start", *common])
         cases.append({"id": "normal_two_stage", "entrypoint": "public_cli", "exit_code": code, "expected": "completed", "actual": first.get("run", {}).get("state"), "passed": code == 0 and first.get("run", {}).get("state") == "completed"})
+
+        takeover_inventory = root / "takeover.json"
+        takeover_inventory.write_text(json.dumps({"schema_version": "spec-runner-takeover-input/v1", "repository_path": str(repository), "source_threads": [], "artifacts": [], "facts": {"requirements": ["R1"], "tracker": True, "partial_code": True}}, ensure_ascii=False), encoding="utf-8")
+        takeover_control = root / "takeover-control"
+        code, adopted = _invoke(root, ["takeover", "apply", "--file", str(takeover_inventory), "--control-root", str(takeover_control), "--takeover-key", "fault-takeover", "--brief", str(brief), "--config", str(config)])
+        cases.append({"id": "takeover_enters_normal_loop", "entrypoint": "public_cli", "exit_code": code, "expected": "completed", "actual": adopted.get("runner", {}).get("run", {}).get("state"), "passed": code == 0 and adopted.get("runner", {}).get("run", {}).get("state") == "completed"})
+        code, adopted_again = _invoke(root, ["takeover", "apply", "--file", str(takeover_inventory), "--control-root", str(takeover_control), "--takeover-key", "fault-takeover", "--brief", str(brief), "--config", str(config)])
+        cases.append({"id": "repeated_takeover_is_idempotent", "entrypoint": "public_cli", "exit_code": code, "expected": "same_run", "actual": adopted_again.get("runner", {}).get("run", {}).get("state"), "passed": code == 0 and adopted_again.get("created") is False and adopted_again.get("runner", {}).get("run", {}).get("state") == "completed"})
         artifact_digest_before = _tree_digest(control)
         code, repeated = _invoke(root, ["drive", *common])
         artifact_digest_after = _tree_digest(control)

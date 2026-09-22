@@ -155,6 +155,9 @@ def _parser() -> argparse.ArgumentParser:
     takeover_apply.add_argument("--file", required=True, type=Path)
     takeover_apply.add_argument("--control-root", required=True, type=Path)
     takeover_apply.add_argument("--takeover-key", required=True)
+    takeover_apply.add_argument("--brief", type=Path)
+    takeover_apply.add_argument("--config", type=Path)
+    takeover_apply.add_argument("--launch-key")
     diagnostic_parser = subparsers.add_parser("diagnose", help="validate fault and release evidence without LLM calls")
     diagnostic_sub = diagnostic_parser.add_subparsers(dest="diagnostic_command", required=True)
     for name in ("fault-matrix", "release-report"):
@@ -273,7 +276,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = inspect_takeover(load_inventory(arguments.file))
             frontier = plan_frontier(report)
             if arguments.takeover_command == "apply":
-                result = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
+                record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
+                result = {**record, "frontier": frontier, "action": completion_action(report)}
+                if frontier["state"] == "planned" and arguments.brief and arguments.config:
+                    launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
+                    result["runner"] = start(
+                        brief_file=arguments.brief,
+                        config_file=arguments.config,
+                        control_root=arguments.control_root,
+                        launch_key=launch_key,
+                    )
+                elif arguments.brief or arguments.config:
+                    raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
             else:
                 result = {"report": report, "frontier": frontier, "action": completion_action(report)}
         elif arguments.command == "diagnose":

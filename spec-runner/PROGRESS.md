@@ -9,7 +9,7 @@ Implemented in the isolated `spec-runner/` package:
 - SR-03: local and GitHub tracker read/publish/readback with explicit relation evidence.
 - SR-04: locked Skill sources, deterministic prompt rendering, bounded Grill, SpecPlan/TicketPlan validation.
 - SR-05/06: isolated Git workspaces, candidate receipts, review validation, local merge, GitHub PR/check/merge adapter.
-- SR-09: read-only arbitrary-stage inventory, deterministic frontier planning, SQLite takeover records.
+- SR-09: read-only arbitrary-stage inventory, deterministic frontier planning, SQLite takeover records, and apply-to-normal-loop continuation.
 - SR-07: public-CLI deterministic fault matrix, runtime diagnostics, release-evidence validation.
 - SR-08: legacy database read-only observation and `/implement-needs` handoff script.
 
