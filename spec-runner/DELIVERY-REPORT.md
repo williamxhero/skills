@@ -15,13 +15,13 @@ The implementation followed the required order:
 | SPEC | Tickets | Implementation evidence | Acceptance state |
 | --- | --- | --- | --- |
 | SR-01 / #165 | #166–#169 | PR #211, installable CLI and SDK adapter | deterministic and direct SDK slice verified; full parent-free two-stage live run not verified |
-| SR-02 / #170 | #171–#174 | PRs #211, #213, #214 | SQLite, lease, detached launch, restart and controls verified; native kill/restart remains not verified |
+| SR-02 / #170 | #171–#174 | PRs #211, #213, #214 | SQLite, lease, detached launch, restart and controls verified; native file-lock cleanup remains not verified |
 | SR-03 / #175 | #176–#179 | PRs #212, #220 | local tracker and GitHub read/error contracts verified; live sandbox publication not verified |
 | SR-04 / #180 | #181–#184 | PR #211 and locked skill/prompt assets | deterministic prompt/plan contracts verified; upstream Matt invocation not verified |
 | SR-05 / #185 | #186–#189 | PRs #211, #212 | local workspace/candidate/review contracts verified; independent live implementation/review not verified |
 | SR-06 / #190 | #191–#194 | PRs #212, #222, #223 | local three-SPEC delivery and merge reconciliation verified; GitHub PR/CI/merge queue not verified |
 | SR-09 / #205 | #206–#210 | PRs #214–#217 | deterministic mixed/takeover frontier and cleanup-only paths verified; real source-thread handoff and side effects not verified |
-| SR-07 / #195 | #196–#199 | PRs #213, #218, #219, #221, #224 | deterministic fault/release/runtime/package gates verified; real Windows/SDK/GitHub matrix remains not verified |
+| SR-07 / #195 | #196–#199 | PRs #213, #218, #219, #221, #224 | deterministic fault/release/runtime/package gates verified; Windows file-lock, SDK user-input, and GitHub matrix remain not verified |
 | SR-08 / #200 | #201–#204 | PR #225 | legacy read-only adapter, thin entry, installation evidence and compatibility boundary delivered; final retirement decision remains dependent on the live gates above |
 
 The 37 ticket inputs are explicitly preserved here rather than inferred from
@@ -83,6 +83,11 @@ also passed.
   created real thread/turn identities, produced artifacts, passed program-owned
   verification, and completed archive readback. Both persisted worker results
   record `approval_mode=deny_all`.
+- a native Windows detached-runner probe used the public `launch` entrypoint in
+  a Chinese/space path, verified the registered child command line, terminated
+  only that exact Runner PID at the first durable artifact boundary, and used
+  public `drive` to recover the same run. The recovered run reached
+  `completed` with two verification receipts and archive readbacks.
 
 ## Not verified / external blockers
 
@@ -90,7 +95,8 @@ These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
   dedicated authorized sandbox repository;
-- native Windows process kill/restart and file-lock cleanup matrix;
+- native Windows file-lock cleanup matrix (detached process kill/restart is
+  verified for the bounded deterministic case above);
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
