@@ -69,6 +69,45 @@ class StoreLeaseTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_codex_turn_identity_is_durable_before_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                from spec_runner.store import RunRecord, now
+
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-turn",
+                    launch_key="turn",
+                    input_digest="input",
+                    config_digest="config",
+                    repository_path=temp,
+                    target_ref="HEAD",
+                    artifact_root="artifacts",
+                    backend_kind="codex_sdk",
+                    state="starting",
+                    current_step="codex_example",
+                    log_path="logs/run-turn.jsonl",
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-turn")
+                store.record_codex_turn_started(
+                    run.run_id,
+                    "start:run-turn",
+                    thread_id="thread-live",
+                    turn_id="turn-live",
+                    step_name="codex_example",
+                    worker_id="codex_sdk:run-turn",
+                )
+                status = store.public_status(run.run_id)
+                self.assertEqual(status["run"]["state"], "running")
+                self.assertEqual(status["workers"][0]["external_thread_id"], "thread-live")
+                self.assertEqual(status["workers"][0]["external_turn_id"], "turn-live")
+                self.assertIn("worker_turn_started", [event["event_type"] for event in status["events"]])
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

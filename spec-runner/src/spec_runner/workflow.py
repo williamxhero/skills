@@ -117,9 +117,31 @@ def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stag
     }
 
 
+def _record_codex_turn_started(
+    store: Store,
+    *,
+    run_id: str,
+    operation_id: str,
+    step_name: str,
+    worker_id: str,
+    thread_id: str,
+    turn_id: str,
+) -> None:
+    store.record_codex_turn_started(
+        run_id,
+        operation_id,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        step_name=step_name,
+        worker_id=worker_id,
+    )
+
+
 def _execute_codex_example(
     *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store
 ) -> RunRecord:
+    operation_id = f"start:{run.run_id}"
+    worker_id = f"codex_sdk:{run.run_id}"
     prompt = (
         "You are a bounded Spec Runner worker. Read the supplied brief, create exactly one handoff file at "
         f"spec-runner-output/{run.run_id}/handoff.md inside the repository, and return only a JSON object with keys "
@@ -133,6 +155,15 @@ def _execute_codex_example(
         repository_path=config.repository_path,
         model=config.model_name,
         effort=config.effort,
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(
+            store,
+            run_id=run.run_id,
+            operation_id=operation_id,
+            step_name="codex_example",
+            worker_id=worker_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+        ),
     )
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=False)
@@ -173,6 +204,15 @@ def _execute_second_codex(
         repository_path=config.repository_path,
         model=config.model_name,
         effort=config.effort,
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(
+            store,
+            run_id=run.run_id,
+            operation_id=operation_id,
+            step_name=step_name,
+            worker_id=f"codex_sdk:{run.run_id}:{step_name}",
+            thread_id=thread_id,
+            turn_id=turn_id,
+        ),
     )
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     (artifact_directory / "worker-result-second.json").write_text(

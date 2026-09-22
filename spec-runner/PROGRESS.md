@@ -32,7 +32,7 @@ Implemented slices in the isolated `spec-runner/` package:
   Runner CLI; the old controller remains available only for identified
   pre-SR-08 runs.
 
-Verified on 2026-09-22 in this branch: 49 `spec-runner` unit/integration tests
+Verified on 2026-09-22 in this branch: 51 `spec-runner` unit/integration tests
 plus 3 `/implement-needs` handoff isolation tests, with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
@@ -40,8 +40,16 @@ matrix, public-CLI process restart recovery after both artifact boundaries,
 public-CLI pause/resume at a stage boundary, structured GitHub read failures,
 and release-report negative cases.
 
-The multi-SPEC loop and SR-08 handoff isolation tests raise the combined
-deterministic suite to 52 passed with one
+The SDK adapter now persists the formal thread and turn IDs at the published
+`Thread.turn()` boundary before waiting for the result. A durable
+`worker_turn_started` event makes an active live worker visible to status and
+recovery instead of leaving it indistinguishable from a pending worker. A
+cross-platform GitHub Actions contract workflow was added for the two supported
+OS families; it runs the tests, builds the wheel, installs that wheel without
+source `PYTHONPATH`, and executes the public fault matrix.
+
+The multi-SPEC loop, SR-08 handoff isolation tests, and live-turn identity
+boundary raise the combined deterministic suite to 54 passed with one
 skipped. A temporary three-SPEC chain was delivered through real local Git
 worktrees and merges, then replayed after simulating a crash after merge but
 before receipt finalization; ancestor reconciliation completed without a

@@ -72,6 +72,13 @@ The live SDK case is intentionally not run by ordinary tests because it requires
 the operator's existing Codex authentication. Set `execution_backend` to
 `codex_sdk` for that explicit run.
 
+The complete implementation/evidence index is [DELIVERY-REPORT.md](DELIVERY-REPORT.md).
+It separates deterministic, local Git, live SDK, Windows, and GitHub evidence;
+an open roadmap issue or a successful model response is not treated as delivery
+proof. The repository CI workflow runs the deterministic contract and installed
+wheel checks on both Windows and Ubuntu. It does not silently run live SDK or
+GitHub side effects.
+
 ## Delivery and takeover boundaries
 
 The package also contains the later vertical slices used by SR-02 through
