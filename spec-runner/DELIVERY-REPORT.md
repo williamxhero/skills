@@ -2,7 +2,8 @@
 
 Updated 2026-09-22. This is an evidence index, not a claim that every live
 acceptance gate is complete. The authoritative delivered code is on
-`origin/master` at `263a347982aa7256cce0af8c510e7fc2e21f0e30`.
+`origin/master` at merge commit
+`28f57d10d02e6231d447653946be2db297cd545a`.
 
 ## Route and implementation order
 
@@ -31,7 +32,7 @@ not being used as a substitute for acceptance evidence.
 
 ## Merged PR evidence
 
-The Spec Runner implementation PR sequence currently includes #211–#225:
+The Spec Runner implementation PR sequence currently includes #211–#228:
 
 - #211 independent execution core;
 - #212 GitHub delivery reconciliation;
@@ -42,13 +43,13 @@ The Spec Runner implementation PR sequence currently includes #211–#225:
   and installed-artifact evidence;
 - #222–#223 local multi-SPEC delivery and merge ancestor reconciliation;
 - #224 deterministic fault expansion;
-- #225 thin `/implement-needs` entry and legacy compatibility boundary.
+- #225 thin `/implement-needs` entry and legacy compatibility boundary;
+- #228 live-turn pause, same-thread resume, cancel, and atomic control evidence.
 
-PR #225 is merged at `0ab209a`, and the follow-up evidence/CI change is merged
-at `263a347`. There were no pre-existing repository CI
-checks; `.github/workflows/spec-runner.yml` now adds Windows and Ubuntu
-contract jobs for future pushes and pull requests. Its first hosted run is
-still pending after this change is pushed.
+PR #225 is merged at `0ab209a`, the follow-up evidence/CI change is merged at
+`263a347`, and PR #228 is merged at `28f57d1`. There were no pre-existing
+repository CI checks; `.github/workflows/spec-runner.yml` now adds Windows and
+Ubuntu contract jobs. The PR #228 hosted run passed both contract jobs.
 
 ## Verified evidence
 
@@ -82,6 +83,7 @@ These are explicit gaps, not simulated passes:
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
+- SDK approval and user-input turn paths.
 
 No credentials, user runs, production issues, or external test repository were
 created as part of the deterministic or live local probes. These gaps must stay
