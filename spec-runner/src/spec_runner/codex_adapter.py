@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable
+
+from .errors import RunnerError
+
+SDK_VERSION = "0.155.1"
+
+
+@dataclass(frozen=True)
+class CodexWorkerResult:
+    thread_id: str
+    turn_id: str
+    status: str
+    error: str | None
+    final_response: str | None
+    item_count: int
+    started_at: int | None
+    completed_at: int | None
+
+    def public(self) -> dict[str, object]:
+        return {
+            "thread_id": self.thread_id,
+            "turn_id": self.turn_id,
+            "status": self.status,
+            "error": self.error,
+            "final_response": self.final_response,
+            "item_count": self.item_count,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "sdk_version": SDK_VERSION,
+        }
+
+
+class CodexAdapter:
+    """Small adapter around the published Python Codex SDK.
+
+    The import is intentionally delayed so deterministic installations can run
+    their contract tests without starting a Codex process. No transport or
+    JSON-RPC protocol is implemented here.
+    """
+
+    def __init__(self, *, codex_factory: Callable[[Any], Any] | None = None, sdk_module: Any | None = None):
+        self._codex_factory = codex_factory
+        self._sdk_module = sdk_module
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        repository_path: Path,
+        model: str,
+        effort: str,
+        thread_id: str | None = None,
+    ) -> CodexWorkerResult:
+        if self._sdk_module is None:
+            try:
+                import openai_codex as sdk_module
+            except ImportError as exc:
+                raise RunnerError(
+                    "sdk_unavailable",
+                    f"openai-codex=={SDK_VERSION} is not installed; install the package in the isolated environment",
+                ) from exc
+        else:
+            sdk_module = self._sdk_module
+        Codex = sdk_module.Codex
+        CodexConfig = sdk_module.CodexConfig
+        Sandbox = sdk_module.Sandbox
+
+        if not prompt.strip():
+            raise RunnerError("invalid_prompt", "Codex prompt must not be empty")
+        if not model.strip() or not effort.strip():
+            raise RunnerError("invalid_route", "model and effort must be non-empty")
+        factory = self._codex_factory or (lambda config: Codex(config))
+        config = CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)
+        try:
+            with factory(config) as codex:
+                if thread_id:
+                    thread = codex.thread_resume(
+                        thread_id, cwd=str(repository_path), model=model, sandbox=Sandbox.workspace_write
+                    )
+                else:
+                    thread = codex.thread_start(model=model, cwd=str(repository_path), sandbox=Sandbox.workspace_write)
+                result = thread.run(
+                    prompt,
+                    cwd=str(repository_path),
+                    model=model,
+                    effort=effort,
+                    sandbox=Sandbox.workspace_write,
+                )
+        except RunnerError:
+            raise
+        except Exception as exc:
+            raise RunnerError(
+                "sdk_execution_failed",
+                "Codex SDK failed while creating or running the worker",
+                details={"exception_type": type(exc).__name__},
+            ) from exc
+
+        result_thread_id = str(getattr(thread, "id", ""))
+        result_turn_id = str(getattr(result, "id", ""))
+        if not result_thread_id or result_thread_id == "None" or not result_turn_id or result_turn_id == "None":
+            raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal thread or turn identifier")
+        result_status = getattr(result, "status", "unknown")
+        return CodexWorkerResult(
+            thread_id=result_thread_id,
+            turn_id=result_turn_id,
+            status=str(getattr(result_status, "value", result_status)),
+            error=str(getattr(result, "error", "")) if getattr(result, "error", None) else None,
+            final_response=getattr(result, "final_response", None),
+            item_count=len(getattr(result, "items", []) or []),
+            started_at=getattr(result, "started_at", None),
+            completed_at=getattr(result, "completed_at", None),
+        )
