@@ -44,3 +44,28 @@ class GitHubDeliveryTests(unittest.TestCase):
         checks = adapter.checks(repository="owner/repo", candidate_sha="new", required=["ci"])
         self.assertFalse(checks["ready"])
         self.assertEqual(checks["wrong_sha"], ["ci"])
+
+    def test_merge_requires_provider_readback(self):
+        calls: list[list[str]] = []
+
+        def runner(args: list[str]) -> str:
+            calls.append(args)
+            if args[-1] == "repos/owner/repo/pulls/12":
+                if len(calls) == 1:
+                    return json.dumps({"head": {"sha": "abc"}, "merged_at": None})
+                return json.dumps({"head": {"sha": "abc"}, "merged_at": "2026-09-22T00:00:00Z", "merge_commit_sha": "merge123"})
+            return json.dumps({"merged": True, "sha": "merge123"})
+
+        result = GitHubDelivery(runner=runner).merge(repository="owner/repo", number=12, expected_head="abc", allow=True)
+        self.assertTrue(result["merged"])
+        self.assertEqual(result["sha"], "merge123")
+        self.assertEqual(len(calls), 3)
+
+    def test_merge_false_without_readback_is_not_success(self):
+        def runner(args: list[str]) -> str:
+            if args[-1] == "repos/owner/repo/pulls/12":
+                return json.dumps({"head": {"sha": "abc"}, "merged_at": None})
+            return json.dumps({"merged": False, "message": "not mergeable"})
+
+        with self.assertRaisesRegex(RunnerError, "not confirmed"):
+            GitHubDelivery(runner=runner).merge(repository="owner/repo", number=12, expected_head="abc", allow=True)

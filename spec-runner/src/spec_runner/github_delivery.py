@@ -31,11 +31,23 @@ class GitHubDelivery:
         self._repo(repository)
         if not all(isinstance(value, str) and value.strip() for value in (head, base, candidate_sha, body, operation_id)):
             raise RunnerError("invalid_pull_request", "PR requires head, base, candidate SHA, body, and operation ID")
-        root = receipt_root.expanduser().resolve()
+        root = receipt_root.expanduser()
+        if root.exists() and root.is_symlink():
+            raise RunnerError("github_receipt_path_escape", "GitHub receipt root cannot be a symbolic link")
+        root = root.resolve()
         root.mkdir(parents=True, exist_ok=True)
         path = root / ".spec-runner-pr-receipts.json"
-        receipts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        if path.is_symlink():
+            raise RunnerError("github_receipt_path_escape", "GitHub PR receipt file cannot be a symbolic link")
+        try:
+            receipts = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RunnerError("github_receipt_corrupt", "GitHub PR receipt file is not valid JSON") from exc
+        if not isinstance(receipts, dict):
+            raise RunnerError("github_receipt_corrupt", "GitHub PR receipt root must be an object")
         old = receipts.get(operation_id)
+        if old is not None and not isinstance(old, dict):
+            raise RunnerError("github_receipt_corrupt", "GitHub PR operation receipt must be an object")
         if old:
             if old.get("candidate_sha") != candidate_sha:
                 raise RunnerError("github_operation_conflict", "PR operation was reused for another candidate")
@@ -85,4 +97,17 @@ class GitHubDelivery:
         result = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}/merge", "--method", "PUT", "-f", "sha=" + expected_head]))
         if not isinstance(result, dict):
             raise RunnerError("github_merge_unconfirmed", "merge response was not an object")
-        return {"number": number, "expected_head": expected_head, "merged": bool(result.get("merged")), "sha": result.get("sha"), "message": result.get("message"), "evidence_digest": digest(result)}
+        readback = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
+        if not isinstance(readback, dict):
+            raise RunnerError("github_merge_readback_incomplete", "GitHub PR merge readback was not an object")
+        merged_at = readback.get("merged_at")
+        applied = bool(result.get("merged")) or bool(readback.get("merged")) or bool(merged_at)
+        if not applied:
+            raise RunnerError(
+                "github_merge_not_applied",
+                "GitHub merge request was not confirmed as applied",
+                details={"message": result.get("message"), "number": number, "expected_head": expected_head},
+            )
+        merge_sha = result.get("sha") or readback.get("merge_commit_sha")
+        evidence = {"merge_response": result, "pr_readback": readback}
+        return {"number": number, "expected_head": expected_head, "merged": True, "sha": merge_sha, "message": result.get("message"), "merged_at": merged_at, "evidence_digest": digest(evidence)}
