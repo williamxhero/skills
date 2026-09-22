@@ -1,10 +1,10 @@
 # Spec Runner delivery and acceptance report
 
 Updated 2026-09-22. This is an evidence index, not a claim that every live
-acceptance gate is complete. The authoritative runtime delivery baseline is on
+acceptance gate is complete. The authoritative runtime delivery is on
 `origin/master` at merge commit
-`28f57d10d02e6231d447653946be2db297cd545a`; this report update is merged at
-`6d5c77b423a256c14e8d6c5a99b1767550ed7d26`.
+`6cb6a695938df05d283a61c69082f40e4b75efa9`, incorporating the active-turn
+baseline at `28f57d1` and the restricted SDK approval hardening in PR #231.
 
 ## Route and implementation order
 
@@ -51,6 +51,8 @@ PR #225 is merged at `0ab209a`, the follow-up evidence/CI change is merged at
 `263a347`, and PR #228 is merged at `28f57d1`. There were no pre-existing
 repository CI checks; `.github/workflows/spec-runner.yml` now adds Windows and
 Ubuntu contract jobs. The PR #228 hosted run passed both contract jobs.
+PR #231 is merged at `6cb6a69`; its hosted Ubuntu and Windows contract jobs
+also passed.
 
 ## Verified evidence
 
