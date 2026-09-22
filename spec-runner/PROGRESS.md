@@ -32,8 +32,8 @@ Implemented slices in the isolated `spec-runner/` package:
   Runner CLI; the old controller remains available only for identified
   pre-SR-08 runs.
 
-Verified on 2026-09-23 in this branch: 63 collected `spec-runner`
-unit/integration tests (62 passed, one skipped) plus 3 `/implement-needs`
+Verified on 2026-09-23 in this branch: 64 collected `spec-runner`
+unit/integration tests (63 passed, one skipped) plus 3 `/implement-needs`
 handoff isolation tests, with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
@@ -87,6 +87,11 @@ returns `pending` while locked and reaches `cleaned` through the same retry
 path after the exact handle is released. This narrows, but does not erase, the
 remaining cross-process Windows cleanup qualification gap.
 
+A bounded detached child now holds a delete-denying SQLite artifact handle
+across cleanup. The first cleanup stays `pending`; after the exact child exits,
+the same workspace and manifest are cleaned on retry. Control-database and
+launcher-log locks across a detached Runner restart remain unverified.
+
 The follow-up handover contract adds a public negative matrix for active source
 writers and raises the deterministic test count to 41 passed with one skipped.
 
@@ -118,5 +123,5 @@ The next steps require inputs that are intentionally outside this repository:
   exposes status flags but no public callback for a Runner-owned answer path;
   interactive approval remains disabled under the verified `deny_all` policy.
 - A bounded Windows test process that holds the Runner's control database or
-  launcher logs across a detached process restart. The direct cleanup locks are
-  verified, but that cross-process lifecycle combination has not been run.
+  launcher logs across a detached process restart. A detached candidate-artifact
+  lock is now verified, but that control/log lifecycle combination has not run.

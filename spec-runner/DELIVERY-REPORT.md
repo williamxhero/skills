@@ -63,7 +63,7 @@ hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
 
 ## Verified evidence
 
-- 63 `spec-runner` tests were collected: 62 passed and one
+- 64 `spec-runner` tests were collected: 63 passed and one
   authentication-dependent test was skipped.
 - 477 existing `implement-needs` tests passed, including the thin-entry
   isolation coverage.
@@ -116,6 +116,9 @@ hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
   Chinese/space path for a tracked SQLite artifact, run log, and artifact
   directory. Each returns `pending` while locked and reaches `cleaned` through
   the same retry path after that exact handle is released.
+- a separate bounded child process holding a delete-denying SQLite artifact
+  handle produces the same `pending` result; after that exact child exits, the
+  retry cleans the original Runner-owned workspace and manifest.
 - the public GitHub read entrypoint read the real `williamxhero/skills` root
   issue #164, SR-01 issues #165–#169, and takeover issue #205 with complete
   pagination. It classified the observed links as body relations and reported
@@ -134,9 +137,10 @@ These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
   dedicated authorized sandbox repository;
-- the broader native Windows file-lock cleanup matrix across detached processes
-  and host/process failures (single-file, managed-worktree cleanup/retry, and
-  direct SQLite/log/artifact-directory delete-deny locks are verified);
+- Windows control-database and launcher-log locks across a detached Runner
+  restart or host/process failure (single-file, managed-worktree cleanup/retry,
+  direct SQLite/log/artifact-directory locks, and a detached artifact-lock
+  process are verified);
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
