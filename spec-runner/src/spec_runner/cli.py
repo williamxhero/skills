@@ -356,7 +356,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 bodies = [diagnostic_json(path, code="invalid_release_evidence") for path in arguments.evidence]
                 result = build_release_report(runner_version=__version__, subject=subject, evidence_documents=bodies, required_kinds=set(arguments.required_kind) or None)
                 arguments.output.write_text(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-                result = {"output": str(arguments.output.resolve()), "report_digest": result["report_digest"], "eligible": True}
+                qualification = validate_release_report(result, expected_runner_version=__version__)
+                result = {"output": str(arguments.output.resolve()), "report_digest": result["report_digest"], **qualification}
             elif arguments.diagnostic_command == "package":
                 result = inspect_wheel(arguments.wheel, expected_runner_version=arguments.runner_version)
             else:

@@ -32,8 +32,9 @@ Implemented slices in the isolated `spec-runner/` package:
   Runner CLI; the old controller remains available only for identified
   pre-SR-08 runs.
 
-Verified on 2026-09-23 in this branch: 61 `spec-runner` unit/integration tests
-plus 3 `/implement-needs` handoff isolation tests, with one
+Verified on 2026-09-23 in this branch: 62 collected `spec-runner`
+unit/integration tests (61 passed, one skipped) plus 3 `/implement-needs`
+handoff isolation tests, with one
 authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
 matrix, public-CLI process restart recovery after both artifact boundaries,
@@ -47,6 +48,12 @@ recovery instead of leaving it indistinguishable from a pending worker. A
 cross-platform GitHub Actions contract workflow was added for the two supported
 OS families; it runs the tests, builds the wheel, installs that wheel without
 source `PYTHONPATH`, and executes the public fault matrix.
+
+Release subjects now bind the qualification contract dimensions: build, SDK
+package/version, Matt lock, prompt/schema/validator digests, configuration,
+OS, trust mode, and scenario version. Their canonical digest is verified on
+readback. A required evidence kind that is `not_verified` or `skipped` now
+returns `eligible: false`; it cannot be represented as a release pass.
 
 The multi-SPEC loop, SR-08 handoff isolation tests, live-turn identity
 boundary, and active-control workflow contract raise the combined deterministic
