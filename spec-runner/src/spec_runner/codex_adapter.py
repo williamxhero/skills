@@ -8,6 +8,7 @@ from typing import Any, Callable
 from .errors import RunnerError
 
 SDK_VERSION = "0.155.1"
+APPROVAL_MODE = "deny_all"
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class CodexWorkerResult:
     item_count: int
     started_at: int | None
     completed_at: int | None
+    approval_mode: str = APPROVAL_MODE
 
     def public(self) -> dict[str, object]:
         return {
@@ -32,6 +34,7 @@ class CodexWorkerResult:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "sdk_version": SDK_VERSION,
+            "approval_mode": self.approval_mode,
         }
 
 
@@ -72,6 +75,13 @@ class CodexAdapter:
         Codex = sdk_module.Codex
         CodexConfig = sdk_module.CodexConfig
         Sandbox = sdk_module.Sandbox
+        approval_modes = getattr(sdk_module, "ApprovalMode", None)
+        approval_mode = getattr(approval_modes, APPROVAL_MODE, None)
+        if approval_mode is None:
+            raise RunnerError(
+                "sdk_approval_policy_unsupported",
+                f"openai-codex=={SDK_VERSION} does not expose the required {APPROVAL_MODE} approval policy",
+            )
 
         if not prompt.strip():
             raise RunnerError("invalid_prompt", "Codex prompt must not be empty")
@@ -83,10 +93,19 @@ class CodexAdapter:
             with factory(config) as codex:
                 if thread_id:
                     thread = codex.thread_resume(
-                        thread_id, cwd=str(repository_path), model=model, sandbox=Sandbox.workspace_write
+                        thread_id,
+                        cwd=str(repository_path),
+                        model=model,
+                        sandbox=Sandbox.workspace_write,
+                        approval_mode=approval_mode,
                     )
                 else:
-                    thread = codex.thread_start(model=model, cwd=str(repository_path), sandbox=Sandbox.workspace_write)
+                    thread = codex.thread_start(
+                        model=model,
+                        cwd=str(repository_path),
+                        sandbox=Sandbox.workspace_write,
+                        approval_mode=approval_mode,
+                    )
                 result_thread_id = str(getattr(thread, "id", ""))
                 if not result_thread_id or result_thread_id == "None":
                     raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal thread identifier")
@@ -146,6 +165,7 @@ class CodexAdapter:
             item_count=len(getattr(result, "items", []) or []),
             started_at=getattr(result, "started_at", None),
             completed_at=getattr(result, "completed_at", None),
+            approval_mode=APPROVAL_MODE,
         )
 
     @staticmethod
