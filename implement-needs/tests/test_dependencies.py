@@ -162,6 +162,16 @@ class DependencyTests(unittest.TestCase):
                     db.add_ticket("#95", "#220", "first ticket", queue_position=1)
                     db.add_ticket("#95", "#221", "second ticket", queue_position=2)
                     dependent_id = "#222"
+                    if name == "malformed_alias":
+                        with self.assertRaisesRegex(ValueError, "malformed SPEC-local ticket alias"):
+                            db.add_ticket(
+                                dependent_spec,
+                                dependent_id,
+                                "dependent ticket",
+                                blocked_by=[blocker_id],
+                                queue_position=3,
+                            )
+                        continue
                     db.add_ticket(
                         dependent_spec,
                         dependent_id,
