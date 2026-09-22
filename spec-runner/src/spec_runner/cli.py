@@ -14,10 +14,11 @@ from .faults import run_fault_matrix
 from .delivery import merge_local, prepare_workspace, validate_review, verify_candidate
 from .diagnostics import load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
 from .matt import load_lock, render_prompt, resolve_grill
-from .legacy import read_legacy_database
+from .legacy import legacy_takeover_inventory, read_legacy_database
 from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
 from .takeover import completion_action, inspect_takeover, load_inventory, plan_frontier, write_takeover_record
 from .tracker import publish_local, read_local
+from .store import Store
 from .workflow import control, doctor, launch, resume, start, status
 
 CLI_SCHEMA_VERSION = "spec-runner-cli/v1"
@@ -51,6 +52,11 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--config", required=True, type=Path)
     resume_parser.add_argument("--control-root", required=True, type=Path)
     resume_parser.add_argument("--launch-key", required=True)
+    answer_parser = subparsers.add_parser("answer", help="persist an answer for a blocked or input-gated run")
+    answer_parser.add_argument("--control-root", required=True, type=Path)
+    answer_parser.add_argument("--run-id", required=True)
+    answer_parser.add_argument("--question-id", required=True)
+    answer_parser.add_argument("--value", required=True)
     launch_parser = subparsers.add_parser("launch", help="start a detached Runner and wait for its handshake")
     launch_parser.add_argument("--brief", required=True, type=Path)
     launch_parser.add_argument("--config", required=True, type=Path)
@@ -170,6 +176,9 @@ def _parser() -> argparse.ArgumentParser:
     legacy_sub = legacy_parser.add_subparsers(dest="legacy_command", required=True)
     legacy_read = legacy_sub.add_parser("read")
     legacy_read.add_argument("--db", required=True, type=Path)
+    legacy_inspect = legacy_sub.add_parser("inspect", help="convert a read-only legacy observation into takeover input")
+    legacy_inspect.add_argument("--db", required=True, type=Path)
+    legacy_inspect.add_argument("--repository", required=True, type=Path)
     fault_parser = subparsers.add_parser("fault", help="run deterministic public-CLI fault scenarios")
     fault_sub = fault_parser.add_subparsers(dest="fault_command", required=True)
     fault_run = fault_sub.add_parser("run")
@@ -216,6 +225,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 control_root=arguments.control_root,
                 launch_key=arguments.launch_key,
             )
+        elif arguments.command == "answer":
+            try:
+                answer_value = json.loads(arguments.value)
+            except json.JSONDecodeError:
+                answer_value = arguments.value
+            store = Store.open(arguments.control_root.expanduser().resolve(), create=False)
+            try:
+                result = {"accepted": True, "answer": store.submit_answer(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value), **store.public_status(arguments.run_id)}
+            finally:
+                store.close()
         elif arguments.command == "launch":
             result = launch(
                 brief_file=arguments.brief,
@@ -297,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 document = diagnostic_json(arguments.file, code="invalid_diagnostic_input")
                 result = validate_fault_matrix(document) if arguments.diagnostic_command == "fault-matrix" else validate_release_report(document, expected_runner_version=arguments.runner_version)
         elif arguments.command == "legacy":
-            result = read_legacy_database(arguments.db)
+            result = read_legacy_database(arguments.db) if arguments.legacy_command == "read" else legacy_takeover_inventory(database=arguments.db, repository=arguments.repository)
         elif arguments.command == "fault":
             result = run_fault_matrix(seed=arguments.seed, keep_artifacts=arguments.keep_artifacts)
         else:

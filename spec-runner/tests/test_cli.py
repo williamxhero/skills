@@ -38,6 +38,15 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.control_root = self.root / "控制 root"
 
     def tearDown(self) -> None:
+        # On Windows the detached child can finish its final JSON write just
+        # after the run reaches `completed`; wait for inherited log handles to
+        # close before removing the fixture directory.
+        for _ in range(40):
+            try:
+                self.temporary_directory.cleanup()
+                return
+            except PermissionError:
+                time.sleep(0.05)
         self.temporary_directory.cleanup()
 
     def write_config(self, **overrides: object) -> None:
@@ -84,6 +93,10 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(len(first["verification"]), 2)
         self.assertEqual(first["verification"][-1]["stage"], "deterministic_second")
         self.assertEqual(first["verification"][-1]["outcome"], "verified")
+        event_types = [event["event_type"] for event in first["events"]]
+        for expected in ("run_created", "step_completed", "step_verified", "cleanup_readback"):
+            self.assertIn(expected, event_types)
+        self.assertIn("next_stage_started", event_types)
         self.assertTrue((self.control_root / "artifacts" / run["run_id"] / "final.json").is_file())
         artifact = self.control_root / "artifacts" / run["run_id"] / "handoff.json"
         self.assertTrue(artifact.is_file())
@@ -103,6 +116,21 @@ class SpecRunnerCliTests(unittest.TestCase):
         code, result = self.start("launch-002")
         self.assertEqual(code, 0)
         self.assertTrue(result["created"])
+
+    def test_answer_is_idempotent_and_cannot_overwrite_a_prior_answer(self) -> None:
+        code, started = self.start("answer-001")
+        self.assertEqual(code, 0)
+        run_id = started["run"]["run_id"]
+        arguments = ("answer", "--control-root", str(self.control_root), "--run-id", run_id, "--question-id", "Q1", "--value", "yes")
+        code, first = self.invoke(*arguments)
+        self.assertEqual(code, 0)
+        self.assertTrue(first["accepted"])
+        code, second = self.invoke(*arguments)
+        self.assertEqual(code, 0)
+        self.assertEqual(second["answer"]["value_digest"], first["answer"]["value_digest"])
+        code, conflict = self.invoke("answer", "--control-root", str(self.control_root), "--run-id", run_id, "--question-id", "Q1", "--value", "no")
+        self.assertEqual(code, 2)
+        self.assertEqual(conflict["error"]["code"], "answer_conflict")
 
     def test_invalid_inputs_do_not_create_control_resources(self) -> None:
         self.write_config(repository_path=str(self.root / "not-a-repository"))
@@ -143,6 +171,46 @@ class SpecRunnerCliTests(unittest.TestCase):
             time.sleep(0.05)
         else:
             self.fail("detached deterministic runner did not complete")
+
+    def test_pause_at_stage_boundary_and_resume_reuses_the_same_run(self) -> None:
+        run_id = "12345678-1234-1234-1234-123456789012"
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(SOURCE_ROOT)
+        environment["SPEC_RUNNER_FAULT_POINT"] = "after_first_artifact"
+        child = subprocess.Popen(
+            [
+                sys.executable, "-m", "spec_runner.cli", "start",
+                "--brief", str(self.brief), "--config", str(self.config),
+                "--control-root", str(self.control_root), "--launch-key", "pause-001", "--run-id", run_id,
+            ],
+            cwd=self.root,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        )
+        ready = self.control_root / "faults" / f"{run_id}.after_first_artifact.ready"
+        for _ in range(100):
+            if ready.is_file():
+                break
+            time.sleep(0.05)
+        else:
+            child.kill()
+            self.fail("fault boundary was not reached")
+        code, paused_request = self.invoke("pause", "--control-root", str(self.control_root), "--run-id", run_id)
+        self.assertEqual(code, 0)
+        self.assertTrue(paused_request["accepted"])
+        (self.control_root / "faults" / f"{run_id}.after_first_artifact.continue").write_text("continue\n", encoding="utf-8")
+        child.communicate(timeout=10)
+        code, paused = self.invoke("status", "--control-root", str(self.control_root), "--run-id", run_id)
+        self.assertEqual(code, 0)
+        self.assertEqual(paused["run"]["state"], "paused")
+        code, resumed = self.invoke("resume", "--brief", str(self.brief), "--config", str(self.config), "--control-root", str(self.control_root), "--launch-key", "pause-001")
+        self.assertEqual(code, 0)
+        self.assertFalse(resumed["created"])
+        self.assertEqual(resumed["run"]["run_id"], run_id)
+        self.assertEqual(resumed["run"]["state"], "completed")
 
     def test_invalid_config_and_artifact_escape_are_structured_errors(self) -> None:
         self.config.write_text("{not json", encoding="utf-8")

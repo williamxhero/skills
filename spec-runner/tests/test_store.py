@@ -35,6 +35,40 @@ class StoreLeaseTests(unittest.TestCase):
             finally:
                 second.close()
 
+    def test_events_are_deduplicated_and_control_requests_are_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                from spec_runner.store import RunRecord, now
+
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-events",
+                    launch_key="events",
+                    input_digest="input",
+                    config_digest="config",
+                    repository_path=temp,
+                    target_ref="HEAD",
+                    artifact_root="artifacts",
+                    backend_kind="deterministic_test",
+                    state="starting",
+                    current_step="deterministic_example",
+                    log_path="logs/run-events.jsonl",
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-events")
+                self.assertTrue(store.append_event(run_id=run.run_id, event_key="same", event_type="late_event", payload={"n": 1}))
+                self.assertFalse(store.append_event(run_id=run.run_id, event_key="same", event_type="late_event", payload={"n": 2}))
+                self.assertTrue(store.append_event(run_id=run.run_id, event_key="same-2", event_type="late_event", payload={"n": 2}))
+                store.request_control(run.run_id, "pause_requested")
+                events = store.events_for_run(run.run_id)
+                self.assertEqual(sum(event["event_key"] == "same" for event in events), 1)
+                self.assertEqual(sum(event["event_key"] == "same-2" for event in events), 1)
+                self.assertEqual(events[-1]["event_type"], "control_requested")
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

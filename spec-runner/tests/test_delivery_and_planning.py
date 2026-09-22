@@ -7,12 +7,14 @@ import unittest
 import sqlite3
 from pathlib import Path
 
+from spec_runner.errors import RunnerError
+
 from spec_runner.delivery import git_sha, merge_local, prepare_workspace, verify_candidate
 from spec_runner.diagnostics import validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import validate_spec_plan, validate_ticket_plan
 from spec_runner.takeover import completion_action, inspect_takeover, plan_frontier, write_takeover_record
-from spec_runner.legacy import read_legacy_database
+from spec_runner.legacy import legacy_takeover_inventory, read_legacy_database
 
 
 class ProductBoundaryTests(unittest.TestCase):
@@ -106,8 +108,26 @@ class ProductBoundaryTests(unittest.TestCase):
     def test_release_and_fault_reports_reject_unverified_shape(self):
         fault = validate_fault_matrix({"schema_version": "spec-runner-fault-matrix/v1", "scenarios": [{"id": "s1", "entrypoint": "public_cli", "expected": {"state": "blocked"}, "evidence_kind": "deterministic"}]})
         self.assertEqual(fault["outcome"], "validated")
-        release = validate_release_report({"schema_version": "spec-runner-release-report/v1", "runner_version": "0.1.0", "required_kinds": ["deterministic"], "evidence": [{"kind": "deterministic", "body_digest": "d", "outcome": "passed"}]}, expected_runner_version="0.1.0")
+        body = {"evidence_kind": "deterministic", "verified": True, "report": "fixture"}
+        from spec_runner.plans import digest
+
+        release = validate_release_report({
+            "schema_version": "spec-runner-release-report/v1",
+            "runner_version": "0.1.0",
+            "subject": {"runner_version": "0.1.0", "build_digest": "build", "config_contract": "spec-runner-config/v1"},
+            "required_kinds": ["deterministic"],
+            "evidence": [{"kind": "deterministic", "body": body, "body_digest": digest(body), "outcome": "passed"}],
+        }, expected_runner_version="0.1.0")
         self.assertTrue(release["eligible"])
+
+        with self.assertRaisesRegex(RunnerError, "digest"):
+            validate_release_report({
+                "schema_version": "spec-runner-release-report/v1",
+                "runner_version": "0.1.0",
+                "subject": {"runner_version": "0.1.0", "build_digest": "build", "config_contract": "spec-runner-config/v1"},
+                "required_kinds": ["deterministic"],
+                "evidence": [{"kind": "deterministic", "body": body, "body_digest": "forged", "outcome": "passed"}],
+            }, expected_runner_version="0.1.0")
 
     def test_legacy_database_is_observed_read_only(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -122,3 +142,22 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertTrue(report["read_only"])
             self.assertEqual(report["tables"]["old_runs"][0]["id"], "historic")
             self.assertEqual(path.stat().st_mtime_ns, before)
+
+    def test_legacy_observation_maps_to_common_takeover_input_without_mutating_db(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+            path = root / "legacy.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute("CREATE TABLE old_runs (id TEXT)")
+            connection.execute("INSERT INTO old_runs VALUES ('historic')")
+            connection.commit()
+            connection.close()
+            before = path.read_bytes()
+            inventory = legacy_takeover_inventory(database=path, repository=repository)
+            self.assertEqual(inventory["schema_version"], "spec-runner-takeover-input/v1")
+            self.assertTrue(inventory["facts"]["legacy_database"]["historical_only"])
+            self.assertEqual(inventory["source_threads"], [])
+            self.assertEqual(path.read_bytes(), before)
