@@ -399,7 +399,7 @@ class Store:
             )
             self.connection.execute(
                 "INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (operation_id, run.run_id, "deterministic_test_stage", "intent", run.input_digest, run.created_at, run.updated_at),
+                (operation_id, run.run_id, f"{run.backend_kind}_stage", "intent", run.input_digest, run.created_at, run.updated_at),
             )
             self.connection.execute(
                 "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -447,27 +447,35 @@ class Store:
     ) -> RunRecord:
         timestamp = now()
         with self.transaction():
-            self.connection.execute(
+            operation_updated = self.connection.execute(
                 "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ?",
                 (state, timestamp, operation_id),
-            )
-            self.connection.execute(
+            ).rowcount
+            if operation_updated != 1:
+                raise RunnerError("operation_missing", "cannot complete a Codex stage without its durable operation")
+            worker_updated = self.connection.execute(
                 """UPDATE workers SET external_thread_id = ?, external_turn_id = ?, state = ?, updated_at = ?
                    WHERE worker_id = ?""",
                 (thread_id, turn_id, state, timestamp, worker_id or f"codex_sdk:{run_id}"),
-            )
-            self.connection.execute(
+            ).rowcount
+            if worker_updated != 1:
+                raise RunnerError("worker_missing", "cannot complete a Codex stage without its durable worker")
+            step_updated = self.connection.execute(
                 "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
                 (state, timestamp, run_id, step_name),
-            )
-            self.connection.execute(
+            ).rowcount
+            if step_updated != 1:
+                raise RunnerError("step_missing", "cannot complete a Codex stage without its durable step")
+            run_updated = self.connection.execute(
                 "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
                 (state, timestamp, run_id),
-            )
+            ).rowcount
+            if run_updated != 1:
+                raise RunnerError("run_missing", "cannot complete a Codex stage for an unknown run")
             self._insert_event(
                 run_id=run_id,
-                event_key=f"operation:{operation_id}:completed",
-                event_type="step_completed",
+                event_key=f"operation:{operation_id}:completed:{turn_id}",
+                event_type="step_completed" if state == "turn_completed" else "worker_turn_interrupted",
                 payload={"operation_id": operation_id, "state": state, "thread_id": thread_id, "turn_id": turn_id},
             )
         record = self.find_by_run_id(run_id)
@@ -495,18 +503,24 @@ class Store:
             ).rowcount
             if updated != 1:
                 raise RunnerError("worker_identity_missing", "cannot record an SDK turn for an unknown worker")
-            self.connection.execute(
+            operation_updated = self.connection.execute(
                 "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ? AND run_id = ?",
                 ("running", timestamp, operation_id, run_id),
-            )
-            self.connection.execute(
+            ).rowcount
+            if operation_updated != 1:
+                raise RunnerError("operation_missing", "cannot start a Codex turn without its durable operation")
+            step_updated = self.connection.execute(
                 "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
                 ("running", timestamp, run_id, step_name),
-            )
-            self.connection.execute(
+            ).rowcount
+            if step_updated != 1:
+                raise RunnerError("step_missing", "cannot start a Codex turn without its durable step")
+            run_updated = self.connection.execute(
                 "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
                 ("running", timestamp, run_id),
-            )
+            ).rowcount
+            if run_updated != 1:
+                raise RunnerError("run_missing", "cannot start a Codex turn for an unknown run")
             self._insert_event(
                 run_id=run_id,
                 event_key=f"operation:{operation_id}:turn-started:{turn_id}",

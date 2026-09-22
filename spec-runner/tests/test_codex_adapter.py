@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import types
 import unittest
+import threading
 from pathlib import Path
 import sys
 
@@ -35,6 +36,23 @@ class FakeTurn:
 
     def run(self) -> FakeResult:
         return FakeResult()
+
+
+class BlockingTurn(FakeTurn):
+    def __init__(self) -> None:
+        self.interrupted = threading.Event()
+        self.started = threading.Event()
+
+    def run(self) -> FakeResult:
+        self.started.set()
+        self.interrupted.wait(2.0)
+        result = FakeResult()
+        result.status = types.SimpleNamespace(value="interrupted")
+        return result
+
+    def interrupt(self) -> object:
+        self.interrupted.set()
+        return types.SimpleNamespace()
 
 
 class FakeThreadWithTurn(FakeThread):
@@ -116,6 +134,44 @@ class CodexAdapterTests(unittest.TestCase):
         with self.assertRaises(RunnerError) as context:
             CodexAdapter().run(prompt="x", repository_path=Path("C:/repo"), model="m", effort="low")
         self.assertEqual(context.exception.code, "sdk_unavailable")
+
+    def test_control_request_interrupts_active_published_turn(self) -> None:
+        holder: dict[str, FakeCodex] = {}
+        turn = BlockingTurn()
+
+        def factory(config: object) -> FakeCodex:
+            codex = FakeCodex(config)
+            codex.thread = FakeThreadWithTurn()
+            codex.thread.turn = lambda prompt, **kwargs: turn  # type: ignore[method-assign]
+            holder["codex"] = codex
+            return codex
+
+        requests = iter([None, "pause_requested"])
+        applied: list[str] = []
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+        )
+        result = CodexAdapter(codex_factory=factory, sdk_module=sdk).run(
+            prompt="do the bounded task",
+            repository_path=Path("C:/repo"),
+            model="gpt-test",
+            effort="high",
+            control_state=lambda: next(requests, "pause_requested"),
+            on_control_applied=applied.append,
+        )
+        self.assertTrue(turn.started.is_set())
+        self.assertTrue(turn.interrupted.is_set())
+        self.assertEqual(applied, ["pause_requested"])
+        self.assertEqual(result.status, "interrupted")
+
+    def test_control_watch_requires_interrupt_capability(self) -> None:
+        with self.assertRaises(RunnerError) as context:
+            CodexAdapter._run_turn_with_control(
+                FakeTurn(), control_state=lambda: "pause_requested", on_control_applied=None
+            )
+        self.assertEqual(context.exception.code, "sdk_control_unsupported")
 
     @unittest.skipUnless(False, "requires explicit authenticated live Codex SDK environment")
     def test_live_sdk_case(self) -> None:

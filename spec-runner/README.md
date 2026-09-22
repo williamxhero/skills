@@ -72,6 +72,12 @@ The live SDK case is intentionally not run by ordinary tests because it requires
 the operator's existing Codex authentication. Set `execution_backend` to
 `codex_sdk` for that explicit run.
 
+For an authenticated SDK run, `pause` and `cancel` are applied to the active
+`TurnHandle` through the SDK's `interrupt()` operation. A paused run persists
+its formal thread/turn identity and `resume` continues that same thread; a
+cancelled run retains its artifacts and performs thread archive readback without
+advancing to another stage.
+
 The complete implementation/evidence index is [DELIVERY-REPORT.md](DELIVERY-REPORT.md).
 It separates deterministic, local Git, live SDK, Windows, and GitHub evidence;
 an open roadmap issue or a successful model response is not treated as delivery

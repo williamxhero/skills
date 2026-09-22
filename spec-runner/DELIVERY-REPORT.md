@@ -52,7 +52,7 @@ still pending after this change is pushed.
 
 ## Verified evidence
 
-- 51 `spec-runner` tests passed with one authentication-dependent test skipped.
+- 55 `spec-runner` tests passed with one authentication-dependent test skipped.
 - 427 existing `implement-needs` tests passed; 3 thin-entry isolation tests
   passed.
 - compile and whitespace checks passed.
@@ -60,14 +60,17 @@ still pending after this change is pushed.
   passed, including merge-before-receipt crash reconciliation.
 - a clean isolated wheel previously passed `--version`, `diagnose package`,
   and all 10 deterministic public fault cases.
-- live SDK adapter execution with `openai-codex==0.155.1` created a real
-  thread/turn, produced a real temporary-repository artifact, and passed
-  archive pagination readback. The new `Thread.turn()` callback also captured
-  formal IDs before the result.
-- a live public CLI run reached `running` with its formal thread/turn visible
-  in `status`; the two-stage run was not allowed to be called complete because
-  the bounded external probe timed out while the model performed repository
-  exploration.
+- live SDK adapter execution with `openai-codex==0.155.1` created real
+  threads/turns, produced real temporary-repository artifacts, and passed
+  archive pagination readback.
+- a live public CLI run completed both stages after the first stage was
+  actively paused and resumed on its persisted thread. It recorded real
+  `worker_turn_started`, `worker_turn_interrupted`, `control_applied`, two
+  verification receipts, and two archive readbacks before reaching
+  `completed`.
+- a separate live public CLI run cancelled an active second-stage SDK turn.
+  It remained `cancelled`, issued no second-stage verification receipt, and
+  archived the interrupted worker with readback.
 
 ## Not verified / external blockers
 
@@ -75,9 +78,6 @@ These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
   dedicated authorized sandbox repository;
-- live public two-stage SDK execution to final archive and next-stage receipt
-  under a sufficiently long external timeout;
-- SDK active-turn interrupt/resume and approval/user-input paths;
 - native Windows process kill/restart and file-lock cleanup matrix;
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
