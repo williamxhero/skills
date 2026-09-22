@@ -1,10 +1,10 @@
 # Spec Runner delivery and acceptance report
 
-Updated 2026-09-22. This is an evidence index, not a claim that every live
+Updated 2026-09-23. This is an evidence index, not a claim that every live
 acceptance gate is complete. The authoritative runtime behavior baseline is
-`8a85fae2047b47b06fdb74bfcd23c179383ecad7`, including managed-worktree cleanup
-recovery. Later documentation-only merge commits do not change that Runner
-runtime baseline.
+`fae55797f627e49bd8b453686a464aaf34ad89da`, including managed-worktree cleanup
+recovery and release-subject qualification. PR #242 adds native lock coverage
+without changing Runner runtime behavior.
 
 ## Route and implementation order
 
@@ -21,7 +21,7 @@ The implementation followed the required order:
 | SR-05 / #185 | #186–#189 | PRs #211, #212 | local workspace/candidate/review contracts verified; independent live implementation/review not verified |
 | SR-06 / #190 | #191–#194 | PRs #212, #222, #223 | local three-SPEC delivery and merge reconciliation verified; GitHub PR/CI/merge queue not verified |
 | SR-09 / #205 | #206–#210 | PRs #214–#217 | deterministic mixed/takeover frontier and cleanup-only paths verified; real source-thread handoff and side effects not verified |
-| SR-07 / #195 | #196–#199 | PRs #213, #218, #219, #221, #224 | deterministic fault/release/runtime/package gates verified; Windows file-lock, SDK user-input, and GitHub matrix remain not verified |
+| SR-07 / #195 | #196–#199 | PRs #213, #218, #219, #221, #224, #241, #242 | deterministic fault/release/runtime/package gates and direct Windows cleanup locks verified; SDK user-input and GitHub matrix remain not verified |
 | SR-08 / #200 | #201–#204 | PR #225 | legacy read-only adapter, thin entry, installation evidence and compatibility boundary delivered; final retirement decision remains dependent on the live gates above |
 
 The 37 ticket inputs are explicitly preserved here rather than inferred from
@@ -33,7 +33,7 @@ not being used as a substitute for acceptance evidence.
 
 ## Merged PR evidence
 
-The Spec Runner implementation PR sequence currently includes #211–#228:
+The Spec Runner implementation PR sequence currently includes #211–#242:
 
 - #211 independent execution core;
 - #212 GitHub delivery reconciliation;
@@ -57,6 +57,9 @@ PR #235 is merged at `1372816`; its hosted Ubuntu and Windows contract jobs
 also passed.
 PR #239 is merged at `8a85fae`; its hosted Ubuntu and Windows contract jobs
 also passed.
+PR #241 is merged at `fae5579`; it binds the full release subject and makes
+unverified required evidence ineligible. PR #242 is merged at `80e5454`; its
+hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
 
 ## Verified evidence
 
@@ -77,6 +80,10 @@ also passed.
   implementation or merge.
 - a clean isolated wheel previously passed `--version`, `diagnose package`,
   and all 10 deterministic public fault cases.
+- release reports now canonically bind build, SDK package/version, Matt lock,
+  prompt/schema/validator digests, configuration, OS, trust mode, and scenario
+  version. The report rejects subject-digest tampering, and a required evidence
+  kind that is not passed returns `eligible: false`.
 - live SDK adapter execution with `openai-codex==0.155.1` created real
   threads/turns, produced real temporary-repository artifacts, and passed
   archive pagination readback.
