@@ -1,11 +1,9 @@
 # Spec Runner delivery and acceptance report
 
 Updated 2026-09-22. This is an evidence index, not a claim that every live
-acceptance gate is complete. The authoritative runtime delivery is on
-`origin/master` at merge commit
-`7e43dafe336d0a9a1c80d956f1ddd3ff410e2a76`. The runtime behavior baseline is
-`13728164416de09807a96752cba68b397f3a7599`; the later merge is a documentation
-closeout and does not change the Runner runtime.
+acceptance gate is complete. The authoritative runtime behavior baseline is
+`13728164416de09807a96752cba68b397f3a7599`. Later documentation-only merge
+commits do not change that Runner runtime baseline.
 
 ## Route and implementation order
 
