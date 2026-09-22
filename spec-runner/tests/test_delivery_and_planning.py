@@ -16,9 +16,53 @@ from spec_runner.matt import resolve_grill
 from spec_runner.plans import validate_spec_plan, validate_ticket_plan
 from spec_runner.takeover import completion_action, inspect_takeover, plan_frontier, write_takeover_record
 from spec_runner.legacy import legacy_takeover_inventory, read_legacy_database
+from spec_runner.multi_spec import run_local_delivery
 
 
 class ProductBoundaryTests(unittest.TestCase):
+    def test_three_spec_local_delivery_uses_real_merge_chain_and_is_replayable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Spec Runner Test"], cwd=repo, check=True)
+            (repo / "state.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+            control = root / "control"
+            plan = {
+                "schema_version": "spec-runner-delivery-plan/v1",
+                "specs": [],
+            }
+            for index, key in enumerate(("SR-01", "SR-02", "SR-03"), 1):
+                review = control / f"reviews/{key}.json"
+                review.parent.mkdir(parents=True, exist_ok=True)
+                plan["specs"].append({
+                    "key": key,
+                    "blocked_by": [] if index == 1 else [f"SR-0{index - 1}"],
+                    "acceptance_version": "a1",
+                    "acceptance": ["A1"],
+                    "implementation": [["python", "-c", f"from pathlib import Path; Path('state.txt').write_text(Path('state.txt').read_text() + '{key}\\n')"]],
+                    "checks": [{"command": ["python", "-c", "from pathlib import Path; assert Path('state.txt').is_file()"], "acceptance": ["A1"]}],
+                    "review_file": f"reviews/{key}.json",
+                })
+                review.write_text(json.dumps({"schema_version": "spec-runner-review-result/v1", "candidate_sha": "placeholder", "acceptance_version": "a1", "findings": []}), encoding="utf-8")
+
+            # The trusted review fixture writes a receipt only after its
+            # candidate commit exists, binding the actual SHA.
+            for spec in plan["specs"]:
+                review_path = str((control / spec["review_file"]).resolve())
+                spec["implementation"] = [["python", "-c", f"from pathlib import Path; p=Path('state.txt'); p.write_text(p.read_text() + '{spec['key']}\\n'); import subprocess,json; subprocess.run(['git','add','state.txt'],check=True); subprocess.run(['git','commit','-qm','{spec['key']}'],check=True); sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(); Path(r'{review_path}').write_text(json.dumps({{'schema_version':'spec-runner-review-result/v1','candidate_sha':sha,'acceptance_version':'a1','findings':[]}}))"]]
+            result = run_local_delivery(plan=plan, repository=repo, workspace_root=root / "workspaces", control_root=control, run_id="delivery-run", target_ref="refs/heads/main")
+            self.assertEqual(result["state"], "completed")
+            self.assertEqual(result["completed_specs"], ["SR-01", "SR-02", "SR-03"])
+            self.assertIn("SR-03", result["specs"])
+            target_contents = subprocess.check_output(["git", "-C", str(repo), "show", "refs/heads/main:state.txt"], text=True)
+            self.assertEqual(target_contents, "base\nSR-01\nSR-02\nSR-03\n")
+            replay = run_local_delivery(plan=plan, repository=repo, workspace_root=root / "workspaces", control_root=control, run_id="delivery-run", target_ref="refs/heads/main")
+            self.assertEqual(replay["completed_specs"], result["completed_specs"])
     def test_plans_are_independent_and_validate_coverage_and_base(self):
         spec = validate_spec_plan({
             "schema_version": "spec-runner-spec-plan/v1",

@@ -15,6 +15,8 @@ from .codex_adapter import CodexAdapter, CodexWorkerResult
 from .errors import RunnerError
 from .store import RunRecord, Store, now
 from .verification import verify_run
+from .plans import load_json
+from .multi_spec import run_local_delivery
 
 
 def _validate_launch_key(value: str) -> str:
@@ -237,6 +239,38 @@ def _verify_and_archive(
     return store.public_status(run.run_id)
 
 
+def _run_delivery_plan(*, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store) -> dict[str, object]:
+    if config.delivery_plan is None:
+        raise RunnerError("delivery_plan_missing", "delivery workflow was requested without a plan")
+    plan = load_json(control_root / config.delivery_plan)
+
+    def on_event(event_type: str, payload: dict[str, object]) -> None:
+        spec_key = str(payload.get("spec_key", "unknown"))
+        store.append_event(run_id=run.run_id, event_key=f"delivery:{run.run_id}:{event_type}:{spec_key}", event_type=event_type, payload=payload)
+
+    def on_verified(receipt: dict[str, object]) -> None:
+        store.record_verification(run.run_id, receipt)
+
+    receipt = run_local_delivery(
+        plan=plan,
+        repository=config.repository_path,
+        workspace_root=control_root / "delivery-workspaces",
+        control_root=control_root,
+        run_id=run.run_id,
+        target_ref=config.target_ref,
+        on_verified=on_verified,
+        on_event=on_event,
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"delivery:{run.run_id}:completed",
+        event_type="delivery_completed",
+        payload={"completed_specs": receipt.get("completed_specs", []), "plan_digest": receipt.get("plan_digest")},
+    )
+    store.mark_archived(run.run_id, state="completed")
+    return store.public_status(run.run_id)
+
+
 def _execute_second_deterministic(*, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store) -> RunRecord:
     step_name = "deterministic_second"
     operation_id = f"second:{run.run_id}"
@@ -289,6 +323,14 @@ def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunR
 
 def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
     """Reconcile only evidence that can be proven locally; never replay an unknown SDK call."""
+    if config.delivery_plan is not None:
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:delivery:detected",
+            event_type="recovery_detected",
+            payload={"step": "delivery_plan", "state": run.state},
+        )
+        return {"created": False, **_run_delivery_plan(control_root=control_root, config=config, run=run, store=store)}
     if config.execution_backend != "deterministic_test":
         if run.state in {"starting", "failed", "cleanup_pending"}:
             raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
@@ -400,9 +442,19 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
                 )
                 return {"created": False, **resumed}
-            recovered_status = _recover_after_process_exit(
-                control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
-            )
+            try:
+                recovered_status = _recover_after_process_exit(
+                    control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
+                )
+            except RunnerError as exc:
+                store.set_run_state(existing.run_id, "blocked")
+                store.append_event(
+                    run_id=existing.run_id,
+                    event_key=f"recovery:{existing.run_id}:blocked",
+                    event_type="recovery_blocked",
+                    payload={"code": exc.code, "message": exc.message},
+                )
+                raise
             if recovered_status is not None:
                 return {"created": False, **recovered_status}
             return {"created": False, **store.public_status(existing.run_id)}
@@ -410,7 +462,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             raise RunnerError("run_id_conflict", "run_id already exists; choose another UUID")
 
         timestamp = now()
-        stage_name = "deterministic_example" if config.execution_backend == "deterministic_test" else "codex_example"
+        stage_name = "delivery_plan" if config.delivery_plan is not None else ("deterministic_example" if config.execution_backend == "deterministic_test" else "codex_example")
         record = RunRecord(
             run_id=requested_run_id,
             launch_key=launch_key,
@@ -445,6 +497,8 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         store.write_log(control_root, requested_run_id, {"event": "run_started", "backend_kind": config.execution_backend})
         _test_fault_pause(control_root=control_root, run_id=requested_run_id, point="after_first_intent")
         try:
+            if config.delivery_plan is not None:
+                return {"created": True, **_run_delivery_plan(control_root=control_root, config=config, run=record, store=store)}
             if config.execution_backend == "deterministic_test":
                 finished = _execute_deterministic_example(
                     control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store

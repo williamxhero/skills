@@ -193,6 +193,50 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(validated["eligible"])
 
+    def test_public_cli_runs_a_local_delivery_spec(self) -> None:
+        subprocess.run(["git", "config", "user.email", "runner@example.invalid"], cwd=self.repository, check=True)
+        subprocess.run(["git", "config", "user.name", "Spec Runner"], cwd=self.repository, check=True)
+        (self.repository / "state.txt").write_text("base\n", encoding="utf-8")
+        (self.repository / "emit.py").write_text(
+            "import json, subprocess, sys\nfrom pathlib import Path\np=Path('state.txt')\np.write_text(p.read_text() + 'SR-CLI\\n')\nsubprocess.run(['git','add','state.txt'], check=True)\nsubprocess.run(['git','commit','-qm','SR-CLI'], check=True)\nsha=subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip()\nPath(sys.argv[1]).parent.mkdir(parents=True, exist_ok=True)\nPath(sys.argv[1]).write_text(json.dumps({'schema_version':'spec-runner-review-result/v1','candidate_sha':sha,'acceptance_version':'a1','findings':[]}))\n",
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=self.repository, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=self.repository, check=True)
+        review_path = (self.control_root / "reviews/SR-CLI.json").resolve()
+        plan = {
+            "schema_version": "spec-runner-delivery-plan/v1",
+            "specs": [{
+                "key": "SR-CLI", "acceptance_version": "a1", "acceptance": ["A1"],
+                "implementation": [[sys.executable, "emit.py", str(review_path)]],
+                "checks": [{"command": [sys.executable, "-c", "from pathlib import Path; assert 'SR-CLI' in Path('state.txt').read_text()"], "acceptance": ["A1"]}],
+                "review_file": "reviews/SR-CLI.json",
+            }],
+        }
+        plan_path = self.control_root / "delivery-plan.json"
+        self.control_root.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text(json.dumps(plan), encoding="utf-8")
+        target_ref = "refs/heads/" + subprocess.check_output(["git", "-C", str(self.repository), "branch", "--show-current"], text=True).strip()
+        code, result = self.invoke(
+            "delivery", "run", "--plan", str(plan_path), "--repository", str(self.repository),
+            "--workspace-root", str(self.root / "workspaces"), "--control-root", str(self.control_root),
+            "--run-id", "cli-delivery", "--target-ref", target_ref,
+        )
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["state"], "completed")
+        self.assertEqual(result["completed_specs"], ["SR-CLI"])
+        # The same plan can be launched through the normal Runner entry and
+        # therefore uses the run lease, SQLite status, and delivery receipt.
+        self.write_config(target_ref=target_ref, delivery={"plan": "delivery-plan.json"})
+        code, started = self.invoke(
+            "start", "--brief", str(self.brief), "--config", str(self.config),
+            "--control-root", str(self.control_root), "--launch-key", "delivery-start",
+        )
+        self.assertEqual(code, 0, started)
+        self.assertTrue(started["created"])
+        self.assertEqual(started["run"]["state"], "completed")
+        self.assertEqual(started["run"]["current_step"], "delivery_plan")
+
     def test_invalid_inputs_do_not_create_control_resources(self) -> None:
         self.write_config(repository_path=str(self.root / "not-a-repository"))
         code, result = self.start()
