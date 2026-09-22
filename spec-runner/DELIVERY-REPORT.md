@@ -3,9 +3,9 @@
 Updated 2026-09-22. This is an evidence index, not a claim that every live
 acceptance gate is complete. The authoritative runtime delivery is on
 `origin/master` at merge commit
-`13728164416de09807a96752cba68b397f3a7599`, incorporating the active-turn
-baseline at `28f57d1`, restricted SDK approval hardening in PR #231, and
-explicit SDK thread inspection in PR #235.
+`7e43dafe336d0a9a1c80d956f1ddd3ff410e2a76`. The runtime behavior baseline is
+`13728164416de09807a96752cba68b397f3a7599`; the later merge is a documentation
+closeout and does not change the Runner runtime.
 
 ## Route and implementation order
 
@@ -16,7 +16,7 @@ The implementation followed the required order:
 | SPEC | Tickets | Implementation evidence | Acceptance state |
 | --- | --- | --- | --- |
 | SR-01 / #165 | #166–#169 | PR #211, installable CLI and SDK adapter | deterministic and direct SDK slice verified; full parent-free two-stage live run not verified |
-| SR-02 / #170 | #171–#174 | PRs #211, #213, #214 | SQLite, lease, detached launch, restart and controls verified; native file-lock cleanup remains not verified |
+| SR-02 / #170 | #171–#174 | PRs #211, #213, #214 | SQLite, lease, detached launch, restart and controls verified; only the single-file native lock subprobe is verified, not the full cleanup matrix |
 | SR-03 / #175 | #176–#179 | PRs #212, #220 | local tracker and GitHub read/error contracts verified; live sandbox publication not verified |
 | SR-04 / #180 | #181–#184 | PR #211 and locked skill/prompt assets | deterministic prompt/plan contracts verified; upstream Matt invocation not verified |
 | SR-05 / #185 | #186–#189 | PRs #211, #212 | local workspace/candidate/review contracts verified; independent live implementation/review not verified |
@@ -59,7 +59,7 @@ also passed.
 
 ## Verified evidence
 
-- 55 `spec-runner` tests passed with one authentication-dependent test skipped.
+- 58 `spec-runner` tests passed with one authentication-dependent test skipped.
 - 427 existing `implement-needs` tests passed; 3 thin-entry isolation tests
   passed.
 - compile and whitespace checks passed.
@@ -91,6 +91,10 @@ also passed.
   only that exact Runner PID at the first durable artifact boundary, and used
   public `drive` to recover the same run. The recovered run reached
   `completed` with two verification receipts and archive readbacks.
+- a native Windows Win32 share-denied file-lock probe used a Chinese/space path:
+  replacement was rejected while the detached holder owned the file and
+  succeeded after that exact holder was terminated. This verifies the single
+  artifact-file lock boundary only; it is not the full Runner cleanup matrix.
 - the public GitHub read entrypoint read the real `williamxhero/skills` root
   issue #164, SR-01 issues #165–#169, and takeover issue #205 with complete
   pagination. It classified the observed links as body relations and reported
@@ -109,8 +113,9 @@ These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
   dedicated authorized sandbox repository;
-- native Windows file-lock cleanup matrix (detached process kill/restart is
-  verified for the bounded deterministic case above);
+- the full native Windows file-lock cleanup matrix (the bounded detached
+  process kill/restart case and the single-file share-denied subprobe are
+  verified, but DB/log/artifact-directory combinations are not);
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
