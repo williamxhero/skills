@@ -61,8 +61,15 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertIn("SR-03", result["specs"])
             target_contents = subprocess.check_output(["git", "-C", str(repo), "show", "refs/heads/main:state.txt"], text=True)
             self.assertEqual(target_contents, "base\nSR-01\nSR-02\nSR-03\n")
+            receipt_path = control / "delivery/delivery-run/delivery-receipt.json"
+            interrupted = json.loads(receipt_path.read_text(encoding="utf-8"))
+            interrupted["state"] = "running"
+            interrupted["specs"]["SR-03"]["state"] = "verified_candidate"
+            interrupted["specs"]["SR-03"].pop("merge", None)
+            receipt_path.write_text(json.dumps(interrupted), encoding="utf-8")
             replay = run_local_delivery(plan=plan, repository=repo, workspace_root=root / "workspaces", control_root=control, run_id="delivery-run", target_ref="refs/heads/main")
             self.assertEqual(replay["completed_specs"], result["completed_specs"])
+            self.assertEqual(replay["specs"]["SR-03"]["merge"]["outcome"], "reconciled")
     def test_plans_are_independent_and_validate_coverage_and_base(self):
         spec = validate_spec_plan({
             "schema_version": "spec-runner-spec-plan/v1",
