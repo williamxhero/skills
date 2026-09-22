@@ -87,6 +87,7 @@ provider-specific capabilities are reported as `not_verified` unless they have
 their own real evidence; deterministic tests never fill those gaps.
 
 `fault run` invokes the public CLI against a temporary Git repository and
-reports replayable deterministic cases for normal completion, completed-run
+reports replayable deterministic cases for normal completion, process restart
+after each durable artifact boundary, takeover continuation, completed-run
 idempotency, input drift, and late cancellation. It also lists live SDK,
 Windows-native, and GitHub merge-queue cases separately as `not_verified`.
