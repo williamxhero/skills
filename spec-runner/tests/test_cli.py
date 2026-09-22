@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -120,6 +121,28 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(result["error"]["code"], "unknown_control_root")
         self.assertEqual(before, digest_tree(self.root))
+
+    def test_detached_launch_returns_only_after_runtime_handshake(self) -> None:
+        code, result = self.invoke(
+            "launch",
+            "--brief", str(self.brief),
+            "--config", str(self.config),
+            "--control-root", str(self.control_root),
+            "--launch-key", "detached-001",
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(result["started"])
+        self.assertGreater(result["pid"], 0)
+        self.assertEqual(result["run"]["runtime"]["pid"], result["pid"])
+        for _ in range(100):
+            status_code, status_result = self.invoke(
+                "status", "--control-root", str(self.control_root), "--run-id", result["run_id"]
+            )
+            if status_code == 0 and status_result["run"]["state"] == "completed":
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("detached deterministic runner did not complete")
 
     def test_invalid_config_and_artifact_escape_are_structured_errors(self) -> None:
         self.config.write_text("{not json", encoding="utf-8")

@@ -8,7 +8,7 @@ from typing import Sequence
 
 from . import __version__
 from .errors import RunnerError
-from .workflow import doctor, start, status
+from .workflow import control, doctor, launch, resume, start, status
 
 CLI_SCHEMA_VERSION = "spec-runner-cli/v1"
 
@@ -26,6 +26,21 @@ def _parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="read persisted status without changing it")
     status_parser.add_argument("--control-root", required=True, type=Path)
     status_parser.add_argument("--run-id")
+    for name, request in (("pause", "pause_requested"), ("cancel", "cancel_requested")):
+        command_parser = subparsers.add_parser(name, help=f"request {name} at the next safe stage boundary")
+        command_parser.add_argument("--control-root", required=True, type=Path)
+        command_parser.add_argument("--run-id", required=True)
+        command_parser.set_defaults(control_request=request)
+    resume_parser = subparsers.add_parser("resume", help="clear pause and resume an existing launch identity")
+    resume_parser.add_argument("--brief", required=True, type=Path)
+    resume_parser.add_argument("--config", required=True, type=Path)
+    resume_parser.add_argument("--control-root", required=True, type=Path)
+    resume_parser.add_argument("--launch-key", required=True)
+    launch_parser = subparsers.add_parser("launch", help="start a detached Runner and wait for its handshake")
+    launch_parser.add_argument("--brief", required=True, type=Path)
+    launch_parser.add_argument("--config", required=True, type=Path)
+    launch_parser.add_argument("--control-root", required=True, type=Path)
+    launch_parser.add_argument("--launch-key", required=True)
     doctor_parser = subparsers.add_parser("doctor", help="read-only configuration checks")
     doctor_parser.add_argument("--config", type=Path)
     doctor_parser.add_argument("--control-root", required=True, type=Path)
@@ -54,6 +69,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif arguments.command == "status":
             result = status(control_root=arguments.control_root, run_id=arguments.run_id)
+        elif arguments.command in {"pause", "cancel"}:
+            result = control(
+                control_root=arguments.control_root,
+                run_id=arguments.run_id,
+                requested_state=arguments.control_request,
+            )
+        elif arguments.command == "resume":
+            result = resume(
+                brief_file=arguments.brief,
+                config_file=arguments.config,
+                control_root=arguments.control_root,
+                launch_key=arguments.launch_key,
+            )
+        elif arguments.command == "launch":
+            result = launch(
+                brief_file=arguments.brief,
+                config_file=arguments.config,
+                control_root=arguments.control_root,
+                launch_key=arguments.launch_key,
+            )
         else:
             result = doctor(config_file=arguments.config, control_root=arguments.control_root)
     except RunnerError as exc:

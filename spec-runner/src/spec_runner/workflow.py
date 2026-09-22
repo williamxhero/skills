@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import subprocess
+import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -213,6 +216,11 @@ def _execute_second_deterministic(*, control_root: Path, config: RunnerConfig, r
 
 
 def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief_digest: str, store: Store) -> dict[str, object]:
+    control = store.control_for_run(run.run_id)
+    if control and control["requested_state"] in {"pause_requested", "cancel_requested"}:
+        stop_state = "paused" if control["requested_state"] == "pause_requested" else "cancelled"
+        store.set_run_state(run.run_id, stop_state)
+        return store.public_status(run.run_id)
     if config.execution_backend == "deterministic_test":
         second = _execute_second_deterministic(control_root=control_root, config=config, run=run, store=store)
     else:
@@ -271,6 +279,12 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         )
         operation_id = f"start:{requested_run_id}"
         store.create_run(record, operation_id)
+        store.register_runtime(
+            requested_run_id,
+            pid=os.getpid(),
+            owner_token=f"{requested_run_id}:{os.getpid()}",
+            log_path=os.fspath(control_root / record.log_path),
+        )
         store.write_log(control_root, requested_run_id, {"event": "run_started", "backend_kind": config.execution_backend})
         try:
             if config.execution_backend == "deterministic_test":
@@ -301,6 +315,110 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         return {"created": True, **final_status}
     finally:
         store.close()
+
+
+def control(*, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:
+    store = Store.open(control_root.expanduser().resolve(), create=False)
+    try:
+        record = store.find_by_run_id(run_id)
+        if record is None:
+            raise RunnerError("unknown_run", f"run does not exist: {run_id}")
+        if record.state == "completed" and requested_state != "resume_requested":
+            return {"accepted": False, "reason": "run_already_completed", **store.public_status(run_id)}
+        request = store.request_control(run_id, requested_state)
+        return {"accepted": True, "control_request": request, **store.public_status(run_id)}
+    finally:
+        store.close()
+
+
+def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
+    control_root = control_root.expanduser().resolve()
+    store = Store.open(control_root, create=False)
+    try:
+        existing = store.find_by_launch_key(launch_key)
+        if existing is None:
+            raise RunnerError("unknown_run", "resume requires an existing launch_key")
+        if existing.state == "cancelled":
+            raise RunnerError("cancelled_run", "cancelled runs require explicit creation of a new launch identity")
+        store.clear_control(existing.run_id)
+    finally:
+        store.close()
+    return start(brief_file=brief_file, config_file=config_file, control_root=control_root, launch_key=launch_key)
+
+
+def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
+    """Start a detached Runner and return only after its durable handshake."""
+    launch_key = _validate_launch_key(launch_key)
+    control_root = control_root.expanduser().resolve()
+    # Validate all user inputs before creating the child or control files.
+    read_brief(brief_file)
+    RunnerConfig.from_file(config_file, control_root)
+    run_id = str(uuid.uuid4())
+    log_root = control_root / "launcher-logs"
+    log_root.mkdir(parents=True, exist_ok=True)
+    stdout_path = log_root / f"{run_id}.stdout.log"
+    stderr_path = log_root / f"{run_id}.stderr.log"
+    command = [
+        sys.executable,
+        "-m",
+        "spec_runner.cli",
+        "start",
+        "--brief",
+        os.fspath(brief_file),
+        "--config",
+        os.fspath(config_file),
+        "--control-root",
+        os.fspath(control_root),
+        "--launch-key",
+        launch_key,
+        "--run-id",
+        run_id,
+    ]
+    creation_flags = 0
+    if os.name == "nt":
+        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
+        child = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            close_fds=True,
+            creationflags=creation_flags,
+            cwd=os.fspath(control_root),
+        )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if child.poll() is not None:
+            raise RunnerError(
+                "launch_handshake_failed",
+                "detached Runner exited before claiming the run",
+                details={"exit_code": child.returncode, "stderr_log": os.fspath(stderr_path)},
+            )
+        try:
+            store = Store.open(control_root, create=False)
+        except RunnerError:
+            time.sleep(0.05)
+            continue
+        try:
+            record = store.find_by_run_id(run_id)
+            runtime = store.runtime_for_run(run_id) if record else None
+            if record and runtime and int(runtime["pid"]) == child.pid:
+                return {
+                    "started": True,
+                    "pid": child.pid,
+                    "run_id": run_id,
+                    "log_path": os.fspath(stdout_path),
+                    "run": store.public_status(run_id),
+                }
+        finally:
+            store.close()
+        time.sleep(0.05)
+    raise RunnerError(
+        "launch_handshake_timeout",
+        "detached Runner did not claim the run before the handshake deadline",
+        details={"pid": child.pid, "stdout_log": os.fspath(stdout_path), "stderr_log": os.fspath(stderr_path)},
+    )
 
 
 def status(*, control_root: Path, run_id: str | None) -> dict[str, object]:

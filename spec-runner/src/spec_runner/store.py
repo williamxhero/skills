@@ -117,6 +117,20 @@ class Store:
                     created_at TEXT NOT NULL,
                     UNIQUE(run_id, stage_name)
                 );
+                CREATE TABLE IF NOT EXISTS runtime_owners (
+                    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+                    pid INTEGER NOT NULL,
+                    owner_token TEXT NOT NULL,
+                    log_path TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS run_controls (
+                    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+                    requested_state TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             verification_sql = self.connection.execute(
@@ -193,6 +207,46 @@ class Store:
 
     def find_by_run_id(self, run_id: str) -> RunRecord | None:
         return self._record(self.connection.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone())
+
+    def register_runtime(self, run_id: str, *, pid: int, owner_token: str, log_path: str) -> None:
+        timestamp = now()
+        with self.transaction():
+            self.connection.execute(
+                """INSERT OR REPLACE INTO runtime_owners(run_id, pid, owner_token, log_path, started_at, updated_at)
+                   VALUES (?, ?, ?, ?, COALESCE((SELECT started_at FROM runtime_owners WHERE run_id = ?), ?), ?)""",
+                (run_id, pid, owner_token, log_path, run_id, timestamp, timestamp),
+            )
+
+    def runtime_for_run(self, run_id: str) -> dict[str, object] | None:
+        row = self.connection.execute("SELECT * FROM runtime_owners WHERE run_id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def request_control(self, run_id: str, requested_state: str) -> dict[str, object]:
+        if requested_state not in {"pause_requested", "cancel_requested", "resume_requested"}:
+            raise RunnerError("invalid_control", "unsupported run control request")
+        timestamp = now()
+        with self.transaction():
+            if self.find_by_run_id(run_id) is None:
+                raise RunnerError("unknown_run", f"run does not exist: {run_id}")
+            previous = self.connection.execute("SELECT generation FROM run_controls WHERE run_id = ?", (run_id,)).fetchone()
+            generation = int(previous[0]) + 1 if previous else 1
+            self.connection.execute(
+                "INSERT OR REPLACE INTO run_controls VALUES (?, ?, ?, ?)",
+                (run_id, requested_state, generation, timestamp),
+            )
+        return {"run_id": run_id, "requested_state": requested_state, "generation": generation, "updated_at": timestamp}
+
+    def control_for_run(self, run_id: str) -> dict[str, object] | None:
+        row = self.connection.execute("SELECT * FROM run_controls WHERE run_id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def clear_control(self, run_id: str) -> None:
+        with self.transaction():
+            self.connection.execute("DELETE FROM run_controls WHERE run_id = ?", (run_id,))
+
+    def set_run_state(self, run_id: str, state: str) -> None:
+        with self.transaction():
+            self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", (state, now(), run_id))
 
     def create_run(self, run: RunRecord, operation_id: str) -> None:
         with self.transaction():
@@ -370,6 +424,8 @@ class Store:
             "step": dict(step) if step else None,
             "workers": self.workers_for_run(run_id),
             "verification": self.verification_for_run(run_id),
+            "runtime": self.runtime_for_run(run_id),
+            "control": self.control_for_run(run_id),
         }
 
     def list_status(self) -> list[dict[str, str]]:
