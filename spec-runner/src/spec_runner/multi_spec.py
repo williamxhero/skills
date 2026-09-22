@@ -54,6 +54,14 @@ def _read_receipt(path: Path) -> dict[str, Any] | None:
     return value
 
 
+def _ancestor(repository: Path, candidate_sha: str, target_ref: str) -> bool:
+    try:
+        result = subprocess.run(["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", candidate_sha, target_ref], check=False, capture_output=True)
+    except OSError as exc:
+        raise RunnerError("delivery_git_read_failed", "could not reconcile candidate ancestry") from exc
+    return result.returncode == 0
+
+
 def _topological(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     remaining = {str(spec["key"]): spec for spec in specs}
     ordered: list[dict[str, Any]] = []
@@ -98,9 +106,25 @@ def run_local_delivery(
         item = receipt["specs"].get(key) if isinstance(receipt["specs"].get(key), dict) else {}
         recovering_implementation = bool(item) and item.get("state") == "implementing"
         if item and item.get("base_sha") != base_sha and item.get("state") not in {"merged"}:
-            raise RunnerError("delivery_base_changed", f"SPEC {key} base changed before recovery", details={"previous": item.get("base_sha"), "current": base_sha})
+            merge_was_applied = item.get("state") == "verified_candidate" and item.get("candidate_sha") and _ancestor(repository, str(item["candidate_sha"]), target_ref)
+            if not merge_was_applied:
+                raise RunnerError("delivery_base_changed", f"SPEC {key} base changed before recovery", details={"previous": item.get("base_sha"), "current": base_sha})
         if on_event:
             on_event("spec_started", {"spec_key": key, "base_sha": base_sha})
+        # A provider/local Git merge can be applied before the process records
+        # its final receipt. If the candidate is already reachable from the
+        # target and the durable state had reached verified_candidate, adopt
+        # that result instead of creating a second merge.
+        if item.get("state") == "verified_candidate" and item.get("candidate_sha") and _ancestor(repository, str(item["candidate_sha"]), target_ref):
+            item.update({"state": "merged", "merge": {"schema_version": "spec-runner-local-merge/v1", "target_ref": target_ref, "tested_head": item["candidate_sha"], "previous_target_sha": item.get("base_sha"), "merge_sha": base_sha, "outcome": "reconciled"}})
+            receipt["specs"][key] = item
+            completed.add(key)
+            if on_verified:
+                on_verified({"schema_version": "spec-runner-spec-verification/v1", "stage": key, "run_id": run_id, "candidate_sha": item["candidate_sha"], "merge_sha": base_sha, "acceptance_version": spec["acceptance_version"], "outcome": "verified", "reconciled": True})
+            if on_event:
+                on_event("spec_merge_reconciled", {"spec_key": key, "candidate_sha": item["candidate_sha"], "merge_sha": base_sha})
+            _write_receipt(receipt_path, receipt)
+            continue
         workspace_info = prepare_workspace(repository=repository, workspace_root=workspace_root, run_id=run_id, spec_key=key, base_ref=target_ref)
         workspace = Path(str(workspace_info["workspace"]))
         item = {**item, "spec_key": key, "base_sha": base_sha, "workspace": str(workspace), "branch": workspace_info["branch"], "state": "implementing"}

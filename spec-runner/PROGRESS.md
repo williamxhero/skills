@@ -18,7 +18,8 @@ Implemented slices in the isolated `spec-runner/` package:
 - SR-04: locked Skill sources, deterministic prompt rendering, bounded Grill,
   and SpecPlan/TicketPlan validation.
 - SR-05/06: isolated Git workspaces, candidate receipts, review validation,
-  guarded local merge, and GitHub PR/check/merge adapters.
+  guarded local merge, GitHub PR/check/merge adapters, and a dependency-ordered
+  local multi-SPEC delivery loop wired into the normal `start` run.
 - SR-09: read-only arbitrary-stage inventory, deterministic frontier planning,
   SQLite takeover records, explicit `wait_then_takeover` /
   `interrupt_then_takeover` handover states, and a continuation entry into the
@@ -34,6 +35,12 @@ space-containing paths, temporary Git candidate/merge, deterministic fault
 matrix, public-CLI process restart recovery after both artifact boundaries,
 public-CLI pause/resume at a stage boundary, structured GitHub read failures,
 and release-report negative cases.
+
+The multi-SPEC loop raises the deterministic suite to 49 passed with one
+skipped. A temporary three-SPEC chain was delivered through real local Git
+worktrees and merges, then replayed after simulating a crash after merge but
+before receipt finalization; ancestor reconciliation completed without a
+second merge. The same plan also passed through the public `start` entry.
 
 The current `0.1.0` wheel was rebuilt from merged `master`, installed into a
 fresh isolated target without source `PYTHONPATH`, and verified through the
