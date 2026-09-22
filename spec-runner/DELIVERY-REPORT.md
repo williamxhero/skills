@@ -63,9 +63,9 @@ hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
 
 ## Verified evidence
 
-- 64 `spec-runner` tests were collected: 63 passed and one
+* 64 `spec-runner` tests were collected: 63 passed and one
   authentication-dependent test was skipped.
-- 477 existing `implement-needs` tests passed, including the thin-entry
+* 477 existing `implement-needs` tests passed, including the thin-entry
   isolation coverage.
 - compile and whitespace checks passed.
 - local Git candidate/review/merge and a three-SPEC dependency-ordered replay
@@ -137,7 +137,7 @@ These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
   dedicated authorized sandbox repository;
-- Windows control-database and launcher-log locks across a detached Runner
+* Windows control-database and launcher-log locks across a detached Runner
   restart or host/process failure (single-file, managed-worktree cleanup/retry,
   direct SQLite/log/artifact-directory locks, and a detached artifact-lock
   process are verified);

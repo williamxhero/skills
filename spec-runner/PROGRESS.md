@@ -92,6 +92,12 @@ across cleanup. The first cleanup stays `pending`; after the exact child exits,
 the same workspace and manifest are cleaned on retry. Control-database and
 launcher-log locks across a detached Runner restart remain unverified.
 
+Local delivery now persists cleanup separately from merge: a simulated locked
+managed worktree remains `cleanup_pending`, and the next drive retries only
+cleanup from the durable receipt without re-running implementation or merge.
+A native Windows probe then confirmed the same behavior through the installed
+public CLI on a Chinese/space path using a delete-denying file handle.
+
 The follow-up handover contract adds a public negative matrix for active source
 writers and raises the deterministic test count to 41 passed with one skipped.
 
