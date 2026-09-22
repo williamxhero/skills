@@ -57,12 +57,20 @@ also passed.
 
 ## Verified evidence
 
-- 58 `spec-runner` tests passed with one authentication-dependent test skipped.
+- 61 `spec-runner` tests passed with one authentication-dependent test skipped.
 - 427 existing `implement-needs` tests passed; 3 thin-entry isolation tests
   passed.
 - compile and whitespace checks passed.
 - local Git candidate/review/merge and a three-SPEC dependency-ordered replay
   passed, including merge-before-receipt crash reconciliation.
+- a persisted local cleanup interruption returned `cleanup_pending` after the
+  merge, preserved the managed resources, and then retried cleanup from the
+  same receipt without re-running implementation or merge.
+- a native Windows cleanup probe held a delete-denying handle in a Runner-owned
+  candidate worktree on a Chinese/space path. Public local delivery returned
+  `cleanup_pending` after its durable merge; after release, the same receipt
+  cleaned the now-unregistered orphan worktree and manifest without a second
+  implementation or merge.
 - a clean isolated wheel previously passed `--version`, `diagnose package`,
   and all 10 deterministic public fault cases.
 - live SDK adapter execution with `openai-codex==0.155.1` created real
@@ -111,9 +119,9 @@ These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
   dedicated authorized sandbox repository;
-- the full native Windows file-lock cleanup matrix (the bounded detached
-  process kill/restart case and the single-file share-denied subprobe are
-  verified, but DB/log/artifact-directory combinations are not);
+- the full native Windows file-lock cleanup matrix (detached process
+  kill/restart, single-file share-denied, and managed-worktree cleanup/retry
+  are verified, but DB/log/artifact-directory combinations are not);
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
