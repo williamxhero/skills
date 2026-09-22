@@ -46,6 +46,12 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
             raise
         head = "unborn"
     status = _git(repository, "status", "--porcelain=v1")
+    branch = _git(repository, "branch", "--show-current")
+    try:
+        latest_commit = _git(repository, "log", "-1", "--format=%H%x00%s")
+    except RunnerError:
+        latest_commit = ""
+    status_lines = status.splitlines() if status else []
     source_threads = inventory.get("source_threads", [])
     if not isinstance(source_threads, list) or any(not isinstance(thread, dict) for thread in source_threads):
         raise RunnerError("invalid_takeover_inventory", "source_threads must be a list of objects")
@@ -95,6 +101,15 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         "schema_version": "spec-runner-takeover-report/v1",
         "repository": os.fspath(repository),
         "head_sha": head,
+        "repository_snapshot": {
+            "branch": branch or None,
+            "head_sha": head,
+            "latest_commit": latest_commit or None,
+            "dirty": bool(status),
+            "porcelain": status,
+            "staged": [line for line in status_lines if len(line) >= 2 and line[0] != " " and line[0] != "?"],
+            "untracked": [line[3:] for line in status_lines if line.startswith("?? ")],
+        },
         "working_tree": {"dirty": bool(status), "porcelain": status},
         "adopted_threads": adopted,
         "unresolved": unresolved,
@@ -106,7 +121,7 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
             "active_threads": [str(thread.get("id")) for thread in source_threads if bool(thread.get("active", False))],
         },
         "next_state": "waiting_handover" if any(item.get("reason") == "waiting_handover" for item in unresolved) else ("blocked" if unresolved else "adopted_ready"),
-        "digest": digest({"repo": os.fspath(repository), "head": head, "threads": source_threads, "artifacts": classifications, "facts": facts, "handover_policy": handover_policy}),
+        "digest": digest({"repo": os.fspath(repository), "snapshot": {"branch": branch, "head": head, "status": status}, "threads": source_threads, "artifacts": classifications, "facts": facts, "handover_policy": handover_policy}),
     }
 
 
@@ -140,6 +155,33 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
     steps: list[dict[str, object]] = []
     categories = {"adopted": [], "backfilled": [], "reverified": [], "new_work": [], "remaining": [], "cleanup": []}
 
+    specs = facts.get("specs") if isinstance(facts, dict) else None
+    if specs is not None:
+        if not isinstance(specs, list) or any(not isinstance(spec, dict) or not isinstance(spec.get("key"), str) for spec in specs):
+            raise RunnerError("invalid_takeover_report", "historical_facts.specs must be a list of keyed objects")
+        for spec in specs:
+            key = str(spec["key"])
+            state = str(spec.get("state", "unknown"))
+            if state in {"completed", "merged", "delivered"} and spec.get("verified"):
+                categories["adopted"].append(key)
+                if spec.get("cleanup_pending"):
+                    categories["cleanup"].append(key)
+                    steps.append({"kind": "cleanup", "target": key, "status": "planned", "implementation_calls": 0, "merge_calls": 0})
+                else:
+                    steps.append({"kind": "adopt", "target": key, "status": "adopted", "reason": "verified delivery evidence is present"})
+            elif state in {"partial", "implementing", "candidate", "merged_without_evidence"}:
+                categories["adopted"].append(key)
+                categories["reverified"].append(key)
+                categories["remaining"].append(key)
+                steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "partial or stale evidence requires current verification"})
+            elif state in {"not_started", "missing", "planned"}:
+                categories["new_work"].append(key)
+                categories["remaining"].append(key)
+                steps.append({"kind": "resume", "target": key, "status": "planned", "reason": "SPEC has no adopted delivery candidate"})
+            else:
+                categories["remaining"].append(key)
+                steps.append({"kind": "reconcile", "target": key, "status": "needs_input", "reason": "SPEC state is unknown or conflicting"})
+
     has_verified_delivery = bool(facts.get("merged") and facts.get("verification_receipt"))
     if not facts.get("requirements") and not has_verified_delivery:
         categories["backfilled"].append("requirement_scope")
@@ -160,7 +202,7 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
     elif facts.get("merged"):
         categories["reverified"].append("merged_candidate")
         steps.append({"kind": "reverify", "target": "merged_candidate", "status": "planned", "reason": "merge exists but delivery evidence is missing"})
-    else:
+    elif specs is None:
         categories["new_work"].append("remaining_acceptance")
         steps.append({"kind": "resume", "target": "remaining_acceptance", "status": "planned", "reason": "continue the normal Runner delivery loop after backfill and reverify"})
     state = "needs_input" if any(step.get("status") == "needs_input" for step in steps) else "planned"
