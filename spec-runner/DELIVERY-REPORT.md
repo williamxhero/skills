@@ -15,7 +15,7 @@ The implementation followed the required order:
 | SPEC | Tickets | Implementation evidence | Acceptance state |
 | --- | --- | --- | --- |
 | SR-01 / #165 | #166–#169 | PR #211, installable CLI and SDK adapter | deterministic and direct SDK slice verified; full parent-free two-stage live run not verified |
-| SR-02 / #170 | #171–#174 | PRs #211, #213, #214 | SQLite, lease, detached launch, restart and controls verified; only the single-file native lock subprobe is verified, not the full cleanup matrix |
+| SR-02 / #170 | #171–#174 | PRs #211, #213, #214 | SQLite, lease, detached launch, restart and controls verified; native cleanup probes cover SQLite, log, and artifact-directory locks, while the broader cross-process matrix remains not verified |
 | SR-03 / #175 | #176–#179 | PRs #212, #220 | local tracker and GitHub read/error contracts verified; live sandbox publication not verified |
 | SR-04 / #180 | #181–#184 | PR #211 and locked skill/prompt assets | deterministic prompt/plan contracts verified; upstream Matt invocation not verified |
 | SR-05 / #185 | #186–#189 | PRs #211, #212 | local workspace/candidate/review contracts verified; independent live implementation/review not verified |
@@ -60,7 +60,7 @@ also passed.
 
 ## Verified evidence
 
-- 62 `spec-runner` tests were collected: 61 passed and one
+- 63 `spec-runner` tests were collected: 62 passed and one
   authentication-dependent test was skipped.
 - 477 existing `implement-needs` tests passed, including the thin-entry
   isolation coverage.
@@ -105,6 +105,10 @@ also passed.
   replacement was rejected while the detached holder owned the file and
   succeeded after that exact holder was terminated. This verifies the single
   artifact-file lock boundary only; it is not the full Runner cleanup matrix.
+- native Windows cleanup regressions use delete-denying Win32 handles on a
+  Chinese/space path for a tracked SQLite artifact, run log, and artifact
+  directory. Each returns `pending` while locked and reaches `cleaned` through
+  the same retry path after that exact handle is released.
 - the public GitHub read entrypoint read the real `williamxhero/skills` root
   issue #164, SR-01 issues #165–#169, and takeover issue #205 with complete
   pagination. It classified the observed links as body relations and reported
@@ -123,9 +127,9 @@ These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
   dedicated authorized sandbox repository;
-- the full native Windows file-lock cleanup matrix (detached process
-  kill/restart, single-file share-denied, and managed-worktree cleanup/retry
-  are verified, but DB/log/artifact-directory combinations are not);
+- the broader native Windows file-lock cleanup matrix across detached processes
+  and host/process failures (single-file, managed-worktree cleanup/retry, and
+  direct SQLite/log/artifact-directory delete-deny locks are verified);
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
