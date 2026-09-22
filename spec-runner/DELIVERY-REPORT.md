@@ -2,8 +2,9 @@
 
 Updated 2026-09-22. This is an evidence index, not a claim that every live
 acceptance gate is complete. The authoritative runtime behavior baseline is
-`13728164416de09807a96752cba68b397f3a7599`. Later documentation-only merge
-commits do not change that Runner runtime baseline.
+`8a85fae2047b47b06fdb74bfcd23c179383ecad7`, including managed-worktree cleanup
+recovery. Later documentation-only merge commits do not change that Runner
+runtime baseline.
 
 ## Route and implementation order
 
@@ -53,6 +54,8 @@ Ubuntu contract jobs. The PR #228 hosted run passed both contract jobs.
 PR #231 is merged at `6cb6a69`; its hosted Ubuntu and Windows contract jobs
 also passed.
 PR #235 is merged at `1372816`; its hosted Ubuntu and Windows contract jobs
+also passed.
+PR #239 is merged at `8a85fae`; its hosted Ubuntu and Windows contract jobs
 also passed.
 
 ## Verified evidence
