@@ -23,17 +23,23 @@ Implemented slices in the isolated `spec-runner/` package:
   SQLite takeover records, explicit `wait_then_takeover` /
   `interrupt_then_takeover` handover states, and a continuation entry into the
   normal Runner loop.
-- SR-07: public-CLI deterministic fault matrix, runtime diagnostics, and
-  release-evidence validation.
+- SR-07: public-CLI deterministic fault matrix, evidence-backed runtime
+  diagnostics, release report construction/validation, and wheel inspection.
 - SR-08: read-only legacy database observation and the thin
   `/implement-needs` handoff script.
 
-Verified on 2026-09-22 in this branch: 38 unit/integration tests with one
-authentication-dependent SDK test skipped, compile checks, wheel build and
-isolated target installation (`spec-runner --version` / `0.1.0`), Chinese and
+Verified on 2026-09-22 in this branch: 47 unit/integration tests with one
+authentication-dependent SDK test skipped, compile checks, Chinese and
 space-containing paths, temporary Git candidate/merge, deterministic fault
 matrix, public-CLI process restart recovery after both artifact boundaries,
-and public-CLI pause/resume at a stage boundary.
+public-CLI pause/resume at a stage boundary, structured GitHub read failures,
+and release-report negative cases.
+
+The current `0.1.0` wheel was rebuilt from merged `master`, installed into a
+fresh isolated target without source `PYTHONPATH`, and verified through the
+installed public CLI: `--version` returned `0.1.0`, `diagnose package` passed,
+and all eight deterministic fault cases passed. The wheel contained no
+database, log, token, secret, or environment members.
 
 The follow-up handover contract adds a public negative matrix for active source
 writers and raises the deterministic test count to 41 passed with one skipped.
