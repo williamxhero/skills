@@ -1,0 +1,14 @@
+from __future__ import annotations
+
+import unittest
+
+from spec_runner.faults import run_fault_matrix
+
+
+class FaultMatrixTests(unittest.TestCase):
+    def test_public_cli_fault_matrix_is_replayable_and_separates_live_gaps(self):
+        report = run_fault_matrix(seed="test-seed")
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["evidence_kind"], "deterministic")
+        self.assertTrue(any(item["kind"] == "live_sdk" for item in report["unverified"]))
+        self.assertEqual([case["id"] for case in report["cases"]], ["normal_two_stage", "process_restart_after_first_artifact", "process_restart_after_second_artifact", "takeover_enters_normal_loop", "repeated_takeover_is_idempotent", "cleanup_only_takeover_has_no_worker", "delivery_dependency_cycle_rejected", "completed_drive_is_idempotent", "input_drift_rejected", "completed_cancel_does_not_reopen"])
