@@ -12,6 +12,7 @@ from .github_tracker import GitHubTracker
 from .delivery import merge_local, prepare_workspace, validate_review, verify_candidate
 from .diagnostics import load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
 from .matt import load_lock, render_prompt, resolve_grill
+from .legacy import read_legacy_database
 from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
 from .takeover import completion_action, inspect_takeover, load_inventory
 from .tracker import publish_local, read_local
@@ -135,6 +136,10 @@ def _parser() -> argparse.ArgumentParser:
         item = diagnostic_sub.add_parser(name)
         item.add_argument("--file", required=True, type=Path)
     diagnostic_sub.choices["release-report"].add_argument("--runner-version", default=__version__)
+    legacy_parser = subparsers.add_parser("legacy", help="read an old control DB without migrating or writing it")
+    legacy_sub = legacy_parser.add_subparsers(dest="legacy_command", required=True)
+    legacy_read = legacy_sub.add_parser("read")
+    legacy_read.add_argument("--db", required=True, type=Path)
     doctor_parser = subparsers.add_parser("doctor", help="read-only configuration checks")
     doctor_parser.add_argument("--config", type=Path)
     doctor_parser.add_argument("--control-root", required=True, type=Path)
@@ -230,6 +235,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.command == "diagnose":
             document = diagnostic_json(arguments.file, code="invalid_diagnostic_input")
             result = validate_fault_matrix(document) if arguments.diagnostic_command == "fault-matrix" else validate_release_report(document, expected_runner_version=arguments.runner_version)
+        elif arguments.command == "legacy":
+            result = read_legacy_database(arguments.db)
         else:
             result = doctor(config_file=arguments.config, control_root=arguments.control_root)
     except RunnerError as exc:
