@@ -78,6 +78,11 @@ class FakeCodex:
         self.start_kwargs = kwargs
         return self.thread
 
+    def thread_resume(self, thread_id: str, **kwargs: object) -> FakeThread:
+        self.resume_thread_id = thread_id
+        self.resume_kwargs = kwargs
+        return self.thread
+
 
 class CodexAdapterTests(unittest.TestCase):
     def test_uses_published_thread_start_and_preserves_formal_ids(self) -> None:
@@ -91,6 +96,7 @@ class CodexAdapterTests(unittest.TestCase):
             CodexConfig=lambda **kwargs: kwargs,
             Codex=object,
             Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
         )
         result = CodexAdapter(codex_factory=factory, sdk_module=sdk).run(
             prompt="do the bounded task",
@@ -102,7 +108,9 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(result.turn_id, "turn-123")
         self.assertEqual(result.status, "completed")
         self.assertEqual(holder["codex"].start_kwargs["model"], "gpt-test")
+        self.assertEqual(holder["codex"].start_kwargs["approval_mode"], "deny_all")
         self.assertEqual(holder["codex"].thread.run_kwargs["effort"], "high")
+        self.assertEqual(result.approval_mode, "deny_all")
 
     def test_published_turn_boundary_reports_identity_before_result(self) -> None:
         holder: dict[str, FakeCodex] = {}
@@ -118,6 +126,7 @@ class CodexAdapterTests(unittest.TestCase):
             CodexConfig=lambda **kwargs: kwargs,
             Codex=object,
             Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
         )
         result = CodexAdapter(codex_factory=factory, sdk_module=sdk).run(
             prompt="do the bounded task",
@@ -129,6 +138,29 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(started, [("thread-123", "turn-started-123")])
         self.assertEqual(result.turn_id, "turn-123")
         self.assertEqual(holder["codex"].thread.turn_kwargs["effort"], "high")
+
+    def test_resume_uses_the_restricted_approval_policy(self) -> None:
+        holder: dict[str, FakeCodex] = {}
+
+        def factory(config: object) -> FakeCodex:
+            holder["codex"] = FakeCodex(config)
+            return holder["codex"]
+
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
+        )
+        CodexAdapter(codex_factory=factory, sdk_module=sdk).run(
+            prompt="continue the bounded task",
+            repository_path=Path("C:/repo"),
+            model="gpt-test",
+            effort="high",
+            thread_id="thread-existing",
+        )
+        self.assertEqual(holder["codex"].resume_thread_id, "thread-existing")
+        self.assertEqual(holder["codex"].resume_kwargs["approval_mode"], "deny_all")
 
     def test_missing_published_sdk_is_a_structured_error(self) -> None:
         with self.assertRaises(RunnerError) as context:
@@ -152,6 +184,7 @@ class CodexAdapterTests(unittest.TestCase):
             CodexConfig=lambda **kwargs: kwargs,
             Codex=object,
             Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
         )
         result = CodexAdapter(codex_factory=factory, sdk_module=sdk).run(
             prompt="do the bounded task",
@@ -165,6 +198,21 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertTrue(turn.interrupted.is_set())
         self.assertEqual(applied, ["pause_requested"])
         self.assertEqual(result.status, "interrupted")
+
+    def test_missing_approval_policy_is_a_structured_capability_error(self) -> None:
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+        )
+        with self.assertRaises(RunnerError) as context:
+            CodexAdapter(codex_factory=lambda config: FakeCodex(config), sdk_module=sdk).run(
+                prompt="do the bounded task",
+                repository_path=Path("C:/repo"),
+                model="gpt-test",
+                effort="high",
+            )
+        self.assertEqual(context.exception.code, "sdk_approval_policy_unsupported")
 
     def test_control_watch_requires_interrupt_capability(self) -> None:
         with self.assertRaises(RunnerError) as context:

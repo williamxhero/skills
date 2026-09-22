@@ -73,6 +73,14 @@ Ubuntu contract jobs. The PR #228 hosted run passed both contract jobs.
 - a separate live public CLI run cancelled an active second-stage SDK turn.
   It remained `cancelled`, issued no second-stage verification receipt, and
   archived the interrupted worker with readback.
+- the pinned SDK adapter now passes the published `ApprovalMode.deny_all` value
+  on both thread creation and persisted-thread resume; the contract tests assert
+  both calls and reject SDK doubles that lack the required policy.
+- a fresh isolated live CLI run (`8d65fe95-afd7-4d92-a193-b267a63aa584`) used
+  that policy on Windows with `openai-codex==0.155.1`: both example stages
+  created real thread/turn identities, produced artifacts, passed program-owned
+  verification, and completed archive readback. Both persisted worker results
+  record `approval_mode=deny_all`.
 
 ## Not verified / external blockers
 
@@ -84,7 +92,9 @@ These are explicit gaps, not simulated passes:
 - upstream Matt Skill invocation against the locked external sources;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
-- SDK approval and user-input turn paths.
+- SDK user-input turn paths; the pinned SDK exposes no public request callback
+  for this boundary. Approval handling is verified for the restricted
+  `deny_all` policy, while interactive approval is intentionally not enabled.
 
 No credentials, user runs, production issues, or external test repository were
 created as part of the deterministic or live local probes. These gaps must stay
