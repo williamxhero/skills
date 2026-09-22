@@ -71,8 +71,9 @@ database, log, token, secret, or environment members.
 
 A native Windows Win32 share-denied probe also used a Chinese/space path and
 confirmed that replacement is blocked while an exact detached holder owns an
-artifact file, then succeeds after that holder is terminated. This is a
-single-file lock boundary, not the full DB/log/artifact cleanup matrix.
+artifact file, then succeeds after that holder is terminated. The subsequent
+direct cleanup matrix covers tracked SQLite, log, and artifact-directory locks;
+cross-process and host-failure combinations remain separate qualification work.
 
 Local delivery now persists cleanup separately from merge: a simulated locked
 managed worktree remains `cleanup_pending`, and the next drive retries only
@@ -95,5 +96,27 @@ separate live cancellation probe archived an interrupted second-stage worker.
 Remaining acceptance gaps are GitHub-mode three-SPEC issue/PR/cleanup side
 effects, arbitrary-stage mixed progress with actual issue/PR/cleanup side
 effects, live GitHub sandbox/merge-queue behavior, upstream Matt Skill
-invocation, and the broader native Windows file-lock cleanup matrix. These are explicitly
-`not_verified`; no deterministic receipt is promoted to live evidence.
+invocation, and the broader native Windows file-lock cleanup matrix. These are
+explicitly `not_verified`; no deterministic receipt is promoted to live
+evidence.
+
+## Remaining qualification inputs
+
+The next steps require inputs that are intentionally outside this repository:
+
+- A dedicated, explicitly authorized GitHub sandbox repository and credential
+  scope for three disposable SPECs with a unique Runner marker. Existing
+  development issues and this production repository must not be used as fault
+  fixtures.
+- An approved upstream Matt source, commit, path, and license. The current
+  lock deliberately identifies its sources as `local-adapter`, so it cannot
+  prove an upstream invocation.
+- An explicitly supplied source thread and host with authority to verify that
+  its old writer has stopped. The pinned SDK can inspect a thread but cannot
+  transfer a foreign active `TurnHandle` from only its thread ID.
+- A supported SDK user-input callback/response contract. Version `0.155.1`
+  exposes status flags but no public callback for a Runner-owned answer path;
+  interactive approval remains disabled under the verified `deny_all` policy.
+- A bounded Windows test process that holds the Runner's control database or
+  launcher logs across a detached process restart. The direct cleanup locks are
+  verified, but that cross-process lifecycle combination has not been run.
