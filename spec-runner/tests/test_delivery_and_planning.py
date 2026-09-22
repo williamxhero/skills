@@ -11,7 +11,7 @@ from pathlib import Path
 from spec_runner.errors import RunnerError
 
 from spec_runner.delivery import git_sha, merge_local, prepare_workspace, verify_candidate
-from spec_runner.diagnostics import build_release_report, inspect_wheel, validate_fault_matrix, validate_release_report
+from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import validate_spec_plan, validate_ticket_plan
 from spec_runner.takeover import completion_action, inspect_takeover, plan_frontier, write_takeover_record
@@ -196,6 +196,12 @@ class ProductBoundaryTests(unittest.TestCase):
                 archive.writestr("spec_runner-0.1.0.dist-info/METADATA", "Version: 0.1.0\n")
             receipt = inspect_wheel(wheel, expected_runner_version="0.1.0")
             self.assertEqual(receipt["outcome"], "verified")
+
+    def test_runtime_report_counts_states_without_treating_telemetry_as_progress(self):
+        report = runtime_report(runner_version="0.1.0", store_status={"runs": [{"state": "completed"}, {"state": "paused"}, {"state": "paused"}]})
+        self.assertEqual(report["states"], {"completed": 1, "paused": 2})
+        self.assertEqual(report["progress_basis"], "verified_step_events_and_receipts")
+        self.assertFalse(report["telemetry_is_business_progress"])
 
     def test_legacy_database_is_observed_read_only(self):
         with tempfile.TemporaryDirectory() as temp:
