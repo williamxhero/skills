@@ -106,13 +106,13 @@ def validation_errors(db, run_id):
             continue
         for blocker_id in blockers:
             if blocker_id not in spec_positions:
-                errors.append({"dependent": spec["spec_id"], "blocker": blocker_id, "code": "unknown_blocker"})
+                errors.append({"dependent": spec["spec_id"], "dependent_type": "spec", "blocker": blocker_id, "blocker_type": "spec", "code": "unknown_blocker"})
             elif spec_positions[blocker_id] >= spec["position"]:
-                errors.append({"dependent": spec["spec_id"], "blocker": blocker_id, "code": "forward_dependency"})
+                errors.append({"dependent": spec["spec_id"], "dependent_type": "spec", "blocker": blocker_id, "blocker_type": "spec", "code": "forward_dependency"})
             else:
                 status = dependency_status(db, "spec", spec["spec_id"], "spec", blocker_id)
                 if not status["satisfied"]:
-                    errors.append({"dependent": spec["spec_id"], "blocker": blocker_id, "code": status["code"]})
+                    errors.append({"dependent": spec["spec_id"], "dependent_type": "spec", "blocker": blocker_id, "blocker_type": "spec", "code": status["code"]})
     tickets = db.conn.execute(
         "SELECT t.ticket_id,t.spec_id,t.queue_position,t.blocked_by,s.run_id "
         "FROM tickets t JOIN specs s ON s.spec_id=t.spec_id WHERE s.run_id=?",
@@ -169,5 +169,5 @@ def validation_errors(db, run_id):
                     and status.get("status") in _ACTIVE_TICKET_STATUSES
                 ):
                     continue
-                errors.append({"dependent": ticket["ticket_id"], "blocker": blocker_id, "code": status["code"]})
+                errors.append({"dependent": ticket["ticket_id"], "dependent_type": "ticket", "blocker": blocker_id, "blocker_type": "ticket", "code": status["code"]})
     return errors

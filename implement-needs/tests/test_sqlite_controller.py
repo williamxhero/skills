@@ -358,6 +358,85 @@ class SQLiteControllerTests(unittest.TestCase):
             self.assertEqual("#434", next_action(db, "run-line")["target"])
             db.close()
 
+    def test_add_ticket_resolves_verified_spec_local_alias(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            try:
+                db.create_run("run", "initiative", "requirement")
+                db.add_spec("run", "#95", "CoordinatorSpec", 1)
+                db.add_ticket("#95", "#220", "first ticket", queue_position=1)
+
+                db.add_ticket("#95", "#221", "second ticket", blocked_by=["#95/01"], queue_position=2)
+
+                row = db.conn.execute("SELECT blocked_by FROM tickets WHERE ticket_id='#221'").fetchone()
+                self.assertEqual(["#220"], json.loads(row[0]))
+            finally:
+                db.close()
+
+    def test_import_ticket_ledger_resolves_verified_spec_local_alias(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            try:
+                queue = ["#220", "#221"]
+                db.create_run("run-line", "initiative", "requirement", "single-ticket-line", "controller", queue)
+                db.add_spec("run-line", "#95", "CoordinatorSpec", 1)
+                ledger = {
+                    "expected_ticket_count": 2,
+                    "queue": queue,
+                    "source": {"kind": "github", "evidence": ["github://issue/95"]},
+                    "tickets": [
+                        {"ticket_id": "#220", "spec_id": "#95", "title": "first", "status": "planned",
+                         "blocked_by": [], "queue_position": 1, "readback_evidence": ["github://issue/220"]},
+                        {"ticket_id": "#221", "spec_id": "#95", "title": "second", "status": "planned",
+                         "blocked_by": ["#95/01"], "queue_position": 2, "readback_evidence": ["github://issue/221"]},
+                    ],
+                }
+
+                db.import_ticket_ledger("run-line", ledger)
+
+                row = db.conn.execute("SELECT blocked_by FROM tickets WHERE ticket_id='#221'").fetchone()
+                self.assertEqual(["#220"], json.loads(row[0]))
+            finally:
+                db.close()
+
+    def test_spec_local_alias_rejects_malformed_unknown_and_cross_spec_references(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            try:
+                db.create_run("run", "initiative", "requirement")
+                db.add_spec("run", "#95", "CoordinatorSpec", 1)
+                db.add_spec("run", "#96", "AnalysisSkillSpec", 2)
+                db.add_ticket("#95", "#220", "first ticket", queue_position=1)
+
+                with self.assertRaisesRegex(ValueError, "malformed SPEC-local ticket alias"):
+                    db.add_ticket("#95", "#221", "bad format", blocked_by=["#95/1"], queue_position=2)
+                with self.assertRaisesRegex(ValueError, "unknown SPEC-local ticket alias"):
+                    db.add_ticket("#95", "#221", "unknown position", blocked_by=["#95/02"], queue_position=2)
+                with self.assertRaisesRegex(ValueError, "cross-SPEC ticket alias"):
+                    db.add_ticket("#95", "#221", "wrong spec", blocked_by=["#96/01"], queue_position=2)
+            finally:
+                db.close()
+
+    def test_resolved_alias_allows_next_action_to_resume_current_spec(self):
+        with tempfile.TemporaryDirectory() as d:
+            db = ControlDB(Path(d) / "run.db")
+            try:
+                db.create_run("run", "initiative", "requirement")
+                db.add_spec("run", "#94", "DebateSpec", 1)
+                db.add_spec("run", "#95", "CoordinatorSpec", 2, blocked_by=["#94"])
+                db.add_ticket("#95", "#220", "first ticket", queue_position=1)
+                db.add_ticket("#95", "#221", "second ticket", blocked_by=["#95/01"], queue_position=2)
+                db.conn.execute("UPDATE specs SET status='closed' WHERE spec_id='#94'")
+                db.record_delivery_proof("spec", "#94", "delivery", "merge:#94", ["commit:#94", "test:#94"])
+                db.conn.execute("UPDATE specs SET status='ready' WHERE spec_id='#95'")
+                db.conn.execute("UPDATE runs SET run_phase='implementing' WHERE run_id='run'")
+
+                action = next_action(db, "run", include_recovery=False)
+
+                self.assertEqual({"kind": "ticket_current_spec", "target": "#95"}, action)
+            finally:
+                db.close()
+
     def test_import_ticket_ledger_rejects_missing_closed_evidence_without_writing(self):
         with tempfile.TemporaryDirectory() as d:
             db = ControlDB(Path(d) / "run.db")
