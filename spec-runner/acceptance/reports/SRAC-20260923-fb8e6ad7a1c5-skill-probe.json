@@ -1,0 +1,25 @@
+{
+  "run_marker": "SRAC-20260923-fb8e6ad7a1c5",
+  "archive_readback": {"thread_id": "01a0cbae-28b3-7d01-b8d1-aa3858270f7c", "archived": true, "pages_read": 1},
+  "schema_version": "spec-runner-live-skill-probe/v1",
+  "sdk_result": {
+    "approval_mode": "deny_all",
+    "completed_at": 1790123590,
+    "error": null,
+    "final_response": "{\"marker\":\"SRAC-20260923-fb8e6ad7a1c5\",\"question\":\"❓ **Q1** - **JSON output shape**: Should the CSV to JSON tool produce an array of objects keyed by the header row, an array of arrays, or another structure?\\n\\n➡️ I recommend an array of objects keyed by the header row, with an explicit error for duplicate or missing headers.\"}",
+    "item_count": 2,
+    "sdk_version": "0.155.1",
+    "skill_observation": {
+      "injection": "sdk_skill_input_plus_current_body",
+      "phase": "grill",
+      "prompt_digest": "959467d9773f0b7a9fcdd7a0fd656b7a7453295c2059f033a553c4935d9405e9",
+      "read_at_ns": 1790123579343594000,
+      "source": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md",
+      "source_digest": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+    },
+    "started_at": 1790123583,
+    "status": "completed",
+    "thread_id": "01a0cbae-28b3-7d01-b8d1-aa3858270f7c",
+    "turn_id": "01a0cbae-29be-7b72-beb6-742c0f768648"
+  }
+}

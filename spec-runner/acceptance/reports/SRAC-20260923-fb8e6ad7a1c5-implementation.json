@@ -1,0 +1,25 @@
+{
+  "fixture": "C:\\Users\\will\\.codex\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260923-fb8e6ad7a1c5\\worktree\\spec-runner\\acceptance\\fixture-app\\SRAC-20260923-fb8e6ad7a1c5",
+  "run_marker": "SRAC-20260923-fb8e6ad7a1c5",
+  "schema_version": "spec-runner-live-implementation-probe/v1",
+  "sdk_result": {
+    "approval_mode": "deny_all",
+    "completed_at": 1790125605,
+    "error": null,
+    "final_response": "{\"outcome\":\"Implemented the CSV-to-JSON command with strict validation, deterministic output, atomic file writes, and tests covering valid input and invalid input preservation. Tests pass: 3/3.\",\"files\":[\"tasks_csv.py\",\"test_tasks_csv.py\"]}",
+    "item_count": 10,
+    "sdk_version": "0.155.1",
+    "skill_observation": {
+      "injection": "sdk_skill_input_plus_current_body",
+      "phase": "implement",
+      "prompt_digest": "d48fdd2ef69d96054dac1b93a9e9e790be1def4a71ff7118a414bb6ad97233b4",
+      "read_at_ns": 1790125413002944200,
+      "source": "C:\\Users\\will\\.agents\\skills\\implement-spec\\SKILL.md",
+      "source_digest": "f703b5f41df9c2202e19540d203e0d5fc32613572a838a070136cc22e712b129"
+    },
+    "started_at": 1790125416,
+    "status": "completed",
+    "thread_id": "01a0cbb1-0ccd-7682-be99-fcd2bf66ec43",
+    "turn_id": "01a0cbca-212e-7d61-a303-41b0243c329b"
+  }
+}

@@ -13,7 +13,7 @@ from .github_delivery import GitHubDelivery
 from .faults import run_fault_matrix
 from .delivery import merge_local, prepare_workspace, validate_review, verify_candidate
 from .diagnostics import build_release_report, inspect_wheel, load_json as diagnostic_json, runtime_report, validate_fault_matrix, validate_release_report
-from .matt import load_lock, render_prompt, resolve_grill
+from .matt import load_lock, render_prompt, resolve_grill, resolve_local_skill
 from .multi_spec import run_local_delivery
 from .legacy import legacy_takeover_inventory, read_legacy_database
 from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
@@ -113,10 +113,11 @@ def _parser() -> argparse.ArgumentParser:
         item.add_argument("--file", required=True, type=Path)
     plan_sub.choices["validate-tickets"].add_argument("--spec-key")
     plan_sub.choices["validate-tickets"].add_argument("--base-sha")
-    skill_parser = subparsers.add_parser("skill", help="render a pinned Skill prompt without publishing")
+    skill_parser = subparsers.add_parser("skill", help="render current local Skill input without publishing")
     skill_sub = skill_parser.add_subparsers(dest="skill_command", required=True)
     skill_render = skill_sub.add_parser("render")
-    skill_render.add_argument("--lock", required=True, type=Path)
+    skill_render.add_argument("--lock", type=Path, help="historical pinned source mode only")
+    skill_render.add_argument("--config", type=Path, help="optional live local Skill mapping")
     skill_render.add_argument("--phase", required=True, choices=["grill", "to-spec", "to-tickets", "implement", "review"])
     skill_render.add_argument("--trusted", required=True, type=Path)
     skill_render.add_argument("--untrusted", required=True, type=Path)
@@ -298,8 +299,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             document = plan_json(arguments.file)
             result = validate_spec_plan(document) if arguments.plan_command == "validate-spec" else validate_ticket_plan(document, expected_spec_key=arguments.spec_key, expected_base_sha=arguments.base_sha)
         elif arguments.command == "skill":
-            locks = load_lock(arguments.lock, roots=tuple(arguments.skill_root))
-            result = render_prompt(phase=arguments.phase, lock=locks[arguments.phase], trusted=plan_json(arguments.trusted), untrusted=plan_json(arguments.untrusted), schema=plan_json(arguments.schema))
+            skill = load_lock(arguments.lock, roots=tuple(arguments.skill_root))[arguments.phase] if arguments.lock else resolve_local_skill(arguments.phase, roots=tuple(arguments.skill_root), config_file=arguments.config)
+            result = render_prompt(phase=arguments.phase, lock=skill, trusted=plan_json(arguments.trusted), untrusted=plan_json(arguments.untrusted), schema=plan_json(arguments.schema))
         elif arguments.command == "grill":
             document = plan_json(arguments.file)
             result = resolve_grill(requirement_digest=str(document.get("requirement_digest", "")), questions=document.get("questions", []), decisions=document.get("decisions", {}), authorization=set(document.get("authorization", [])), max_rounds=int(document.get("max_rounds", 1)))

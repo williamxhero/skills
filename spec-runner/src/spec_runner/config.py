@@ -76,6 +76,8 @@ class RunnerConfig:
     effort: str
     authorization_roots: tuple[Path, ...]
     delivery_plan: Path | None
+    skill_config: Path | None
+    skill_roots: tuple[Path, ...]
     digest: str
 
     @classmethod
@@ -132,6 +134,20 @@ class RunnerConfig:
             delivery_plan = _normalise_relative_path(delivery.get("plan"), "delivery.plan")
             if not (control_root / delivery_plan).is_file():
                 raise RunnerError("invalid_config", "delivery.plan does not exist below control_root")
+        skills = document.get("skills", {})
+        if skills is None:
+            skills = {}
+        if not isinstance(skills, dict):
+            raise RunnerError("invalid_config", "skills must be an object when configured")
+        skill_config: Path | None = None
+        if skills.get("config") is not None:
+            skill_config = _normalise_relative_path(skills["config"], "skills.config")
+            if not (control_root / skill_config).is_file():
+                raise RunnerError("invalid_config", "skills.config does not exist below control_root")
+        raw_skill_roots = skills.get("roots", [])
+        if not isinstance(raw_skill_roots, list) or any(not isinstance(item, str) for item in raw_skill_roots):
+            raise RunnerError("invalid_config", "skills.roots must be a list of paths")
+        skill_roots = tuple(Path(item).expanduser() for item in raw_skill_roots)
 
         normalized = {
             "schema_version": CONFIG_SCHEMA_VERSION,
@@ -143,6 +159,7 @@ class RunnerConfig:
             "model": {"name": model["name"], "effort": model["effort"]},
             "authorization": {"artifact_roots": [root.as_posix() for root in authorization_roots]},
             "delivery": {"plan": delivery_plan.as_posix()} if delivery_plan else None,
+            "skills": {"config": skill_config.as_posix() if skill_config else None, "roots": [os.fspath(item) for item in skill_roots]},
         }
         return cls(
             repository_path=repository_path,
@@ -154,6 +171,8 @@ class RunnerConfig:
             effort=model["effort"],
             authorization_roots=authorization_roots,
             delivery_plan=delivery_plan,
+            skill_config=(control_root / skill_config).resolve() if skill_config else None,
+            skill_roots=skill_roots,
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
         )
 

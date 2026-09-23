@@ -19,6 +19,28 @@ from .plans import load_json
 from .multi_spec import run_local_delivery
 
 
+def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None):
+    """Use the live Skill boundary when available; retain test-double compatibility."""
+    semantic = getattr(adapter, "run_semantic", None)
+    if callable(semantic):
+        return semantic(
+            phase=phase,
+            repository_path=repository_path,
+            model=model,
+            effort=effort,
+            trusted={**trusted, "legacy_prompt": prompt},
+            untrusted={},
+            schema={"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
+            skill_roots=config.skill_roots,
+            skill_config=(config.skill_config and (Path(config.skill_config))),
+            thread_id=thread_id,
+            on_turn_started=on_turn_started,
+            control_state=control_state,
+            on_control_applied=on_control_applied,
+        )
+    return adapter.run(prompt=prompt, repository_path=repository_path, model=model, effort=effort, thread_id=thread_id, on_turn_started=on_turn_started, control_state=control_state, on_control_applied=on_control_applied)
+
+
 def _validate_launch_key(value: str) -> str:
     if not value or len(value) > 200 or any(character.isspace() for character in value):
         raise RunnerError("invalid_launch_key", "launch_key must be non-empty, at most 200 characters, and contain no whitespace")
@@ -167,8 +189,10 @@ def _execute_codex_example(
         "Do not publish issues, create a PR, or modify files outside the configured repository.\n\n"
         f"Brief digest: {brief_digest}\n\n{brief}"
     )
-    result: CodexWorkerResult = CodexAdapter().run(
-        prompt=prompt,
+    adapter = CodexAdapter()
+    result: CodexWorkerResult = _run_worker(
+        adapter=adapter, phase="implement", config=config, prompt=prompt,
+        trusted={"brief_digest": brief_digest, "stage": "example", "repository_scope": os.fspath(config.repository_path)},
         repository_path=config.repository_path,
         model=config.model_name,
         effort=config.effort,
@@ -236,8 +260,10 @@ def _execute_second_codex(
         "then return only JSON with outcome, artifacts, and blockers. Do not publish issues or create a PR.\n\n"
         f"First-stage handoff: spec-runner-output/{run.run_id}/handoff.md\nBrief digest: {brief_digest}"
     )
-    result = CodexAdapter().run(
-        prompt=prompt,
+    adapter = CodexAdapter()
+    result = _run_worker(
+        adapter=adapter, phase="implement", config=config, prompt=prompt,
+        trusted={"brief_digest": brief_digest, "stage": step_name, "repository_scope": os.fspath(config.repository_path)},
         repository_path=config.repository_path,
         model=config.model_name,
         effort=config.effort,

@@ -1,0 +1,49 @@
+{
+  "archive_readback": {
+    "archived": true,
+    "pages_read": 1,
+    "thread_id": "01a0cbaf-3350-7913-bec5-105eee085317"
+  },
+  "passed": true,
+  "results": [
+    {
+      "actual": {
+        "question": "ALPHA QUESTION"
+      },
+      "expected": "ALPHA QUESTION",
+      "skill_observation": {
+        "injection": "sdk_skill_input_plus_current_body",
+        "phase": "grill",
+        "prompt_digest": "1c5da94b42c3b3fde1fd289fda37558affcbd894ec8309d85290490f25dbebfb",
+        "read_at_ns": 1790123651006579100,
+        "source": "C:\\Users\\will\\.codex\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260923-fb8e6ad7a1c5\\controlled-skill\\grilling\\SKILL.md",
+        "source_digest": "445646eff592d7d737fc7ae158cebf02bbb33b681b78e856bfcda94a9d99c6bc"
+      },
+      "status": "completed",
+      "thread_id": "01a0cbaf-3350-7913-bec5-105eee085317",
+      "turn_id": "01a0cbaf-3437-7e00-bf53-7af52bb8a8c6",
+      "version": "A"
+    },
+    {
+      "actual": {
+        "question": "BETA QUESTION"
+      },
+      "expected": "BETA QUESTION",
+      "skill_observation": {
+        "injection": "sdk_skill_input_plus_current_body",
+        "phase": "grill",
+        "prompt_digest": "3a9eca13326833ba2f2cc2c53adb920a1fa311da2b8d8f1b0b4b0e8fde5b8b29",
+        "read_at_ns": 1790123657960087700,
+        "source": "C:\\Users\\will\\.codex\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260923-fb8e6ad7a1c5\\controlled-skill\\grilling\\SKILL.md",
+        "source_digest": "9856dbd4bcbcf38bcbbedf551a8f5f5e9863d00ebb3aca4bef5e1f381daec056"
+      },
+      "status": "completed",
+      "thread_id": "01a0cbaf-3350-7913-bec5-105eee085317",
+      "turn_id": "01a0cbaf-4c0b-7880-b50c-f00ef7e87eba",
+      "version": "B"
+    }
+  ],
+  "run_marker": "SRAC-20260923-fb8e6ad7a1c5",
+  "schema_version": "spec-runner-live-skill-update-probe/v1",
+  "source_copy_of": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md"
+}

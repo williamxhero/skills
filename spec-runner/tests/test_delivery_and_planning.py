@@ -26,7 +26,6 @@ def release_subject() -> dict[str, object]:
         "build_digest": "build",
         "config_contract": "spec-runner-config/v1",
         "sdk_runtime": {"package": "openai-codex", "version": "0.155.1"},
-        "matt_lock_digest": "matt-lock",
         "contract_digests": {"prompt_templates": "prompts", "schemas": "schemas", "validators": "validators"},
         "os": "windows-11",
         "trust_mode": "deny_all",
@@ -353,7 +352,7 @@ class ProductBoundaryTests(unittest.TestCase):
         tampered = {**report, "subject": {**report["subject"], "trust_mode": "interactive"}}
         with self.assertRaisesRegex(RunnerError, "subject digest"):
             validate_release_report(tampered, expected_runner_version="0.1.0")
-        for missing in ("sdk_runtime", "matt_lock_digest", "contract_digests", "os", "trust_mode", "scenario_version"):
+        for missing in ("sdk_runtime", "contract_digests", "os", "trust_mode", "scenario_version"):
             invalid = release_subject()
             invalid.pop(missing)
             with self.assertRaisesRegex(RunnerError, "release subject"):
