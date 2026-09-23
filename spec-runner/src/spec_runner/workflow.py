@@ -402,6 +402,64 @@ def _git_checked(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _execute_independent_review(*, control_root: Path, config: RunnerConfig, brief_digest: str,
+                                 run: RunRecord, store: Store, ticket_plan: dict[str, object],
+                                 workspace: Path, candidate_sha: str, candidate_receipt: dict[str, object],
+                                 implementation_thread: str, artifact_directory: Path) -> tuple[dict[str, object], CodexWorkerResult]:
+    spec_key = str(ticket_plan["spec_key"])
+    review_operation = f"review:{run.run_id}:{spec_key}:{candidate_sha}"
+    review_step = "codex_review"
+    review_worker = f"codex_sdk:{run.run_id}:{review_step}:{spec_key}:{candidate_sha[:12]}"
+    store.begin_stage(run.run_id, step_name=review_step, operation_id=review_operation, backend_kind="codex_sdk", worker_id=review_worker)
+    review_schema = {"type": "object", "properties": {"schema_version": {"type": "string"}, "candidate_sha": {"type": "string"}, "acceptance_version": {"type": "string"}, "findings": {"type": "array", "items": {"type": "object", "properties": {"severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]}, "status": {"type": "string", "enum": ["open", "resolved"]}, "description": {"type": "string"}}, "required": ["severity", "status", "description"], "additionalProperties": False}}}, "required": ["schema_version", "candidate_sha", "acceptance_version", "findings"], "additionalProperties": False}
+    review_result = _run_worker(
+        adapter=CodexAdapter(), phase="review", config=config,
+        prompt=("Review the candidate in this read-only workspace against the SPEC and the attached real check receipt. "
+                "Return schema_version spec-runner-review-result/v1, candidate_sha, acceptance_version and findings. "
+                "Do not edit files, publish, or merge.\n\n" + json.dumps({"spec": ticket_plan, "candidate": candidate_receipt}, ensure_ascii=False, sort_keys=True)),
+        model=config.model_name, effort=config.effort, thread_id=None, repository_path=workspace,
+        trusted={"brief_digest": brief_digest, "stage": review_step, "spec_key": spec_key, "candidate_sha": candidate_sha, "acceptance_version": ticket_plan["digest"]},
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=review_operation, step_name=review_step, worker_id=review_worker, thread_id=thread_id, turn_id=turn_id),
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=review_schema,
+    )
+    (artifact_directory / f"review-worker-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps(review_result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    validated = independent_review(review_result, implementation_thread=implementation_thread, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
+    store.complete_codex_stage(run.run_id, review_operation, thread_id=review_result.thread_id, turn_id=review_result.turn_id, state="reviewed", step_name=review_step, worker_id=review_worker)
+    (artifact_directory / f"review-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps({**validated, "worker": review_result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    CodexAdapter().archive_and_readback(thread_id=review_result.thread_id, repository_path=workspace)
+    return validated, review_result
+
+
+def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord,
+                      store: Store, ticket_plan: dict[str, object], workspace: Path,
+                      findings: list[object], implementation_thread: str, artifact_directory: Path) -> tuple[str, dict[str, object]]:
+    spec_key = str(ticket_plan["spec_key"])
+    operation = f"repair:{run.run_id}:{spec_key}:{len(store.workers_for_run(run.run_id))}"
+    step = "codex_repair"
+    worker = f"codex_sdk:{run.run_id}:{step}:{spec_key}"
+    store.begin_stage(run.run_id, step_name=step, operation_id=operation, backend_kind="codex_sdk", worker_id=worker)
+    result = _run_worker(
+        adapter=CodexAdapter(), phase="implement", config=config,
+        prompt=("Fix only these independent review findings in the existing assigned workspace. Preserve all acceptance "
+                "requirements and do not publish, merge, or edit outside the workspace.\n\n" + json.dumps(findings, ensure_ascii=False, sort_keys=True)),
+        model=config.model_name, effort=config.effort, thread_id=implementation_thread, repository_path=workspace,
+        trusted={"brief_digest": brief_digest, "stage": step, "spec_key": spec_key, "review_findings": findings},
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation, step_name=step, worker_id=worker, thread_id=thread_id, turn_id=turn_id),
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+    )
+    if result.status != "completed":
+        raise RunnerError("repair_worker_failed", "bounded repair worker did not complete", details=result.public())
+    if not _git_checked(workspace, "status", "--porcelain"):
+        raise RunnerError("repair_no_progress", "repair worker produced no candidate changes")
+    _git_checked(workspace, "add", "--all")
+    _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: repair {spec_key}")
+    candidate_sha = git_sha(workspace)
+    candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks), acceptance=list(config.acceptance_ids))
+    store.complete_codex_stage(run.run_id, operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=step, worker_id=worker)
+    (artifact_directory / f"repair-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps({"candidate": candidate_receipt, "worker": result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return candidate_sha, candidate_receipt
+
+
 def _execute_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     ticket_plan: dict[str, object],
@@ -449,29 +507,14 @@ def _execute_codex_implementation(
     (artifact_directory / f"candidate-{spec_key}.json").write_text(json.dumps(candidate_receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     CodexAdapter().archive_and_readback(thread_id=result.thread_id, repository_path=workspace)
 
-    review_operation = f"review:{run.run_id}:{spec_key}:{candidate_sha}"
-    review_step = "codex_review"
-    review_worker = f"codex_sdk:{run.run_id}:{review_step}:{spec_key}"
-    store.begin_stage(run.run_id, step_name=review_step, operation_id=review_operation, backend_kind="codex_sdk", worker_id=review_worker)
-    review_schema = {"type": "object", "properties": {"schema_version": {"type": "string"}, "candidate_sha": {"type": "string"}, "acceptance_version": {"type": "string"}, "findings": {"type": "array", "items": {"type": "object", "properties": {"severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]}, "status": {"type": "string", "enum": ["open", "resolved"]}, "description": {"type": "string"}}, "required": ["severity", "status", "description"], "additionalProperties": False}}}, "required": ["schema_version", "candidate_sha", "acceptance_version", "findings"], "additionalProperties": False}
-    review_result = _run_worker(
-        adapter=CodexAdapter(), phase="review", config=config,
-        prompt=("Review the candidate in this read-only workspace against the SPEC and the attached real check receipt. "
-                "Return schema_version spec-runner-review-result/v1, candidate_sha, acceptance_version and findings. "
-                "Do not edit files, publish, or merge.\n\n" + json.dumps({"spec": ticket_plan, "candidate": candidate_receipt}, ensure_ascii=False, sort_keys=True)),
-        model=config.model_name, effort=config.effort, thread_id=None, repository_path=workspace,
-        trusted={"brief_digest": brief_digest, "stage": review_step, "spec_key": spec_key, "candidate_sha": candidate_sha, "acceptance_version": ticket_plan["digest"]},
-        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=review_operation, step_name=review_step, worker_id=review_worker, thread_id=thread_id, turn_id=turn_id),
-        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=review_schema,
-    )
-    (artifact_directory / f"review-worker-{spec_key}.json").write_text(json.dumps(review_result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    validated_review = independent_review(review_result, implementation_thread=result.thread_id,
-        candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
-    store.complete_codex_stage(run.run_id, review_operation, thread_id=review_result.thread_id, turn_id=review_result.turn_id, state="reviewed", step_name=review_step, worker_id=review_worker)
-    (artifact_directory / f"review-{spec_key}.json").write_text(json.dumps({**validated_review, "worker": review_result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-    CodexAdapter().archive_and_readback(thread_id=review_result.thread_id, repository_path=workspace)
+    validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
+    repair_round = 0
+    while not validated_review["approved"] and repair_round < 2:
+        repair_round += 1
+        candidate_sha, candidate_receipt = _repair_candidate(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, findings=list(validated_review["blocking"]), implementation_thread=result.thread_id, artifact_directory=artifact_directory)
+        validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
     if not validated_review["approved"]:
-        raise RunnerError("review_blocked", "independent review has unresolved blocking findings", details={"findings": validated_review["blocking"]})
+        raise RunnerError("review_blocked", "independent review remained blocked after bounded repair rounds", details={"findings": validated_review["blocking"], "repair_rounds": repair_round})
     if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
         raise RunnerError("candidate_changed_after_review", "candidate changed after the verified check/review pair")
     if git_sha(config.repository_path, str(workspace_info["branch"])) != candidate_sha:
