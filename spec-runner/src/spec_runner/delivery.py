@@ -17,9 +17,14 @@ from .plans import digest
 WORKTREE_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 
+def _git_command(repository: Path, *args: str) -> list[str]:
+    """Keep managed worktrees usable when the repository contains long paths."""
+    return ["git", "-c", "core.longpaths=true", "-C", os.fspath(repository), *args]
+
+
 def _git(repository: Path, *args: str, check: bool = True) -> str:
     try:
-        result = subprocess.run(["git", "-C", os.fspath(repository), *args], check=check, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(_git_command(repository, *args), check=check, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("git_operation_failed", "Git command failed", details={"args": list(args)}) from exc
     return result.stdout.strip()
@@ -40,7 +45,7 @@ def _safe_child(root: Path, child: Path) -> Path:
 def _worktree_is_registered(*, repository: Path, workspace: Path) -> bool:
     try:
         result = subprocess.run(
-            ["git", "-C", os.fspath(repository), "worktree", "list", "--porcelain"],
+            _git_command(repository, "worktree", "list", "--porcelain"),
             check=False,
             capture_output=True,
             text=True,
@@ -62,7 +67,7 @@ def _remove_managed_worktree(*, repository: Path, workspace: Path) -> None:
     """Bound one cleanup command so an exclusive Windows lock cannot hang a run."""
     try:
         result = subprocess.run(
-            ["git", "-C", os.fspath(repository), "worktree", "remove", os.fspath(workspace)],
+            _git_command(repository, "worktree", "remove", os.fspath(workspace)),
             check=False,
             capture_output=True,
             text=True,

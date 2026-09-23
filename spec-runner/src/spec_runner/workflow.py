@@ -538,7 +538,7 @@ def _execute_codex_tickets(
 
 def _git_checked(repository: Path, *args: str) -> str:
     try:
-        result = subprocess.run(["git", "-C", os.fspath(repository), *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(["git", "-c", "core.longpaths=true", "-C", os.fspath(repository), *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("implementation_git_failed", "Runner could not reconcile the implementation workspace", details={"args": list(args)}) from exc
     return result.stdout.strip()
