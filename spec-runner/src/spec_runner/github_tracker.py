@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -29,7 +30,20 @@ class GitHubTracker:
     @staticmethod
     def _run_gh(arguments: list[str]) -> str:
         try:
-            result = subprocess.run(["gh", *arguments], check=True, capture_output=True, text=True, encoding="utf-8")
+            # Keep arbitrary Unicode issue bodies out of shell/CLI argument
+            # encoding. gh reads UTF-8 without BOM from the file directly.
+            with tempfile.TemporaryDirectory(prefix="spec-runner-gh-") as directory:
+                prepared = list(arguments)
+                for index, value in enumerate(prepared):
+                    if value.startswith("body=") and index and prepared[index - 1] == "-f":
+                        body_file = Path(directory) / f"body-{index}.md"
+                        body_file.write_text(value[5:], encoding="utf-8", newline="\n")
+                        prepared[index - 1] = "-F"
+                        prepared[index] = f"body=@{body_file}"
+                result = subprocess.run(["gh", *prepared], check=True, capture_output=True,
+                                        text=True, encoding="utf-8", timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            raise RunnerError("github_timeout", "GitHub command exceeded 120 seconds; reconcile writes before retry") from exc
         except FileNotFoundError as exc:
             raise RunnerError("github_unavailable", "gh CLI is not installed") from exc
         except subprocess.CalledProcessError as exc:
@@ -189,8 +203,8 @@ class GitHubTracker:
         if previous:
             if previous.get("draft_digest") != draft_digest:
                 raise RunnerError("github_operation_conflict", "operation_id was reused with another draft")
-            if previous.get("complete", True):
-                return {"created": False, "receipt": previous}
+            if previous.get("repository") != repository:
+                raise RunnerError("github_operation_conflict", "operation belongs to another repository")
         published: list[dict[str, object]] = list(previous.get("issues", [])) if isinstance(previous, dict) else []
         published_by_key = {str(item.get("key")): item for item in published if isinstance(item, dict) and item.get("key")}
         receipt = {
@@ -209,18 +223,36 @@ class GitHubTracker:
             temporary.write_text(json.dumps(receipts, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
             temporary.replace(receipt_file)
 
-        # A single SPEC has no umbrella. Multiple SPECs get one umbrella and it
-        # remains outside the implementation queue.
+        # A single SPEC need not have an umbrella, but an explicitly supplied
+        # parent must not disappear when it has only one child ticket.
         issue_items = list(specs)
-        if len(specs) > 1:
-            umbrella = draft.get("umbrella")
+        umbrella = draft.get("umbrella")
+        if len(specs) > 1 or umbrella is not None:
             if not isinstance(umbrella, dict) or not umbrella.get("title") or not umbrella.get("body"):
                 raise RunnerError("invalid_publish_draft", "multiple SPECs require an explicit umbrella draft")
             issue_items = [umbrella, *issue_items]
+        seen: set[str] = set()
+        for item in issue_items:
+            if not isinstance(item, dict) or not all(isinstance(item.get(field), str) and item[field].strip() for field in ("key", "title", "body")):
+                raise RunnerError("invalid_publish_draft", "each issue needs key, title, and body")
+            key = item["key"]
+            if key in seen:
+                raise RunnerError("invalid_publish_draft", "duplicate issue key")
+            if not isinstance(item.get("blocked_by", []), list):
+                raise RunnerError("invalid_publish_draft", "blocked_by must be a list of keys")
+            relations = ([item["parent"]] if item.get("parent") else []) + item.get("blocked_by", [])
+            if any(not isinstance(target, str) or target not in seen for target in relations):
+                raise RunnerError("invalid_publish_draft", "relations must reference earlier issue keys")
+            seen.add(key)
+        created = False
         for item in issue_items:
             key = item.get("key")
             title = item.get("title")
             body = item.get("body")
+            if item.get("parent"):
+                body += f"\n\nParent: #{published_by_key[item['parent']]['number']}"
+            for dependency in item.get("blocked_by", []):
+                body += f"\nBlocked by: #{published_by_key[dependency]['number']}"
             if not all(isinstance(value, str) and value.strip() for value in (key, title, body)):
                 raise RunnerError("invalid_publish_draft", "each issue needs key, title, and body")
             marker = f"<!-- spec-runner-key:{key} operation:{operation_id} -->"
@@ -228,6 +260,9 @@ class GitHubTracker:
             if prior:
                 if prior.get("marker") != marker:
                     raise RunnerError("github_operation_conflict", "published issue marker changed for the same operation")
+                current = self._issue(repository, int(prior["number"]))
+                if current.get("title") != title or current.get("body") != f"{marker}\n{body}" or current.get("pull_request"):
+                    raise RunnerError("github_publish_conflict", "published issue changed since its receipt")
                 continue
             response: dict[str, Any] | None
             if key in receipt["unknown_keys"]:
@@ -238,6 +273,10 @@ class GitHubTracker:
                 response = None
             try:
                 if response is None:
+                    # Persist uncertainty BEFORE dispatch: process termination
+                    # cannot be caught by the lost-response exception handler.
+                    receipt["unknown_keys"].append(key)
+                    save_progress()
                     raw_response = self._runner(["api", f"repos/{repository}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={marker}\n{body}"])
                     response = json.loads(raw_response)
             except Exception as exc:
@@ -245,7 +284,6 @@ class GitHubTracker:
                 # lost. Reconcile by the formal run marker, never by title.
                 response = self._run_owned_issue(repository=repository, marker=marker, title=title, body=body)
                 if response is None:
-                    receipt["unknown_keys"].append(key)
                     save_progress()
                     raise RunnerError("github_publish_unknown", "issue creation outcome is unknown and no unique marker readback exists") from exc
             if not isinstance(response, dict) or not response.get("number") or str(response.get("repository_url") or "").split("/repos/")[-1] != repository:
@@ -255,8 +293,10 @@ class GitHubTracker:
             item_receipt = {"key": key, "number": int(response["number"]), "node_id": response.get("node_id"), "marker": marker}
             published.append(item_receipt)
             published_by_key[key] = item_receipt
+            receipt["unknown_keys"] = [unknown for unknown in receipt["unknown_keys"] if unknown != key]
             receipt["issues"] = published
+            created = True
             save_progress()
         receipt["complete"] = True
         save_progress()
-        return {"created": True, "receipt": receipt}
+        return {"created": created, "receipt": receipt}

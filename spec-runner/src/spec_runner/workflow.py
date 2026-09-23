@@ -427,6 +427,7 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
         if blocked:
             relation += "\nBlocked by: " + ", ".join(str(item) for item in blocked)
         specs.append({"key": ticket_key, "title": str(ticket.get("title") or ticket_key),
+                      "parent": spec_key, "blocked_by": blocked,
                       "body": f"spec-runner-run:{run_id}\n{relation}\n\n{ticket['body']}"})
     # The first item is the umbrella SPEC; remaining items are its tickets.
     draft = {"umbrella": specs[0], "specs": specs[1:]}
@@ -611,7 +612,7 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
 
 
 def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: RunRecord,
-                           store: Store) -> dict[str, object]:
+                           store: Store, finalize_run: bool = True) -> dict[str, object]:
     artifact = _safe_artifact_directory(control_root, config, run.run_id)
     github_files = sorted(artifact.glob("github-*.json"))
     candidate_files = sorted(artifact.glob("candidate-*.json"))
@@ -644,13 +645,18 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
         store.mark_cleanup_pending(run.run_id)
         result["state"] = "cleanup_pending"
     else:
-        store.mark_archived(run.run_id, state="completed")
+        if finalize_run:
+            store.mark_archived(run.run_id, state="completed")
+        else:
+            store.set_run_state(run.run_id, "spec_completed")
+    if not finalize_run and result.get("state") == "github_completed":
+        result["state"] = "spec_completed"
     return result
 
 
 def _execute_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
-    ticket_plan: dict[str, object],
+    ticket_plan: dict[str, object], finalize_run: bool = True,
 ) -> dict[str, object]:
     """Run one real implementation and independent review for the active SPEC.
 
@@ -725,8 +731,11 @@ def _execute_codex_implementation(
             github_result["cleanup"] = cleanup
             return {**github_result, "state": "cleanup_pending"}
         github_result["cleanup"] = cleanup
-        store.mark_archived(run.run_id, state="completed")
-        return github_result
+        if finalize_run:
+            store.mark_archived(run.run_id, state="completed")
+        else:
+            store.set_run_state(run.run_id, "spec_completed")
+        return {**github_result, "state": "completed" if finalize_run else "spec_completed"}
     if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
         raise RunnerError("candidate_changed_after_review", "candidate changed after the verified check/review pair")
     if git_sha(config.repository_path, str(workspace_info["branch"])) != candidate_sha:
@@ -737,8 +746,12 @@ def _execute_codex_implementation(
     if cleanup.get("outcome") != "cleaned":
         store.mark_cleanup_pending(run.run_id)
         return {"state": "cleanup_pending", "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
-    store.mark_archived(run.run_id, state="completed")
-    return {"state": "completed", "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
+    if finalize_run:
+        store.mark_archived(run.run_id, state="completed")
+    else:
+        store.set_run_state(run.run_id, "spec_completed")
+    return {"state": "completed" if finalize_run else "spec_completed", "spec_key": spec_key,
+            "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
 
 
 def _execute_codex_example(
@@ -1232,6 +1245,75 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
     return None
 
 
+def _production_completed_specs(*, control_root: Path, config: RunnerConfig, run_id: str) -> set[str]:
+    path = _safe_artifact_directory(control_root, config, run_id) / "completed-specs.json"
+    if not path.exists():
+        return set()
+    document = load_json(path)
+    values = document.get("specs", [])
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        raise RunnerError("completed_specs_corrupt", "completed SPEC record is invalid")
+    return set(values)
+
+
+def _record_production_spec(*, control_root: Path, config: RunnerConfig, run_id: str, spec_key: str,
+                            plan_digest: str) -> None:
+    directory = _safe_artifact_directory(control_root, config, run_id)
+    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run_id)
+    completed.add(spec_key)
+    path = directory / "completed-specs.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"schema_version": "spec-runner-completed-specs/v1",
+        "plan_digest": plan_digest, "specs": sorted(completed)}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8", newline="\n")
+    temporary.replace(path)
+
+
+def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_digest: str,
+                          run: RunRecord, store: Store, spec_plan: dict[str, object]) -> dict[str, object]:
+    """Drive every ready SPEC in one program-owned production run.
+
+    The model plans the queue once. The Runner alone selects the next ready
+    SPEC, persists completion, and continues from the latest plan; no parent
+    conversation owns a cross-SPEC dispatch loop.
+    """
+    specs = spec_plan.get("specs")
+    if not isinstance(specs, list) or any(not isinstance(item, dict) for item in specs):
+        raise RunnerError("invalid_spec_plan", "production queue requires keyed SPEC objects")
+    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run.run_id)
+    while len(completed) < len(specs):
+        ready = [item for item in specs if str(item.get("key")) not in completed and
+                 set(item.get("blocked_by", [])) <= completed]
+        if not ready:
+            raise RunnerError("production_queue_blocked", "no dependency-ready SPEC remains")
+        spec = ready[0]
+        spec_key = str(spec["key"])
+        ticketed = _execute_codex_tickets(
+            control_root=control_root, config=config, brief_digest=brief_digest, run=run,
+            store=store, spec_plan={**spec_plan, "specs": [spec]})
+        if ticketed.state != "tickets_ready":
+            return store.public_status(run.run_id)
+        ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob(f"ticket-plan-{spec_key}.json"))
+        if not ticket_files:
+            raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+        delivered = _execute_codex_implementation(
+            control_root=control_root, config=config, brief_digest=brief_digest, run=ticketed,
+            store=store, ticket_plan=load_json(ticket_files[-1]), finalize_run=False)
+        if delivered.get("state") in {"waiting_ci", "cleanup_pending"}:
+            return delivered
+        if delivered.get("state") != "spec_completed":
+            return delivered
+        _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+            spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
+        completed.add(spec_key)
+        current = store.find_by_run_id(run.run_id)
+        if current is None:
+            raise RunnerError("run_missing", "production queue run disappeared during continuation")
+        run = current
+    store.mark_archived(run.run_id, state="completed")
+    return store.public_status(run.run_id)
+
+
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str, run_id: str | None = None) -> dict[str, object]:
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
@@ -1278,22 +1360,28 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
                 if not plan_path.is_file():
                     raise RunnerError("spec_plan_missing", "planned run has no persisted SpecPlan")
-                ticketed = _execute_codex_tickets(
+                return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
-                    store=store, spec_plan=load_json(plan_path),
-                )
-                return {"created": False, **store.public_status(ticketed.run_id)}
+                    store=store, spec_plan=load_json(plan_path))}
             if existing.state == "tickets_ready" and config.workflow_mode == "production":
-                ticket_files = sorted(_safe_artifact_directory(control_root, config, existing.run_id).glob("ticket-plan-*.json"))
-                if not ticket_files:
-                    raise RunnerError("ticket_plan_missing", "tickets_ready run has no persisted TicketPlan")
-                delivered = _execute_codex_implementation(
+                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
+                return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
-                    store=store, ticket_plan=load_json(ticket_files[0]),
-                )
-                return {"created": False, **delivered}
+                    store=store, spec_plan=load_json(plan_path))}
             if existing.state == "waiting_ci" and config.workflow_mode == "production":
-                return {"created": False, **_resume_waiting_github(control_root=control_root, config=config, run=existing, store=store)}
+                resumed = _resume_waiting_github(control_root=control_root, config=config, run=existing, store=store, finalize_run=False)
+                if resumed.get("state") == "spec_completed":
+                    plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
+                    current = store.find_by_run_id(existing.run_id)
+                    assert current is not None
+                    return {"created": False, **_run_production_queue(control_root=control_root, config=config,
+                        brief_digest=brief_digest, run=current, store=store, spec_plan=load_json(plan_path))}
+                return {"created": False, **resumed}
+            if existing.state == "spec_completed" and config.workflow_mode == "production":
+                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
+                return {"created": False, **_run_production_queue(
+                    control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
+                    store=store, spec_plan=load_json(plan_path))}
             if existing.state == "needs_input" and not store.control_for_run(existing.run_id):
                 worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
                 questions: list[dict[str, object]] = []
@@ -1404,17 +1492,12 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             return {"created": True, **store.public_status(finished.run_id)}
         if finished.state == "planned":
             plan_path = _safe_artifact_directory(control_root, config, finished.run_id) / "spec-plan.json"
-            ticketed = _execute_codex_tickets(
-                control_root=control_root, config=config, brief_digest=brief_digest, run=finished,
-                store=store, spec_plan=load_json(plan_path),
-            )
-            if ticketed.state == "tickets_ready" and config.workflow_mode == "production":
-                ticket_files = sorted(_safe_artifact_directory(control_root, config, ticketed.run_id).glob("ticket-plan-*.json"))
-                delivered = _execute_codex_implementation(
-                    control_root=control_root, config=config, brief_digest=brief_digest, run=ticketed,
-                    store=store, ticket_plan=load_json(ticket_files[0]),
-                )
-                return {"created": True, **delivered}
+            if config.workflow_mode == "production":
+                return {"created": True, **_run_production_queue(
+                    control_root=control_root, config=config, brief_digest=brief_digest, run=finished,
+                    store=store, spec_plan=load_json(plan_path))}
+            ticketed = _execute_codex_tickets(control_root=control_root, config=config, brief_digest=brief_digest,
+                run=finished, store=store, spec_plan=load_json(plan_path))
             return {"created": True, **store.public_status(ticketed.run_id)}
         _verify_and_archive(
             control_root=control_root,

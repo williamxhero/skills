@@ -104,6 +104,47 @@ def test_github_tracker_is_published_after_local_plan_and_keeps_body_link_mode(c
     assert published[0]["draft"]["specs"][0]["key"] == "T1"
 
 
+def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatch(context, monkeypatch):
+    root, config, store, run = context
+    config = replace(config, workflow_mode="production")
+    plan = {"digest": "plan-2", "specs": [
+        {"key": "S1", "title": "First", "body": "one", "blocked_by": []},
+        {"key": "S2", "title": "Second", "body": "two", "blocked_by": ["S1"]},
+        {"key": "S3", "title": "Third", "body": "three", "blocked_by": ["S2"]},
+    ]}
+    calls = []
+
+    def fake_tickets(*, run, spec_plan, **kwargs):
+        key = spec_plan["specs"][0]["key"]
+        calls.append(("tickets", key))
+        artifact = root / "artifacts" / run.run_id
+        artifact.mkdir(parents=True, exist_ok=True)
+        (artifact / f"ticket-plan-{key}.json").write_text(json.dumps({"spec_key": key}), encoding="utf-8")
+        store.set_run_state(run.run_id, "tickets_ready")
+        current = store.find_by_run_id(run.run_id)
+        assert current is not None
+        return current
+
+    def fake_implementation(*, run, ticket_plan, **kwargs):
+        key = ticket_plan["spec_key"]
+        calls.append(("implementation", key))
+        store.set_run_state(run.run_id, "spec_completed")
+        return {"state": "spec_completed", "spec_key": key}
+
+    monkeypatch.setattr(workflow, "_execute_codex_tickets", fake_tickets)
+    monkeypatch.setattr(workflow, "_execute_codex_implementation", fake_implementation)
+    original_load_json = workflow.load_json
+    def load_for_test(path):
+        if path.name.startswith("ticket-plan-"):
+            return {"spec_key": path.stem.removeprefix("ticket-plan-")}
+        return original_load_json(path)
+    monkeypatch.setattr(workflow, "load_json", load_for_test)
+    result = workflow._run_production_queue(control_root=root, config=config, brief_digest="brief", run=run, store=store, spec_plan=plan)
+    assert result["run"]["state"] == "completed"
+    assert calls == [("tickets", "S1"), ("implementation", "S1"), ("tickets", "S2"), ("implementation", "S2"), ("tickets", "S3"), ("implementation", "S3")]
+    assert json.loads((root / "artifacts" / run.run_id / "completed-specs.json").read_text())["specs"] == ["S1", "S2", "S3"]
+
+
 @pytest.mark.parametrize("status", ["failed", "interrupted", "unknown"])
 def test_nonterminal_or_failed_planner_cannot_publish_valid_looking_plan(context, monkeypatch, status):
     root, config, store, run = context
