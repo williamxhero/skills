@@ -1363,6 +1363,28 @@ def _persist_delivery_evidence(*, control_root: Path, config: RunnerConfig, run_
 
 def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_digest: str,
                           run: RunRecord, store: Store, spec_plan: dict[str, object]) -> dict[str, object]:
+    try:
+        return _run_production_queue_impl(
+            control_root=control_root,
+            config=config,
+            brief_digest=brief_digest,
+            run=run,
+            store=store,
+            spec_plan=spec_plan,
+        )
+    except RunnerError as exc:
+        # The initial planning stage is wrapped by start(), but production
+        # queue work begins after that boundary. Close the durable run before
+        # returning a queue error so a process exit cannot leave it running.
+        try:
+            store.fail_run(run.run_id, f"start:{run.run_id}")
+        except RunnerError as state_error:
+            raise state_error from exc
+        raise
+
+
+def _run_production_queue_impl(*, control_root: Path, config: RunnerConfig, brief_digest: str,
+                               run: RunRecord, store: Store, spec_plan: dict[str, object]) -> dict[str, object]:
     """Drive every ready SPEC in one program-owned production run.
 
     The model plans the queue once. The Runner alone selects the next ready
