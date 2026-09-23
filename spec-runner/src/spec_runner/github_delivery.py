@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -16,11 +17,30 @@ class GitHubDelivery:
 
     @staticmethod
     def _gh(args: list[str]) -> str:
-        import subprocess
         try:
-            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise RunnerError("github_delivery_failed", "GitHub delivery command failed") from exc
+            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=120).stdout
+        except subprocess.TimeoutExpired as exc:
+            raise RunnerError("github_delivery_timeout", "GitHub delivery exceeded the 120 second boundary; reconcile before retry") from exc
+        except OSError as exc:
+            raise RunnerError("github_delivery_unavailable", "gh CLI is not available") from exc
+        except subprocess.CalledProcessError as exc:
+            message = (exc.stderr or "").strip()
+            status_match = re.search(r"\bHTTP\s+(\d{3})\b", message, re.IGNORECASE)
+            status = int(status_match.group(1)) if status_match else None
+            lowered = message.lower()
+            if status in {401} or "authentication" in lowered:
+                code = "github_auth"
+            elif status in {403, 404}:
+                code = "github_forbidden" if status == 403 else "github_not_found"
+            elif status in {429} or "rate limit" in lowered:
+                code = "github_rate_limited"
+            elif status is not None and status >= 500:
+                code = "github_server_error"
+            else:
+                code = "github_delivery_failed"
+            raise RunnerError(code, "GitHub delivery command failed", details={
+                "exit_code": exc.returncode, "http_status": status, "stderr": message[:1000]}) from exc
 
     @staticmethod
     def _repo(repository: str) -> None:
@@ -98,7 +118,9 @@ class GitHubDelivery:
                 raise RunnerError("github_pr_unconfirmed", "GitHub PR create response was not a PR")
             receipt = {"number": response["number"], "url": response.get("html_url"), "candidate_sha": candidate_sha, "head": head, "base": base, "adopted": adopted_after_reconcile, "marker": marker}
         receipts[operation_id] = receipt
-        path.write_text(json.dumps(receipts, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(receipts, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        temporary.replace(path)
         return {"created": not receipt.get("adopted", False), "receipt": receipt}
 
     def checks(self, *, repository: str, candidate_sha: str, required: list[str]) -> dict[str, object]:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -45,3 +47,20 @@ def test_malformed_pr_pagination_is_rejected(pages):
             repository="owner/repo", head="branch", base="main", candidate_sha="abc",
             body="body", operation_id="op", receipt_root=Path("."),
         )
+
+
+def test_gh_timeout_is_structured_and_bounded():
+    with patch("spec_runner.github_delivery.subprocess.run",
+               side_effect=subprocess.TimeoutExpired(["gh"], 120)) as run:
+        with pytest.raises(Exception) as error:
+            GitHubDelivery._gh(["api", "repos/owner/repo"])
+    assert error.value.code == "github_delivery_timeout"
+    assert run.call_args.kwargs["timeout"] == 120
+
+
+def test_gh_http_failures_preserve_recovery_class():
+    with patch("spec_runner.github_delivery.subprocess.run",
+               side_effect=subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 429 rate limit")):
+        with pytest.raises(Exception) as error:
+            GitHubDelivery._gh(["api", "repos/owner/repo"])
+    assert error.value.code == "github_rate_limited"
