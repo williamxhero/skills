@@ -24,7 +24,11 @@ No live SDK or GitHub side effects in these tests; transport is simulated.
 Deferred: final exact-wheel L3 with two replays; owner regression L4 after the
 six-SPEC tail; live single-SPEC, three-SPEC GitHub, source takeover, and Windows
 control DB/log recovery L5. None are discharged by a unit-test result.
-Native relation writer remains unimplemented; body links are not native proof.
+Native parent and blocked-by relation writing and readback are verified by the
+live report `SRAC-20260923-6dfe49ef27ba-native-relations.json`. That evidence
+covers the SF-03.1 relation capability only; it does not discharge the
+deferred project-level live SDK restart, complete three-SPEC GitHub delivery,
+or Windows control DB/log recovery gates.
 
 The transport tests additionally verify BOM-free UTF-8 file upload, temporary
 file cleanup, a 120-second gh timeout, and structured timeout classification.
