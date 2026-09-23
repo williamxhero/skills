@@ -59,7 +59,10 @@ class GitHubDeliveryTests(unittest.TestCase):
             self.assertEqual(calls, 4)
 
     def test_checks_bind_success_to_candidate_sha_and_merge_requires_authorization(self):
+        calls: list[list[str]] = []
+
         def runner(args: list[str]) -> str:
+            calls.append(args)
             if "check-runs" in args[-1]:
                 return json.dumps({"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}]})
             return json.dumps({"sha": "abc", "state": "success", "statuses": []})
@@ -67,6 +70,8 @@ class GitHubDeliveryTests(unittest.TestCase):
         adapter = GitHubDelivery(runner=runner)
         checks = adapter.checks(repository="owner/repo", candidate_sha="abc", required=["ci"])
         self.assertTrue(checks["ready"])
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all("--method" in call and call[call.index("--method") + 1] == "GET" for call in calls))
         with self.assertRaises(RunnerError) as context:
             adapter.merge(repository="owner/repo", number=12, expected_head="abc")
         self.assertEqual(context.exception.code, "merge_not_authorized")

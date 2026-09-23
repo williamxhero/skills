@@ -174,7 +174,7 @@ class GitHubDelivery:
         self._repo(repository)
         if not required or any(not isinstance(name, str) or not name.strip() for name in required):
             raise RunnerError("invalid_required_checks", "at least one non-empty required check is required")
-        raw = self.runner(["api", "--paginate", "--slurp", "-f", "per_page=100", f"repos/{repository}/commits/{candidate_sha}/check-runs"])
+        raw = self.runner(["api", "--paginate", "--slurp", "--method", "GET", "-f", "per_page=100", f"repos/{repository}/commits/{candidate_sha}/check-runs"])
         try:
             pages = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -184,7 +184,7 @@ class GitHubDelivery:
         if not isinstance(pages, list) or any(not isinstance(page, dict) for page in pages):
             raise RunnerError("github_checks_incomplete", "check-runs pagination response is incomplete")
         runs = [item for page in pages for item in (page.get("check_runs") or []) if isinstance(item, dict)]
-        status_raw = self.runner(["api", "--paginate", "--slurp", "-f", "per_page=100", f"repos/{repository}/commits/{candidate_sha}/status"])
+        status_raw = self.runner(["api", "--paginate", "--slurp", "--method", "GET", "-f", "per_page=100", f"repos/{repository}/commits/{candidate_sha}/status"])
         try:
             status_pages = json.loads(status_raw)
         except json.JSONDecodeError as exc:
