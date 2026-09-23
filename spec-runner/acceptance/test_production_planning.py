@@ -92,7 +92,9 @@ def test_planning_prompt_binds_covers_to_exact_requirements(context, monkeypatch
     root, config, store, run = context
     calls = adapter(monkeypatch, [spec_document()])
     workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
-    assert "covers list must contain only exact strings copied from that requirements list" in calls[0]["trusted"]["legacy_prompt"]
+    prompt = calls[0]["trusted"]["legacy_prompt"]
+    assert "covers list must contain only exact strings copied from that requirements list" in prompt
+    assert "Every requirement must appear in at least one covers list" in prompt
 
 
 def test_planning_persists_real_callback_identity_and_publishes_local_parent(context, monkeypatch):

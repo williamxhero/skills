@@ -337,7 +337,9 @@ def _execute_codex_planning(
         "If a user decision is required, return outcome needs_input and questions; otherwise return outcome "
         "planned with complete requirements and dependency-ordered specs. The requirements field is the exact "
         "canonical list of requirement strings, and every spec's covers list must contain only exact strings "
-        "copied from that requirements list; do not put acceptance prose or paraphrases in covers.\n\n" + brief
+        "copied from that requirements list; do not put acceptance prose or paraphrases in covers. Every "
+        "requirement must appear in at least one covers list, including global structural or scope "
+        "requirements; do not treat those requirements as implicitly covered by the shape of the plan.\n\n" + brief
     )
     if handoff:
         prompt += "\n\nValidated Grill handoff:\n" + json.dumps(handoff, ensure_ascii=False, sort_keys=True)
