@@ -154,6 +154,32 @@ class StoreLeaseTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_external_operation_returns_structured_receipt_after_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                prepared = store.prepare_external_operation(
+                    operation_id="github:issue:1", run_id="run-external",
+                    operation_kind="github_issue_publication", repository="owner/repo",
+                    input_digest="digest",
+                )
+                self.assertEqual(prepared["state"], "intent")
+                self.assertNotIn("receipt_json", prepared)
+                completed = store.complete_external_operation(
+                    operation_id="github:issue:1", receipt={"key": "S1", "number": 1},
+                )
+                self.assertEqual(completed["receipt"], {"key": "S1", "number": 1})
+                self.assertNotIn("receipt_json", completed)
+                replay = store.prepare_external_operation(
+                    operation_id="github:issue:1", run_id="run-external",
+                    operation_kind="github_issue_publication", repository="owner/repo",
+                    input_digest="digest",
+                )
+                self.assertEqual(replay["state"], "completed")
+                self.assertEqual(replay["receipt"], {"key": "S1", "number": 1})
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

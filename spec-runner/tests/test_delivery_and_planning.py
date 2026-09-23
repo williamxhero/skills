@@ -134,6 +134,16 @@ class ProductBoundaryTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
             workspace_info = prepare_workspace(repository=repo, workspace_root=Path(temp) / "workspaces", run_id="12345678-1234-1234-1234-123456789012", spec_key="SR-01", base_ref="refs/heads/main")
+            adopted = prepare_workspace(
+                repository=repo,
+                workspace_root=Path(temp) / "workspaces",
+                run_id="12345678-1234-1234-1234-123456789012",
+                spec_key="SR-01",
+                base_ref="refs/heads/main",
+            )
+            self.assertEqual(adopted["manifest"], workspace_info["manifest"])
+            manifest_document = json.loads(Path(str(workspace_info["manifest"])).read_text(encoding="utf-8"))
+            self.assertEqual(manifest_document["manifest"], workspace_info["manifest"])
             workspace = Path(workspace_info["workspace"])
             (workspace / "README.md").write_text("candidate\n", encoding="utf-8")
             subprocess.run(["git", "add", "README.md"], cwd=workspace, check=True)

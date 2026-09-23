@@ -470,7 +470,13 @@ class Store:
                     event_type="external_operation_intent", payload={"operation_id": operation_id,
                         "operation_kind": operation_kind, "repository": repository, "input_digest": input_digest})
             row = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()
-            return dict(row)
+            assert row is not None
+            result = dict(row)
+            if result.get("receipt_json"):
+                result["receipt"] = json.loads(str(result.pop("receipt_json")))
+            else:
+                result.pop("receipt_json", None)
+            return result
 
     def complete_external_operation(self, *, operation_id: str, receipt: dict[str, object]) -> dict[str, object]:
         timestamp = now()
@@ -487,7 +493,10 @@ class Store:
                 event_type="external_operation_completed", payload={"operation_id": operation_id,
                     "receipt_digest": hashlib.sha256(receipt_json.encode("utf-8")).hexdigest()})
             row = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()
-            return dict(row)
+            assert row is not None
+            result = dict(row)
+            result["receipt"] = json.loads(str(result.pop("receipt_json")))
+            return result
 
     def external_operation(self, operation_id: str) -> dict[str, object] | None:
         row = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()

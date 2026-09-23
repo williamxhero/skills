@@ -312,7 +312,12 @@ class GitHubTracker:
                 )
             if operation_state and operation_state.get("state") == "completed":
                 operation_receipt = operation_state.get("receipt")
-                if not isinstance(operation_receipt, dict) or not operation_receipt.get("number"):
+                if (not isinstance(operation_receipt, dict)
+                        or operation_receipt.get("key") != key
+                        or operation_receipt.get("marker") != marker
+                        or not isinstance(operation_receipt.get("number"), int)
+                        or isinstance(operation_receipt.get("number"), bool)
+                        or operation_receipt["number"] < 1):
                     raise RunnerError("github_receipt_corrupt", "completed issue operation has no issue identity")
                 current = self._issue(repository, int(operation_receipt["number"]))
                 if current.get("pull_request") or current.get("title") != title or current.get("body") != rendered_body:
@@ -329,9 +334,18 @@ class GitHubTracker:
             if prior:
                 if prior.get("marker") != marker:
                     raise RunnerError("github_operation_conflict", "published issue marker changed for the same operation")
+                if (not isinstance(prior.get("number"), int)
+                        or isinstance(prior.get("number"), bool)
+                        or prior["number"] < 1):
+                    raise RunnerError("github_receipt_corrupt", "published issue receipt has no valid issue identity")
                 current = self._issue(repository, int(prior["number"]))
                 if current.get("title") != title or current.get("body") != f"{marker}\n{body}" or current.get("pull_request"):
                     raise RunnerError("github_publish_conflict", "published issue changed since its receipt")
+                if operation_state is not None and operation_state.get("state") != "completed":
+                    if operation_completed is None:
+                        raise RunnerError("github_operation_incomplete", "published issue receipt cannot replace a missing durable operation completion")
+                    operation_completed(operation_id=item_operation_id, receipt=prior)
+                receipt["unknown_keys"] = [unknown for unknown in receipt["unknown_keys"] if unknown != key]
                 continue
             response: dict[str, Any] | None
             if key in receipt["unknown_keys"]:

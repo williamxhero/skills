@@ -340,6 +340,100 @@ class CodexWorkflowControlTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_process_exit_reconciles_completed_running_implementation_turn(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-codex-running-implementation-recovery-") as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q", str(repository)], check=True)
+            (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "baseline"],
+                check=True,
+            )
+            config = RunnerConfig(
+                repository, "HEAD", Path("artifacts"), "codex_sdk", ("production",),
+                "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
+            )
+            run_id = "66666666-6666-6666-6666-666666666666"
+            timestamp = now()
+            run = RunRecord(
+                run_id=run_id,
+                launch_key="running-implementation-recovery",
+                input_digest="brief",
+                config_digest="config",
+                repository_path=str(repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="codex_sdk",
+                state="starting",
+                current_step="codex_implementation",
+                log_path="logs/run.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            store = Store.open(root / "control", create=True)
+            try:
+                store.create_run(run, f"start:{run_id}")
+                operation_id = f"implementation:{run_id}:SPEC-95"
+                worker_id = f"codex_sdk:{run_id}:codex_implementation:SPEC-95"
+                store.begin_stage(
+                    run_id, step_name="codex_implementation", operation_id=operation_id,
+                    backend_kind="codex_sdk", worker_id=worker_id,
+                )
+                store.record_codex_turn_started(
+                    run_id, operation_id, thread_id="implementation-thread",
+                    turn_id="implementation-turn", step_name="codex_implementation",
+                    worker_id=worker_id,
+                )
+                running = store.find_by_run_id(run_id)
+                assert running is not None
+                workflow.prepare_workspace(
+                    repository=repository, workspace_root=root / "control" / "delivery-workspaces",
+                    run_id=run_id, spec_key="SPEC-95", base_ref="HEAD",
+                )
+                reconciled = {"run": {"state": "needs_input"}}
+
+                class ReadOnlyAdapter:
+                    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                        self_thread = thread_id
+                        self_path = repository_path
+                        if self_thread != "implementation-thread" or self_path != Path(
+                            str(root / "control" / "delivery-workspaces" / "SPEC-95-66666666")
+                        ):
+                            raise AssertionError("recovery inspected the wrong SDK thread or workspace")
+                        return {
+                            "schema_version": "spec-runner-sdk-thread-inspection/v1",
+                            "thread_id": "implementation-thread",
+                            "thread_status": "idle",
+                            "active_flags": [],
+                            "started_turn": False,
+                            "turn_count": 1,
+                            "turns": [{"turn_id": "implementation-turn", "status": "completed"}],
+                        }
+
+                with (
+                    patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                    patch.object(workflow, "_reconcile_completed_implementation_turn", return_value=reconciled) as reconcile,
+                    patch.object(workflow, "_execute_codex_implementation", side_effect=AssertionError("must not replay a completed turn")),
+                ):
+                    recovered = workflow._recover_after_process_exit(
+                        control_root=root / "control",
+                        config=config,
+                        run=running,
+                        brief="brief",
+                        brief_digest="brief",
+                        store=store,
+                    )
+
+                self.assertEqual(recovered, {"created": False, **reconciled})
+                reconcile.assert_called_once()
+                self.assertEqual(reconcile.call_args.kwargs["thread_id"], "implementation-thread")
+                self.assertEqual(reconcile.call_args.kwargs["turn_id"], "implementation-turn")
+            finally:
+                store.close()
+
     def test_process_exit_reconciles_completed_ticket_turn(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-completed-ticket-recovery-") as temp:
             root = Path(temp)

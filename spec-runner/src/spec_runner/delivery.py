@@ -211,7 +211,7 @@ def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, sp
         if previous.get("run_id") != run_id or previous.get("base_sha") != base_sha or Path(str(previous.get("workspace", ""))).resolve() != workspace:
             raise RunnerError("workspace_adoption_conflict", "existing workspace manifest belongs to another candidate")
         if workspace.is_dir() and git_sha(workspace) :
-            return previous
+            return {**previous, "manifest": os.fspath(manifest)}
     if workspace.exists():
         raise RunnerError("workspace_path_conflict", "workspace path already exists without an adopted manifest")
     # A worktree never touches the caller's currently checked-out files.
@@ -221,13 +221,12 @@ def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, sp
     except RunnerError:
         _git(repository, "worktree", "remove", "--force", os.fspath(workspace))
         raise
-    result = {"schema_version": "spec-runner-workspace/v1", "run_id": run_id, "spec_key": spec_key, "workspace": os.fspath(workspace), "branch": branch, "base_sha": base_sha, "repository": os.fspath(repository), "trust_mode": "local_workspace_write", "automatic_merge_allowed": False}
+    result = {"schema_version": "spec-runner-workspace/v1", "run_id": run_id, "spec_key": spec_key, "workspace": os.fspath(workspace), "branch": branch, "base_sha": base_sha, "repository": os.fspath(repository), "manifest": os.fspath(manifest), "trust_mode": "local_workspace_write", "automatic_merge_allowed": False}
     descriptor, temporary = tempfile.mkstemp(prefix=".workspace-", suffix=".json", dir=workspace_root)
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(result, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     os.replace(temporary, manifest)
-    result["manifest"] = os.fspath(manifest)
     return result
 
 

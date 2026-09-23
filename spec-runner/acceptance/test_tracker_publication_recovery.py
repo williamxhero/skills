@@ -175,6 +175,37 @@ def test_issue_operations_are_independently_durable_and_read_back(tmp_path):
     assert transport.posts == 2
 
 
+def test_projection_replay_repairs_missing_issue_operation_receipts(tmp_path):
+    transport = Transport()
+    operations = {}
+
+    def intent(**identity):
+        existing = operations.get(identity["operation_id"])
+        if existing:
+            assert existing["input_digest"] == identity["input_digest"]
+            return existing
+        operations[identity["operation_id"]] = {**identity, "state": "intent"}
+        return operations[identity["operation_id"]]
+
+    def completed(*, operation_id, receipt):
+        operations[operation_id].update(state="completed", receipt=receipt)
+
+    def run():
+        return GitHubTracker(runner=transport).publish_draft(
+            repository="williamxhero/skills", draft=draft(),
+            operation_id="SRAC-projection-replay", receipt_root=tmp_path,
+            operation_intent=intent, operation_completed=completed)
+
+    first = run()
+    assert first["receipt"]["complete"]
+    operations.clear()
+    second = run()
+
+    assert second["receipt"]["complete"]
+    assert transport.posts == 2
+    assert all(value["state"] == "completed" for value in operations.values())
+
+
 def test_native_relations_are_logged_written_and_read_back(tmp_path):
     transport = Transport()
     operations = {}
