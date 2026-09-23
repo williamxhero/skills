@@ -59,6 +59,8 @@ def _parser() -> argparse.ArgumentParser:
     answer_parser.add_argument("--run-id", required=True)
     answer_parser.add_argument("--question-id", required=True)
     answer_parser.add_argument("--value", required=True)
+    answer_parser.add_argument("--brief", type=Path)
+    answer_parser.add_argument("--config", type=Path)
     launch_parser = subparsers.add_parser("launch", help="start a detached Runner and wait for its handshake")
     launch_parser.add_argument("--brief", required=True, type=Path)
     launch_parser.add_argument("--config", required=True, type=Path)
@@ -255,9 +257,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 answer_value = arguments.value
             store = Store.open(arguments.control_root.expanduser().resolve(), create=False)
             try:
-                result = {"accepted": True, "answer": store.submit_answer(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value), **store.public_status(arguments.run_id)}
+                answer = store.submit_answer(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value)
+                store.request_control(arguments.run_id, "resume_requested")
+                result = {"accepted": True, "answer": answer, **store.public_status(arguments.run_id)}
             finally:
                 store.close()
+            if arguments.brief or arguments.config:
+                if not arguments.brief or not arguments.config:
+                    raise RunnerError("answer_inputs_incomplete", "answer continuation requires both --brief and --config")
+                result["continuation"] = resume(brief_file=arguments.brief, config_file=arguments.config, control_root=arguments.control_root, launch_key=str(result["run"]["launch_key"]))
         elif arguments.command == "launch":
             result = launch(
                 brief_file=arguments.brief,
