@@ -20,6 +20,7 @@ from .plans import load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
 from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_review, verify_candidate
 from .tracker import read_local, publish_local
+from .github_tracker import GitHubTracker
 from .scope_lock import ScopeLock
 from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
 from .github_delivery import GitHubDelivery
@@ -405,6 +406,37 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
     return source
 
 
+def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict[str, object],
+                         operation_id: str, run_id: str) -> dict[str, object]:
+    """Publish the validated plan through the configured tracker boundary.
+
+    GitHub publication is deliberately a separate receipt-backed operation. It
+    is never inferred from local files and it keeps body-link relations
+    explicit because native GitHub relation writes are not capability-verified.
+    """
+    source = plan
+    spec_key = str(source["spec_key"])
+    spec_title = str(source.get("spec_title") or spec_key)
+    spec_body = str(source.get("spec_body") or "")
+    specs = [{"key": spec_key, "title": spec_title,
+              "body": f"spec-runner-run:{run_id}\n\n{spec_body}"}]
+    for ticket in source["tickets"]:  # type: ignore[index]
+        ticket_key = str(ticket["key"])
+        blocked = list(ticket.get("blocked_by", []))
+        relation = f"Parent SPEC: {spec_key}"
+        if blocked:
+            relation += "\nBlocked by: " + ", ".join(str(item) for item in blocked)
+        specs.append({"key": ticket_key, "title": str(ticket.get("title") or ticket_key),
+                      "body": f"spec-runner-run:{run_id}\n{relation}\n\n{ticket['body']}"})
+    # The first item is the umbrella SPEC; remaining items are its tickets.
+    draft = {"umbrella": specs[0], "specs": specs[1:]}
+    if not config.github_repository or not config.github_receipt_root:
+        raise RunnerError("github_config_incomplete", "GitHub tracker publication requires repository and receipt root")
+    return GitHubTracker().publish_draft(repository=config.github_repository, draft=draft,
+        operation_id=operation_id, receipt_root=config.github_receipt_root,
+        relation_mode="body_links")
+
+
 def _execute_codex_tickets(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     spec_plan: dict[str, object], thread_id: str | None = None,
@@ -463,7 +495,12 @@ def _execute_codex_tickets(
     (artifact_directory / f"ticket-plan-{spec_key}.json").write_text(json.dumps(validated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     source = _ticket_plan_source(artifact_directory=artifact_directory, plan=validated, run_id=run.run_id)
     published = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
-    store.write_log(control_root, run.run_id, {"event": "ticket_plan_published", "spec_key": spec_key, "ticket_count": len(validated["tickets"]), "tracker": published})
+    tracker_receipts: dict[str, object] = {"local": published}
+    if config.github_repository is not None:
+        tracker_receipts["github"] = _publish_ticket_plan(
+            config=config, control_root=control_root, plan=validated,
+            operation_id=operation_id, run_id=run.run_id)
+    store.write_log(control_root, run.run_id, {"event": "ticket_plan_published", "spec_key": spec_key, "ticket_count": len(validated["tickets"]), "tracker": tracker_receipts})
     return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="tickets_ready", step_name=step_name, worker_id=worker_id)
 
 

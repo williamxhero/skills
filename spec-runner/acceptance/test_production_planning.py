@@ -80,6 +80,30 @@ def test_planning_persists_real_callback_identity_and_publishes_local_parent(con
     assert {item["external_thread_id"] for item in workers if item["external_thread_id"]} == {"thread-1", "thread-2"}
 
 
+def test_github_tracker_is_published_after_local_plan_and_keeps_body_link_mode(context, monkeypatch):
+    root, config, store, run = context
+    config = replace(config, github_repository="williamxhero/skills",
+        github_receipt_root=root / "github-receipts")
+    adapter(monkeypatch, [spec_document(), {"outcome": "planned", "questions": [], "tickets": [
+        {"key": "T1", "title": "Ticket", "body": "Implement R1", "acceptance": ["R1"], "blocked_by": []}] }])
+    published = []
+
+    class FakeGitHubTracker:
+        def publish_draft(self, **kwargs):
+            published.append(kwargs)
+            return {"created": True, "receipt": {"operation_id": kwargs["operation_id"], "complete": True}}
+
+    monkeypatch.setattr(workflow, "GitHubTracker", FakeGitHubTracker)
+    planned = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
+    plan = json.loads((root / "artifacts" / run.run_id / "spec-plan.json").read_text())
+    workflow._execute_codex_tickets(control_root=root, config=config, brief_digest="brief", run=planned, store=store, spec_plan=plan)
+    assert len(published) == 1
+    assert published[0]["repository"] == "williamxhero/skills"
+    assert published[0]["relation_mode"] == "body_links"
+    assert published[0]["draft"]["umbrella"]["key"] == "S1"
+    assert published[0]["draft"]["specs"][0]["key"] == "T1"
+
+
 @pytest.mark.parametrize("status", ["failed", "interrupted", "unknown"])
 def test_nonterminal_or_failed_planner_cannot_publish_valid_looking_plan(context, monkeypatch, status):
     root, config, store, run = context
