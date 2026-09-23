@@ -54,12 +54,21 @@ def test_live_owner_is_not_stolen_even_with_zero_stale_budget(lock_root):
         _release_global_lease(first, "a")
 
 
-def test_legacy_timestamp_lease_is_not_silently_stolen(lock_root):
+def test_live_legacy_timestamp_lease_is_not_silently_stolen(lock_root):
     (lock_root / "scope.json").write_text(json.dumps({"pid": os.getpid(), "owner_token": "old"}))
     os.utime(lock_root / "scope.json", (1, 1))
     with pytest.raises(RunnerError) as error:
         _acquire_global_lease(scope="s", owner_token="new", stale_after_seconds=0)
     assert error.value.code == "legacy_scope_lease_present"
+
+
+def test_dead_legacy_timestamp_lease_is_reclaimed(lock_root):
+    (lock_root / "scope.json").write_text(json.dumps({"pid": 2147483647, "owner_token": "old"}))
+    lease = _acquire_global_lease(scope="s", owner_token="new", stale_after_seconds=0)
+    try:
+        assert lease.descriptor is not None
+    finally:
+        _release_global_lease(lease, "new")
 
 
 @pytest.mark.parametrize("crash", [False, True])

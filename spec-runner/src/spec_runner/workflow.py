@@ -23,6 +23,7 @@ from .tracker import read_local, publish_local
 from .scope_lock import ScopeLock
 from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
 from .github_delivery import GitHubDelivery
+from .store import _process_alive
 
 
 def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None, schema: dict[str, object] | None = None):
@@ -80,10 +81,20 @@ def _global_lease_path(scope: str) -> Path:
 
 def _acquire_global_lease(*, scope: str, owner_token: str, stale_after_seconds: float) -> ScopeLock:
     path = _global_lease_path(scope)
-    # An older Runner may still hold the timestamp lease. Never steal it merely
-    # because its heartbeat is old, or silently mix ownership protocols.
+    # An older Runner may still hold the timestamp lease. Reclaim only when its
+    # recorded PID is proven dead; age alone is never ownership evidence.
     if path.exists():
-        raise RunnerError("legacy_scope_lease_present", "old repository lease requires owner reconciliation", details={"path": str(path)})
+        try:
+            legacy = json.loads(path.read_text(encoding="utf-8"))
+            pid = int(legacy.get("pid", 0))
+        except (OSError, UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise RunnerError("legacy_scope_lease_present", "old repository lease cannot be safely inspected", details={"path": str(path)}) from exc
+        if _process_alive(pid):
+            raise RunnerError("legacy_scope_lease_present", "old repository lease belongs to an active process", details={"path": str(path), "owner_pid": pid})
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise RunnerError("legacy_scope_lease_present", "dead legacy repository lease could not be reclaimed", details={"path": str(path)}) from exc
     return ScopeLock.acquire(path.with_suffix(".lock"), owner_token)
 
 
