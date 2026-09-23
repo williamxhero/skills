@@ -189,6 +189,36 @@ def _record_codex_turn_started(
     )
 
 
+def _planning_response(*, result: CodexWorkerResult, control_root: Path, config: RunnerConfig,
+                       run: RunRecord, store: Store, operation_id: str, step_name: str,
+                       worker_id: str, brief_digest: str) -> dict[str, object] | RunRecord:
+    directory = _safe_artifact_directory(control_root, config, run.run_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    # Retain the actual transport result even if semantic validation fails.
+    turn_key = hashlib.sha256(result.turn_id.encode("utf-8")).hexdigest()
+    (directory / f"{step_name}-{turn_key}.json").write_text(
+        json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if result.status != "completed" or result.error:
+        raise RunnerError("planning_worker_failed", "planning requires a successful terminal SDK turn")
+    try:
+        document = json.loads(result.final_response or "null")
+    except json.JSONDecodeError as exc:
+        raise RunnerError("invalid_planning_output", "planning worker did not return JSON") from exc
+    if not isinstance(document, dict):
+        raise RunnerError("invalid_planning_output", "planning worker returned a non-object")
+    declared = _declared_model_result(result, brief_digest=brief_digest, stage=step_name)
+    if document.get("outcome") == "needs_input":
+        if not declared["questions"]:
+            raise RunnerError("invalid_worker_questions", "needs_input requires at least one question")
+        (directory / "worker-result.json").write_text(json.dumps(declared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id,
+            turn_id=result.turn_id, state="needs_input", step_name=step_name, worker_id=worker_id)
+    if document.get("outcome") != "planned" or declared["questions"]:
+        raise RunnerError("planning_not_ready", "only planned without unanswered questions may advance",
+                          details={"outcome": document.get("outcome")})
+    return document
+
+
 def _execute_codex_planning(
     *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store
 ) -> RunRecord:
@@ -196,7 +226,7 @@ def _execute_codex_planning(
     step_name = "codex_planning"
     operation_id = f"planning:{run.run_id}"
     worker_id = f"codex_sdk:{run.run_id}:{step_name}"
-    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="codex_sdk")
+    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="codex_sdk", worker_id=worker_id)
     schema = {"type": "object", "properties": {
         "outcome": {"type": "string"}, "requirements": {"type": "array", "items": {"type": "string"}},
         "specs": {"type": "array", "items": {"type": "object", "properties": {
@@ -215,12 +245,10 @@ def _execute_codex_planning(
         schema=schema,
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
     )
-    try:
-        document = json.loads(result.final_response or "null")
-    except json.JSONDecodeError as exc:
-        raise RunnerError("invalid_planning_output", "planning worker did not return JSON") from exc
-    if not isinstance(document, dict):
-        raise RunnerError("invalid_planning_output", "planning worker returned a non-object")
+    document = _planning_response(result=result, control_root=control_root, config=config, run=run,
+        store=store, operation_id=operation_id, step_name=step_name, worker_id=worker_id, brief_digest=brief_digest)
+    if isinstance(document, RunRecord):
+        return document
     document["schema_version"] = "spec-runner-spec-plan/v1"
     document["requirement_digest"] = brief_digest
     validated = validate_spec_plan(document)
@@ -251,7 +279,7 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
         "comments": [f"spec-runner-run:{run_id}"],
     }
     spec_frontmatter = "---\n" + "\n".join(
-        f"{field}: {json.dumps(value, ensure_ascii=False, separators=(',', ':')) if isinstance(value, (list, dict)) else value}"
+        f"{field}: {json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
         for field, value in spec_metadata.items()
     ) + "\n---\n"
     (source / ("".join(character if character.isalnum() or character in "._-" else "-" for character in spec_key) + ".md")).write_text(
@@ -271,7 +299,7 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
             "comments": [f"spec-runner-run:{run_id}"],
         }
         frontmatter = "---\n" + "\n".join(
-            f"{field}: {json.dumps(value, ensure_ascii=False, separators=(',', ':')) if isinstance(value, (list, dict)) else value}"
+            f"{field}: {json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
             for field, value in metadata.items()
         ) + "\n---\n"
         (source / filename).write_text(frontmatter + body.rstrip() + "\n", encoding="utf-8", newline="\n")
@@ -292,7 +320,7 @@ def _execute_codex_tickets(
     step_name = "codex_ticket_planning"
     operation_id = f"tickets:{run.run_id}:{spec_key}"
     worker_id = f"codex_sdk:{run.run_id}:{step_name}:{spec_key}"
-    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="codex_sdk")
+    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="codex_sdk", worker_id=worker_id)
     schema = {
         "type": "object",
         "properties": {
@@ -319,18 +347,10 @@ def _execute_codex_tickets(
         schema=schema,
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
     )
-    try:
-        document = json.loads(result.final_response or "null")
-    except json.JSONDecodeError as exc:
-        raise RunnerError("invalid_ticket_planning_output", "ticket worker did not return JSON") from exc
-    if not isinstance(document, dict):
-        raise RunnerError("invalid_ticket_planning_output", "ticket worker returned a non-object")
-    questions = document.get("questions", [])
-    if document.get("outcome") == "needs_input" and questions:
-        artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
-        artifact_directory.mkdir(parents=True, exist_ok=True)
-        (artifact_directory / "worker-result.json").write_text(json.dumps({"questions": questions, **result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-        return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="needs_input", step_name=step_name, worker_id=worker_id)
+    document = _planning_response(result=result, control_root=control_root, config=config, run=run,
+        store=store, operation_id=operation_id, step_name=step_name, worker_id=worker_id, brief_digest=brief_digest)
+    if isinstance(document, RunRecord):
+        return document
     document.update({
         "schema_version": "spec-runner-ticket-plan/v1", "spec_key": spec_key, "base_sha": base_sha,
         "spec_title": str(spec.get("title") or spec_key), "spec_body": str(spec.get("body") or ""),
@@ -373,7 +393,7 @@ def _execute_codex_implementation(
     implementation_operation = f"implementation:{run.run_id}:{spec_key}"
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
-    store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk")
+    store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
     schema = {"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers", "questions"], "additionalProperties": False}
     result = _run_worker(
         adapter=CodexAdapter(), phase="implement", config=config,
@@ -401,7 +421,7 @@ def _execute_codex_implementation(
     review_operation = f"review:{run.run_id}:{spec_key}:{candidate_sha}"
     review_step = "codex_review"
     review_worker = f"codex_sdk:{run.run_id}:{review_step}:{spec_key}"
-    store.begin_stage(run.run_id, step_name=review_step, operation_id=review_operation, backend_kind="codex_sdk")
+    store.begin_stage(run.run_id, step_name=review_step, operation_id=review_operation, backend_kind="codex_sdk", worker_id=review_worker)
     review_schema = {"type": "object", "properties": {"schema_version": {"type": "string"}, "candidate_sha": {"type": "string"}, "acceptance_version": {"type": "string"}, "findings": {"type": "array"}}, "required": ["schema_version", "candidate_sha", "acceptance_version", "findings"], "additionalProperties": True}
     review_result = _run_worker(
         adapter=CodexAdapter(), phase="review", config=config,

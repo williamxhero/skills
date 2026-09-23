@@ -531,7 +531,7 @@ class Store:
                 payload={"operation_id": operation_id, "step_name": step_name, "thread_id": thread_id, "turn_id": turn_id},
             )
 
-    def begin_stage(self, run_id: str, *, step_name: str, operation_id: str, backend_kind: str) -> None:
+    def begin_stage(self, run_id: str, *, step_name: str, operation_id: str, backend_kind: str, worker_id: str | None = None) -> None:
         timestamp = now()
         with self.transaction():
             self.connection.execute(
@@ -544,7 +544,7 @@ class Store:
             )
             self.connection.execute(
                 "INSERT OR IGNORE INTO workers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"{backend_kind}:{run_id}:{step_name}", run_id, backend_kind, None, None, "pending", timestamp, timestamp),
+                (worker_id or f"{backend_kind}:{run_id}:{step_name}", run_id, backend_kind, None, None, "pending", timestamp, timestamp),
             )
             self.connection.execute(
                 "UPDATE runs SET current_step = ?, state = ?, updated_at = ? WHERE run_id = ?",

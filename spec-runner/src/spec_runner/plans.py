@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,7 @@ def _list(value: Any, field: str) -> list[dict[str, Any]]:
 
 def _keys(items: list[dict[str, Any]], field: str) -> set[str]:
     keys = [item.get("key") for item in items]
-    if any(not isinstance(key, str) or not key.strip() for key in keys) or len(set(keys)) != len(keys):
+    if not keys or any(not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}", key) for key in keys) or len({key.casefold() for key in keys}) != len(keys):
         raise RunnerError("invalid_plan", f"{field} keys must be non-empty and unique")
     return set(keys)
 
@@ -78,24 +79,34 @@ def _acyclic(items: list[dict[str, Any]], keys: set[str], *, relation: str = "bl
         visit(key)
 
 
+def _ordered(items: list[dict[str, Any]]) -> None:
+    """Respect the supplied execution queue; never silently sort it."""
+    seen: set[str] = set()
+    for item in items:
+        if set(item.get("blocked_by") or []) - seen:
+            raise RunnerError("plan_order_conflict", "a prerequisite appears after its dependent in the explicit queue")
+        seen.add(item["key"])
+
+
 def validate_spec_plan(document: dict[str, Any]) -> dict[str, Any]:
     if document.get("schema_version") != SPEC_PLAN_SCHEMA:
         raise RunnerError("invalid_spec_plan", f"schema_version must be {SPEC_PLAN_SCHEMA}")
     requirements = document.get("requirements")
-    if not isinstance(requirements, list) or any(not isinstance(value, str) or not value for value in requirements):
+    if not isinstance(requirements, list) or not requirements or any(not isinstance(value, str) or not value.strip() for value in requirements) or len(set(requirements)) != len(requirements):
         raise RunnerError("invalid_spec_plan", "requirements must be non-empty requirement IDs")
     specs = _list(document.get("specs"), "specs")
     keys = _keys(specs, "specs")
     _acyclic(specs, keys)
+    _ordered(specs)
     covered: set[str] = set()
     for spec in specs:
-        if not isinstance(spec.get("title"), str) or not isinstance(spec.get("body"), str):
+        if any(not isinstance(spec.get(field), str) or not spec[field].strip() for field in ("title", "body")):
             raise RunnerError("invalid_spec_plan", "each SPEC needs title and body")
         route = spec.get("route")
         if not isinstance(route, dict) or not all(isinstance(route.get(x), str) and route[x] for x in ("model", "effort", "reason")):
             raise RunnerError("invalid_spec_plan", "each SPEC needs a model, effort, and reason")
         mapping = spec.get("covers", [])
-        if not isinstance(mapping, list) or any(item not in requirements for item in mapping):
+        if not isinstance(mapping, list) or not mapping or any(item not in requirements for item in mapping):
             raise RunnerError("invalid_spec_plan", "SPEC covers must reference requirements")
         covered.update(mapping)
     missing = set(requirements) - covered
@@ -122,6 +133,9 @@ def validate_ticket_plan(document: dict[str, Any], *, expected_spec_key: str | N
     tickets = _list(document.get("tickets"), "tickets")
     keys = _keys(tickets, "tickets")
     _acyclic(tickets, keys)
+    _ordered(tickets)
+    if spec_key.casefold() in {key.casefold() for key in keys}:
+        raise RunnerError("invalid_ticket_plan", "a ticket key cannot overwrite its parent SPEC")
     for ticket in tickets:
         if not isinstance(ticket.get("body"), str) or not ticket["body"].strip():
             raise RunnerError("invalid_ticket_plan", "each ticket requires a body")
