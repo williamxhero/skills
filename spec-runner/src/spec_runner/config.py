@@ -92,6 +92,7 @@ class RunnerConfig:
     # the same config with an empty acceptance section so those runs can be
     # resumed through the public CLI after the required checks are supplied.
     legacy_acceptance_digest: str = ""
+    acceptance_timeout_compatible_digest: str = ""
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -222,6 +223,9 @@ class RunnerConfig:
         }
         compatibility_normalized = json.loads(_canonical_json(normalized))
         compatibility_normalized["workflow"]["acceptance"] = {"ids": [], "checks": []}
+        timeout_compatible_normalized = json.loads(_canonical_json(normalized))
+        for check in timeout_compatible_normalized["workflow"]["acceptance"]["checks"]:
+            check.pop("timeout_seconds", None)
         return cls(
             repository_path=repository_path,
             target_ref=target_ref,
@@ -239,6 +243,9 @@ class RunnerConfig:
             acceptance_ids=tuple(acceptance_ids),
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
             legacy_acceptance_digest=digest_bytes(_canonical_json(compatibility_normalized).encode("utf-8")),
+            acceptance_timeout_compatible_digest=digest_bytes(
+                _canonical_json(timeout_compatible_normalized).encode("utf-8")
+            ),
             github_repository=github_repository,
             github_required_checks=tuple(github_checks),
             github_receipt_root=(control_root / github_receipt).resolve() if github_receipt else None,

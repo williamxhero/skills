@@ -241,7 +241,11 @@ def _run_check(workspace: Path, command: list[str], timeout: int) -> dict[str, o
         stdout, stderr = process.stdout, process.stderr
     except subprocess.TimeoutExpired as exc:
         timed_out, code, stdout, stderr = True, None, exc.stdout or "", exc.stderr or ""
-    return {"command": command, "exit_code": code, "timed_out": timed_out, "duration_seconds": round(time.monotonic() - started, 3), "stdout_digest": hashlib.sha256(str(stdout).encode()).hexdigest(), "stderr_digest": hashlib.sha256(str(stderr).encode()).hexdigest(), "passed": not timed_out and code == 0}
+    def tail(value: object) -> str:
+        text = str(value)
+        return text[-4000:]
+
+    return {"command": command, "exit_code": code, "timed_out": timed_out, "duration_seconds": round(time.monotonic() - started, 3), "stdout_digest": hashlib.sha256(str(stdout).encode()).hexdigest(), "stderr_digest": hashlib.sha256(str(stderr).encode()).hexdigest(), "stdout_tail": tail(stdout), "stderr_tail": tail(stderr), "passed": not timed_out and code == 0}
 
 
 def verify_candidate(*, workspace: Path, candidate_sha: str, acceptance_version: str, checks: list[dict[str, Any]], acceptance: list[str]) -> dict[str, object]:

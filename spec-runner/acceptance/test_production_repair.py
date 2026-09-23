@@ -69,7 +69,7 @@ def test_repair_cannot_commit_unverified_semantic_result(monkeypatch, case, expe
                     findings=[{"severity": "high", "status": "open", "description": "missing validation"}],
                     implementation_thread="owner", artifact_directory=artifacts)
             assert error.value.code == expected
-            assert len(git_calls) == (1 if case == "no_progress" else 0)
+            assert len(git_calls) == (1 if case in {"no_progress", "blocked"} else 0)
             assert len(list(artifacts.glob("repair-worker-*.json"))) == 1
             assert store.find_by_run_id(run.run_id).state != "completed"
         finally:

@@ -653,7 +653,22 @@ def _execute_independent_review(*, control_root: Path, config: RunnerConfig, bri
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=review_schema,
     )
     (artifact_directory / f"review-worker-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps(review_result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    validated = independent_review(review_result, implementation_thread=implementation_thread, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
+    try:
+        validated = independent_review(review_result, implementation_thread=implementation_thread, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
+    except RunnerError as exc:
+        # A completed SDK turn with an invalid receipt is terminal external
+        # work, but it cannot advance delivery. Persist that distinction so a
+        # later drive can archive/read back the reviewer and retry review.
+        store.reject_codex_stage(
+            run.run_id,
+            review_operation,
+            thread_id=review_result.thread_id,
+            turn_id=review_result.turn_id,
+            step_name=review_step,
+            worker_id=review_worker,
+            code=exc.code,
+        )
+        raise
     store.complete_codex_stage(run.run_id, review_operation, thread_id=review_result.thread_id, turn_id=review_result.turn_id, state="reviewed", step_name=review_step, worker_id=review_worker)
     (artifact_directory / f"review-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps({**validated, "worker": review_result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     CodexAdapter().archive_and_readback(thread_id=review_result.thread_id, repository_path=workspace)
@@ -662,17 +677,34 @@ def _execute_independent_review(*, control_root: Path, config: RunnerConfig, bri
 
 def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord,
                       store: Store, ticket_plan: dict[str, object], workspace: Path,
-                      findings: list[object], implementation_thread: str, artifact_directory: Path) -> tuple[str, dict[str, object]]:
+                      findings: list[object], implementation_thread: str, artifact_directory: Path,
+                      start_new_thread: bool = False) -> tuple[str, dict[str, object]]:
     spec_key = str(ticket_plan["spec_key"])
-    operation = f"repair:{run.run_id}:{spec_key}:{len(store.workers_for_run(run.run_id))}"
+    operation = f"repair:{run.run_id}:{spec_key}:{len(store.operations_for_run(run.run_id))}"
     step = "codex_repair"
     worker = f"codex_sdk:{run.run_id}:{step}:{spec_key}"
     store.begin_stage(run.run_id, step_name=step, operation_id=operation, backend_kind="codex_sdk", worker_id=worker)
+    adapter = CodexAdapter()
+    if not start_new_thread:
+        # A prior candidate/review cycle may have archived the implementation
+        # thread. Repair must resume that same formal owner, so explicitly
+        # restore it before issuing the next SDK turn.  Lightweight adapter
+        # doubles used by the deterministic contract tests may not implement
+        # the optional archive probe; they still exercise the real receipt and
+        # candidate gates below.
+        unarchive = getattr(adapter, "unarchive_and_readback", None)
+        if callable(unarchive):
+            unarchive(thread_id=implementation_thread, repository_path=workspace)
     result = _run_worker(
-        adapter=CodexAdapter(), phase="implement", config=config,
+        adapter=adapter, phase="implement", config=config,
         prompt=("Fix only these independent review findings in the existing assigned workspace. Preserve all acceptance "
-                "requirements and do not publish, merge, or edit outside the workspace.\n\n" + json.dumps(findings, ensure_ascii=False, sort_keys=True)),
-        model=config.model_name, effort=config.effort, thread_id=implementation_thread, repository_path=workspace,
+                "requirements and do not publish, merge, or edit outside the workspace. "
+                "The structured artifacts array must contain only existing workspace-relative file paths; "
+                "never include test summaries, prose, or other non-path text in artifacts.\n\n"
+                + json.dumps(findings, ensure_ascii=False, sort_keys=True)),
+        model=config.model_name, effort=config.effort,
+        thread_id=None if start_new_thread else implementation_thread,
+        repository_path=workspace,
         trusted={"brief_digest": brief_digest, "stage": step, "spec_key": spec_key, "review_findings": findings},
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation, step_name=step, worker_id=worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
@@ -681,18 +713,157 @@ def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest:
     turn_key = hashlib.sha256(result.turn_id.encode("utf-8")).hexdigest()
     (artifact_directory / f"repair-worker-{spec_key}-{turn_key}.json").write_text(
         json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if result.thread_id != implementation_thread:
+    if not start_new_thread and result.thread_id != implementation_thread:
         raise RunnerError("repair_owner_changed", "repair must resume the original implementation thread")
-    implementation_artifacts(result, workspace)
-    if not _git_checked(workspace, "status", "--porcelain"):
+    return _finish_repair_candidate_result(
+        control_root=control_root, config=config, run=run, store=store,
+        ticket_plan=ticket_plan, workspace=workspace, result=result,
+        operation=operation, worker=worker, artifact_directory=artifact_directory,
+        # A repair worker may report an environmental or unrelated test
+        # blocker after making real workspace changes. Let the trusted
+        # candidate acceptance gate decide whether that candidate is
+        # deliverable; do not discard the repair before verification.
+        allow_blocked=True,
+    )
+
+
+def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                                    store: Store, ticket_plan: dict[str, object], workspace: Path,
+                                    result: CodexWorkerResult, operation: str, worker: str,
+                                    artifact_directory: Path,
+                                    adopt_existing: bool = False,
+                                    allow_blocked: bool = False) -> tuple[str, dict[str, object]]:
+    """Commit and verify one already persisted repair result exactly once."""
+    spec_key = str(ticket_plan["spec_key"])
+    step = "codex_repair"
+    try:
+        implementation_artifacts(result, workspace)
+        workspace_status = _git_checked(workspace, "status", "--porcelain")
+    except RunnerError as exc:
+        # A blocked worker is admissible only when it actually produced a
+        # candidate that the trusted checks can evaluate.  Keep all other
+        # invalid receipts on the early semantic gate so they cannot even
+        # trigger a workspace inspection or write.
+        try:
+            declared = json.loads(result.final_response or "null")
+        except json.JSONDecodeError:
+            declared = None
+        if not (allow_blocked and exc.code == "implementation_not_ready"
+                and isinstance(declared, dict)
+                and declared.get("outcome") in {"blocked", "completed"}
+                and isinstance(declared.get("blockers"), list)
+                and bool(declared.get("blockers"))):
+            raise
+        workspace_status = _git_checked(workspace, "status", "--porcelain")
+        if not workspace_status:
+            raise exc
+        implementation_artifacts(result, workspace, allow_blocked=True)
+    if workspace_status:
+        _git_checked(workspace, "add", "--all")
+        _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: repair {spec_key}")
+    elif not adopt_existing:
         raise RunnerError("repair_no_progress", "repair worker produced no candidate changes")
-    _git_checked(workspace, "add", "--all")
-    _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: repair {spec_key}")
+    else:
+        candidate_sha = git_sha(workspace)
+        if candidate_sha == str(ticket_plan.get("base_sha") or ""):
+            raise RunnerError("repair_no_progress", "repair worker produced no candidate changes")
     candidate_sha = git_sha(workspace)
     candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks), acceptance=list(config.acceptance_ids))
     store.complete_codex_stage(run.run_id, operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=step, worker_id=worker)
     (artifact_directory / f"repair-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps({"candidate": candidate_receipt, "worker": result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return candidate_sha, candidate_receipt
+
+
+def _candidate_verification_finding(exc: RunnerError) -> dict[str, object]:
+    """Convert a failed trusted check into bounded repair input."""
+    details = exc.details if isinstance(exc.details, dict) else {}
+    checks = details.get("checks")
+    failed_checks = [
+        {
+            "command": item.get("command"),
+            "exit_code": item.get("exit_code"),
+            "timed_out": item.get("timed_out"),
+            "stdout_digest": item.get("stdout_digest"),
+            "stderr_digest": item.get("stderr_digest"),
+            "stdout_tail": item.get("stdout_tail"),
+            "stderr_tail": item.get("stderr_tail"),
+        }
+        for item in checks
+        if isinstance(item, dict) and not item.get("passed")
+    ] if isinstance(checks, list) else []
+    return {
+        "severity": "high",
+        "status": "open",
+        "description": "Trusted candidate verification failed. Run the exact acceptance command(s), fix the product regression, and preserve the SPEC contract.",
+        "verification_error": exc.code,
+        "checks": failed_checks,
+    }
+
+
+def _retry_repair_after_candidate_failure(*, control_root: Path, config: RunnerConfig,
+                                         brief_digest: str, run: RunRecord, store: Store,
+                                         ticket_plan: dict[str, object], workspace: Path,
+                                         findings: list[object], implementation_thread: str,
+                                         artifact_directory: Path, failed_operation: str,
+                                         failed_result: CodexWorkerResult,
+                                         failure: RunnerError) -> tuple[str, dict[str, object]]:
+    """Give one failed candidate check back to the repair worker.
+
+    The failed candidate is already committed in the managed workspace. The
+    next turn therefore edits that exact candidate and remains on the formal
+    repair thread recorded by the Runner.
+    """
+    worker = f"codex_sdk:{run.run_id}:codex_repair:{ticket_plan['spec_key']}"
+    store.complete_codex_stage(
+        run.run_id, failed_operation, thread_id=failed_result.thread_id,
+        turn_id=failed_result.turn_id, state="candidate_verification_failed",
+        step_name="codex_repair", worker_id=worker,
+    )
+    worker_rows = [
+        item for item in store.workers_for_run(run.run_id)
+        if str(item.get("worker_id") or "") == worker
+    ]
+    repair_thread = str(worker_rows[-1].get("external_thread_id") or "") if worker_rows else ""
+    if not repair_thread:
+        raise RunnerError("recovery_blocked", "candidate verification failed but the repair thread identity was lost")
+    repair_findings = [*findings, _candidate_verification_finding(failure)]
+    candidate_sha, receipt = _repair_candidate(
+        control_root=control_root, config=config, brief_digest=brief_digest,
+        run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+        findings=repair_findings, implementation_thread=repair_thread,
+        artifact_directory=artifact_directory,
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:candidate-verification-repaired:{candidate_sha}",
+        event_type="candidate_verification_failure_repaired",
+        payload={"spec_key": str(ticket_plan["spec_key"]), "failed_operation": failed_operation,
+                 "repair_thread_id": repair_thread, "candidate_sha": candidate_sha},
+    )
+    return candidate_sha, receipt
+
+
+def _resume_after_repair_candidate(*, control_root: Path, config: RunnerConfig,
+                                   brief_digest: str, run: RunRecord, store: Store,
+                                   spec_key: str) -> dict[str, object]:
+    """Return to the completed implementation turn after a repair candidate."""
+    implementation_prefix = f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}"
+    implementation_workers = [
+        item for item in store.workers_for_run(run.run_id)
+        if str(item.get("worker_id") or "") == implementation_prefix
+    ]
+    implementation_worker = implementation_workers[-1] if implementation_workers else None
+    if implementation_worker is None:
+        raise RunnerError("recovery_blocked", "repair completed but the implementation worker identity is missing")
+    implementation_thread = str(implementation_worker.get("external_thread_id") or "")
+    implementation_turn = str(implementation_worker.get("external_turn_id") or "")
+    if not implementation_thread or not implementation_turn:
+        raise RunnerError("recovery_blocked", "repair completed but the implementation turn identity is missing")
+    return _reconcile_completed_implementation_turn(
+        control_root=control_root, config=config, run=run,
+        brief_digest=brief_digest, store=store, worker=implementation_worker,
+        thread_id=implementation_thread, turn_id=implementation_turn,
+    )
 
 
 def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: RunRecord,
@@ -784,7 +955,7 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
 def _finish_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     ticket_plan: dict[str, object], workspace_info: dict[str, object], result: CodexWorkerResult,
-    finalize_run: bool,
+    finalize_run: bool, validated_review: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Finish an implementation whose SDK turn has already completed.
 
@@ -797,17 +968,26 @@ def _finish_codex_implementation(
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
     implementation_artifacts(result, workspace)
-    if _git_checked(workspace, "status", "--porcelain") == "":
-        raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
-    _git_checked(workspace, "add", "--all")
-    _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: implement {spec_key}")
+    workspace_status = _git_checked(workspace, "status", "--porcelain")
+    if workspace_status:
+        _git_checked(workspace, "add", "--all")
+        _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: implement {spec_key}")
+    else:
+        # A process can exit after the implementation commit but before the
+        # candidate/review phase.  Recovery must adopt that durable commit,
+        # not mistake a clean workspace for an implementation that did
+        # nothing or start a second worker turn.
+        existing_sha = git_sha(workspace)
+        if existing_sha == str(workspace_info["base_sha"]):
+            raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
     candidate_sha = git_sha(workspace)
     candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks), acceptance=list(config.acceptance_ids))
     store.complete_codex_stage(run.run_id, implementation_operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=implementation_step, worker_id=implementation_worker)
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / f"candidate-{spec_key}.json").write_text(json.dumps(candidate_receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-    validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
+    if validated_review is None:
+        validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
     repair_round = 0
     while not validated_review["approved"] and repair_round < 2:
         repair_round += 1
@@ -1394,6 +1574,210 @@ def _resume_codex_stage(
     raise RunnerError("resume_stage_unknown", f"paused Codex run has unsupported step: {run.current_step}")
 
 
+def _reconcile_blocked_review(*, control_root: Path, config: RunnerConfig,
+                              run: RunRecord, store: Store, worker: dict[str, object],
+                              brief_digest: str) -> dict[str, object]:
+    """Resume repair after a valid review was persisted with blocking findings.
+
+    ``_execute_independent_review`` records a structurally valid review as
+    ``reviewed`` before the implementation loop decides that its findings
+    require repair.  If the process exits at that boundary, the durable worker
+    is therefore ``reviewed`` even though the run is blocked.  Treat that
+    state as a repair frontier and reuse the persisted review evidence.
+    """
+    prefix = f"codex_sdk:{run.run_id}:codex_review:"
+    worker_id = str(worker.get("worker_id") or "")
+    if not worker_id.startswith(prefix):
+        raise RunnerError("recovery_blocked", "blocking review worker is not scoped to a candidate")
+    identity = worker_id[len(prefix):].rsplit(":", 1)
+    if len(identity) != 2 or not identity[0] or len(identity[1]) < 12:
+        raise RunnerError("recovery_blocked", "blocking review worker has no SPEC/candidate identity")
+    spec_key, candidate_short = identity
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    review_path = artifact_directory / f"review-{spec_key}-{candidate_short}.json"
+    if not review_path.is_file():
+        raise RunnerError("recovery_blocked", "blocking review has no persisted validated receipt")
+    validated_review = load_json(review_path)
+    if validated_review.get("approved") is not False or not isinstance(validated_review.get("blocking"), list) or not validated_review["blocking"]:
+        raise RunnerError("recovery_blocked", "persisted review is not a blocking repair frontier")
+    ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
+    if not ticket_path.is_file():
+        raise RunnerError("recovery_blocked", "blocking review has no matching TicketPlan")
+    ticket_plan = load_json(ticket_path)
+    candidate_receipt = None
+    candidate_files = [artifact_directory / f"candidate-{spec_key}.json", *sorted(artifact_directory.glob(f"repair-{spec_key}-*.json"))]
+    for path in candidate_files:
+        if not path.is_file():
+            continue
+        document = load_json(path)
+        candidate = document.get("candidate") if path.name.startswith("repair-") else document
+        if isinstance(candidate, dict) and str(candidate.get("candidate_sha") or "").startswith(candidate_short):
+            candidate_receipt = candidate
+            break
+    if candidate_receipt is None:
+        raise RunnerError("recovery_blocked", "blocking review has no matching candidate receipt")
+    implementation_prefix = f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}"
+    implementation_workers = [
+        item for item in store.workers_for_run(run.run_id)
+        if str(item.get("worker_id") or "") == implementation_prefix and item.get("external_thread_id")
+    ]
+    if not implementation_workers:
+        raise RunnerError("recovery_blocked", "blocking review has no implementation owner")
+    implementation_thread = str(implementation_workers[-1]["external_thread_id"])
+    workspace = _implementation_workspace_path(control_root=control_root, config=config, run=run, spec_key=spec_key)
+    repair_round = 0
+    while not validated_review["approved"] and repair_round < 2:
+        repair_round += 1
+        candidate_sha, candidate_receipt = _repair_candidate(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+            findings=list(validated_review["blocking"]), implementation_thread=implementation_thread,
+            artifact_directory=artifact_directory,
+        )
+        validated_review, _ = _execute_independent_review(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+            candidate_sha=candidate_sha, candidate_receipt=candidate_receipt,
+            implementation_thread=implementation_thread, artifact_directory=artifact_directory,
+        )
+    if not validated_review["approved"]:
+        raise RunnerError("review_blocked", "independent review remained blocked after bounded repair rounds", details={"findings": validated_review["blocking"], "repair_rounds": repair_round})
+    implementation_path = artifact_directory / f"implementation-{spec_key}.json"
+    if not implementation_path.is_file():
+        raise RunnerError("recovery_blocked", "blocking review has no persisted implementation result")
+    implementation_document = load_json(implementation_path)
+    result = CodexWorkerResult(
+        thread_id=implementation_thread,
+        turn_id=str(implementation_document["turn_id"]),
+        status="completed", error=None,
+        final_response=str(implementation_document["final_response"]),
+        item_count=int(implementation_document["item_count"]),
+        started_at=int(implementation_document["started_at"]),
+        completed_at=int(implementation_document["completed_at"]),
+    )
+    workspace_info = prepare_workspace(
+        repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
+        run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+    )
+    return _finish_codex_implementation(
+        control_root=control_root, config=config, brief_digest=brief_digest,
+        run=run, store=store, ticket_plan=ticket_plan, workspace_info=workspace_info,
+        result=result, finalize_run=False, validated_review=validated_review,
+    )
+
+
+def _reconcile_rejected_review(*, control_root: Path, config: RunnerConfig,
+                               run: RunRecord, store: Store, worker: dict[str, object],
+                               brief_digest: str) -> dict[str, object]:
+    """Retry review after a terminal reviewer turn produced an invalid receipt."""
+    prefix = f"codex_sdk:{run.run_id}:codex_review:"
+    worker_id = str(worker.get("worker_id") or "")
+    if not worker_id.startswith(prefix):
+        raise RunnerError("recovery_blocked", "rejected review worker is not scoped to a candidate")
+    review_identity = worker_id[len(prefix):].rsplit(":", 1)
+    if len(review_identity) != 2:
+        raise RunnerError("recovery_blocked", "rejected review worker has no SPEC/candidate identity")
+    spec_key, candidate_sha = review_identity
+    if len(candidate_sha) < 12:
+        raise RunnerError("recovery_blocked", "rejected review worker has no candidate identity")
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    candidate_files = sorted(artifact_directory.glob("candidate-*.json"))
+    matching_candidate = None
+    for path in candidate_files:
+        try:
+            document = load_json(path)
+        except RunnerError:
+            continue
+        if str(document.get("candidate_sha") or "").startswith(candidate_sha):
+            matching_candidate = document
+            spec_key = path.stem.removeprefix("candidate-")
+            break
+    if matching_candidate is None:
+        for path in sorted(artifact_directory.glob(f"repair-{spec_key}-*.json")):
+            try:
+                document = load_json(path)
+            except RunnerError:
+                continue
+            candidate = document.get("candidate")
+            if isinstance(candidate, dict) and str(candidate.get("candidate_sha") or "").startswith(candidate_sha):
+                matching_candidate = candidate
+                break
+    if matching_candidate is None:
+        raise RunnerError("recovery_blocked", "rejected review has no matching candidate receipt")
+    ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
+    if not ticket_path.is_file():
+        raise RunnerError("recovery_blocked", "rejected review has no matching TicketPlan")
+    ticket_plan = load_json(ticket_path)
+    workspace = _implementation_workspace_path(control_root=control_root, config=config, run=run, spec_key=spec_key)
+    old_thread = str(worker.get("external_thread_id") or "")
+    if not old_thread or not str(worker.get("external_turn_id") or ""):
+        raise RunnerError("recovery_blocked", "rejected review lacks formal thread/turn identity")
+    archive = CodexAdapter().archive_and_readback(thread_id=old_thread, repository_path=workspace)
+    if archive.get("thread_id") != old_thread or archive.get("archived") is not True:
+        raise RunnerError("recovery_blocked", "rejected review owner was not archived and read back")
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:review-rejected:{old_thread}:{worker.get('external_turn_id')}",
+        event_type="rejected_review_reconciled",
+        payload={"spec_key": spec_key, "candidate_sha": candidate_sha, "archive": archive},
+    )
+    implementation_thread = ""
+    implementation_prefix = f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}"
+    for candidate in reversed(store.workers_for_run(run.run_id)):
+        if str(candidate.get("worker_id") or "") == implementation_prefix and candidate.get("external_thread_id"):
+            implementation_thread = str(candidate["external_thread_id"])
+            break
+    if not implementation_thread:
+        raise RunnerError("recovery_blocked", "rejected review has no implementation owner for review context")
+    refreshed = _execute_independent_review(
+        control_root=control_root,
+        config=config,
+        brief_digest=brief_digest,
+        run=run,
+        store=store,
+        ticket_plan=ticket_plan,
+        workspace=workspace,
+        candidate_sha=str(matching_candidate["candidate_sha"]),
+        candidate_receipt=matching_candidate,
+        implementation_thread=implementation_thread,
+        artifact_directory=artifact_directory,
+    )
+    validated, _ = refreshed
+    if not validated["approved"]:
+        raise RunnerError("review_blocked", "recovered review still has blocking findings", details={"findings": validated["blocking"]})
+    implementation_result_path = artifact_directory / f"implementation-{spec_key}.json"
+    implementation_document = load_json(implementation_result_path)
+    result = CodexWorkerResult(
+        thread_id=implementation_thread,
+        turn_id=str(implementation_document["turn_id"]),
+        status="completed",
+        error=None,
+        final_response=str(implementation_document["final_response"]),
+        item_count=int(implementation_document["item_count"]),
+        started_at=int(implementation_document["started_at"]),
+        completed_at=int(implementation_document["completed_at"]),
+    )
+    workspace_info = prepare_workspace(
+        repository=config.repository_path,
+        workspace_root=control_root / "delivery-workspaces",
+        run_id=run.run_id,
+        spec_key=spec_key,
+        base_ref=config.target_ref,
+    )
+    return _finish_codex_implementation(
+        control_root=control_root,
+        config=config,
+        brief_digest=brief_digest,
+        run=run,
+        store=store,
+        ticket_plan=ticket_plan,
+        workspace_info=workspace_info,
+        result=result,
+        finalize_run=False,
+        validated_review=validated,
+    )
+
+
 def _reconcile_completed_ticket_turn(*, control_root: Path, config: RunnerConfig, run: RunRecord,
                                      brief_digest: str, store: Store, worker: dict[str, object],
                                      thread_id: str, turn_id: str) -> RunRecord:
@@ -1713,6 +2097,333 @@ def _reconcile_completed_implementation_turn(*, control_root: Path, config: Runn
     return recovered
 
 
+def _repair_spec_key(*, run: RunRecord, worker: dict[str, object]) -> str:
+    prefix = f"codex_sdk:{run.run_id}:codex_repair:"
+    worker_id = str(worker.get("worker_id") or "")
+    if not worker_id.startswith(prefix) or not worker_id[len(prefix):]:
+        raise RunnerError("recovery_blocked", "repair worker identity is not scoped to a SPEC")
+    return worker_id[len(prefix):]
+
+
+def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
+                           run: RunRecord, brief_digest: str, store: Store,
+                           worker: dict[str, object], turn_status: str) -> dict[str, object]:
+    """Consume a completed repair result or safely retry a failed turn."""
+    spec_key = _repair_spec_key(run=run, worker=worker)
+    thread_id = str(worker.get("external_thread_id") or "")
+    turn_id = str(worker.get("external_turn_id") or "")
+    if not thread_id or not turn_id:
+        raise RunnerError("recovery_blocked", "failed repair turn has no recoverable thread identity")
+    workspace = _implementation_workspace_path(
+        control_root=control_root, config=config, run=run, spec_key=spec_key,
+    )
+    try:
+        inspection = CodexAdapter().read_thread(thread_id=thread_id, repository_path=workspace)
+    except RunnerError as exc:
+        raise RunnerError(
+            "recovery_blocked",
+            "the failed repair thread could not be reconciled; inspect it before retry",
+            details={"inspection_error": exc.code},
+        ) from exc
+    turns = inspection.get("turns") if isinstance(inspection, dict) else None
+    turn_count = inspection.get("turn_count") if isinstance(inspection, dict) else None
+    failed_repair_turns = sum(
+        1 for item in turns
+        if isinstance(item, dict) and item.get("status") in {"failed", "interrupted"}
+    ) if isinstance(turns, list) else 0
+    terminal_statuses = {"failed", "interrupted"} if turn_status != "completed" else {"completed"}
+    terminal = (
+        isinstance(inspection, dict)
+        and inspection.get("started_turn") is False
+        and inspection.get("thread_id") == thread_id
+        and inspection.get("thread_status") == "idle"
+        and inspection.get("active_flags") == []
+        and isinstance(turns, list)
+        and isinstance(turn_count, int)
+        and not isinstance(turn_count, bool)
+        and turn_count == len(turns)
+        and bool(turns)
+        and isinstance(turns[-1], dict)
+        and turns[-1].get("turn_id") == turn_id
+        and turns[-1].get("status") in terminal_statuses
+    )
+    if not terminal:
+        raise RunnerError("recovery_blocked", "the failed repair turn has no uniquely recoverable terminal result")
+
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    review_files = sorted(artifact_directory.glob(f"review-{spec_key}-*.json"))
+    if not review_files:
+        raise RunnerError("recovery_blocked", "failed repair turn has no persisted review findings")
+    review = load_json(review_files[-1])
+    findings = review.get("blocking")
+    if not isinstance(findings, list) or not findings:
+        raise RunnerError("recovery_blocked", "failed repair turn has no persisted blocking findings")
+    ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
+    if not ticket_path.is_file():
+        raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+    ticket_plan = validate_ticket_plan(
+        load_json(ticket_path), expected_spec_key=spec_key,
+        expected_base_sha=git_sha(config.repository_path, config.target_ref),
+    )
+    repair_prefix = f"codex_sdk:{run.run_id}:codex_repair:{spec_key}"
+    if turn_status != "completed":
+        start_new_thread = failed_repair_turns >= 2
+        candidate_sha, _ = _repair_candidate(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+            findings=findings, implementation_thread=thread_id,
+            artifact_directory=artifact_directory, start_new_thread=start_new_thread,
+        )
+        replacement_worker = store.workers_for_run(run.run_id)[-1]
+        replacement_thread = str(replacement_worker.get("external_thread_id") or "")
+        if not replacement_thread:
+            raise RunnerError("recovery_blocked", "replacement repair has no durable thread identity")
+        if start_new_thread:
+            archive = CodexAdapter().archive_and_readback(thread_id=thread_id, repository_path=workspace)
+            store.append_event(
+                run_id=run.run_id,
+                event_key=f"recovery:{run.run_id}:repair-thread-replaced:{replacement_thread}",
+                event_type="repair_thread_replaced",
+                payload={"spec_key": spec_key, "previous_thread_id": thread_id,
+                         "replacement_thread_id": replacement_thread,
+                         "failed_repair_turns": failed_repair_turns,
+                         "reason": "repeated_terminal_repair_failure", "archive": archive},
+            )
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:failed-repair-turn:{turn_id}:{candidate_sha}",
+            event_type="failed_sdk_turn_reconciled",
+            payload={"step": "codex_repair", "spec_key": spec_key,
+                     "thread_id": thread_id, "turn_id": turn_id, "turn_status": turn_status},
+        )
+        implementation_prefix = f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}"
+        implementation_workers = [
+            item for item in store.workers_for_run(run.run_id)
+            if str(item.get("worker_id") or "") == implementation_prefix
+        ]
+        implementation_worker = implementation_workers[-1] if implementation_workers else None
+        if implementation_worker is None:
+            raise RunnerError("recovery_blocked", "repair recovered but the implementation worker identity is missing")
+        implementation_thread = str(implementation_worker.get("external_thread_id") or "")
+        implementation_turn = str(implementation_worker.get("external_turn_id") or "")
+        if not implementation_thread or not implementation_turn:
+            raise RunnerError("recovery_blocked", "repair recovered but the implementation turn identity is missing")
+        return _reconcile_completed_implementation_turn(
+            control_root=control_root, config=config, run=run,
+            brief_digest=brief_digest, store=store, worker=implementation_worker,
+            thread_id=implementation_thread, turn_id=implementation_turn,
+        )
+
+    result_path = artifact_directory / f"repair-worker-{spec_key}-{hashlib.sha256(turn_id.encode('utf-8')).hexdigest()}.json"
+    try:
+        persisted = load_json(result_path)
+    except RunnerError as exc:
+        raise RunnerError("recovery_blocked", "repair turn has no persisted worker result") from exc
+    if (persisted.get("thread_id") != thread_id or persisted.get("turn_id") != turn_id
+            or persisted.get("status") != "completed" or persisted.get("error") is not None):
+        raise RunnerError("recovery_blocked", "repair worker result identity or terminal status does not match")
+    final_response = persisted.get("final_response")
+    if not isinstance(final_response, str) or not final_response.strip():
+        raise RunnerError("recovery_blocked", "repair turn has no useful structured result")
+    result = CodexWorkerResult(
+        thread_id=thread_id, turn_id=turn_id, status="completed", error=None,
+        final_response=final_response,
+        item_count=int(persisted.get("item_count") or 0),
+        started_at=persisted.get("started_at"), completed_at=persisted.get("completed_at"),
+        approval_mode=str(persisted.get("approval_mode") or "deny_all"),
+        skill_observation=persisted.get("skill_observation") if isinstance(persisted.get("skill_observation"), dict) else None,
+    )
+    try:
+        document = json.loads(final_response)
+    except json.JSONDecodeError as exc:
+        raise RunnerError("recovery_blocked", "repair result is not valid JSON") from exc
+    blocked_candidate = (
+        isinstance(document, dict)
+        and document.get("outcome") in {"blocked", "completed"}
+        and isinstance(document.get("blockers"), list)
+        and bool(document.get("blockers"))
+        and document.get("questions") == []
+        and git_sha(workspace) != str(ticket_plan.get("base_sha") or "")
+    )
+    if blocked_candidate and turn_status == "completed":
+        operation = str(store.operations_for_run(run.run_id)[-1]["operation_id"])
+        try:
+            candidate_sha, _ = _finish_repair_candidate_result(
+                control_root=control_root, config=config, run=run, store=store,
+                ticket_plan=ticket_plan, workspace=workspace, result=result,
+                operation=operation, worker=repair_prefix,
+                artifact_directory=artifact_directory, adopt_existing=True, allow_blocked=True,
+            )
+        except RunnerError as exc:
+            if exc.code != "candidate_verification_failed":
+                raise
+            candidate_sha, _ = _retry_repair_after_candidate_failure(
+                control_root=control_root, config=config, brief_digest=brief_digest,
+                run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+                findings=findings, implementation_thread=thread_id,
+                artifact_directory=artifact_directory, failed_operation=operation,
+                failed_result=result, failure=exc,
+            )
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:blocked-worker-candidate:{candidate_sha}",
+            event_type="blocked_worker_candidate_verified",
+            payload={"spec_key": spec_key, "thread_id": thread_id, "turn_id": turn_id,
+                     "candidate_sha": candidate_sha},
+        )
+        return _resume_after_repair_candidate(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, spec_key=spec_key,
+        )
+    if (
+        not isinstance(document, dict)
+        or document.get("outcome") != "completed"
+        or document.get("blockers") != []
+        or document.get("questions") != []
+    ):
+        if turn_status == "completed" and isinstance(document, dict):
+            operation = str(store.operations_for_run(run.run_id)[-1]["operation_id"])
+            store.complete_codex_stage(
+                run.run_id, operation, thread_id=thread_id, turn_id=turn_id,
+                state="worker_blocked", step_name="codex_repair", worker_id=repair_prefix,
+            )
+            blocked_findings = [
+                *findings,
+                {
+                    "severity": "high",
+                    "status": "open",
+                    "description": "A prior trusted candidate verification failed. Run the exact acceptance command and fix every failing test; do not only report an environment blocker.",
+                    "worker_blockers": document.get("blockers", []),
+                    "worker_questions": document.get("questions", []),
+                },
+            ]
+            try:
+                verify_candidate(
+                    workspace=workspace,
+                    candidate_sha=git_sha(workspace),
+                    acceptance_version=str(ticket_plan["digest"]),
+                    checks=list(config.acceptance_checks),
+                    acceptance=list(config.acceptance_ids),
+                )
+            except RunnerError as verification_error:
+                if verification_error.code == "candidate_verification_failed":
+                    blocked_findings.append(_candidate_verification_finding(verification_error))
+            _repair_candidate(
+                control_root=control_root, config=config, brief_digest=brief_digest,
+                run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+                findings=blocked_findings, implementation_thread=thread_id,
+                artifact_directory=artifact_directory,
+            )
+            return _resume_after_repair_candidate(
+                control_root=control_root, config=config, brief_digest=brief_digest,
+                run=run, store=store, spec_key=spec_key,
+            )
+        raise RunnerError("implementation_not_ready", "implementation is incomplete or requires input")
+    artifacts = document.get("artifacts") if isinstance(document, dict) else None
+    missing_artifacts: list[str] = []
+    if not isinstance(artifacts, list):
+        missing_artifacts = ["<artifacts:not-a-list>"]
+    else:
+        for item in artifacts:
+            if not isinstance(item, str) or not item.strip():
+                missing_artifacts.append("<artifact:invalid>")
+                continue
+            relative = Path(item)
+            path = workspace / relative
+            if (relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts
+                    or workspace.resolve() not in path.resolve().parents or not path.is_file()
+                    or any(part.is_symlink() for part in [path, *path.parents])):
+                missing_artifacts.append(item)
+    if missing_artifacts:
+        if turn_status == "completed":
+            # Never replay a completed turn. Use the same active implementation
+            # thread to ask for a contract-correct receipt over the existing files.
+            receipt_operation = f"repair-receipt:{run.run_id}:{spec_key}:{turn_id}"
+            store.begin_stage(
+                run.run_id, step_name="codex_repair", operation_id=receipt_operation,
+                backend_kind="codex_sdk", worker_id=repair_prefix,
+            )
+            receipt_result = _run_worker(
+                adapter=CodexAdapter(), phase="implement", config=config,
+                prompt=("The previous repair turn completed its workspace edits, but its structured artifacts field "
+                        "included invalid entries. Do not change any files. Return outcome=completed and list only "
+                        "real workspace-relative file paths in artifacts; include no prose or test summaries there. "
+                        "Preserve blockers/questions as empty arrays.\n\nInvalid entries: "
+                        + json.dumps(missing_artifacts, ensure_ascii=False)),
+                model=config.model_name, effort=config.effort, thread_id=thread_id,
+                repository_path=workspace,
+                trusted={"brief_digest": brief_digest, "stage": "codex_repair_receipt", "spec_key": spec_key,
+                         "prior_turn_id": turn_id},
+                on_turn_started=lambda next_thread, next_turn: _record_codex_turn_started(
+                    store, run_id=run.run_id, operation_id=receipt_operation,
+                    step_name="codex_repair", worker_id=repair_prefix,
+                    thread_id=next_thread, turn_id=next_turn),
+                control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+                schema=IMPLEMENTATION_SCHEMA,
+            )
+            receipt_key = hashlib.sha256(receipt_result.turn_id.encode("utf-8")).hexdigest()
+            (artifact_directory / f"repair-worker-{spec_key}-{receipt_key}.json").write_text(
+                json.dumps(receipt_result.public(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8", newline="\n",
+            )
+            if receipt_result.thread_id != thread_id:
+                raise RunnerError("repair_owner_changed", "artifact receipt must resume the existing repair thread")
+            try:
+                _finish_repair_candidate_result(
+                    control_root=control_root, config=config, run=run, store=store,
+                    ticket_plan=ticket_plan, workspace=workspace, result=receipt_result,
+                    operation=receipt_operation, worker=repair_prefix,
+                    artifact_directory=artifact_directory, adopt_existing=True,
+                )
+            except RunnerError as exc:
+                if exc.code != "candidate_verification_failed":
+                    raise
+                _retry_repair_after_candidate_failure(
+                    control_root=control_root, config=config, brief_digest=brief_digest,
+                    run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+                    findings=findings, implementation_thread=thread_id,
+                    artifact_directory=artifact_directory, failed_operation=receipt_operation,
+                    failed_result=receipt_result, failure=exc,
+                )
+            return {"created": False, **_resume_after_repair_candidate(
+                control_root=control_root, config=config, brief_digest=brief_digest,
+                run=run, store=store, spec_key=spec_key,
+            )}
+
+    if turn_status != "completed":
+        raise RunnerError("recovery_blocked", "failed repair turn completed without its persisted result")
+    operation = str(store.operations_for_run(run.run_id)[-1]["operation_id"])
+    try:
+        candidate_sha, _ = _finish_repair_candidate_result(
+            control_root=control_root, config=config, run=run, store=store,
+            ticket_plan=ticket_plan, workspace=workspace, result=result,
+            operation=operation, worker=repair_prefix, artifact_directory=artifact_directory,
+            adopt_existing=True,
+        )
+    except RunnerError as exc:
+        if exc.code != "candidate_verification_failed":
+            raise
+        candidate_sha, _ = _retry_repair_after_candidate_failure(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+            findings=findings, implementation_thread=thread_id,
+            artifact_directory=artifact_directory, failed_operation=operation,
+            failed_result=result, failure=exc,
+        )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:failed-repair-turn:{turn_id}:{candidate_sha}",
+        event_type="failed_sdk_turn_reconciled",
+        payload={"step": "codex_repair", "spec_key": spec_key,
+                 "thread_id": thread_id, "turn_id": turn_id,
+                 "turn_status": "failed"},
+    )
+    return _resume_after_repair_candidate(
+        control_root=control_root, config=config, brief_digest=brief_digest,
+        run=run, store=store, spec_key=spec_key,
+    )
+
+
 def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
     """Reconcile only evidence that can be proven locally; never replay an unknown SDK call."""
     if config.delivery_plan is not None:
@@ -1838,6 +2549,214 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     ),
                 ),
             }
+        if run.state in {"running", "cleanup_pending", "blocked"} and run.current_step == "codex_review":
+            review_prefix = f"codex_sdk:{run.run_id}:codex_review:"
+            review_workers = [
+                worker for worker in store.workers_for_run(run.run_id)
+                if worker.get("backend_kind") == "codex_sdk"
+                and worker.get("state") in {"running", "failed", "rejected", "reviewed"}
+                and str(worker.get("worker_id") or "").startswith(review_prefix)
+            ]
+            worker = review_workers[-1] if review_workers else None
+            if worker is None:
+                raise RunnerError("recovery_blocked", "review stage has no uniquely identified worker")
+            if run.state == "blocked" and worker.get("state") == "reviewed":
+                recovered = _reconcile_blocked_review(
+                    control_root=control_root, config=config, run=run, store=store,
+                    worker=worker, brief_digest=brief_digest,
+                )
+                return {"created": False, **recovered}
+            thread_id = str(worker.get("external_thread_id") or "")
+            turn_id = str(worker.get("external_turn_id") or "")
+            if not thread_id or not turn_id:
+                raise RunnerError("recovery_blocked", "review lacks durable thread/turn identity")
+            review_identity = str(worker.get("worker_id") or "")[len(review_prefix):].rsplit(":", 1)
+            if len(review_identity) != 2:
+                raise RunnerError("recovery_blocked", "review lacks SPEC/candidate identity")
+            spec_key = review_identity[0]
+            workspace = _implementation_workspace_path(
+                control_root=control_root, config=config, run=run, spec_key=spec_key,
+            )
+            try:
+                inspection = CodexAdapter().read_thread(thread_id=thread_id, repository_path=workspace)
+            except RunnerError as exc:
+                raise RunnerError(
+                    "recovery_blocked", "the review thread could not be reconciled",
+                    details={"inspection_error": exc.code},
+                ) from exc
+            turns = inspection.get("turns") if isinstance(inspection, dict) else None
+            terminal = (
+                isinstance(inspection, dict)
+                and inspection.get("thread_id") == thread_id
+                and inspection.get("thread_status") == "idle"
+                and inspection.get("active_flags") == []
+                and inspection.get("started_turn") is False
+                and isinstance(turns, list)
+                and len(turns) == inspection.get("turn_count")
+                and bool(turns)
+                and isinstance(turns[-1], dict)
+                and turns[-1].get("turn_id") == turn_id
+                and turns[-1].get("status") == "completed"
+            )
+            if not terminal:
+                raise RunnerError("recovery_blocked", "review turn has no uniquely recoverable terminal result")
+            artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+            candidate_files = sorted(artifact_directory.glob("candidate-*.json"))
+            candidate_receipt = None
+            candidate_short = review_identity[1]
+            for path in candidate_files:
+                document = load_json(path)
+                if path.stem.removeprefix("candidate-") == spec_key and str(document.get("candidate_sha") or "").startswith(candidate_short):
+                    candidate_receipt = document
+                    break
+            if candidate_receipt is None:
+                for path in sorted(artifact_directory.glob(f"repair-{spec_key}-*.json")):
+                    document = load_json(path)
+                    candidate = document.get("candidate")
+                    if isinstance(candidate, dict) and str(candidate.get("candidate_sha") or "").startswith(candidate_short):
+                        candidate_receipt = candidate
+                        break
+            if candidate_receipt is None:
+                raise RunnerError("recovery_blocked", "review stage has no matching candidate receipt")
+            review_path = artifact_directory / f"review-worker-{spec_key}-{candidate_short}.json"
+            if not review_path.is_file():
+                raise RunnerError("recovery_blocked", "review stage has no persisted worker receipt")
+            review_document = load_json(review_path)
+            final_response = review_document.get("final_response")
+            if not isinstance(final_response, str) or not final_response.strip():
+                raise RunnerError("recovery_blocked", "review stage has no structured worker output")
+            review_result = CodexWorkerResult(
+                thread_id=thread_id,
+                turn_id=turn_id,
+                status="completed",
+                error=review_document.get("error"),
+                final_response=final_response,
+                item_count=int(review_document.get("item_count", 0)),
+                started_at=int(review_document.get("started_at", 0)),
+                completed_at=int(review_document.get("completed_at", 0)),
+            )
+            ticket_plan = load_json(artifact_directory / f"ticket-plan-{spec_key}.json")
+            try:
+                independent_review(
+                    review_result,
+                    implementation_thread="__recovery_review_owner__",
+                    candidate_sha=str(candidate_receipt["candidate_sha"]),
+                    acceptance_version=str(ticket_plan["digest"]),
+                )
+            except RunnerError as exc:
+                operation_id = f"review:{run.run_id}:{spec_key}:{candidate_receipt['candidate_sha']}"
+                if worker.get("state") != "rejected":
+                    store.reject_codex_stage(
+                        run.run_id,
+                        operation_id,
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        step_name="codex_review",
+                        worker_id=str(worker["worker_id"]),
+                        code=exc.code,
+                    )
+                    worker = next(item for item in store.workers_for_run(run.run_id) if item.get("worker_id") == worker["worker_id"])
+            else:
+                raise RunnerError("recovery_blocked", "review receipt was valid but the stage cannot be replayed safely")
+            recovered = _reconcile_rejected_review(
+                control_root=control_root,
+                config=config,
+                run=run,
+                store=store,
+                worker=worker,
+                brief_digest=brief_digest,
+            )
+            return {"created": False, **recovered}
+        if run.state in {"running", "cleanup_pending", "blocked"} and run.current_step == "codex_repair":
+            workers = store.workers_for_run(run.run_id)
+            worker_prefix = f"codex_sdk:{run.run_id}:codex_repair:"
+            stage_workers = [
+                worker for worker in workers
+                if worker.get("backend_kind") == "codex_sdk"
+                and worker.get("state") in {"running", "failed"}
+                and str(worker.get("worker_id") or "").startswith(worker_prefix)
+            ]
+            worker = stage_workers[-1] if stage_workers else None
+            if worker is None:
+                # A repair can fail while restoring its archived owner, after
+                # the durable stage intent but before the SDK emits a turn
+                # identity. Reuse the last formal repair owner for this SPEC;
+                # the next repair operation will create the missing worker
+                # identity and remain fully acceptance-gated.
+                intents = [
+                    item for item in store.operations_for_run(run.run_id)
+                    if str(item.get("operation_id") or "").startswith(f"repair:{run.run_id}:")
+                    and item.get("state") == "intent"
+                ]
+                latest_intent = intents[-1] if intents else None
+                if latest_intent is None:
+                    raise RunnerError("recovery_blocked", "the failed repair stage has no uniquely identified worker")
+                operation_parts = str(latest_intent.get("operation_id") or "").split(":")
+                spec_key = operation_parts[-2] if len(operation_parts) >= 4 else ""
+                owner_workers = [
+                    item for item in workers
+                    if item.get("backend_kind") == "codex_sdk"
+                    and str(item.get("worker_id") or "") == f"{worker_prefix}{spec_key}"
+                    and item.get("external_thread_id")
+                ]
+                owner = owner_workers[-1] if owner_workers else None
+                if owner is None or not spec_key:
+                    raise RunnerError("recovery_blocked", "the orphaned repair intent has no uniquely identified owner")
+                thread_id = str(owner.get("external_thread_id") or "")
+                artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+                review_files = sorted(artifact_directory.glob(f"review-{spec_key}-*.json"))
+                ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
+                if not review_files or not ticket_path.is_file():
+                    raise RunnerError("recovery_blocked", "the orphaned repair intent lacks review or ticket evidence")
+                review = load_json(review_files[-1])
+                findings = review.get("blocking")
+                if not isinstance(findings, list) or not findings:
+                    raise RunnerError("recovery_blocked", "the orphaned repair intent lacks blocking findings")
+                ticket_plan = validate_ticket_plan(
+                    load_json(ticket_path), expected_spec_key=spec_key,
+                    expected_base_sha=git_sha(config.repository_path, config.target_ref),
+                )
+                workspace = _implementation_workspace_path(
+                    control_root=control_root, config=config, run=run, spec_key=spec_key,
+                )
+                _repair_candidate(
+                    control_root=control_root, config=config, brief_digest=brief_digest,
+                    run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+                    findings=findings, implementation_thread=thread_id,
+                    artifact_directory=artifact_directory,
+                )
+                return {"created": False, **_resume_after_repair_candidate(
+                    control_root=control_root, config=config, brief_digest=brief_digest,
+                    run=run, store=store, spec_key=spec_key,
+                )}
+            thread_id = str(worker.get("external_thread_id") or "")
+            turn_id = str(worker.get("external_turn_id") or "")
+            if not thread_id or not turn_id:
+                raise RunnerError("recovery_blocked", "the repair stage has no durable thread/turn identity")
+            spec_key = _repair_spec_key(run=run, worker=worker)
+            workspace = _implementation_workspace_path(
+                control_root=control_root, config=config, run=run, spec_key=spec_key,
+            )
+            try:
+                inspection = CodexAdapter().read_thread(thread_id=thread_id, repository_path=workspace)
+            except RunnerError as exc:
+                raise RunnerError(
+                    "recovery_blocked", "the repair thread could not be reconciled",
+                    details={"inspection_error": exc.code},
+                ) from exc
+            turns = inspection.get("turns") if isinstance(inspection, dict) else None
+            repair_turn_status = (
+                turns[-1].get("status") if isinstance(turns, list) and turns
+                and isinstance(turns[-1], dict) else None
+            )
+            if repair_turn_status not in {"completed", "failed", "interrupted"}:
+                raise RunnerError("recovery_blocked", "the repair turn has no uniquely recoverable terminal result")
+            recovered = _reconcile_repair_turn(
+                control_root=control_root, config=config, run=run,
+                brief_digest=brief_digest, store=store, worker=worker,
+                turn_status=str(repair_turn_status),
+            )
+            return {"created": False, **recovered}
         if run.state in {"running", "cleanup_pending"} and run.current_step == "codex_ticket_planning":
             workers = store.workers_for_run(run.run_id)
             worker_prefix = f"codex_sdk:{run.run_id}:codex_ticket_planning:"
@@ -1922,7 +2841,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 store=store, worker=worker, thread_id=thread_id, turn_id=turn_id,
             )
             return {"created": False, **store.public_status(recovered.run_id)}
-        if run.state in {"running", "cleanup_pending"} and run.current_step == "codex_implementation":
+        if run.state in {"running", "cleanup_pending", "blocked"} and run.current_step == "codex_implementation":
             workers = store.workers_for_run(run.run_id)
             worker_prefix = f"codex_sdk:{run.run_id}:codex_implementation:"
             stage_workers = [
@@ -2549,12 +3468,15 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
 
 
 def _acceptance_upgrade_compatible(existing: RunRecord, config: RunnerConfig) -> bool:
-    """Allow only the SR-08 empty-to-required acceptance config migration."""
+    """Allow the acceptance addition or a timeout-only acceptance update."""
     return (
         config.workflow_mode == "production"
         and bool(config.acceptance_ids)
         and bool(config.acceptance_checks)
-        and existing.config_digest == config.legacy_acceptance_digest
+        and existing.config_digest in {
+            config.legacy_acceptance_digest,
+            config.acceptance_timeout_compatible_digest,
+        }
     )
 
 

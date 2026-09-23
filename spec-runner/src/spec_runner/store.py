@@ -621,6 +621,49 @@ class Store:
         assert record is not None
         return record
 
+    def reject_codex_stage(
+        self, run_id: str, operation_id: str, *, thread_id: str, turn_id: str,
+        step_name: str, worker_id: str, code: str,
+    ) -> RunRecord:
+        """Persist a terminal Codex result whose structured receipt was rejected."""
+        timestamp = now()
+        with self.transaction():
+            operation_updated = self.connection.execute(
+                "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ? AND run_id = ?",
+                ("rejected", timestamp, operation_id, run_id),
+            ).rowcount
+            if operation_updated != 1:
+                raise RunnerError("operation_missing", "cannot reject a Codex stage without its durable operation")
+            worker_updated = self.connection.execute(
+                """UPDATE workers SET external_thread_id = ?, external_turn_id = ?, state = ?, updated_at = ?
+                   WHERE worker_id = ? AND run_id = ?""",
+                (thread_id, turn_id, "rejected", timestamp, worker_id, run_id),
+            ).rowcount
+            if worker_updated != 1:
+                raise RunnerError("worker_missing", "cannot reject a Codex stage without its durable worker")
+            step_updated = self.connection.execute(
+                "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
+                ("blocked", timestamp, run_id, step_name),
+            ).rowcount
+            if step_updated != 1:
+                raise RunnerError("step_missing", "cannot reject a Codex stage without its durable step")
+            run_updated = self.connection.execute(
+                "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
+                ("blocked", timestamp, run_id),
+            ).rowcount
+            if run_updated != 1:
+                raise RunnerError("run_missing", "cannot reject a Codex stage for an unknown run")
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"operation:{operation_id}:rejected:{turn_id}",
+                event_type="codex_stage_receipt_rejected",
+                payload={"operation_id": operation_id, "step_name": step_name,
+                         "thread_id": thread_id, "turn_id": turn_id, "code": code},
+            )
+        record = self.find_by_run_id(run_id)
+        assert record is not None
+        return record
+
     def record_codex_turn_started(
         self,
         run_id: str,

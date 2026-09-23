@@ -236,6 +236,7 @@ class CodexAdapter:
                 description,
                 details={
                     "exception_type": type(exc).__name__,
+                    "exception_message": str(exc)[:500],
                     "model": model,
                     "thread_id": result_thread_id if "result_thread_id" in locals() else None,
                     "turn_id": result_turn_id if "result_turn_id" in locals() else None,
@@ -364,6 +365,41 @@ class CodexAdapter:
                 details={"exception_type": type(exc).__name__},
             ) from exc
         raise RunnerError("archive_readback_failed", "archived thread was not found in the complete page walk")
+
+    def unarchive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+        """Make an archived implementation thread resumable and prove identity."""
+        if self._sdk_module is None:
+            try:
+                import openai_codex as sdk_module
+            except ImportError as exc:
+                raise RunnerError("sdk_unavailable", f"openai-codex=={SDK_VERSION} is not installed") from exc
+        else:
+            sdk_module = self._sdk_module
+        Codex = sdk_module.Codex
+        CodexConfig = sdk_module.CodexConfig
+        factory = self._codex_factory or (lambda config: Codex(config))
+        try:
+            with factory(CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)) as codex:
+                try:
+                    codex.thread_unarchive(thread_id)
+                except Exception as exc:
+                    # The operation is intentionally idempotent: a prior
+                    # recovery process may already have restored the thread.
+                    if "no archived rollout" not in str(exc).lower():
+                        raise
+                thread = codex.thread_resume(thread_id, cwd=str(repository_path))
+                resumed_id = str(getattr(thread, "id", ""))
+                if resumed_id != thread_id:
+                    raise RunnerError("unarchive_readback_failed", "unarchived thread identity did not match")
+                return {"thread_id": thread_id, "archived": False, "resumed": True}
+        except RunnerError:
+            raise
+        except Exception as exc:
+            raise RunnerError(
+                "unarchive_failed",
+                "Codex SDK unarchive or resume readback failed",
+                details={"exception_type": type(exc).__name__},
+            ) from exc
 
     def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
         """Read one explicitly supplied SDK thread without starting a turn.
