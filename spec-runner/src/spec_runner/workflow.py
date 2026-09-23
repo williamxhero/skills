@@ -781,54 +781,21 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
     return result
 
 
-def _execute_codex_implementation(
+def _finish_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
-    ticket_plan: dict[str, object], finalize_run: bool = True, thread_id: str | None = None,
+    ticket_plan: dict[str, object], workspace_info: dict[str, object], result: CodexWorkerResult,
+    finalize_run: bool,
 ) -> dict[str, object]:
-    """Run one real implementation and independent review for the active SPEC.
+    """Finish an implementation whose SDK turn has already completed.
 
-    The worker may write only its managed worktree.  Commit, candidate
-    verification, review binding, merge and cleanup remain Runner operations.
+    Keeping this boundary separate lets process-exit recovery consume a
+    persisted completed turn without starting a second model turn.
     """
-    if not config.acceptance_ids or not config.acceptance_checks:
-        raise RunnerError("acceptance_config_missing", "production implementation requires workflow.acceptance ids and checks")
     spec_key = str(ticket_plan["spec_key"])
-    workspace_info = prepare_workspace(
-        repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
-        run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
-    )
     workspace = Path(str(workspace_info["workspace"]))
     implementation_operation = f"implementation:{run.run_id}:{spec_key}"
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
-    store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
-    schema = IMPLEMENTATION_SCHEMA
-    implementation_prompt = (
-        "Implement this SPEC in the assigned workspace. Work on the real code and tests; do not publish, merge, "
-        "or modify files outside this workspace. Return JSON only after the implementation is complete.\n\n"
-        + json.dumps(ticket_plan, ensure_ascii=False, sort_keys=True)
-    )
-    answers = store.answers_for_run(run.run_id)
-    if answers:
-        implementation_prompt += "\n\nRunner-recorded implementation answers (use these as decisions; do not ask them again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
-    result = _run_worker(
-        adapter=CodexAdapter(), phase="implement", config=config,
-        prompt=implementation_prompt,
-        model=config.model_name, effort=config.effort, thread_id=thread_id, repository_path=workspace,
-        trusted={"brief_digest": brief_digest, "stage": implementation_step, "spec_key": spec_key, "workspace": os.fspath(workspace), "ticket_plan_digest": ticket_plan["digest"], "answers": answers},
-        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=implementation_operation, step_name=implementation_step, worker_id=implementation_worker, thread_id=thread_id, turn_id=turn_id),
-        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=schema,
-    )
-    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
-    artifact_directory.mkdir(parents=True, exist_ok=True)
-    (artifact_directory / f"implementation-{spec_key}.json").write_text(json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    input_gate = _persist_implementation_input_gate(
-        control_root=control_root, config=config, run=run, store=store, result=result,
-        brief_digest=brief_digest, operation_id=implementation_operation, step_name=implementation_step,
-        worker_id=implementation_worker, spec_key=spec_key,
-    )
-    if input_gate is not None:
-        return input_gate
     implementation_artifacts(result, workspace)
     if _git_checked(workspace, "status", "--porcelain") == "":
         raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
@@ -897,6 +864,60 @@ def _execute_codex_implementation(
         store.set_run_state(run.run_id, "spec_completed")
     return {"state": "completed" if finalize_run else "spec_completed", "spec_key": spec_key,
             "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
+
+
+def _execute_codex_implementation(
+    *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
+    ticket_plan: dict[str, object], finalize_run: bool = True, thread_id: str | None = None,
+) -> dict[str, object]:
+    """Run one real implementation and independent review for the active SPEC.
+
+    The worker may write only its managed worktree.  Commit, candidate
+    verification, review binding, merge and cleanup remain Runner operations.
+    """
+    if not config.acceptance_ids or not config.acceptance_checks:
+        raise RunnerError("acceptance_config_missing", "production implementation requires workflow.acceptance ids and checks")
+    spec_key = str(ticket_plan["spec_key"])
+    workspace_info = prepare_workspace(
+        repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
+        run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+    )
+    workspace = Path(str(workspace_info["workspace"]))
+    implementation_operation = f"implementation:{run.run_id}:{spec_key}"
+    implementation_step = "codex_implementation"
+    implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
+    store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
+    schema = IMPLEMENTATION_SCHEMA
+    implementation_prompt = (
+        "Implement this SPEC in the assigned workspace. Work on the real code and tests; do not publish, merge, "
+        "or modify files outside this workspace. Return JSON only after the implementation is complete.\n\n"
+        + json.dumps(ticket_plan, ensure_ascii=False, sort_keys=True)
+    )
+    answers = store.answers_for_run(run.run_id)
+    if answers:
+        implementation_prompt += "\n\nRunner-recorded implementation answers (use these as decisions; do not ask them again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
+    result = _run_worker(
+        adapter=CodexAdapter(), phase="implement", config=config,
+        prompt=implementation_prompt,
+        model=config.model_name, effort=config.effort, thread_id=thread_id, repository_path=workspace,
+        trusted={"brief_digest": brief_digest, "stage": implementation_step, "spec_key": spec_key, "workspace": os.fspath(workspace), "ticket_plan_digest": ticket_plan["digest"], "answers": answers},
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=implementation_operation, step_name=implementation_step, worker_id=implementation_worker, thread_id=thread_id, turn_id=turn_id),
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=schema,
+    )
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    (artifact_directory / f"implementation-{spec_key}.json").write_text(json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    input_gate = _persist_implementation_input_gate(
+        control_root=control_root, config=config, run=run, store=store, result=result,
+        brief_digest=brief_digest, operation_id=implementation_operation, step_name=implementation_step,
+        worker_id=implementation_worker, spec_key=spec_key,
+    )
+    if input_gate is not None:
+        return input_gate
+    return _finish_codex_implementation(
+        control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store,
+        ticket_plan=ticket_plan, workspace_info=workspace_info, result=result, finalize_run=finalize_run,
+    )
 
 
 def _execute_codex_example(
@@ -1577,6 +1598,119 @@ def _adopt_existing_ticket_plan(*, control_root: Path, config: RunnerConfig, run
     return adopted
 
 
+def _implementation_spec_key(*, run: RunRecord, worker: dict[str, object]) -> str:
+    prefix = f"codex_sdk:{run.run_id}:codex_implementation:"
+    worker_id = str(worker.get("worker_id") or "")
+    if not worker_id.startswith(prefix):
+        raise RunnerError("recovery_blocked", "implementation worker identity is not scoped to a SPEC")
+    spec_key = worker_id[len(prefix):]
+    if not spec_key:
+        raise RunnerError("recovery_blocked", "implementation worker has no SPEC identity")
+    return spec_key
+
+
+def _implementation_workspace_path(*, control_root: Path, config: RunnerConfig,
+                                   run: RunRecord, spec_key: str) -> Path:
+    """Read the worker's exact managed cwd without creating a replacement."""
+    workspace_root = (control_root / "delivery-workspaces").resolve()
+    safe_key = "".join(char if char.isalnum() or char in "._-" else "-" for char in spec_key)
+    manifest = workspace_root / f"{safe_key}-{run.run_id[:8]}.manifest.json"
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerError("recovery_blocked", "implementation recovery has no readable workspace manifest") from exc
+    if not isinstance(document, dict) or document.get("run_id") != run.run_id or document.get("spec_key") != spec_key:
+        raise RunnerError("recovery_blocked", "implementation workspace manifest identity does not match the failed run")
+    workspace = Path(str(document.get("workspace", ""))).resolve()
+    if workspace_root not in workspace.parents or not workspace.is_dir():
+        raise RunnerError("recovery_blocked", "implementation workspace is missing or outside the managed workspace root")
+    if Path(str(document.get("repository", ""))).resolve() != config.repository_path.resolve():
+        raise RunnerError("recovery_blocked", "implementation workspace manifest repository does not match the configured repository")
+    return workspace
+
+
+def _reconcile_completed_implementation_turn(*, control_root: Path, config: RunnerConfig,
+                                             run: RunRecord, brief_digest: str, store: Store,
+                                             worker: dict[str, object], thread_id: str,
+                                             turn_id: str, finalize_run: bool = False) -> dict[str, object]:
+    """Consume a completed implementation turn without replaying the worker."""
+    spec_key = _implementation_spec_key(run=run, worker=worker)
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    result_path = artifact_directory / f"implementation-{spec_key}.json"
+    try:
+        persisted = load_json(result_path)
+    except RunnerError as exc:
+        raise RunnerError("recovery_blocked", "completed implementation turn lacks a readable persisted result") from exc
+    if persisted.get("thread_id") != thread_id or persisted.get("turn_id") != turn_id:
+        raise RunnerError("recovery_blocked", "persisted implementation result identity does not match the completed SDK turn")
+    if persisted.get("status") != "completed" or persisted.get("error") is not None:
+        raise RunnerError("recovery_blocked", "completed implementation turn has no successful persisted result")
+    final_response = persisted.get("final_response")
+    if not isinstance(final_response, str) or not final_response.strip():
+        raise RunnerError("recovery_blocked", "completed implementation turn lacks useful persisted output")
+    item_count = persisted.get("item_count", 0)
+    if isinstance(item_count, bool) or not isinstance(item_count, int) or item_count < 0:
+        raise RunnerError("recovery_blocked", "completed implementation turn has an invalid persisted item count")
+    started_at = persisted.get("started_at")
+    completed_at = persisted.get("completed_at")
+    if (started_at is not None and (isinstance(started_at, bool) or not isinstance(started_at, int))) or (
+            completed_at is not None and (isinstance(completed_at, bool) or not isinstance(completed_at, int))):
+        raise RunnerError("recovery_blocked", "completed implementation turn has invalid persisted timestamps")
+    result = CodexWorkerResult(
+        thread_id=thread_id,
+        turn_id=turn_id,
+        status="completed",
+        error=None,
+        final_response=final_response,
+        item_count=item_count,
+        started_at=started_at,
+        completed_at=completed_at,
+        approval_mode=str(persisted.get("approval_mode") or "deny_all"),
+        skill_observation=persisted.get("skill_observation") if isinstance(persisted.get("skill_observation"), dict) else None,
+    )
+    ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
+    if not ticket_path.is_file():
+        raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+    ticket_plan = validate_ticket_plan(
+        load_json(ticket_path), expected_spec_key=spec_key,
+        expected_base_sha=git_sha(config.repository_path, config.target_ref),
+    )
+    workspace = _implementation_workspace_path(control_root=control_root, config=config, run=run, spec_key=spec_key)
+    workspace_info = prepare_workspace(
+        repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
+        run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+    )
+    if Path(str(workspace_info["workspace"])).resolve() != workspace:
+        raise RunnerError("recovery_blocked", "implementation workspace adoption changed the persisted workspace identity")
+    input_gate = _persist_implementation_input_gate(
+        control_root=control_root, config=config, run=run, store=store, result=result,
+        brief_digest=brief_digest, operation_id=f"implementation:{run.run_id}:{spec_key}",
+        step_name="codex_implementation",
+        worker_id=str(worker["worker_id"]), spec_key=spec_key,
+    )
+    if input_gate is not None:
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:completed-implementation-input:{turn_id}",
+            event_type="completed_sdk_turn_reconciled",
+            payload={"step": "codex_implementation", "spec_key": spec_key,
+                     "thread_id": thread_id, "turn_id": turn_id, "state": "needs_input"},
+        )
+        return store.public_status(run.run_id)
+    recovered = _finish_codex_implementation(
+        control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store,
+        ticket_plan=ticket_plan, workspace_info=workspace_info, result=result, finalize_run=finalize_run,
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:completed-implementation-turn:{turn_id}",
+        event_type="completed_sdk_turn_reconciled",
+        payload={"step": "codex_implementation", "spec_key": spec_key,
+                 "thread_id": thread_id, "turn_id": turn_id, "state": recovered.get("state")},
+    )
+    return recovered
+
+
 def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
     """Reconcile only evidence that can be proven locally; never replay an unknown SDK call."""
     if config.delivery_plan is not None:
@@ -1594,6 +1728,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 "codex_grill",
                 "codex_planning",
                 "codex_ticket_planning",
+                "codex_implementation",
                 "codex_second",
             }
             if run.current_step not in resumable_steps:
@@ -1605,6 +1740,8 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 matches_stage = lambda worker_id: worker_id == expected_worker_id
             elif run.current_step == "codex_ticket_planning":
                 matches_stage = lambda worker_id: worker_id.startswith(f"{worker_prefix}:codex_ticket_planning:")
+            elif run.current_step == "codex_implementation":
+                matches_stage = lambda worker_id: worker_id.startswith(f"{worker_prefix}:codex_implementation:")
             else:
                 expected_worker_id = f"{worker_prefix}:{run.current_step}"
                 matches_stage = lambda worker_id: worker_id == expected_worker_id
@@ -1625,10 +1762,16 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 )
                 if adopted is not None:
                     return {"created": False, **store.public_status(adopted.run_id)}
+            inspection_repository = config.repository_path
+            if run.current_step == "codex_implementation" and worker is not None:
+                spec_key = _implementation_spec_key(run=run, worker=worker)
+                inspection_repository = _implementation_workspace_path(
+                    control_root=control_root, config=config, run=run, spec_key=spec_key,
+                )
             try:
                 inspection = CodexAdapter().read_thread(
                     thread_id=thread_id,
-                    repository_path=config.repository_path,
+                    repository_path=inspection_repository,
                 )
             except RunnerError as exc:
                 raise RunnerError(
@@ -1640,6 +1783,13 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
             turns = inspection.get("turns")
             turn_count = inspection.get("turn_count")
+            turn_status = turns[-1].get("status") if isinstance(turns, list) and turns and isinstance(turns[-1], dict) else None
+            if run.current_step == "codex_implementation" and turn_status == "completed":
+                recovered = _reconcile_completed_implementation_turn(
+                    control_root=control_root, config=config, run=run, brief_digest=brief_digest,
+                    store=store, worker=worker, thread_id=thread_id, turn_id=turn_id,
+                )
+                return {"created": False, **recovered}
             reconciled = (
                 inspection.get("started_turn") is False
                 and inspection.get("thread_id") == thread_id
@@ -1652,7 +1802,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 and bool(turns)
                 and isinstance(turns[-1], dict)
                 and turns[-1].get("turn_id") == turn_id
-                and turns[-1].get("status") == "failed"
+                and turn_status == "failed"
             )
             if not reconciled:
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")

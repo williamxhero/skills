@@ -70,6 +70,19 @@ class GitHubTrackerTests(unittest.TestCase):
             GitHubTracker(runner=comments_only).read_issue(repository="acme/demo", number=1)
         self.assertEqual(comments_error.exception.code, "github_pagination_incomplete")
 
+    def test_malformed_paged_objects_fail_closed(self) -> None:
+        raw = json.dumps([["not-an-object"]])
+        tracker = GitHubTracker(runner=lambda arguments: raw)
+        with self.assertRaisesRegex(RunnerError, "non-object") as comments_error:
+            tracker._comments("acme/demo", 1)
+        self.assertEqual(comments_error.exception.code, "github_pagination_incomplete")
+        with self.assertRaisesRegex(RunnerError, "non-object") as issue_error:
+            tracker._run_owned_issue(repository="acme/demo", marker="marker", title="title", body="body")
+        self.assertEqual(issue_error.exception.code, "github_pagination_incomplete")
+        with self.assertRaisesRegex(RunnerError, "non-object") as relation_error:
+            tracker._relation_items("acme/demo", "repos/acme/demo/issues/1/sub_issues")
+        self.assertEqual(relation_error.exception.code, "github_relation_read_incomplete")
+
     def test_partial_publish_and_lost_response_reconcile_by_marker(self) -> None:
         calls: list[list[str]] = []
         umbrella = {"number": 9, "node_id": "I9", "repository_url": "https://api.github.com/repos/acme/demo", "title": "Umbrella", "body": "<!-- spec-runner-key:ROOT operation:op-1 -->\nroot"}
@@ -142,6 +155,31 @@ class GitHubTrackerTests(unittest.TestCase):
                     with self.assertRaises(RunnerError) as error:
                         GitHubTracker._run_gh(["api", "repos/acme/demo/issues"])
                 self.assertEqual(error.exception.code, expected)
+
+    def test_definitive_issue_create_failures_are_not_reclassified_as_unknown(self) -> None:
+        cases = ("github_auth", "github_forbidden", "github_not_found", "github_rate_limited",
+                 "github_rejected", "github_unavailable")
+        draft = {"specs": [{"key": "SR-01", "title": "One", "body": "one"}]}
+        for code in cases:
+            with self.subTest(code=code):
+                calls: list[list[str]] = []
+
+                def fake(arguments: list[str], failure: str = code) -> str:
+                    calls.append(arguments)
+                    if "POST" in arguments:
+                        raise RunnerError(failure, "definitive GitHub failure")
+                    raise AssertionError("definitive create failures must not trigger marker reconciliation")
+
+                with tempfile.TemporaryDirectory() as temp:
+                    with self.assertRaises(RunnerError) as error:
+                        GitHubTracker(runner=fake).publish_draft(
+                            repository="acme/demo", draft=draft, operation_id="op-definitive",
+                            receipt_root=Path(temp),
+                        )
+                    self.assertEqual(error.exception.code, code)
+                    receipt = json.loads((Path(temp) / ".spec-runner-github-receipts.json").read_text(encoding="utf-8"))
+                    self.assertEqual(receipt["op-definitive"]["unknown_keys"], [])
+                self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

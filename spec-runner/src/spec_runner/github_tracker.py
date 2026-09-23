@@ -23,6 +23,16 @@ def _digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+_DEFINITIVE_PUBLICATION_FAILURES = frozenset({
+    "github_auth",
+    "github_forbidden",
+    "github_not_found",
+    "github_rate_limited",
+    "github_rejected",
+    "github_unavailable",
+})
+
+
 class GitHubTracker:
     def __init__(self, *, runner: Callable[[list[str]], str] | None = None):
         self._runner = runner or self._run_gh
@@ -92,7 +102,9 @@ class GitHubTracker:
         for page in pages:
             if not isinstance(page, list):
                 raise RunnerError("github_pagination_incomplete", "GitHub comments page was not a list")
-            comments.extend(item for item in page if isinstance(item, dict))
+            if any(not isinstance(item, dict) for item in page):
+                raise RunnerError("github_pagination_incomplete", "GitHub comments page contained a non-object item")
+            comments.extend(page)
         return comments
 
     def _relation_items(self, repository: str, path: str) -> list[dict[str, Any]]:
@@ -104,7 +116,9 @@ class GitHubTracker:
             return value
         if not isinstance(value, list) or any(not isinstance(page, list) for page in value):
             raise RunnerError("github_relation_read_incomplete", "GitHub relation pagination was incomplete")
-        return [item for page in value for item in page if isinstance(item, dict)]
+        if any(not isinstance(item, dict) for page in value for item in page):
+            raise RunnerError("github_relation_read_incomplete", "GitHub relation page contained a non-object item")
+        return [item for page in value for item in page]
 
     def _run_owned_issue(self, *, repository: str, marker: str, title: str, body: str) -> dict[str, Any] | None:
         """Find one exact run-owned issue, or fail closed on ambiguity/editing."""
@@ -115,6 +129,8 @@ class GitHubTracker:
             raise RunnerError("github_pagination_incomplete", "GitHub issue listing was not valid JSON") from exc
         if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
             raise RunnerError("github_pagination_incomplete", "GitHub issue listing was not a complete page list")
+        if any(not isinstance(item, dict) for page in pages for item in page):
+            raise RunnerError("github_pagination_incomplete", "GitHub issue listing contained a non-object item")
         matches = [
             item
             for page in pages
@@ -332,6 +348,21 @@ class GitHubTracker:
                     save_progress()
                     raw_response = self._runner(["api", f"repos/{repository}/issues", "--method", "POST", "-f", f"title={title}", "-f", f"body={marker}\n{body}"])
                     response = json.loads(raw_response)
+            except RunnerError as exc:
+                if exc.code in _DEFINITIVE_PUBLICATION_FAILURES:
+                    # These errors prove that GitHub rejected the request or
+                    # that the local transport never reached GitHub. They do
+                    # not have an unknown external outcome, so leave the
+                    # operation retryable after the cause is fixed.
+                    receipt["unknown_keys"] = [unknown for unknown in receipt["unknown_keys"] if unknown != key]
+                    save_progress()
+                    raise
+                # A server or transport failure may have followed an accepted
+                # POST. Reconcile by the exact run marker before retrying.
+                response = self._run_owned_issue(repository=repository, marker=marker, title=title, body=body)
+                if response is None:
+                    save_progress()
+                    raise RunnerError("github_publish_unknown", "issue creation outcome is unknown and no unique marker readback exists") from exc
             except Exception as exc:
                 # The POST may have been accepted before its response was
                 # lost. Reconcile by the formal run marker, never by title.
