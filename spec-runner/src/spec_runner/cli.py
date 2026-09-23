@@ -17,7 +17,7 @@ from .matt import load_lock, render_prompt, resolve_grill, resolve_local_skill
 from .multi_spec import run_local_delivery
 from .legacy import legacy_takeover_inventory, read_legacy_database
 from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
-from .takeover import completion_action, inspect_takeover, load_inventory, plan_frontier, write_takeover_record
+from .takeover import completion_action, inspect_takeover, load_inventory, perform_cleanup, plan_frontier, write_takeover_record
 from .tracker import publish_local, read_local
 from .store import Store
 from .workflow import control, doctor, launch, resume, start, status
@@ -344,6 +344,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
                     action = completion_action(report)
                     result = {**record, "frontier": frontier, "action": action}
+                    if action["state"] == "cleanup_pending":
+                        result["cleanup"] = perform_cleanup(report)
+                        if result["cleanup"]["outcome"] == "cleaned":
+                            result["action"] = {**action, "state": "cleaned"}
                     # A cleanup-only takeover has no remaining implementation
                     # authority. Persist the adoption record but do not create a
                     # generic worker run merely to make status look active.

@@ -15,7 +15,7 @@ from spec_runner.delivery import cleanup_managed_workspace, git_sha, merge_local
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
-from spec_runner.takeover import completion_action, inspect_takeover, plan_frontier, write_takeover_record
+from spec_runner.takeover import completion_action, inspect_takeover, perform_cleanup, plan_frontier, write_takeover_record
 from spec_runner.legacy import legacy_takeover_inventory, read_legacy_database
 from spec_runner.multi_spec import run_local_delivery
 
@@ -313,6 +313,15 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(frontier["categories"]["reverified"], ["SR-02"])
             self.assertEqual(frontier["categories"]["new_work"], ["SR-03"])
             self.assertEqual([step["target"] for step in frontier["steps"]], ["SR-01", "SR-02", "SR-03"])
+
+    def test_cleanup_only_takeover_executes_explicit_owned_targets(self):
+        report = {"repository": str(Path.cwd()), "historical_facts": {"merged": True,
+            "verification_receipt": {"candidate_sha": "known"},
+            "cleanup_targets": [{"workspace_root": "C:/runtime/workspaces", "workspace": "C:/runtime/workspaces/run", "manifest": "C:/runtime/workspaces/run.manifest.json"}]}}
+        with patch("spec_runner.takeover.cleanup_managed_workspace", return_value={"outcome": "cleaned"}) as cleanup:
+            result = perform_cleanup(report)
+        self.assertEqual(result["outcome"], "cleaned")
+        cleanup.assert_called_once()
 
     def test_release_and_fault_reports_reject_unverified_shape(self):
         fault = validate_fault_matrix({"schema_version": "spec-runner-fault-matrix/v1", "scenarios": [{"id": "s1", "entrypoint": "public_cli", "expected": {"state": "blocked"}, "evidence_kind": "deterministic"}]})

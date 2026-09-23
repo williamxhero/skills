@@ -10,6 +10,7 @@ from typing import Any
 from .errors import RunnerError
 from .plans import digest
 from .store import Store
+from .delivery import cleanup_managed_workspace
 
 
 def _git(path: Path, *args: str) -> str:
@@ -135,6 +136,35 @@ def completion_action(report: dict[str, Any]) -> dict[str, object]:
     if isinstance(facts, dict) and facts.get("merged") and facts.get("verification_receipt"):
         return {"state": "cleanup_pending", "implementation_calls": 0, "merge_calls": 0}
     return {"state": "resume_delivery", "implementation_calls": 0, "merge_calls": 0, "requires": "normal Runner stage loop"}
+
+
+def perform_cleanup(report: dict[str, Any]) -> dict[str, object]:
+    """Execute only explicitly recorded Runner-owned cleanup targets.
+
+    A historical merge receipt alone is not a path authorization.  Cleanup is
+    attempted only when the source inventory records the workspace root and
+    manifest, and the delivery helper independently verifies ownership.
+    """
+    facts = report.get("historical_facts", {})
+    if not isinstance(facts, dict) or not facts.get("merged") or not facts.get("verification_receipt"):
+        raise RunnerError("takeover_cleanup_not_authorized", "cleanup requires verified historical delivery evidence")
+    targets = facts.get("cleanup_targets", [])
+    if not isinstance(targets, list):
+        raise RunnerError("invalid_takeover_cleanup", "cleanup_targets must be a list")
+    if not targets:
+        return {"outcome": "pending", "reason": "cleanup_targets_missing", "attempted": 0, "results": []}
+    repository = Path(str(report["repository"])).resolve()
+    results: list[dict[str, object]] = []
+    for target in targets:
+        if not isinstance(target, dict) or not all(isinstance(target.get(field), str) and target[field].strip() for field in ("workspace_root", "workspace")):
+            raise RunnerError("invalid_takeover_cleanup", "each cleanup target needs workspace_root and workspace")
+        workspace_root = Path(str(target["workspace_root"])).expanduser().resolve()
+        workspace = Path(str(target["workspace"])).expanduser().resolve()
+        manifest_value = target.get("manifest")
+        manifest = Path(str(manifest_value)).expanduser().resolve() if isinstance(manifest_value, str) and manifest_value.strip() else None
+        results.append(cleanup_managed_workspace(repository=repository, workspace_root=workspace_root, workspace=workspace, manifest=manifest))
+    outcome = "cleaned" if all(item.get("outcome") == "cleaned" for item in results) else "pending"
+    return {"outcome": outcome, "attempted": len(results), "results": results}
 
 
 def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
