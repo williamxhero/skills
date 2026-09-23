@@ -264,13 +264,28 @@ def test_grill_question_stops_before_spec_and_resumes_same_thread(context, monke
         brief_digest="brief", run=run, store=store)
     assert waiting.state == "needs_input" and waiting.current_step == "codex_grill"
     assert len(calls) == 1
-    store.submit_answer(run_id=run.run_id, question_id="Q1", value="json")
+    answer = store.submit_answer_and_wake(run_id=run.run_id, question_id="Q1", value="json")
+    assert answer["value_digest"]
+    assert store.control_for_run(run.run_id)["requested_state"] == "resume_requested"
+    assert len([event for event in store.events_for_run(run.run_id) if event["event_type"] == "answer_submitted"]) == 1
+    assert len([event for event in store.events_for_run(run.run_id) if event["event_type"] == "control_requested"]) == 1
+    assert store.submit_answer_and_wake(run_id=run.run_id, question_id="Q1", value="json")["value_digest"] == answer["value_digest"]
+    assert len([event for event in store.events_for_run(run.run_id) if event["event_type"] == "control_requested"]) == 1
     resumed = workflow._resume_codex_stage(control_root=root, config=config, run=waiting,
         brief="Requirement", brief_digest="brief", store=store)
     assert resumed["run"]["current_step"] == "codex_ticket_planning"
     assert calls[1]["thread_id"] == "thread-1"
     assert calls[1]["trusted"]["answers"][0]["value"] == "json"
     assert [call["phase"] for call in calls] == ["grill", "grill", "to-spec", "to-tickets"]
+
+
+def test_answer_and_wake_rejects_stale_or_terminal_run(context):
+    _, _, store, run = context
+    with pytest.raises(RunnerError, match="currently waiting"):
+        store.submit_answer_and_wake(run_id=run.run_id, question_id="Q1", value="json")
+    store.set_run_state(run.run_id, "cancelled")
+    with pytest.raises(RunnerError, match="cancelled runs"):
+        store.submit_answer_and_wake(run_id=run.run_id, question_id="Q1", value="json")
 
 
 @pytest.mark.parametrize("mutation", ["empty", "blank_body", "unsafe_key", "order", "empty_coverage"])

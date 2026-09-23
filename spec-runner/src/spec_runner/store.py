@@ -337,12 +337,19 @@ class Store:
         return dict(row) if row else None
 
     def submit_answer(self, *, run_id: str, question_id: str, value: object) -> dict[str, object]:
+        return self._submit_answer(run_id=run_id, question_id=question_id, value=value, wake=False)
+
+    def submit_answer_and_wake(self, *, run_id: str, question_id: str, value: object) -> dict[str, object]:
+        """Commit an answer and its same-run resume intent atomically."""
+        return self._submit_answer(run_id=run_id, question_id=question_id, value=value, wake=True)
+
+    def _submit_answer(self, *, run_id: str, question_id: str, value: object, wake: bool) -> dict[str, object]:
         if not question_id or any(character.isspace() for character in question_id):
             raise RunnerError("invalid_answer", "question_id must be non-empty and contain no whitespace")
         record = self.find_by_run_id(run_id)
         if record is None:
             raise RunnerError("unknown_run", f"run does not exist: {run_id}")
-        if record.state == "cancelled":
+        if record.state in {"cancelled", "completed", "failed", "blocked", "blocked_writer_busy"} and wake:
             raise RunnerError("cancelled_run", "cancelled runs cannot be revived by an answer")
         value_json = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         import hashlib
@@ -350,31 +357,42 @@ class Store:
         value_digest = hashlib.sha256(value_json.encode("utf-8")).hexdigest()
         timestamp = now()
         with self.transaction():
+            current = self.connection.execute("SELECT state FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+            if current is None:
+                raise RunnerError("unknown_run", f"run does not exist: {run_id}")
+            if wake and current[0] in {"cancelled", "completed", "failed", "blocked", "blocked_writer_busy"}:
+                raise RunnerError("answer_run_not_waiting", "terminal runs cannot accept an answer")
             existing = self.connection.execute(
                 "SELECT * FROM run_answers WHERE run_id = ? AND question_id = ?", (run_id, question_id)
             ).fetchone()
+            if wake and current[0] != "needs_input" and existing is None:
+                raise RunnerError("answer_run_not_waiting", "answers may wake only a run currently waiting for input")
             if existing:
                 if existing["value_digest"] != value_digest:
                     raise RunnerError("answer_conflict", "question already has a different answer")
-                return dict(existing)
-            self.connection.execute(
-                "INSERT INTO run_answers VALUES (?, ?, ?, ?, ?, ?)",
-                (run_id, question_id, value_json, value_digest, timestamp, timestamp),
-            )
-            self._insert_event(
-                run_id=run_id,
-                event_key=f"answer:{run_id}:{question_id}:{value_digest}",
-                event_type="answer_submitted",
-                payload={"question_id": question_id, "value_digest": value_digest},
-            )
-        return {
-            "run_id": run_id,
-            "question_id": question_id,
-            "value": value,
-            "value_digest": value_digest,
-            "created_at": timestamp,
-            "updated_at": timestamp,
-        }
+                answer = dict(existing)
+            else:
+                self.connection.execute(
+                    "INSERT INTO run_answers VALUES (?, ?, ?, ?, ?, ?)",
+                    (run_id, question_id, value_json, value_digest, timestamp, timestamp),
+                )
+                self._insert_event(
+                    run_id=run_id,
+                    event_key=f"answer:{run_id}:{question_id}:{value_digest}",
+                    event_type="answer_submitted",
+                    payload={"question_id": question_id, "value_digest": value_digest},
+                )
+                answer = {"run_id": run_id, "question_id": question_id, "value": value,
+                          "value_digest": value_digest, "created_at": timestamp, "updated_at": timestamp}
+            if wake and current[0] == "needs_input":
+                previous = self.connection.execute("SELECT generation, requested_state FROM run_controls WHERE run_id = ?", (run_id,)).fetchone()
+                if previous is None or previous["requested_state"] != "resume_requested":
+                    generation = int(previous["generation"]) + 1 if previous else 1
+                    self.connection.execute("INSERT OR REPLACE INTO run_controls VALUES (?, ?, ?, ?)",
+                        (run_id, "resume_requested", generation, timestamp))
+                    self._insert_event(run_id=run_id, event_key=f"control:{run_id}:{generation}",
+                        event_type="control_requested", payload={"requested_state": "resume_requested", "generation": generation})
+            return answer
 
     def answers_for_run(self, run_id: str) -> list[dict[str, object]]:
         answers = []

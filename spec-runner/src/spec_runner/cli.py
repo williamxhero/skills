@@ -258,9 +258,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             store = Store.open(arguments.control_root.expanduser().resolve(), create=False)
             try:
                 current = store.find_by_run_id(arguments.run_id)
-                answer = store.submit_answer(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value)
                 if current and current.state == "needs_input":
-                    store.request_control(arguments.run_id, "resume_requested")
+                    answer = store.submit_answer_and_wake(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value)
+                else:
+                    # Preserve the historical answer-only CLI contract for
+                    # non-interactive runs; only a waiting run gains a wake intent.
+                    answer = store.submit_answer(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value)
                 result = {"accepted": True, "answer": answer, **store.public_status(arguments.run_id)}
             finally:
                 store.close()
