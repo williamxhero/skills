@@ -63,6 +63,31 @@ def adapter(monkeypatch, documents, *, status="completed"):
     return calls
 
 
+def assert_strict_json_schema(schema):
+    """The live Codex SDK requires every object property to be required."""
+    if not isinstance(schema, dict):
+        return
+    if schema.get("type") == "object":
+        properties = schema.get("properties", {})
+        assert schema.get("additionalProperties") is False
+        assert set(properties) == set(schema.get("required", []))
+        for child in properties.values():
+            assert_strict_json_schema(child)
+    elif schema.get("type") == "array":
+        assert_strict_json_schema(schema.get("items"))
+
+
+def test_production_worker_schemas_are_strict_json_schema(context, monkeypatch):
+    root, config, store, run = context
+    calls = adapter(monkeypatch, [spec_document(), {"outcome": "planned", "questions": [], "tickets": [
+        {"key": "T1", "title": "Ticket", "body": "Implement R1", "acceptance": ["R1"], "blocked_by": []}]}])
+    planned = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
+    plan = json.loads((root / "artifacts" / run.run_id / "spec-plan.json").read_text())
+    workflow._execute_codex_tickets(control_root=root, config=config, brief_digest="brief", run=planned, store=store, spec_plan=plan)
+    for call in calls:
+        assert_strict_json_schema(call["schema"])
+
+
 def test_planning_persists_real_callback_identity_and_publishes_local_parent(context, monkeypatch):
     root, config, store, run = context
     calls = adapter(monkeypatch, [spec_document(), {"outcome": "planned", "questions": [], "tickets": [

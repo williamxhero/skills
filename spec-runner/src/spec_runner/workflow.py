@@ -38,7 +38,7 @@ def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prom
             effort=effort,
             trusted={**trusted, "legacy_prompt": prompt},
             untrusted={},
-            schema=schema or {"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
+            schema=schema or {"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question", "options"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers", "questions"], "additionalProperties": False},
             skill_roots=config.skill_roots,
             skill_config=(config.skill_config and (Path(config.skill_config))),
             thread_id=thread_id,
@@ -329,7 +329,7 @@ def _execute_codex_planning(
             "blocked_by": {"type": "array", "items": {"type": "string"}}, "covers": {"type": "array", "items": {"type": "string"}},
             "route": {"type": "object", "properties": {"model": {"type": "string"}, "effort": {"type": "string"}, "reason": {"type": "string"}}, "required": ["model", "effort", "reason"], "additionalProperties": False},
         }, "required": ["key", "title", "body", "blocked_by", "covers", "route"], "additionalProperties": False}},
-        "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}},
+        "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question", "options"], "additionalProperties": False}},
     }, "required": ["outcome", "requirements", "specs", "questions"], "additionalProperties": False}
     answers = store.answers_for_run(run.run_id)
     prompt = "Produce a SpecPlan for this requirement. Do not publish issues, create branches, or modify files. If a user decision is required, return outcome needs_input and questions; otherwise return outcome planned with complete requirements and dependency-ordered specs.\n\n" + brief
@@ -480,7 +480,7 @@ def _execute_codex_tickets(
                 "blocked_by": {"type": "array", "items": {"type": "string"}},
                 "acceptance": {"type": "array", "items": {"type": "string"}},
             }, "required": ["key", "title", "body", "blocked_by", "acceptance"], "additionalProperties": False}},
-            "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}},
+            "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question", "options"], "additionalProperties": False}},
         },
         "required": ["outcome", "tickets", "questions"], "additionalProperties": False,
     }
