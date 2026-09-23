@@ -5,6 +5,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -49,12 +50,14 @@ def _validate_launch_key(value: str) -> str:
     return value
 
 
-def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str) -> tuple[threading.Event, threading.Thread]:
+def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str, global_path: Path | None = None) -> tuple[threading.Event, threading.Thread]:
     """Keep a long-running SDK call from looking stale to a recovery process."""
     stop = threading.Event()
 
     def beat() -> None:
         while not stop.wait(5.0):
+            if global_path is not None:
+                _touch_global_lease(global_path)
             try:
                 heartbeat_store = Store.open(control_root, create=False)
                 try:
@@ -67,6 +70,56 @@ def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str) 
     thread = threading.Thread(target=beat, name="spec-runner-lease-heartbeat", daemon=True)
     thread.start()
     return stop, thread
+
+
+def _global_lease_path(scope: str) -> Path:
+    key = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+    return Path(tempfile.gettempdir()) / "spec-runner-leases" / f"{key}.json"
+
+
+def _acquire_global_lease(*, scope: str, owner_token: str, stale_after_seconds: float) -> Path:
+    path = _global_lease_path(scope)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = {"schema_version": "spec-runner-global-lease/v1", "scope": scope, "owner_token": owner_token, "pid": os.getpid(), "acquired_at": time.time()}
+    for attempt in range(2):
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(descriptor, (json.dumps(document, sort_keys=True) + "\n").encode("utf-8"))
+            finally:
+                os.close(descriptor)
+            return path
+        except FileExistsError:
+            try:
+                age = max(0.0, time.time() - path.stat().st_mtime)
+                existing = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RunnerError("global_writer_busy", "repository scope lease exists but cannot be inspected") from exc
+            if age <= stale_after_seconds:
+                raise RunnerError("global_writer_busy", "another Spec Runner owns this repository/ref scope", details={"scope": scope, "owner_pid": existing.get("pid"), "age_seconds": age})
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise RunnerError("global_writer_busy", "stale repository scope lease could not be reclaimed") from exc
+    raise RunnerError("global_writer_busy", "repository scope lease could not be acquired")
+
+
+def _touch_global_lease(path: Path) -> None:
+    try:
+        os.utime(path, None)
+    except OSError:
+        return
+
+
+def _release_global_lease(path: Path | None, owner_token: str) -> None:
+    if path is None:
+        return
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if document.get("owner_token") == owner_token:
+            path.unlink(missing_ok=True)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
 
 
 def _read_control_state(*, control_root: Path, run_id: str) -> str | None:
@@ -969,6 +1022,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             raise RunnerError("invalid_test_fault_config", "test lease stale timeout must be numeric") from exc
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
+    global_lease: Path | None = None
     try:
         existing = store.find_by_launch_key(launch_key)
         if existing:
@@ -980,8 +1034,9 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 )
             if existing.state in {"completed", "cancelled", "blocked_writer_busy"}:
                 return {"created": False, **store.public_status(existing.run_id)}
+            global_lease = _acquire_global_lease(scope=lease_scope, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
             store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
-            heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token)
+            heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
             if existing.state == "ready_for_next":
                 final_status = _advance_second_stage(
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
@@ -1085,7 +1140,8 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             # a second starting writer that a later process might adopt.
             store.fail_run(requested_run_id, operation_id, state="blocked_writer_busy")
             raise
-        heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token)
+        global_lease = _acquire_global_lease(scope=lease_scope, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
+        heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
         store.write_log(control_root, requested_run_id, {"event": "run_started", "backend_kind": config.execution_backend})
         _test_fault_pause(control_root=control_root, run_id=requested_run_id, point="after_first_intent")
         try:
@@ -1156,6 +1212,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             store.release_lease(scope=lease_scope, owner_token=owner_token)
         except RunnerError:
             pass
+        _release_global_lease(global_lease, owner_token)
         store.close()
 
 
