@@ -535,6 +535,32 @@ def _git_checked(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _reconcile_github_base(*, repository: Path, target_ref: str, base: str) -> dict[str, object]:
+    """Advance the local delivery base to the exact remote merge result.
+
+    GitHub delivery changes the provider first. The next SPEC must prepare its
+    worktree from that provider state, while a concurrent local change must
+    fail closed instead of silently basing work on an older ref.
+    """
+    target_branch = target_ref.removeprefix("refs/heads/")
+    remote_ref = f"refs/remotes/origin/{base}"
+    _git_checked(repository, "fetch", "origin", f"refs/heads/{base}:{remote_ref}")
+    remote_sha = git_sha(repository, remote_ref)
+    local_sha = git_sha(repository, target_ref)
+    if local_sha == remote_sha:
+        return {"target_ref": target_ref, "previous_sha": local_sha, "synced_sha": remote_sha, "outcome": "already_current"}
+    if _git_checked(repository, "status", "--porcelain"):
+        raise RunnerError("github_base_sync_dirty", "cannot advance the local base with uncommitted changes")
+    current_branch = _git_checked(repository, "branch", "--show-current")
+    if current_branch == target_branch:
+        _git_checked(repository, "merge", "--ff-only", remote_ref)
+    else:
+        _git_checked(repository, "update-ref", target_ref, remote_sha, local_sha)
+    if git_sha(repository, target_ref) != remote_sha:
+        raise RunnerError("github_base_sync_unconfirmed", "local base did not reach the provider merge revision")
+    return {"target_ref": target_ref, "previous_sha": local_sha, "synced_sha": remote_sha, "outcome": "fast_forwarded"}
+
+
 def _execute_independent_review(*, control_root: Path, config: RunnerConfig, brief_digest: str,
                                  run: RunRecord, store: Store, ticket_plan: dict[str, object],
                                  workspace: Path, candidate_sha: str, candidate_receipt: dict[str, object],
@@ -630,6 +656,8 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
     merged = delivery.merge(repository=repository, number=int(pr_receipt["number"]),
         expected_head=candidate_sha, expected_base=base,
         candidate_receipt=candidate_receipt, review=review, checks=checks, allow=True)
+    merged["base_sync"] = _reconcile_github_base(repository=config.repository_path,
+                                                  target_ref=config.target_ref, base=base)
     return {"state": "github_completed", "spec_key": spec_key, "pr": pr_receipt, "checks": checks,
             "merge": merged, "candidate": candidate_receipt, "review": review}
 

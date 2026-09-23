@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import json
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -113,3 +114,31 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     assert calls[1]["push"] is False
     assert store.find_by_run_id(run.run_id).state == "spec_completed"
     assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S1"]
+
+
+def test_github_merge_reconciles_local_base_before_next_spec(tmp_path):
+    remote = tmp_path / "remote.git"
+    repository = tmp_path / "repo"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "-b", "master", str(repository)], check=True, capture_output=True)
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repository), *args], check=True, capture_output=True, text=True).stdout.strip()
+    git("config", "user.name", "test")
+    git("config", "user.email", "test@example.invalid")
+    (repository / "state.txt").write_text("base\n", encoding="utf-8")
+    git("add", "state.txt")
+    git("commit", "-m", "base")
+    git("remote", "add", "origin", str(remote))
+    git("push", "-u", "origin", "master")
+    remote_clone = tmp_path / "remote-clone"
+    subprocess.run(["git", "clone", str(remote), str(remote_clone)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(remote_clone), "config", "user.name", "test"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(remote_clone), "config", "user.email", "test@example.invalid"], check=True, capture_output=True)
+    (remote_clone / "state.txt").write_text("merged\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(remote_clone), "add", "state.txt"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(remote_clone), "commit", "-m", "merged"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(remote_clone), "push", "origin", "master"], check=True, capture_output=True)
+
+    synced = workflow._reconcile_github_base(repository=repository, target_ref="refs/heads/master", base="master")
+    assert synced["outcome"] == "fast_forwarded"
+    assert (repository / "state.txt").read_text(encoding="utf-8") == "merged\n"
