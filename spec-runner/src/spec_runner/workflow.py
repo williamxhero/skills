@@ -20,6 +20,8 @@ from .plans import load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
 from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_review, verify_candidate
 from .tracker import read_local, publish_local
+from .scope_lock import ScopeLock
+from .production_gates import implementation_artifacts, independent_review
 
 
 def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None, schema: dict[str, object] | None = None):
@@ -50,14 +52,12 @@ def _validate_launch_key(value: str) -> str:
     return value
 
 
-def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str, global_path: Path | None = None) -> tuple[threading.Event, threading.Thread]:
+def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str, global_path: ScopeLock | None = None) -> tuple[threading.Event, threading.Thread]:
     """Keep a long-running SDK call from looking stale to a recovery process."""
     stop = threading.Event()
 
     def beat() -> None:
         while not stop.wait(1.0):
-            if global_path is not None:
-                _touch_global_lease(global_path)
             try:
                 heartbeat_store = Store.open(control_root, create=False)
                 try:
@@ -77,49 +77,18 @@ def _global_lease_path(scope: str) -> Path:
     return Path(tempfile.gettempdir()) / "spec-runner-leases" / f"{key}.json"
 
 
-def _acquire_global_lease(*, scope: str, owner_token: str, stale_after_seconds: float) -> Path:
+def _acquire_global_lease(*, scope: str, owner_token: str, stale_after_seconds: float) -> ScopeLock:
     path = _global_lease_path(scope)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    document = {"schema_version": "spec-runner-global-lease/v1", "scope": scope, "owner_token": owner_token, "pid": os.getpid(), "acquired_at": time.time()}
-    for attempt in range(2):
-        try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
-                os.write(descriptor, (json.dumps(document, sort_keys=True) + "\n").encode("utf-8"))
-            finally:
-                os.close(descriptor)
-            return path
-        except FileExistsError:
-            try:
-                age = max(0.0, time.time() - path.stat().st_mtime)
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise RunnerError("global_writer_busy", "repository scope lease exists but cannot be inspected") from exc
-            if age <= stale_after_seconds:
-                raise RunnerError("global_writer_busy", "another Spec Runner owns this repository/ref scope", details={"scope": scope, "owner_pid": existing.get("pid"), "age_seconds": age})
-            try:
-                path.unlink()
-            except OSError as exc:
-                raise RunnerError("global_writer_busy", "stale repository scope lease could not be reclaimed") from exc
-    raise RunnerError("global_writer_busy", "repository scope lease could not be acquired")
+    # An older Runner may still hold the timestamp lease. Never steal it merely
+    # because its heartbeat is old, or silently mix ownership protocols.
+    if path.exists():
+        raise RunnerError("legacy_scope_lease_present", "old repository lease requires owner reconciliation", details={"path": str(path)})
+    return ScopeLock.acquire(path.with_suffix(".lock"), owner_token)
 
 
-def _touch_global_lease(path: Path) -> None:
-    try:
-        os.utime(path, None)
-    except OSError:
-        return
-
-
-def _release_global_lease(path: Path | None, owner_token: str) -> None:
-    if path is None:
-        return
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-        if document.get("owner_token") == owner_token:
-            path.unlink(missing_ok=True)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return
+def _release_global_lease(lease: ScopeLock | None, owner_token: str) -> None:
+    if lease is not None:
+        lease.release(owner_token)
 
 
 def _read_control_state(*, control_root: Path, run_id: str) -> str | None:
@@ -464,8 +433,10 @@ def _execute_codex_implementation(
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=implementation_operation, step_name=implementation_step, worker_id=implementation_worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=schema,
     )
-    if result.status != "completed":
-        raise RunnerError("implementation_worker_failed", "implementation worker did not complete", details=result.public())
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    (artifact_directory / f"implementation-{spec_key}.json").write_text(json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    implementation_artifacts(result, workspace)
     if _git_checked(workspace, "status", "--porcelain") == "":
         raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
     _git_checked(workspace, "add", "--all")
@@ -482,7 +453,7 @@ def _execute_codex_implementation(
     review_step = "codex_review"
     review_worker = f"codex_sdk:{run.run_id}:{review_step}:{spec_key}"
     store.begin_stage(run.run_id, step_name=review_step, operation_id=review_operation, backend_kind="codex_sdk", worker_id=review_worker)
-    review_schema = {"type": "object", "properties": {"schema_version": {"type": "string"}, "candidate_sha": {"type": "string"}, "acceptance_version": {"type": "string"}, "findings": {"type": "array"}}, "required": ["schema_version", "candidate_sha", "acceptance_version", "findings"], "additionalProperties": True}
+    review_schema = {"type": "object", "properties": {"schema_version": {"type": "string"}, "candidate_sha": {"type": "string"}, "acceptance_version": {"type": "string"}, "findings": {"type": "array", "items": {"type": "object", "properties": {"severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]}, "status": {"type": "string", "enum": ["open", "resolved"]}, "description": {"type": "string"}}, "required": ["severity", "status", "description"], "additionalProperties": False}}}, "required": ["schema_version", "candidate_sha", "acceptance_version", "findings"], "additionalProperties": False}
     review_result = _run_worker(
         adapter=CodexAdapter(), phase="review", config=config,
         prompt=("Review the candidate in this read-only workspace against the SPEC and the attached real check receipt. "
@@ -493,19 +464,19 @@ def _execute_codex_implementation(
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=review_operation, step_name=review_step, worker_id=review_worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=review_schema,
     )
-    try:
-        review_document = json.loads(review_result.final_response or "null")
-    except json.JSONDecodeError as exc:
-        raise RunnerError("invalid_review_output", "review worker did not return JSON") from exc
-    if not isinstance(review_document, dict):
-        raise RunnerError("invalid_review_output", "review worker returned a non-object")
-    validated_review = validate_review(result=review_document, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
+    (artifact_directory / f"review-worker-{spec_key}.json").write_text(json.dumps(review_result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    validated_review = independent_review(review_result, implementation_thread=result.thread_id,
+        candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
     store.complete_codex_stage(run.run_id, review_operation, thread_id=review_result.thread_id, turn_id=review_result.turn_id, state="reviewed", step_name=review_step, worker_id=review_worker)
     (artifact_directory / f"review-{spec_key}.json").write_text(json.dumps({**validated_review, "worker": review_result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     CodexAdapter().archive_and_readback(thread_id=review_result.thread_id, repository_path=workspace)
     if not validated_review["approved"]:
         raise RunnerError("review_blocked", "independent review has unresolved blocking findings", details={"findings": validated_review["blocking"]})
-    expected_target_sha = git_sha(config.repository_path, config.target_ref)
+    if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
+        raise RunnerError("candidate_changed_after_review", "candidate changed after the verified check/review pair")
+    if git_sha(config.repository_path, str(workspace_info["branch"])) != candidate_sha:
+        raise RunnerError("candidate_branch_changed", "candidate branch moved after verification")
+    expected_target_sha = str(workspace_info["base_sha"])
     merged = merge_local(repository=config.repository_path, candidate_branch=str(workspace_info["branch"]), target_ref=config.target_ref, expected_target_sha=expected_target_sha, workspace_root=control_root / "delivery-workspaces", run_id=run.run_id)
     cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=control_root / "delivery-workspaces", workspace=workspace, manifest=Path(str(workspace_info["manifest"])))
     if cleanup.get("outcome") != "cleaned":
@@ -1022,7 +993,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             raise RunnerError("invalid_test_fault_config", "test lease stale timeout must be numeric") from exc
     heartbeat_stop: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
-    global_lease: Path | None = None
+    global_lease: ScopeLock | None = None
     try:
         existing = store.find_by_launch_key(launch_key)
         if existing:

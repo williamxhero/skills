@@ -274,6 +274,13 @@ def validate_review(*, result: dict[str, Any], candidate_sha: str, acceptance_ve
     findings = result.get("findings")
     if not isinstance(findings, list):
         raise RunnerError("invalid_review", "review requires a findings list")
+    for finding in findings:
+        if (not isinstance(finding, dict)
+            or finding.get("severity") not in {"critical", "high", "medium", "low", "info"}
+            or finding.get("status") not in {"open", "resolved"}
+            or not isinstance(finding.get("description"), str)
+            or not finding["description"].strip()):
+            raise RunnerError("invalid_review", "each finding needs a known severity, status and description")
     blocking = [finding for finding in findings if isinstance(finding, dict) and finding.get("severity") in blocking_severity and finding.get("status") != "resolved"]
     return {"candidate_sha": candidate_sha, "findings": findings, "blocking": blocking, "approved": not blocking, "review_digest": digest(result)}
 
