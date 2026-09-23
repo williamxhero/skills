@@ -82,6 +82,8 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     (artifact / "github-S1.json").write_text(json.dumps({"spec_key": "S1", "state": "waiting_ci"}), encoding="utf-8")
     (artifact / "candidate-S1.json").write_text(json.dumps({"candidate_sha": "abc1234"}), encoding="utf-8")
     (artifact / "review-S1.json").write_text(json.dumps({"approved": True}), encoding="utf-8")
+    (artifact / "spec-plan.json").write_text(json.dumps({"digest": "plan-1", "specs": [{"key": "S1"}]}), encoding="utf-8")
+    (artifact / "ticket-plan-S1.json").write_text(json.dumps({"digest": "ticket-1", "spec_key": "S1"}), encoding="utf-8")
     workspaces = root / "delivery-workspaces"
     workspaces.mkdir()
     manifest = workspaces / "run.manifest.json"
@@ -92,7 +94,8 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     calls = []
     responses = iter([
         {"state": "waiting_ci", "spec_key": "S1"},
-        {"state": "github_completed", "spec_key": "S1"},
+        {"state": "github_completed", "spec_key": "S1", "candidate": {"candidate_sha": "abc1234"},
+         "review": {"approved": True}, "merge": {"merged": True}},
     ])
 
     def fake_delivery(**kwargs):
@@ -104,8 +107,9 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     first = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
     assert first["state"] == "waiting_ci"
     assert calls[0]["push"] is False
-    second = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
-    assert second["state"] == "github_completed"
+    second = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store, finalize_run=False)
+    assert second["state"] == "spec_completed"
     assert len(calls) == 2
     assert calls[1]["push"] is False
-    assert store.find_by_run_id(run.run_id).state == "completed"
+    assert store.find_by_run_id(run.run_id).state == "spec_completed"
+    assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S1"]

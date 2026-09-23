@@ -150,12 +150,17 @@ def test_production_cleanup_pending_retries_cleanup_without_implementation(conte
     artifact = root / "artifacts" / run.run_id
     artifact.mkdir(parents=True)
     (artifact / "ticket-plan-S1.json").write_text(json.dumps({"spec_key": "S1"}), encoding="utf-8")
+    (artifact / "spec-plan.json").write_text(json.dumps({"digest": "plan-1", "specs": [{"key": "S1"}]}), encoding="utf-8")
+    (artifact / "ticket-plan-S1.json").write_text(json.dumps({"spec_key": "S1", "digest": "ticket-1"}), encoding="utf-8")
+    (artifact / "delivery-S1.json").write_text(json.dumps({
+        "run_id": run.run_id, "spec_key": "S1", "plan_digest": "plan-1", "ticket_plan_digest": "ticket-1",
+        "candidate": {"candidate_sha": "abc"}, "review": {"approved": True}, "merge": {"merged": True}}), encoding="utf-8")
     workspaces = root / "delivery-workspaces"
     workspaces.mkdir()
     workspace = workspaces / "run-S1"
     workspace.mkdir()
     manifest = workspaces / "run-S1.manifest.json"
-    manifest.write_text(json.dumps({"run_id": run.run_id, "workspace": str(workspace)}), encoding="utf-8")
+    manifest.write_text(json.dumps({"run_id": run.run_id, "spec_key": "S1", "workspace": str(workspace)}), encoding="utf-8")
     store.set_run_state(run.run_id, "cleanup_pending")
     calls = []
     monkeypatch.setattr(workflow, "cleanup_managed_workspace", lambda **kwargs: calls.append(kwargs) or {"outcome": "cleaned"})
@@ -165,6 +170,26 @@ def test_production_cleanup_pending_retries_cleanup_without_implementation(conte
     assert result["state"] == "spec_completed"
     assert len(calls) == 1
     assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S1"]
+
+
+def test_production_cleanup_cannot_infer_completion_from_manifest_or_ticket_guess(context, monkeypatch):
+    root, config, store, run = context
+    artifact = root / "artifacts" / run.run_id
+    artifact.mkdir(parents=True)
+    (artifact / "ticket-plan-S1.json").write_text(json.dumps({"spec_key": "S1"}), encoding="utf-8")
+    workspaces = root / "delivery-workspaces"
+    workspaces.mkdir()
+    workspace = workspaces / "run-S1"
+    workspace.mkdir()
+    manifest = workspaces / "run-S1.manifest.json"
+    manifest.write_text(json.dumps({"run_id": run.run_id, "spec_key": "S1", "workspace": str(workspace)}), encoding="utf-8")
+    store.set_run_state(run.run_id, "cleanup_pending")
+    monkeypatch.setattr(workflow, "cleanup_managed_workspace", lambda **kwargs: {"outcome": "cleaned"})
+    current = store.find_by_run_id(run.run_id)
+    assert current is not None
+    with pytest.raises(RunnerError, match="delivery, plan and ticket evidence"):
+        workflow._retry_production_cleanup(control_root=root, config=config, run=current, store=store)
+    assert not (artifact / "completed-specs.json").exists()
 
 
 @pytest.mark.parametrize("status", ["failed", "interrupted", "unknown"])

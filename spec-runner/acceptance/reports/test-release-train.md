@@ -29,3 +29,26 @@ Native relation writer remains unimplemented; body links are not native proof.
 The transport tests additionally verify BOM-free UTF-8 file upload, temporary
 file cleanup, a 120-second gh timeout, and structured timeout classification.
 No repository initialization, test issue creation, or issue closure occurred.
+
+## Production cleanup recovery hardening (2026-09-23)
+
+Impact: `src/spec_runner/workflow.py` production dispatch and recovery; direct
+acceptance coverage is `acceptance/test_production_planning.py` and
+`acceptance/test_github_production_boundary.py`.
+
+L0: `git diff --check` passed. L1/L2: complete `pytest -q` selection under
+`spec-runner/` passed (118 passed, 1 skipped, 23.40 seconds); the run includes
+the affected production queue and GitHub boundary contracts. The initial run
+exposed a missing plan/ticket fixture in the waiting-CI acceptance; the fixture
+was updated to represent durable production evidence and the complete suite
+was rerun successfully. This is source-level evidence only, not L3 installed
+artifact proof or L5 live GitHub merge evidence.
+
+The live current-skill probe marker `SRAC-20260923-7e4a1b9c2d3f` observed the
+registered idle SDK thread, then archived it through the installed SDK and
+verified archived-list readback (one page). Receipt:
+`SRAC-20260923-7e4a1b9c2d3f-skill-probe.json`.
+
+Remaining for this train: exact-wheel L3 and two replays; six-SPEC tail L4;
+live GitHub source/takeover and Windows control DB/log recovery L5. None is
+discharged by these unit/acceptance tests.

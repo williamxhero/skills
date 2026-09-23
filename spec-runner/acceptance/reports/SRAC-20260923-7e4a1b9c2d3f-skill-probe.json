@@ -1,0 +1,30 @@
+{
+  "run_marker": "SRAC-20260923-7e4a1b9c2d3f",
+  "schema_version": "spec-runner-live-skill-probe/v1",
+  "sdk_result": {
+    "approval_mode": "deny_all",
+    "completed_at": 1790146788,
+    "error": null,
+    "final_response": "{\"marker\":\"grill-round-1\",\"question\":\"What should the CSV-to-JSON tool do when it encounters malformed rows or missing values: fail the entire conversion, skip invalid rows with warnings, or include nulls and continue?\"}",
+    "item_count": 3,
+    "sdk_version": "0.155.1",
+    "skill_observation": {
+      "injection": "sdk_skill_input_plus_current_body",
+      "phase": "grill",
+      "prompt_digest": "05bac676f46faebf2f18dfae7fc1f26f63155b5f171bf35ad55fc03aa4cc60bb",
+      "read_at_ns": 1790146749216084800,
+      "source": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md",
+      "source_digest": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+    },
+    "started_at": 1790146751,
+    "status": "completed",
+    "thread_id": "01a0cd0f-a9ce-7db1-84fc-f8148aeb7750",
+    "turn_id": "01a0cd0f-aaa0-78b3-8576-c2633cfc4184"
+  },
+  "archive_readback": {
+    "thread_id": "01a0cd0f-a9ce-7db1-84fc-f8148aeb7750",
+    "archived": true,
+    "pages_read": 1,
+    "verified_by": "installed openai-codex 0.155.1 CodexAdapter.archive_and_readback"
+  }
+}

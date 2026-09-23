@@ -637,6 +637,8 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
         candidate_receipt=candidate, review=review, push=False)
     if result["state"] != "github_completed":
         return result
+    _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                               spec_key=str(result["spec_key"]), delivery=result)
     cleanup = cleanup_managed_workspace(repository=config.repository_path,
         workspace_root=control_root / "delivery-workspaces", workspace=Path(str(manifest["workspace"])),
         manifest=manifest_path)
@@ -648,6 +650,9 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
         if finalize_run:
             store.mark_archived(run.run_id, state="completed")
         else:
+            plan = load_json(artifact / "spec-plan.json")
+            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+                spec_key=str(result["spec_key"]), plan_digest=str(plan.get("digest", "")))
             store.set_run_state(run.run_id, "spec_completed")
     if not finalize_run and result.get("state") == "github_completed":
         result["state"] = "spec_completed"
@@ -723,6 +728,8 @@ def _execute_codex_implementation(
             store.append_event(run_id=run.run_id, event_key=f"github:{run.run_id}:{spec_key}:waiting",
                 event_type="github_checks_pending", payload=github_result)
             return github_result
+        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                                   spec_key=spec_key, delivery=github_result)
         cleanup = cleanup_managed_workspace(repository=config.repository_path,
             workspace_root=control_root / "delivery-workspaces", workspace=workspace,
             manifest=Path(str(workspace_info["manifest"])))
@@ -742,6 +749,8 @@ def _execute_codex_implementation(
         raise RunnerError("candidate_branch_changed", "candidate branch moved after verification")
     expected_target_sha = str(workspace_info["base_sha"])
     merged = merge_local(repository=config.repository_path, candidate_branch=str(workspace_info["branch"]), target_ref=config.target_ref, expected_target_sha=expected_target_sha, workspace_root=control_root / "delivery-workspaces", run_id=run.run_id)
+    _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+        spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review, "merge": merged})
     cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=control_root / "delivery-workspaces", workspace=workspace, manifest=Path(str(workspace_info["manifest"])))
     if cleanup.get("outcome") != "cleaned":
         store.mark_cleanup_pending(run.run_id)
@@ -1269,6 +1278,22 @@ def _record_production_spec(*, control_root: Path, config: RunnerConfig, run_id:
     temporary.replace(path)
 
 
+def _persist_delivery_evidence(*, control_root: Path, config: RunnerConfig, run_id: str,
+                               spec_key: str, delivery: dict[str, object]) -> None:
+    """Durably bind successful delivery to its exact plan before cleanup."""
+    artifact = _safe_artifact_directory(control_root, config, run_id)
+    plan = load_json(artifact / "spec-plan.json")
+    ticket = load_json(artifact / f"ticket-plan-{spec_key}.json")
+    record = {"schema_version": "spec-runner-production-delivery/v1", "run_id": run_id,
+              "spec_key": spec_key, "plan_digest": plan.get("digest"),
+              "ticket_plan_digest": ticket.get("digest"), **delivery}
+    path = artifact / f"delivery-{spec_key}.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+                         encoding="utf-8", newline="\n")
+    temporary.replace(path)
+
+
 def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_digest: str,
                           run: RunRecord, store: Store, spec_plan: dict[str, object]) -> dict[str, object]:
     """Drive every ready SPEC in one program-owned production run.
@@ -1301,6 +1326,17 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
             store=store, ticket_plan=load_json(ticket_files[-1]), finalize_run=False)
         if delivered.get("state") in {"waiting_ci", "cleanup_pending"}:
             return delivered
+        # A completed SPEC may have been recovered from a completed CI wait.
+        # Persist that fact before selecting another queue item.
+        if delivered.get("state") == "spec_completed" and str(delivered.get("spec_key")) == spec_key:
+            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+                spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
+            completed.add(spec_key)
+            current = store.find_by_run_id(run.run_id)
+            if current is None:
+                raise RunnerError("run_missing", "production queue run disappeared during continuation")
+            run = current
+            continue
         if delivered.get("state") != "spec_completed":
             return delivered
         _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
@@ -1326,22 +1362,36 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
             continue
         if document.get("run_id") == run.run_id:
             manifests.append(manifest)
-    if not manifests:
+    if len(manifests) != 1:
         raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no owned workspace manifest")
-    results = []
-    for manifest in manifests:
-        document = load_json(manifest)
-        results.append(cleanup_managed_workspace(
-            repository=config.repository_path, workspace_root=root,
-            workspace=Path(str(document["workspace"])), manifest=manifest))
+    manifest = manifests[0]
+    document = load_json(manifest)
+    spec_key = document.get("spec_key")
+    if not isinstance(spec_key, str) or not spec_key:
+        raise RunnerError("production_cleanup_evidence_missing", "workspace manifest has no SPEC identity")
+    artifact = _safe_artifact_directory(control_root, config, run.run_id)
+    receipt_path = artifact / f"delivery-{spec_key}.json"
+    plan_path = artifact / "spec-plan.json"
+    ticket_path = artifact / f"ticket-plan-{spec_key}.json"
+    if not receipt_path.is_file() or not plan_path.is_file() or not ticket_path.is_file():
+        raise RunnerError("production_cleanup_evidence_missing", "cleanup retry requires persisted delivery, plan and ticket evidence")
+    receipt, plan, ticket = load_json(receipt_path), load_json(plan_path), load_json(ticket_path)
+    if (receipt.get("spec_key") != spec_key or receipt.get("run_id") != run.run_id
+            or receipt.get("plan_digest") != plan.get("digest")
+            or receipt.get("ticket_plan_digest") != ticket.get("digest")
+            or not isinstance(receipt.get("candidate"), dict)
+            or not isinstance(receipt.get("review"), dict)
+            or receipt.get("review", {}).get("approved") is not True
+            or not isinstance(receipt.get("merge"), dict)
+            or not receipt.get("merge")):
+        raise RunnerError("production_cleanup_evidence_invalid", "persisted delivery evidence does not prove this SPEC was reviewed and merged")
+    results = [cleanup_managed_workspace(
+        repository=config.repository_path, workspace_root=root,
+        workspace=Path(str(document["workspace"])), manifest=manifest)]
     if any(item.get("outcome") != "cleaned" for item in results):
         return {"state": "cleanup_pending", "cleanup": results}
-    plan_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob("ticket-plan-*.json"))
-    if not plan_files:
-        raise RunnerError("ticket_plan_missing", "cleaned production run has no ticket plan")
-    spec_key = str(load_json(plan_files[-1])["spec_key"])
     _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
-        spec_key=spec_key, plan_digest="recovered")
+        spec_key=spec_key, plan_digest=str(plan["digest"]))
     store.set_run_state(run.run_id, "spec_completed")
     return {"state": "spec_completed", "spec_key": spec_key, "cleanup": results}
 
