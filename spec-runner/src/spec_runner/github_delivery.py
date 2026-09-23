@@ -66,10 +66,27 @@ class GitHubDelivery:
             item = matches[0]
             receipt = {"number": item.get("number"), "url": item.get("html_url"), "candidate_sha": candidate_sha, "head": head, "base": base, "adopted": True, "marker": marker}
         else:
-            response = json.loads(self.runner(["api", f"repos/{repository}/pulls", "--method", "POST", "-f", f"title=Spec Runner {candidate_sha[:12]}", "-f", f"head={head}", "-f", f"base={base}", "-f", f"body={marker}\n{body}"]))
+            adopted_after_reconcile = False
+            try:
+                response = json.loads(self.runner(["api", f"repos/{repository}/pulls", "--method", "POST", "-f", f"title=Spec Runner {candidate_sha[:12]}", "-f", f"head={head}", "-f", f"base={base}", "-f", f"body={marker}\n{body}"]))
+            except Exception as exc:
+                # A lost POST response has an unknown outcome. Re-read the
+                # complete scoped listing and adopt exactly one matching PR;
+                # never issue a second create based on a timeout alone.
+                try:
+                    retry_listing = json.loads(self.runner(["api", f"repos/{repository}/pulls", "--method", "GET", "-f", f"head={head}", "-f", f"base={base}"]))
+                except Exception as readback_exc:
+                    raise RunnerError("github_pr_unknown", "PR creation outcome and readback are both unknown") from readback_exc
+                if not isinstance(retry_listing, list):
+                    raise RunnerError("github_pr_readback_incomplete", "pull request readback was not a list") from exc
+                recovered = [item for item in retry_listing if isinstance(item, dict) and marker in str(item.get("body") or "") and str(item.get("head", {}).get("sha", "")) == candidate_sha]
+                if len(recovered) != 1:
+                    raise RunnerError("github_pr_unknown", "PR creation outcome is not uniquely reconciled") from exc
+                response = recovered[0]
+                adopted_after_reconcile = True
             if not isinstance(response, dict) or not response.get("number"):
                 raise RunnerError("github_pr_unconfirmed", "GitHub PR create response was not a PR")
-            receipt = {"number": response["number"], "url": response.get("html_url"), "candidate_sha": candidate_sha, "head": head, "base": base, "adopted": False, "marker": marker}
+            receipt = {"number": response["number"], "url": response.get("html_url"), "candidate_sha": candidate_sha, "head": head, "base": base, "adopted": adopted_after_reconcile, "marker": marker}
         receipts[operation_id] = receipt
         path.write_text(json.dumps(receipts, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
         return {"created": not receipt.get("adopted", False), "receipt": receipt}
