@@ -787,7 +787,7 @@ class Store:
             )
 
     def workers_for_run(self, run_id: str) -> list[dict[str, object]]:
-        return [dict(row) for row in self.connection.execute("SELECT * FROM workers WHERE run_id = ?", (run_id,))]
+        return [dict(row) for row in self.connection.execute("SELECT * FROM workers WHERE run_id = ? ORDER BY rowid", (run_id,))]
 
     def steps_for_run(self, run_id: str) -> list[dict[str, object]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM steps WHERE run_id = ? ORDER BY created_at, step_name", (run_id,))]

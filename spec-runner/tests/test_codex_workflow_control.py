@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,6 +64,141 @@ class FakeResumableAdapter:
 
 
 class CodexWorkflowControlTests(unittest.TestCase):
+    def _failed_sdk_run(self, root: Path) -> tuple[RunnerConfig, RunRecord, Store]:
+        repository = root / "repo"
+        repository.mkdir()
+        config = RunnerConfig(
+            repository, "HEAD", Path("artifacts"), "codex_sdk", ("production",),
+            "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
+        )
+        timestamp = now()
+        run = RunRecord(
+            run_id="33333333-3333-3333-3333-333333333333",
+            launch_key="recovery-failed",
+            input_digest="brief",
+            config_digest="config",
+            repository_path=str(repository),
+            target_ref="HEAD",
+            artifact_root="artifacts",
+            backend_kind="codex_sdk",
+            state="starting",
+            current_step="codex_planning",
+            log_path="logs/run.jsonl",
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        store = Store.open(root / "control", create=True)
+        store.create_run(run, f"start:{run.run_id}")
+        operation_id = f"planning:{run.run_id}"
+        worker_id = f"codex_sdk:{run.run_id}:codex_planning"
+        store.begin_stage(
+            run.run_id,
+            step_name="codex_planning",
+            operation_id=operation_id,
+            backend_kind="codex_sdk",
+            worker_id=worker_id,
+        )
+        store.record_codex_turn_started(
+            run.run_id,
+            operation_id,
+            thread_id="thread-failed",
+            turn_id="turn-failed",
+            step_name="codex_planning",
+            worker_id=worker_id,
+        )
+        store.fail_run(run.run_id, operation_id)
+        failed = store.find_by_run_id(run.run_id)
+        assert failed is not None
+        return config, failed, store
+
+    @staticmethod
+    def _failed_turn_inspection(**overrides: object) -> dict[str, object]:
+        return {
+            "schema_version": "spec-runner-sdk-thread-inspection/v1",
+            "thread_id": "thread-failed",
+            "thread_status": "idle",
+            "active_flags": [],
+            "started_turn": False,
+            "turn_count": 1,
+            "turns": [{"turn_id": "turn-failed", "status": "failed"}],
+            **overrides,
+        }
+
+    def test_recovery_retries_only_a_confirmed_terminal_failed_turn_at_its_stage(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-codex-failed-recovery-") as temp:
+            root = Path(temp)
+            config, run, store = self._failed_sdk_run(root)
+            retry_calls: list[dict[str, object]] = []
+
+            class ReadOnlyAdapter:
+                def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                    if thread_id != "thread-failed" or repository_path != config.repository_path:
+                        raise AssertionError("recovery inspected a different SDK thread or repository")
+                    return CodexWorkflowControlTests._failed_turn_inspection()
+
+            def retry_planning(**kwargs: object) -> RunRecord:
+                retry_calls.append(kwargs)
+                return replace(run, state="planned")
+
+            try:
+                with (
+                    patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                    patch.object(workflow, "_execute_codex_planning", side_effect=retry_planning),
+                    patch.object(workflow, "load_json", return_value={"specs": [{"key": "SPEC-1"}]}),
+                    patch.object(workflow, "_execute_codex_tickets", return_value=run),
+                ):
+                    workflow._recover_after_process_exit(
+                        control_root=root / "control",
+                        config=config,
+                        run=run,
+                        brief="brief",
+                        brief_digest="brief",
+                        store=store,
+                    )
+                self.assertEqual(len(retry_calls), 1)
+                self.assertEqual(retry_calls[0]["run"].current_step, "codex_planning")
+                self.assertEqual(retry_calls[0]["thread_id"], "thread-failed")
+                self.assertIn("failed_sdk_turn_reconciled", [event["event_type"] for event in store.events_for_run(run.run_id)])
+            finally:
+                store.close()
+
+    def test_recovery_blocks_unknown_or_in_flight_sdk_results(self) -> None:
+        rejected_inspections = [
+            self._failed_turn_inspection(turns=[{"turn_id": "turn-other", "status": "failed"}]),
+            self._failed_turn_inspection(turns=[{"turn_id": "turn-failed", "status": "running"}]),
+            self._failed_turn_inspection(thread_status="busy"),
+            self._failed_turn_inspection(active_flags=["turn_running"]),
+            self._failed_turn_inspection(turn_count=2),
+        ]
+        for index, inspection in enumerate(rejected_inspections):
+            with self.subTest(inspection=inspection), tempfile.TemporaryDirectory(
+                prefix=f"spec-runner-codex-unknown-recovery-{index}-"
+            ) as temp:
+                root = Path(temp)
+                config, run, store = self._failed_sdk_run(root)
+
+                class ReadOnlyAdapter:
+                    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                        return inspection
+
+                try:
+                    with (
+                        patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                        patch.object(workflow, "_execute_codex_planning") as retry,
+                    ):
+                        with self.assertRaisesRegex(RunnerError, "no uniquely recoverable external result"):
+                            workflow._recover_after_process_exit(
+                                control_root=root / "control",
+                                config=config,
+                                run=run,
+                                brief="brief",
+                                brief_digest="brief",
+                                store=store,
+                            )
+                    retry.assert_not_called()
+                finally:
+                    store.close()
+
     def test_process_exit_in_running_sdk_stage_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-recovery-") as temp:
             root = Path(temp)

@@ -1131,16 +1131,17 @@ def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunR
 
 
 def _resume_codex_stage(
-    *, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store,
+    thread_id: str | None = None,
 ) -> dict[str, object]:
-    """Resume the interrupted SDK turn on its persisted thread.
+    """Continue the current SDK stage on its persisted thread.
 
     A paused run is a stage boundary, not permission to start a competing
     thread. The formal thread identity persisted by ``Thread.turn()`` is the
-    only identity accepted for this continuation.
+    only identity accepted for this continuation or a reconciled retry.
     """
     worker = store.workers_for_run(run.run_id)[-1]
-    thread_id = str(worker.get("external_thread_id") or "")
+    thread_id = thread_id or str(worker.get("external_thread_id") or "")
     if not thread_id:
         raise RunnerError("resume_thread_missing", "paused Codex run has no persisted thread identity")
     if run.current_step == "codex_example":
@@ -1249,7 +1250,91 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
         )
         return {"created": False, **_run_delivery_plan(control_root=control_root, config=config, run=run, store=store)}
     if config.execution_backend != "deterministic_test":
-        if run.state in {"starting", "running", "failed", "cleanup_pending"}:
+        if run.state == "failed":
+            resumable_steps = {
+                "codex_example",
+                "codex_grill",
+                "codex_planning",
+                "codex_ticket_planning",
+                "codex_second",
+            }
+            if run.current_step not in resumable_steps:
+                raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            workers = store.workers_for_run(run.run_id)
+            worker_prefix = f"codex_sdk:{run.run_id}"
+            if run.current_step == "codex_example":
+                expected_worker_id = worker_prefix
+                matches_stage = lambda worker_id: worker_id == expected_worker_id
+            elif run.current_step == "codex_ticket_planning":
+                matches_stage = lambda worker_id: worker_id.startswith(f"{worker_prefix}:codex_ticket_planning:")
+            else:
+                expected_worker_id = f"{worker_prefix}:{run.current_step}"
+                matches_stage = lambda worker_id: worker_id == expected_worker_id
+            stage_workers = [
+                worker for worker in workers
+                if worker.get("backend_kind") == "codex_sdk"
+                and worker.get("state") == "failed"
+                and matches_stage(str(worker.get("worker_id", "")))
+            ]
+            worker = stage_workers[-1] if stage_workers else None
+            thread_id = str(worker.get("external_thread_id") or "") if worker else ""
+            turn_id = str(worker.get("external_turn_id") or "") if worker else ""
+            if not thread_id or not turn_id:
+                raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            try:
+                inspection = CodexAdapter().read_thread(
+                    thread_id=thread_id,
+                    repository_path=config.repository_path,
+                )
+            except RunnerError as exc:
+                raise RunnerError(
+                    "recovery_blocked",
+                    "the persisted SDK thread could not be reconciled; inspect it before retry",
+                    details={"inspection_error": exc.code},
+                ) from exc
+            turns = inspection.get("turns")
+            turn_count = inspection.get("turn_count")
+            reconciled = (
+                inspection.get("started_turn") is False
+                and inspection.get("thread_id") == thread_id
+                and inspection.get("thread_status") == "idle"
+                and inspection.get("active_flags") == []
+                and isinstance(turns, list)
+                and isinstance(turn_count, int)
+                and not isinstance(turn_count, bool)
+                and turn_count == len(turns)
+                and bool(turns)
+                and isinstance(turns[-1], dict)
+                and turns[-1].get("turn_id") == turn_id
+                and turns[-1].get("status") == "failed"
+            )
+            if not reconciled:
+                raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            store.append_event(
+                run_id=run.run_id,
+                event_key=f"recovery:{run.run_id}:failed-turn-retry:{turn_id}:{worker['updated_at']}",
+                event_type="failed_sdk_turn_reconciled",
+                payload={
+                    "step": run.current_step,
+                    "thread_id": thread_id,
+                    "turn_id": turn_id,
+                    "thread_status": "idle",
+                    "turn_status": "failed",
+                },
+            )
+            return {
+                "created": False,
+                **_resume_codex_stage(
+                    control_root=control_root,
+                    config=config,
+                    run=run,
+                    brief=brief,
+                    brief_digest=brief_digest,
+                    store=store,
+                    thread_id=thread_id,
+                ),
+            }
+        if run.state in {"starting", "running", "cleanup_pending"}:
             raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
         return None
     store.append_event(
