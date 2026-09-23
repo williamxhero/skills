@@ -628,7 +628,8 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
     if not config.github_merge_authorized:
         raise RunnerError("github_merge_not_authorized", "GitHub checks passed but merge authorization is not configured")
     merged = delivery.merge(repository=repository, number=int(pr_receipt["number"]),
-        expected_head=candidate_sha, allow=True)
+        expected_head=candidate_sha, expected_base=base,
+        candidate_receipt=candidate_receipt, review=review, checks=checks, allow=True)
     return {"state": "github_completed", "spec_key": spec_key, "pr": pr_receipt, "checks": checks,
             "merge": merged, "candidate": candidate_receipt, "review": review}
 

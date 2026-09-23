@@ -17,6 +17,8 @@ def test_check_runs_are_paginated_and_pending_is_waiting_not_failure():
 
     def runner(args: list[str]) -> str:
         calls.append(args)
+        if "status" in args[-1]:
+            return json.dumps({"sha": "abc", "state": "pending", "statuses": []})
         return json.dumps([{"check_runs": [
             {"name": "ci", "status": "in_progress", "conclusion": None, "head_sha": "abc", "started_at": "2026-01-01T00:00:00Z"},
         ]}, {"check_runs": [
@@ -31,10 +33,15 @@ def test_check_runs_are_paginated_and_pending_is_waiting_not_failure():
 
 
 def test_check_runs_reject_completed_neutral_and_wrong_sha():
-    result = GitHubDelivery(runner=lambda args: json.dumps({"check_runs": [
-        {"name": "ci", "status": "completed", "conclusion": "neutral", "head_sha": "abc"},
-        {"name": "lint", "status": "completed", "conclusion": "success", "head_sha": "old"},
-    ]})).checks(repository="owner/repo", candidate_sha="abc", required=["ci", "lint"])
+    def runner(args: list[str]) -> str:
+        if "status" in args[-1]:
+            return json.dumps({"sha": "abc", "state": "failure", "statuses": []})
+        return json.dumps({"check_runs": [
+            {"name": "ci", "status": "completed", "conclusion": "neutral", "head_sha": "abc"},
+            {"name": "lint", "status": "completed", "conclusion": "success", "head_sha": "old"},
+        ]})
+
+    result = GitHubDelivery(runner=runner).checks(repository="owner/repo", candidate_sha="abc", required=["ci", "lint"])
     assert result["failed"] == ["ci"]
     assert result["wrong_sha"] == ["lint"]
     assert result["ready"] is False
@@ -64,3 +71,4 @@ def test_gh_http_failures_preserve_recovery_class():
         with pytest.raises(Exception) as error:
             GitHubDelivery._gh(["api", "repos/owner/repo"])
     assert error.value.code == "github_rate_limited"
+

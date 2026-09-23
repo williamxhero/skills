@@ -102,6 +102,10 @@ def _parser() -> argparse.ArgumentParser:
     merge_parser.add_argument("--repository", required=True)
     merge_parser.add_argument("--number", required=True, type=int)
     merge_parser.add_argument("--expected-head", required=True)
+    merge_parser.add_argument("--expected-base", required=True)
+    merge_parser.add_argument("--candidate-receipt", required=True, type=Path)
+    merge_parser.add_argument("--review", required=True, type=Path)
+    merge_parser.add_argument("--checks", required=True, type=Path)
     merge_parser.add_argument("--authorize", action="store_true")
     intake_parser = subparsers.add_parser("intake", help="adopt an explicit existing plan without regenerating tickets")
     intake_sub = intake_parser.add_subparsers(dest="intake_command", required=True)
@@ -305,7 +309,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             elif arguments.github_delivery_command == "checks":
                 result = adapter.checks(repository=arguments.repository, candidate_sha=arguments.candidate_sha, required=arguments.required)
             else:
-                result = adapter.merge(repository=arguments.repository, number=arguments.number, expected_head=arguments.expected_head, allow=arguments.authorize)
+                result = adapter.merge(
+                    repository=arguments.repository, number=arguments.number,
+                    expected_head=arguments.expected_head, expected_base=arguments.expected_base,
+                    candidate_receipt=plan_json(arguments.candidate_receipt),
+                    review=plan_json(arguments.review), checks=plan_json(arguments.checks),
+                    allow=arguments.authorize)
         elif arguments.command == "intake":
             result = intake_snapshot(read_local(arguments.root), entry_key=arguments.entry)
         elif arguments.command == "plan":
