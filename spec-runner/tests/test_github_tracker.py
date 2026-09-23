@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -122,6 +124,24 @@ class GitHubTrackerTests(unittest.TestCase):
             with self.assertRaisesRegex(RunnerError, "unknown"):
                 adapter.publish_draft(repository="acme/demo", draft=draft, operation_id="op-unknown", receipt_root=Path(temp))
         self.assertEqual(sum("POST" in call for call in calls), 1)
+
+    def test_http_failures_keep_auth_permission_not_found_rate_and_server_states_distinct(self) -> None:
+        cases = {
+            "HTTP 401": "github_auth",
+            "HTTP 403: Resource not accessible": "github_forbidden",
+            "HTTP 404": "github_not_found",
+            "HTTP 403: API rate limit exceeded": "github_rate_limited",
+            "HTTP 429": "github_rate_limited",
+            "HTTP 503": "github_server_error",
+            "request failed without status": "github_request_failed",
+        }
+        for message, expected in cases.items():
+            with self.subTest(message=message):
+                with patch("spec_runner.github_tracker.subprocess.run",
+                           side_effect=subprocess.CalledProcessError(1, ["gh"], stderr=message)):
+                    with self.assertRaises(RunnerError) as error:
+                        GitHubTracker._run_gh(["api", "repos/acme/demo/issues"])
+                self.assertEqual(error.exception.code, expected)
 
 
 if __name__ == "__main__":

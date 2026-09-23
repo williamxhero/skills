@@ -14,14 +14,30 @@ class Transport:
         self.issues = []
         self.posts = 0
         self.crash = False
+        self.sub_issues = {}
+        self.dependencies = {}
+        self.relation_posts = 0
+        self.lose_relation_response = False
 
     def __call__(self, args):
         if "POST" in args:
             if "sub_issues" in args[1]:
-                self.sub_issue = next(int(v.split("=", 1)[1]) for v in args if v.startswith("sub_issue_id="))
+                child = next(int(v.split("=", 1)[1]) for v in args if v.startswith("sub_issue_id="))
+                parent_number = int(args[1].split("/issues/")[1].split("/")[0])
+                self.sub_issues.setdefault(parent_number, set()).add(child)
+                self.relation_posts += 1
+                if self.lose_relation_response:
+                    self.lose_relation_response = False
+                    raise ConnectionError("relation committed but response was lost")
                 return "{}"
             if "dependencies/blocked_by" in args[1]:
                 self.blocked_by = next(int(v.split("=", 1)[1]) for v in args if v.startswith("issue_id="))
+                issue_number = int(args[1].split("/issues/")[1].split("/")[0])
+                self.dependencies.setdefault(issue_number, set()).add(self.blocked_by)
+                self.relation_posts += 1
+                if self.lose_relation_response:
+                    self.lose_relation_response = False
+                    raise ConnectionError("relation committed but response was lost")
                 return "{}"
             self.posts += 1
             issue = {"number": len(self.issues) + 1,
@@ -36,10 +52,14 @@ class Transport:
             return json.dumps(issue)
         if "issues?state=all" in args[-1]:
             return json.dumps([self.issues])
-        if "sub_issues" in args[-1]:
-            return json.dumps([self.issues[1]] if getattr(self, "sub_issue", None) == self.issues[1]["id"] else [])
         if "dependencies/blocked_by" in args[-1]:
-            return json.dumps([self.issues[0]] if getattr(self, "blocked_by", None) == self.issues[0]["id"] else [])
+            issue_number = int(args[-1].split("/issues/")[1].split("/")[0])
+            ids = self.dependencies.get(issue_number, set())
+            return json.dumps([issue for issue in self.issues if issue["id"] in ids])
+        if "sub_issues" in args[-1]:
+            parent_number = int(args[-1].split("/issues/")[1].split("/")[0])
+            ids = self.sub_issues.get(parent_number, set())
+            return json.dumps([issue for issue in self.issues if issue["id"] in ids])
         return json.dumps(self.issues[int(args[-1].rsplit("/", 1)[1]) - 1])
 
 
@@ -180,3 +200,35 @@ def test_native_relations_are_logged_written_and_read_back(tmp_path):
     assert len([key for key in operations if ":relation:" in key]) == 2
     assert all(operations[key]["state"] == "completed" for key in operations if ":relation:" in key)
     assert result["receipt"]["relation_evidence"]["native"] is True
+
+
+def test_lost_relation_response_reconciles_without_recreating_issues_or_relation(tmp_path):
+    transport = Transport()
+    transport.lose_relation_response = True
+    operations = {}
+
+    def intent(**identity):
+        existing = operations.get(identity["operation_id"])
+        if existing:
+            assert existing["input_digest"] == identity["input_digest"]
+            return existing
+        operations[identity["operation_id"]] = {**identity, "state": "intent"}
+        return operations[identity["operation_id"]]
+
+    def completed(*, operation_id, receipt):
+        operations[operation_id].update(state="completed", receipt=receipt)
+
+    def run():
+        return GitHubTracker(runner=transport).publish_draft(
+            repository="williamxhero/skills", draft=draft(), operation_id="SRAC-native-recovery",
+            receipt_root=tmp_path, relation_mode="native", operation_intent=intent,
+            operation_completed=completed)
+
+    with pytest.raises(ConnectionError, match="response was lost"):
+        run()
+    result = run()
+    assert result["receipt"]["complete"]
+    assert transport.posts == 2
+    assert transport.relation_posts == 1
+    assert all(value["state"] == "completed" for key, value in operations.items()
+               if ":relation:" in key)

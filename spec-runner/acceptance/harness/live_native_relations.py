@@ -1,6 +1,6 @@
-"""Exercise native GitHub issue relations using only run-owned acceptance issues.
+"""Exercise a three-issue native hierarchy using run-owned acceptance issues.
 
-The script is opt-in. It writes two marked issues and closes only those exact
+The script is opt-in. It writes three marked issues and closes only those exact
 issue numbers after successful readback. Reports are stored under acceptance.
 """
 from __future__ import annotations
@@ -66,9 +66,14 @@ def main() -> int:
         draft = {
             "umbrella": {"key": f"{args.marker}-P", "title": f"[{args.marker}] native relation parent",
                          "body": f"Acceptance-only parent issue. Marker: {args.marker}."},
-            "specs": [{"key": f"{args.marker}-C", "title": f"[{args.marker}] native relation child",
-                       "body": f"Acceptance-only child issue. Marker: {args.marker}.",
-                       "parent": f"{args.marker}-P", "blocked_by": [f"{args.marker}-P"]}],
+            "specs": [
+                {"key": f"{args.marker}-C1", "title": f"[{args.marker}] native relation child one",
+                 "body": f"Acceptance-only child one. Marker: {args.marker}.",
+                 "parent": f"{args.marker}-P"},
+                {"key": f"{args.marker}-C2", "title": f"[{args.marker}] native relation child two",
+                 "body": f"Acceptance-only child two. Marker: {args.marker}.",
+                 "parent": f"{args.marker}-P", "blocked_by": [f"{args.marker}-C1"]},
+            ],
         }
         result = tracker.publish_draft(repository=args.repository, draft=draft,
             operation_id=f"{args.marker}:publication", receipt_root=runtime / "projection",

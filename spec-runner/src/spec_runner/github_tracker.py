@@ -48,9 +48,27 @@ class GitHubTracker:
             raise RunnerError("github_unavailable", "gh CLI is not installed") from exc
         except subprocess.CalledProcessError as exc:
             message = (exc.stderr or "").strip()
-            code = "github_auth" if exc.returncode == 4 or "auth" in message.lower() else "github_read_failed"
+            status_match = re.search(r"\bHTTP\s+(\d{3})\b", message, re.IGNORECASE)
+            status = int(status_match.group(1)) if status_match else None
+            lowered = message.lower()
+            if exc.returncode == 4 or status == 401 or "authentication" in lowered:
+                code = "github_auth"
+            elif status == 403 and ("rate limit" in lowered or "secondary rate" in lowered):
+                code = "github_rate_limited"
+            elif status == 403:
+                code = "github_forbidden"
+            elif status == 404:
+                code = "github_not_found"
+            elif status == 429:
+                code = "github_rate_limited"
+            elif status is not None and status >= 500:
+                code = "github_server_error"
+            elif status == 422:
+                code = "github_rejected"
+            else:
+                code = "github_request_failed"
             raise RunnerError(code, "GitHub request failed", details={"exit_code": exc.returncode,
-                "stderr": message[:1000]}) from exc
+                "http_status": status, "stderr": message[:1000]}) from exc
         return result.stdout
 
     def _issue(self, repository: str, number: int) -> dict[str, Any]:
