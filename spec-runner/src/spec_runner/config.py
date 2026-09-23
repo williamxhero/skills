@@ -82,6 +82,11 @@ class RunnerConfig:
     digest: str
     acceptance_checks: tuple[dict[str, Any], ...] = ()
     acceptance_ids: tuple[str, ...] = ()
+    github_repository: str | None = None
+    github_required_checks: tuple[str, ...] = ()
+    github_receipt_root: Path | None = None
+    github_base: str | None = None
+    github_merge_authorized: bool = False
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -175,6 +180,26 @@ class RunnerConfig:
                 raise RunnerError("invalid_config", "workflow acceptance checks need command arrays")
             if not isinstance(mapped, list) or not mapped or any(item not in acceptance_ids for item in mapped):
                 raise RunnerError("invalid_config", "workflow acceptance checks need valid acceptance IDs")
+        github = document.get("github")
+        if github is None:
+            github = {}
+        if not isinstance(github, dict):
+            raise RunnerError("invalid_config", "github must be an object when configured")
+        github_repository = github.get("repository")
+        if github_repository is not None and (not isinstance(github_repository, str) or not github_repository or "/" not in github_repository or any(character.isspace() for character in github_repository)):
+            raise RunnerError("invalid_config", "github.repository must be owner/name")
+        github_checks = github.get("required_checks", [])
+        if not isinstance(github_checks, list) or any(not isinstance(item, str) or not item.strip() for item in github_checks):
+            raise RunnerError("invalid_config", "github.required_checks must be a list of names")
+        github_receipt = None
+        if github.get("receipt_root") is not None:
+            github_receipt = _normalise_relative_path(github["receipt_root"], "github.receipt_root")
+        github_base = github.get("base", target_ref)
+        if not isinstance(github_base, str) or not github_base.strip():
+            raise RunnerError("invalid_config", "github.base must be a non-empty ref")
+        github_authorized = github.get("merge_authorized", False)
+        if not isinstance(github_authorized, bool):
+            raise RunnerError("invalid_config", "github.merge_authorized must be boolean")
 
         normalized = {
             "schema_version": CONFIG_SCHEMA_VERSION,
@@ -188,6 +213,7 @@ class RunnerConfig:
             "delivery": {"plan": delivery_plan.as_posix()} if delivery_plan else None,
             "skills": {"config": skill_config.as_posix() if skill_config else None, "roots": [os.fspath(item) for item in skill_roots]},
             "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks}},
+            "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized},
         }
         return cls(
             repository_path=repository_path,
@@ -205,6 +231,11 @@ class RunnerConfig:
             acceptance_checks=tuple(dict(item) for item in checks),
             acceptance_ids=tuple(acceptance_ids),
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
+            github_repository=github_repository,
+            github_required_checks=tuple(github_checks),
+            github_receipt_root=(control_root / github_receipt).resolve() if github_receipt else None,
+            github_base=github_base if github_repository else None,
+            github_merge_authorized=github_authorized,
         )
 
 

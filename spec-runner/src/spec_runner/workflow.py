@@ -22,6 +22,7 @@ from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_w
 from .tracker import read_local, publish_local
 from .scope_lock import ScopeLock
 from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
+from .github_delivery import GitHubDelivery
 
 
 def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None, schema: dict[str, object] | None = None):
@@ -526,6 +527,79 @@ def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest:
     return candidate_sha, candidate_receipt
 
 
+def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                             spec_key: str, candidate_sha: str, branch: str,
+                             candidate_receipt: dict[str, object], review: dict[str, object],
+                             push: bool = True) -> dict[str, object]:
+    """Publish one already verified candidate through the explicit GitHub gate."""
+    if not config.github_repository or not config.github_required_checks or not config.github_receipt_root or not config.github_base:
+        raise RunnerError("github_config_incomplete", "GitHub delivery requires repository, base, receipt root and required checks")
+    base = config.github_base.removeprefix("refs/heads/")
+    repository = config.github_repository
+    # The branch push is a Runner side effect, after all local candidate gates.
+    if push:
+        _git_checked(config.repository_path, "push", "--set-upstream", "origin", branch)
+    body = json.dumps({"run_id": run.run_id, "spec_key": spec_key, "candidate": candidate_receipt,
+                       "review": review}, ensure_ascii=False, sort_keys=True)
+    operation = f"github:{run.run_id}:{spec_key}:{candidate_sha}"
+    delivery = GitHubDelivery()
+    pr_result = delivery.create_or_adopt_pr(repository=repository, head=branch, base=base,
+        candidate_sha=candidate_sha, body=body, operation_id=operation,
+        receipt_root=config.github_receipt_root)
+    pr_receipt = pr_result.get("receipt")
+    if not isinstance(pr_receipt, dict) or not isinstance(pr_receipt.get("number"), int):
+        raise RunnerError("github_pr_unconfirmed", "GitHub PR receipt lacks a confirmed number")
+    checks = delivery.checks(repository=repository, candidate_sha=candidate_sha,
+        required=list(config.github_required_checks))
+    if not checks["ready"]:
+        return {"state": "waiting_ci", "spec_key": spec_key, "pr": pr_receipt, "checks": checks,
+                "candidate": candidate_receipt, "review": review}
+    if not config.github_merge_authorized:
+        raise RunnerError("github_merge_not_authorized", "GitHub checks passed but merge authorization is not configured")
+    merged = delivery.merge(repository=repository, number=int(pr_receipt["number"]),
+        expected_head=candidate_sha, allow=True)
+    return {"state": "github_completed", "spec_key": spec_key, "pr": pr_receipt, "checks": checks,
+            "merge": merged, "candidate": candidate_receipt, "review": review}
+
+
+def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                           store: Store) -> dict[str, object]:
+    artifact = _safe_artifact_directory(control_root, config, run.run_id)
+    github_files = sorted(artifact.glob("github-*.json"))
+    candidate_files = sorted(artifact.glob("candidate-*.json"))
+    review_files = sorted(artifact.glob("review-*.json"))
+    manifests = []
+    for path in (control_root / "delivery-workspaces").glob("*.manifest.json"):
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if document.get("run_id") == run.run_id:
+            manifests.append((path, document))
+    if not github_files or not candidate_files or not review_files or not manifests:
+        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run lacks durable candidate, review or workspace evidence")
+    github = load_json(github_files[0])
+    candidate = load_json(candidate_files[-1])
+    review = load_json(review_files[-1])
+    manifest_path, manifest = manifests[0]
+    result = _execute_github_delivery(control_root=control_root, config=config, run=run,
+        spec_key=str(github.get("spec_key") or manifest.get("spec_key")),
+        candidate_sha=str(candidate.get("candidate_sha")), branch=str(manifest["branch"]),
+        candidate_receipt=candidate, review=review, push=False)
+    if result["state"] != "github_completed":
+        return result
+    cleanup = cleanup_managed_workspace(repository=config.repository_path,
+        workspace_root=control_root / "delivery-workspaces", workspace=Path(str(manifest["workspace"])),
+        manifest=manifest_path)
+    result["cleanup"] = cleanup
+    if cleanup.get("outcome") != "cleaned":
+        store.mark_cleanup_pending(run.run_id)
+        result["state"] = "cleanup_pending"
+    else:
+        store.mark_archived(run.run_id, state="completed")
+    return result
+
+
 def _execute_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     ticket_plan: dict[str, object],
@@ -584,6 +658,27 @@ def _execute_codex_implementation(
     archive = CodexAdapter().archive_and_readback(thread_id=result.thread_id, repository_path=workspace)
     store.append_event(run_id=run.run_id, event_key=f"cleanup:{run.run_id}:{spec_key}:implementation:{candidate_sha}",
                        event_type="cleanup_readback", payload=archive)
+    if config.github_repository is not None:
+        github_result = _execute_github_delivery(control_root=control_root, config=config, run=run,
+            spec_key=spec_key, candidate_sha=candidate_sha, branch=str(workspace_info["branch"]),
+            candidate_receipt=candidate_receipt, review=validated_review)
+        artifact_directory.joinpath(f"github-{spec_key}.json").write_text(
+            json.dumps(github_result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if github_result["state"] == "waiting_ci":
+            store.set_run_state(run.run_id, "waiting_ci")
+            store.append_event(run_id=run.run_id, event_key=f"github:{run.run_id}:{spec_key}:waiting",
+                event_type="github_checks_pending", payload=github_result)
+            return github_result
+        cleanup = cleanup_managed_workspace(repository=config.repository_path,
+            workspace_root=control_root / "delivery-workspaces", workspace=workspace,
+            manifest=Path(str(workspace_info["manifest"])))
+        if cleanup.get("outcome") != "cleaned":
+            store.mark_cleanup_pending(run.run_id)
+            github_result["cleanup"] = cleanup
+            return {**github_result, "state": "cleanup_pending"}
+        github_result["cleanup"] = cleanup
+        store.mark_archived(run.run_id, state="completed")
+        return github_result
     if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
         raise RunnerError("candidate_changed_after_review", "candidate changed after the verified check/review pair")
     if git_sha(config.repository_path, str(workspace_info["branch"])) != candidate_sha:
@@ -1149,6 +1244,8 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     store=store, ticket_plan=load_json(ticket_files[0]),
                 )
                 return {"created": False, **delivered}
+            if existing.state == "waiting_ci" and config.workflow_mode == "production":
+                return {"created": False, **_resume_waiting_github(control_root=control_root, config=config, run=existing, store=store)}
             if existing.state == "needs_input" and not store.control_for_run(existing.run_id):
                 worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
                 questions: list[dict[str, object]] = []
