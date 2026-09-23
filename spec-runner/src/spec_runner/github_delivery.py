@@ -84,7 +84,29 @@ class GitHubDelivery:
         if old:
             if old.get("candidate_sha") != candidate_sha:
                 raise RunnerError("github_operation_conflict", "PR operation was reused for another candidate")
-            return {"created": False, "receipt": old}
+            number = old.get("number")
+            if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+                raise RunnerError("github_receipt_corrupt", "PR operation receipt has no valid number")
+            try:
+                readback = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
+            except Exception as exc:
+                raise RunnerError("github_pr_readback_incomplete", "could not verify the previously recorded PR") from exc
+            expected_marker = str(old.get("marker") or f"<!-- spec-runner-pr:{operation_id} candidate:{candidate_sha} -->")
+            if not isinstance(readback, dict):
+                raise RunnerError("github_pr_readback_incomplete", "previous PR readback was not an object")
+            if (str(readback.get("head", {}).get("sha", "")) != candidate_sha
+                    or str(readback.get("head", {}).get("ref", "")) != head
+                    or str(readback.get("base", {}).get("ref", "")) != base
+                    or expected_marker not in str(readback.get("body") or "")):
+                raise RunnerError("github_pr_receipt_stale", "previously recorded PR no longer matches its operation")
+            verified = {**old, "url": readback.get("html_url") or old.get("url"),
+                        "state": readback.get("state"), "merged": bool(readback.get("merged")),
+                        "merged_at": readback.get("merged_at")}
+            receipts[operation_id] = verified
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(json.dumps(receipts, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+            temporary.replace(path)
+            return {"created": False, "receipt": verified}
         marker = f"<!-- spec-runner-pr:{operation_id} candidate:{candidate_sha} -->"
         # The query is scoped to the configured repository, head and base. A
         # title similarity is never used as an adoption key.

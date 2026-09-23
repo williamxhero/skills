@@ -1,0 +1,24 @@
+{
+  "run_marker": "SRAC-20260923-f0a6ee9e8556",
+  "schema_version": "spec-runner-live-skill-probe/v1",
+  "sdk_result": {
+    "approval_mode": "deny_all",
+    "completed_at": 1790152322,
+    "error": null,
+    "final_response": "{\"marker\":\"SRAC-20260923-f0a6ee9e8556\",\"question\":\"❓ **Q1 — CSV input shape**: What should the task CSV-to-JSON tool accept: a file path, CSV text supplied directly, or both? I recommend supporting both so it works in scripts and interactive use.\"}",
+    "item_count": 2,
+    "sdk_version": "0.155.1",
+    "skill_observation": {
+      "injection": "sdk_skill_input_plus_current_body",
+      "phase": "grill",
+      "prompt_digest": "ae33937f2902a1614e7bd7d8f442add8983d135e38de0637d407d538d1278def",
+      "read_at_ns": 1790152301063956200,
+      "source": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md",
+      "source_digest": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+    },
+    "started_at": 1790152302,
+    "status": "completed",
+    "thread_id": "01a0cd64-5e34-71d0-a1d9-f7195361fbe0",
+    "turn_id": "01a0cd64-5f62-7422-99f3-bcaa4cf9eae9"
+  }
+}

@@ -12,7 +12,11 @@ from spec_runner.github_delivery import GitHubDelivery
 class GitHubDeliveryTests(unittest.TestCase):
     def test_pr_is_created_once_and_retry_adopts_receipt(self):
         calls: list[list[str]] = []
-        responses = ["[]", json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12"})]
+        responses = ["[]", json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12"}),
+                     json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12",
+                                 "head": {"sha": "abc1234", "ref": "branch"},
+                                 "base": {"ref": "main"}, "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->",
+                                 "state": "open", "merged": False})]
 
         def runner(args: list[str]) -> str:
             calls.append(args)
@@ -24,7 +28,29 @@ class GitHubDeliveryTests(unittest.TestCase):
             second = adapter.create_or_adopt_pr(repository="owner/repo", head="branch", base="main", candidate_sha="abc1234", body="evidence", operation_id="op-1", receipt_root=Path(temp))
             self.assertTrue(first["created"])
             self.assertFalse(second["created"])
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), 3)
+            self.assertEqual(second["receipt"]["state"], "open")
+
+    def test_stale_receipt_is_not_returned_as_verified(self):
+        calls = 0
+
+        def runner(args: list[str]) -> str:
+            nonlocal calls
+            calls += 1
+            if any(arg == "repos/owner/repo/pulls" for arg in args) and "GET" in args:
+                return "[]"
+            if any(arg == "repos/owner/repo/pulls" for arg in args) and "POST" in args:
+                return json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12"})
+            return json.dumps({"number": 12, "head": {"sha": "new-sha", "ref": "branch"},
+                               "base": {"ref": "main"}, "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->"})
+
+        with tempfile.TemporaryDirectory() as temp:
+            adapter = GitHubDelivery(runner=runner)
+            adapter.create_or_adopt_pr(repository="owner/repo", head="branch", base="main", candidate_sha="abc1234", body="evidence", operation_id="op-1", receipt_root=Path(temp))
+            with self.assertRaises(RunnerError) as context:
+                adapter.create_or_adopt_pr(repository="owner/repo", head="branch", base="main", candidate_sha="abc1234", body="evidence", operation_id="op-1", receipt_root=Path(temp))
+            self.assertEqual(context.exception.code, "github_pr_receipt_stale")
+            self.assertEqual(calls, 3)
 
     def test_checks_bind_success_to_candidate_sha_and_merge_requires_authorization(self):
         def runner(args: list[str]) -> str:

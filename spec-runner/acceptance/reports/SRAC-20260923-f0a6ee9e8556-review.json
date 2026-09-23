@@ -1,0 +1,32 @@
+{
+  "candidate_sha": "cc0a3111d39fc2aaa193713fff951c9ab22ee886",
+  "declared": {
+    "candidate_sha": "cc0a3111d39fc2aaa193713fff951c9ab22ee886",
+    "findings": []
+  },
+  "passed": true,
+  "run_marker": "SRAC-20260923-f0a6ee9e8556",
+  "schema_version": "spec-runner-live-review-probe/v1",
+  "sdk_result": {
+    "approval_mode": "deny_all",
+    "completed_at": 1790153678,
+    "error": null,
+    "final_response": "{\"candidate_sha\":\"cc0a3111d39fc2aaa193713fff951c9ab22ee886\",\"findings\":[]}",
+    "item_count": 11,
+    "sdk_version": "0.155.1",
+    "skill_observation": {
+      "injection": "sdk_skill_input_plus_current_body",
+      "phase": "review",
+      "prompt_digest": "4802dfefd44aa3b3f80d2a024c06c07932777cdcf04c648a45ec5a8a20316801",
+      "read_at_ns": 1790153520620959300,
+      "source": "C:\\Users\\will\\.agents\\skills\\code-review\\SKILL.md",
+      "source_digest": "47f4e52c21694def9c7c11cbfbf891ca35eac7a93e395797515be3c8a409ae50"
+    },
+    "started_at": 1790153521,
+    "status": "completed",
+    "thread_id": "01a0cd76-f96b-7fc1-bd09-024f9a93b672",
+    "turn_id": "01a0cd76-fa5c-7742-a71b-b278804b2674"
+  },
+  "workspace_clean_after": true,
+  "workspace_clean_before": true
+}
