@@ -332,7 +332,13 @@ def _execute_codex_planning(
         "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question", "options"], "additionalProperties": False}},
     }, "required": ["outcome", "requirements", "specs", "questions"], "additionalProperties": False}
     answers = store.answers_for_run(run.run_id)
-    prompt = "Produce a SpecPlan for this requirement. Do not publish issues, create branches, or modify files. If a user decision is required, return outcome needs_input and questions; otherwise return outcome planned with complete requirements and dependency-ordered specs.\n\n" + brief
+    prompt = (
+        "Produce a SpecPlan for this requirement. Do not publish issues, create branches, or modify files. "
+        "If a user decision is required, return outcome needs_input and questions; otherwise return outcome "
+        "planned with complete requirements and dependency-ordered specs. The requirements field is the exact "
+        "canonical list of requirement strings, and every spec's covers list must contain only exact strings "
+        "copied from that requirements list; do not put acceptance prose or paraphrases in covers.\n\n" + brief
+    )
     if handoff:
         prompt += "\n\nValidated Grill handoff:\n" + json.dumps(handoff, ensure_ascii=False, sort_keys=True)
     if answers:
