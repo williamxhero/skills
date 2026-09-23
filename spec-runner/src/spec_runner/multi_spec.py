@@ -18,10 +18,17 @@ from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_w
 from .errors import RunnerError
 from .plans import digest, validate_delivery_plan
 
+IMPLEMENTATION_TIMEOUT_SECONDS = 1800
 
-def _run_command(command: list[str], *, cwd: Path) -> dict[str, object]:
+
+def _run_command(command: list[str], *, cwd: Path, timeout_seconds: int = IMPLEMENTATION_TIMEOUT_SECONDS) -> dict[str, object]:
+    if timeout_seconds <= 0:
+        raise RunnerError("delivery_timeout_invalid", "implementation timeout must be positive")
     try:
-        process = subprocess.run(command, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False)
+        process = subprocess.run(command, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace", shell=False, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        result = {"command": command, "exit_code": None, "timed_out": True, "timeout_seconds": timeout_seconds, "stdout_digest": digest(str(exc.stdout or "")), "stderr_digest": digest(str(exc.stderr or "")), "passed": False}
+        raise RunnerError("delivery_command_timeout", "implementation command exceeded its bounded timeout", details=result) from exc
     except OSError as exc:
         raise RunnerError("delivery_command_failed", "implementation command could not start", details={"command": command}) from exc
     result = {
@@ -30,6 +37,8 @@ def _run_command(command: list[str], *, cwd: Path) -> dict[str, object]:
         "stdout_digest": digest(process.stdout),
         "stderr_digest": digest(process.stderr),
         "passed": process.returncode == 0,
+        "timed_out": False,
+        "timeout_seconds": timeout_seconds,
     }
     if process.returncode != 0:
         raise RunnerError("delivery_command_failed", "implementation command failed", details=result)
