@@ -80,7 +80,7 @@ def test_planning_persists_real_callback_identity_and_publishes_local_parent(con
     assert {item["external_thread_id"] for item in workers if item["external_thread_id"]} == {"thread-1", "thread-2"}
 
 
-def test_github_tracker_is_published_after_local_plan_and_keeps_body_link_mode(context, monkeypatch):
+def test_github_tracker_is_published_after_local_plan_and_requests_native_relations(context, monkeypatch):
     root, config, store, run = context
     config = replace(config, github_repository="williamxhero/skills",
         github_receipt_root=root / "github-receipts")
@@ -100,7 +100,7 @@ def test_github_tracker_is_published_after_local_plan_and_keeps_body_link_mode(c
     workflow._execute_codex_tickets(control_root=root, config=config, brief_digest="brief", run=planned, store=store, spec_plan=plan)
     assert len(published) == 1
     assert published[0]["repository"] == "williamxhero/skills"
-    assert published[0]["relation_mode"] == "body_links"
+    assert published[0]["relation_mode"] == "native"
     assert published[0]["draft"]["umbrella"]["key"] == "S1"
     assert published[0]["draft"]["specs"][0]["key"] == "T1"
     operation = store.external_operation("tickets:test-production:S1")

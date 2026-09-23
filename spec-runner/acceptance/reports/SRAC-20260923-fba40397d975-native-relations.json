@@ -1,0 +1,73 @@
+{
+  "api_calls": [
+    [
+      "api",
+      "repos/williamxhero/skills/issues",
+      "--method",
+      "POST",
+      "-f",
+      "title",
+      "-f",
+      "body"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/277"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues",
+      "--method",
+      "POST",
+      "-f",
+      "title",
+      "-f",
+      "body"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/278"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/278"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/277"
+    ],
+    [
+      "api",
+      "--paginate",
+      "--slurp",
+      "repos/williamxhero/skills/issues/277/sub_issues"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/277/sub_issues",
+      "--method",
+      "POST",
+      "-f",
+      "sub_issue_id"
+    ]
+  ],
+  "cleanup_errors": {},
+  "closed_issue_numbers": [
+    277,
+    278
+  ],
+  "error": "GitHub request failed",
+  "error_details": {
+    "exit_code": 1,
+    "stderr": "gh: Invalid request.\n\nInvalid property /sub_issue_id: `\"5550412760\"` is not of type `integer`. (HTTP 422)"
+  },
+  "error_type": "RunnerError",
+  "evidence_kind": "live_github",
+  "issue_numbers": [
+    277,
+    278
+  ],
+  "marker": "SRAC-20260923-fba40397d975",
+  "outcome": "failed",
+  "repository": "williamxhero/skills"
+}

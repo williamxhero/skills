@@ -17,8 +17,15 @@ class Transport:
 
     def __call__(self, args):
         if "POST" in args:
+            if "sub_issues" in args[1]:
+                self.sub_issue = next(int(v.split("=", 1)[1]) for v in args if v.startswith("sub_issue_id="))
+                return "{}"
+            if "dependencies/blocked_by" in args[1]:
+                self.blocked_by = next(int(v.split("=", 1)[1]) for v in args if v.startswith("issue_id="))
+                return "{}"
             self.posts += 1
             issue = {"number": len(self.issues) + 1,
+                     "id": 100 + len(self.issues) + 1,
                      "repository_url": "https://api.github.com/repos/williamxhero/skills",
                      "title": next(v[6:] for v in args if v.startswith("title=")),
                      "body": next(v[5:] for v in args if v.startswith("body="))}
@@ -29,6 +36,10 @@ class Transport:
             return json.dumps(issue)
         if "issues?state=all" in args[-1]:
             return json.dumps([self.issues])
+        if "sub_issues" in args[-1]:
+            return json.dumps([self.issues[1]] if getattr(self, "sub_issue", None) == self.issues[1]["id"] else [])
+        if "dependencies/blocked_by" in args[-1]:
+            return json.dumps([self.issues[0]] if getattr(self, "blocked_by", None) == self.issues[0]["id"] else [])
         return json.dumps(self.issues[int(args[-1].rsplit("/", 1)[1]) - 1])
 
 
@@ -142,3 +153,30 @@ def test_issue_operations_are_independently_durable_and_read_back(tmp_path):
         run()
     assert first["receipt"]["complete"]
     assert transport.posts == 2
+
+
+def test_native_relations_are_logged_written_and_read_back(tmp_path):
+    transport = Transport()
+    operations = {}
+
+    def intent(**identity):
+        existing = operations.get(identity["operation_id"])
+        if existing:
+            assert existing["input_digest"] == identity["input_digest"]
+            return existing
+        operations[identity["operation_id"]] = {**identity, "state": "intent"}
+        return operations[identity["operation_id"]]
+
+    def completed(*, operation_id, receipt):
+        operations[operation_id].update(state="completed", receipt=receipt)
+
+    value = {"umbrella": {"key": "S1", "title": "SPEC", "body": "Scope"},
+             "specs": [{"key": "T1", "title": "Ticket", "body": "Work", "parent": "S1",
+                        "blocked_by": ["S1"]}]}
+    result = GitHubTracker(runner=transport).publish_draft(
+        repository="williamxhero/skills", draft=value, operation_id="SRAC-native",
+        receipt_root=tmp_path, relation_mode="native", operation_intent=intent,
+        operation_completed=completed)
+    assert len([key for key in operations if ":relation:" in key]) == 2
+    assert all(operations[key]["state"] == "completed" for key in operations if ":relation:" in key)
+    assert result["receipt"]["relation_evidence"]["native"] is True

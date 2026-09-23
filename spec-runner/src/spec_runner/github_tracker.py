@@ -49,7 +49,8 @@ class GitHubTracker:
         except subprocess.CalledProcessError as exc:
             message = (exc.stderr or "").strip()
             code = "github_auth" if exc.returncode == 4 or "auth" in message.lower() else "github_read_failed"
-            raise RunnerError(code, "GitHub read failed", details={"exit_code": exc.returncode}) from exc
+            raise RunnerError(code, "GitHub request failed", details={"exit_code": exc.returncode,
+                "stderr": message[:1000]}) from exc
         return result.stdout
 
     def _issue(self, repository: str, number: int) -> dict[str, Any]:
@@ -75,6 +76,17 @@ class GitHubTracker:
                 raise RunnerError("github_pagination_incomplete", "GitHub comments page was not a list")
             comments.extend(item for item in page if isinstance(item, dict))
         return comments
+
+    def _relation_items(self, repository: str, path: str) -> list[dict[str, Any]]:
+        try:
+            value = json.loads(self._runner(["api", "--paginate", "--slurp", path]))
+        except json.JSONDecodeError as exc:
+            raise RunnerError("github_relation_read_failed", "GitHub relation response was not valid JSON") from exc
+        if isinstance(value, list) and all(isinstance(item, dict) for item in value):
+            return value
+        if not isinstance(value, list) or any(not isinstance(page, list) for page in value):
+            raise RunnerError("github_relation_read_incomplete", "GitHub relation pagination was incomplete")
+        return [item for page in value for item in page if isinstance(item, dict)]
 
     def _run_owned_issue(self, *, repository: str, marker: str, title: str, body: str) -> dict[str, Any] | None:
         """Find one exact run-owned issue, or fail closed on ambiguity/editing."""
@@ -176,11 +188,6 @@ class GitHubTracker:
             raise RunnerError("invalid_github_repository", "repository must be owner/name")
         if relation_mode not in {"body_links", "native"}:
             raise RunnerError("invalid_relation_mode", "relation_mode must be body_links or native")
-        # Native relation writes are not implemented in this adapter.  Refuse
-        # before creating even the first issue; otherwise a capability blocker
-        # would leave a partially published draft with no durable receipt.
-        if relation_mode == "native":
-            raise RunnerError("github_native_relations_unavailable", "native relation writer must be explicitly implemented and capability-verified")
         specs = draft.get("specs")
         if not isinstance(specs, list) or not specs:
             raise RunnerError("invalid_publish_draft", "publish draft needs at least one SPEC")
@@ -251,10 +258,11 @@ class GitHubTracker:
             key = item.get("key")
             title = item.get("title")
             body = item.get("body")
-            if item.get("parent"):
+            if item.get("parent") and relation_mode == "body_links":
                 body += f"\n\nParent: #{published_by_key[item['parent']]['number']}"
-            for dependency in item.get("blocked_by", []):
-                body += f"\nBlocked by: #{published_by_key[dependency]['number']}"
+            if relation_mode == "body_links":
+                for dependency in item.get("blocked_by", []):
+                    body += f"\nBlocked by: #{published_by_key[dependency]['number']}"
             if not all(isinstance(value, str) and value.strip() for value in (key, title, body)):
                 raise RunnerError("invalid_publish_draft", "each issue needs key, title, and body")
             marker = f"<!-- spec-runner-key:{key} operation:{operation_id} -->"
@@ -327,6 +335,52 @@ class GitHubTracker:
             receipt["issues"] = published
             created = True
             save_progress()
+        if relation_mode == "native":
+            for item in issue_items:
+                child = published_by_key[item["key"]]
+                relations = []
+                if item.get("parent"):
+                    relations.append(("parent", item["parent"], child, published_by_key[item["parent"]]))
+                relations.extend(("blocked_by", target, child, published_by_key[target])
+                                 for target in item.get("blocked_by", []))
+                for kind, target_key, subject, target in relations:
+                    subject_issue = self._issue(repository, int(subject["number"]))
+                    target_issue = self._issue(repository, int(target["number"]))
+                    subject_id = subject_issue.get("id")
+                    target_id = target_issue.get("id")
+                    if not subject_id or not target_id:
+                        raise RunnerError("github_relation_identity_missing", "issue readback lacks numeric identity for native relation")
+                    if kind == "parent":
+                        path = f"repos/{repository}/issues/{target['number']}/sub_issues"
+                        relation_identity = {"parent_id": int(target_id), "child_id": int(subject_id)}
+                        relation_args = ["api", path, "--method", "POST", "-F", f"sub_issue_id={subject_id}"]
+                    else:
+                        path = f"repos/{repository}/issues/{subject['number']}/dependencies/blocked_by"
+                        relation_identity = {"issue_id": int(subject_id), "blocked_by_id": int(target_id)}
+                        relation_args = ["api", path, "--method", "POST", "-F", f"issue_id={target_id}"]
+                    relation_operation = f"{operation_id}:relation:{kind}:{item['key']}:{target_key}"
+                    relation_digest = _digest(relation_identity)
+                    saved_relation = operation_intent(operation_id=relation_operation,
+                        operation_kind=f"github_{kind}_relation", repository=repository,
+                        input_digest=relation_digest) if operation_intent else None
+                    collection = self._relation_items(repository, path)
+                    relation_id = int(subject_id) if kind == "parent" else int(target_id)
+                    present = any(int(entry.get("id", -1)) == relation_id for entry in collection)
+                    relation_receipt = {**relation_identity, "kind": kind, "target_key": target_key}
+                    if saved_relation and saved_relation.get("state") == "completed":
+                        saved_value = saved_relation.get("receipt")
+                        if saved_value != relation_receipt or not present:
+                            raise RunnerError("github_relation_conflict", "SQLite relation receipt does not match GitHub readback")
+                    else:
+                        if not present:
+                            self._runner(relation_args)
+                        verified = self._relation_items(repository, path)
+                        if not any(int(entry.get("id", -1)) == relation_id for entry in verified):
+                            raise RunnerError("github_relation_unconfirmed", "native relation write was not confirmed by readback")
+                        if operation_completed:
+                            operation_completed(operation_id=relation_operation, receipt=relation_receipt)
+                    receipt["relation_evidence"]["written"].append(relation_receipt)
+            receipt["relation_evidence"]["native"] = True
         receipt["complete"] = True
         save_progress()
         return {"created": created, "receipt": receipt}

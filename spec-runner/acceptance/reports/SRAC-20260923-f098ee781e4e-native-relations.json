@@ -1,0 +1,15 @@
+{
+  "cleanup_errors": {},
+  "closed_issue_numbers": [
+    273
+  ],
+  "error": "GitHub read failed",
+  "error_type": "RunnerError",
+  "evidence_kind": "live_github",
+  "issue_numbers": [
+    273
+  ],
+  "marker": "SRAC-20260923-f098ee781e4e",
+  "outcome": "failed",
+  "repository": "williamxhero/skills"
+}

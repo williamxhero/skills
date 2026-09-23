@@ -410,9 +410,9 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
                          operation_id: str, run_id: str, store: Store) -> dict[str, object]:
     """Publish the validated plan through the configured tracker boundary.
 
-    GitHub publication is deliberately a separate receipt-backed operation. It
-    is never inferred from local files and it keeps body-link relations
-    explicit because native GitHub relation writes are not capability-verified.
+    GitHub publication uses per-object durable operations. Native relations are
+    written only after each issue has been independently read back, then their
+    own operation receipts are committed after relation readback.
     """
     source = plan
     spec_key = str(source["spec_key"])
@@ -448,7 +448,7 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
 
     result = GitHubTracker().publish_draft(repository=config.github_repository, draft=draft,
         operation_id=operation_id, receipt_root=config.github_receipt_root,
-        relation_mode="body_links", operation_intent=prepare_issue_operation,
+        relation_mode="native", operation_intent=prepare_issue_operation,
         operation_completed=complete_issue_operation)
     receipt = result.get("receipt")
     if not isinstance(receipt, dict) or receipt.get("complete") is not True:

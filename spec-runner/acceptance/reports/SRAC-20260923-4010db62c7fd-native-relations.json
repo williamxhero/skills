@@ -1,0 +1,55 @@
+{
+  "cleanup_errors": {},
+  "closed_issue_numbers": [
+    281,
+    282
+  ],
+  "evidence_kind": "live_github",
+  "issue_numbers": [
+    281,
+    282
+  ],
+  "marker": "SRAC-20260923-4010db62c7fd",
+  "native_relations_confirmed": true,
+  "outcome": "passed",
+  "receipt": {
+    "complete": true,
+    "draft_digest": "8a08c7349e4954ed2767edafb05017e4abffabf7f6e09f66f6ea9078c2535412",
+    "issues": [
+      {
+        "key": "SRAC-20260923-4010db62c7fd-P",
+        "marker": "<!-- spec-runner-key:SRAC-20260923-4010db62c7fd-P operation:SRAC-20260923-4010db62c7fd:publication -->",
+        "node_id": "I_kwDOUSX3rs8AAAABStbqzw",
+        "number": 281
+      },
+      {
+        "key": "SRAC-20260923-4010db62c7fd-C",
+        "marker": "<!-- spec-runner-key:SRAC-20260923-4010db62c7fd-C operation:SRAC-20260923-4010db62c7fd:publication -->",
+        "node_id": "I_kwDOUSX3rs8AAAABStbsWQ",
+        "number": 282
+      }
+    ],
+    "operation_id": "SRAC-20260923-4010db62c7fd:publication",
+    "relation_evidence": {
+      "mode": "native",
+      "native": true,
+      "written": [
+        {
+          "child_id": 5550566489,
+          "kind": "parent",
+          "parent_id": 5550566095,
+          "target_key": "SRAC-20260923-4010db62c7fd-P"
+        },
+        {
+          "blocked_by_id": 5550566095,
+          "issue_id": 5550566489,
+          "kind": "blocked_by",
+          "target_key": "SRAC-20260923-4010db62c7fd-P"
+        }
+      ]
+    },
+    "repository": "williamxhero/skills",
+    "unknown_keys": []
+  },
+  "repository": "williamxhero/skills"
+}

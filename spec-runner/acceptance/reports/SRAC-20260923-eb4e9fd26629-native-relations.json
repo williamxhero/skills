@@ -1,0 +1,69 @@
+{
+  "api_calls": [
+    [
+      "api",
+      "repos/williamxhero/skills/issues",
+      "--method",
+      "POST",
+      "-f",
+      "title",
+      "-f",
+      "body"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/275"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues",
+      "--method",
+      "POST",
+      "-f",
+      "title",
+      "-f",
+      "body"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/276"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/276"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/275"
+    ],
+    [
+      "api",
+      "--paginate",
+      "--slurp",
+      "repos/williamxhero/skills/issues/275/sub_issues"
+    ],
+    [
+      "api",
+      "repos/williamxhero/skills/issues/275/sub_issues",
+      "--method",
+      "POST",
+      "-f",
+      "sub_issue_id"
+    ]
+  ],
+  "cleanup_errors": {},
+  "closed_issue_numbers": [
+    275,
+    276
+  ],
+  "error": "GitHub read failed",
+  "error_type": "RunnerError",
+  "evidence_kind": "live_github",
+  "issue_numbers": [
+    275,
+    276
+  ],
+  "marker": "SRAC-20260923-eb4e9fd26629",
+  "outcome": "failed",
+  "repository": "williamxhero/skills"
+}

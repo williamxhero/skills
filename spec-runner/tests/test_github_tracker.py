@@ -54,23 +54,6 @@ class GitHubTrackerTests(unittest.TestCase):
         self.assertEqual(result.relation_evidence["unresolved_relations"], [{"issue": "GH-1", "relation": "blocked_by", "target": "GH-3"}])
         self.assertFalse(result.relation_evidence["native"])
 
-    def test_native_relation_mode_blocks_before_any_external_write(self) -> None:
-        calls: list[list[str]] = []
-
-        def fake(arguments: list[str]) -> str:
-            calls.append(arguments)
-            return "{}"
-
-        with self.assertRaisesRegex(RunnerError, "native relation"):
-            GitHubTracker(runner=fake).publish_draft(
-                repository="acme/demo",
-                draft={"specs": [{"key": "SR-01", "title": "Spec", "body": "body"}]},
-                operation_id="op-native",
-                receipt_root=Path("."),
-                relation_mode="native",
-            )
-        self.assertEqual(calls, [])
-
     def test_malformed_issue_and_comments_responses_are_structured_read_errors(self) -> None:
         with self.assertRaisesRegex(RunnerError, "not valid JSON") as issue_error:
             GitHubTracker(runner=lambda arguments: "not-json").read_issue(repository="acme/demo", number=1)
