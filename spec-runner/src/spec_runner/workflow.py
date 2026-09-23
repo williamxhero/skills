@@ -30,7 +30,7 @@ def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prom
             effort=effort,
             trusted={**trusted, "legacy_prompt": prompt},
             untrusted={},
-            schema={"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
+            schema={"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
             skill_roots=config.skill_roots,
             skill_config=(config.skill_config and (Path(config.skill_config))),
             thread_id=thread_id,
@@ -151,6 +151,7 @@ def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stag
         "outcome": declared.get("outcome", "completed" if result.status == "completed" else result.status),
         "artifacts": declared.get("artifacts", []),
         "blockers": declared.get("blockers", [result.error] if result.error else []),
+        "questions": declared.get("questions", []),
         **result.public(),
     }
 
@@ -230,12 +231,14 @@ def _execute_codex_example(
     state = "paused" if control and control["requested_state"] == "pause_requested" else (
         "cancelled" if interrupted else "turn_completed"
     )
+    declared = _declared_model_result(result, brief_digest=brief_digest, stage="example")
+    stage_state = "needs_input" if result.status == "completed" and declared.get("outcome") == "needs_input" and isinstance(declared.get("questions"), list) and declared["questions"] else state
     completed = store.complete_codex_stage(
         run.run_id,
         f"start:{run.run_id}",
         thread_id=result.thread_id,
         turn_id=result.turn_id,
-        state=state,
+        state=stage_state,
     )
     if interrupted and control:
         store.append_event(
@@ -662,6 +665,20 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
                 )
                 return {"created": False, **final_status}
+            if existing.state == "needs_input" and not store.control_for_run(existing.run_id):
+                worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
+                questions: list[dict[str, object]] = []
+                if worker_result.is_file():
+                    try:
+                        document = json.loads(worker_result.read_text(encoding="utf-8"))
+                        questions = [item for item in document.get("questions", []) if isinstance(item, dict) and isinstance(item.get("id"), str)]
+                    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                        questions = []
+                answer_ids = {str(item["question_id"]) for item in store.answers_for_run(existing.run_id)}
+                if questions and {str(item["id"]) for item in questions}.issubset(answer_ids) and config.execution_backend == "codex_sdk":
+                    resumed = _resume_codex_stage(control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store)
+                    return {"created": False, **resumed}
+                return {"created": False, **store.public_status(existing.run_id)}
             if existing.state == "paused" and not store.control_for_run(existing.run_id):
                 if config.execution_backend == "codex_sdk":
                     resumed = _resume_codex_stage(
@@ -748,6 +765,8 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         if finished.state in {"paused", "cancelled"}:
             if finished.state == "cancelled":
                 return {"created": True, **_finalize_cancelled_codex(config=config, run=finished, store=store)}
+            return {"created": True, **store.public_status(finished.run_id)}
+        if finished.state == "needs_input":
             return {"created": True, **store.public_status(finished.run_id)}
         _verify_and_archive(
             control_root=control_root,

@@ -475,7 +475,7 @@ class Store:
             self._insert_event(
                 run_id=run_id,
                 event_key=f"operation:{operation_id}:completed:{turn_id}",
-                event_type="step_completed" if state == "turn_completed" else "worker_turn_interrupted",
+                event_type=("step_completed" if state == "turn_completed" else ("worker_needs_input" if state == "needs_input" else "worker_turn_interrupted")),
                 payload={"operation_id": operation_id, "state": state, "thread_id": thread_id, "turn_id": turn_id},
             )
         record = self.find_by_run_id(run_id)
