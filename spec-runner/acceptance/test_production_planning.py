@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -125,3 +126,24 @@ def test_spec_validation_rejects_incomplete_or_unsafe_queue(mutation):
 def test_empty_ticket_plan_is_not_deliverable():
     with pytest.raises(RunnerError):
         validate_ticket_plan({"schema_version": "spec-runner-ticket-plan/v1", "spec_key": "S1", "base_sha": "abcdef0", "tickets": []})
+
+
+def test_business_answer_resumes_planning_thread_and_advances_without_parent_dispatch(context, monkeypatch):
+    root, config, store, run = context
+    config = replace(config, workflow_mode="example")
+    documents = [{"outcome": "needs_input", "requirements": [], "specs": [],
+                  "questions": [{"id": "Q1", "question": "Which format?", "options": ["json"]}]},
+                 spec_document(), {"outcome": "planned", "questions": [], "tickets": [
+                     {"key": "T1", "title": "Ticket", "body": "Implement", "acceptance": ["R1"], "blocked_by": []}]}]
+    calls = adapter(monkeypatch, documents)
+    waiting = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
+    assert waiting.state == "needs_input"
+    store.submit_answer(run_id=run.run_id, question_id="Q1", value="json")
+    store.clear_control(run.run_id)
+    current = store.find_by_run_id(run.run_id)
+    assert current is not None
+    resumed = workflow._resume_codex_stage(control_root=root, config=config, run=current, brief="Requirement", brief_digest="brief", store=store)
+    assert resumed["run"]["state"] == "tickets_ready"
+    assert calls[0]["thread_id"] is None
+    assert calls[1]["thread_id"] == "thread-1"
+    assert "Runner-recorded business answers" in calls[1]["trusted"]["legacy_prompt"]
