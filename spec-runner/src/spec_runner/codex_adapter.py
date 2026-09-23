@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
 from typing import Any, Callable
 
 from .errors import RunnerError
+from .matt import render_prompt, resolve_local_skill
 
 SDK_VERSION = "0.155.1"
 APPROVAL_MODE = "deny_all"
@@ -22,9 +23,10 @@ class CodexWorkerResult:
     started_at: int | None
     completed_at: int | None
     approval_mode: str = APPROVAL_MODE
+    skill_observation: dict[str, object] | None = None
 
     def public(self) -> dict[str, object]:
-        return {
+        result = {
             "thread_id": self.thread_id,
             "turn_id": self.turn_id,
             "status": self.status,
@@ -36,6 +38,9 @@ class CodexWorkerResult:
             "sdk_version": SDK_VERSION,
             "approval_mode": self.approval_mode,
         }
+        if self.skill_observation is not None:
+            result["skill_observation"] = self.skill_observation
+        return result
 
 
 class CodexAdapter:
@@ -50,6 +55,53 @@ class CodexAdapter:
         self._codex_factory = codex_factory
         self._sdk_module = sdk_module
 
+    def run_semantic(
+        self,
+        *,
+        phase: str,
+        repository_path: Path,
+        model: str,
+        effort: str,
+        trusted: dict[str, Any],
+        untrusted: dict[str, Any],
+        schema: dict[str, Any],
+        skill_roots: tuple[Path, ...] = (),
+        skill_config: Path | None = None,
+        thread_id: str | None = None,
+        on_turn_started: Callable[[str, str], None] | None = None,
+        control_state: Callable[[], str | None] | None = None,
+        on_control_applied: Callable[[str], None] | None = None,
+    ) -> CodexWorkerResult:
+        """Resolve the current Skill at every SDK turn, including resume.
+
+        SDK 0.155.1 accepts SkillInput and a formal output_schema.  The
+        current body is also in this turn's text so a resumed thread cannot
+        silently rely on an older cached Skill rendering.
+        """
+        skill = resolve_local_skill(phase, roots=skill_roots, config_file=skill_config)
+        rendered = render_prompt(phase=phase, lock=skill, trusted=trusted, untrusted=untrusted, schema=schema)
+        result = self.run(
+            prompt=str(rendered["prompt"]),
+            repository_path=repository_path,
+            model=model,
+            effort=effort,
+            thread_id=thread_id,
+            read_only=phase != "implement",
+            skill_ref=(skill.name, str(skill.path)),
+            output_schema=schema or None,
+            on_turn_started=on_turn_started,
+            control_state=control_state,
+            on_control_applied=on_control_applied,
+        )
+        return replace(result, skill_observation={
+            "phase": phase,
+            "source": str(skill.path),
+            "source_digest": skill.sha256,
+            "read_at_ns": skill.read_at_ns,
+            "prompt_digest": rendered["prompt_digest"],
+            "injection": "sdk_skill_input_plus_current_body",
+        })
+
     def run(
         self,
         *,
@@ -58,6 +110,9 @@ class CodexAdapter:
         model: str,
         effort: str,
         thread_id: str | None = None,
+        read_only: bool = False,
+        skill_ref: tuple[str, str] | None = None,
+        output_schema: dict[str, Any] | None = None,
         on_turn_started: Callable[[str, str], None] | None = None,
         control_state: Callable[[], str | None] | None = None,
         on_control_applied: Callable[[str], None] | None = None,
@@ -75,6 +130,16 @@ class CodexAdapter:
         Codex = sdk_module.Codex
         CodexConfig = sdk_module.CodexConfig
         Sandbox = sdk_module.Sandbox
+        sandbox = Sandbox.read_only if read_only else Sandbox.workspace_write
+        sdk_input: Any = prompt
+        if skill_ref is not None:
+            skill_input = getattr(sdk_module, "SkillInput", None)
+            text_input = getattr(sdk_module, "TextInput", None)
+            if callable(skill_input) and callable(text_input):
+                sdk_input = [text_input(prompt), skill_input(name=skill_ref[0], path=skill_ref[1])]
+            elif self._sdk_module is None:
+                raise RunnerError("sdk_skill_input_unsupported", "installed SDK does not expose SkillInput and TextInput")
+            # Isolated fake SDKs may test the equivalent full-text fallback.
         approval_modes = getattr(sdk_module, "ApprovalMode", None)
         approval_mode = getattr(approval_modes, APPROVAL_MODE, None)
         if approval_mode is None:
@@ -96,14 +161,14 @@ class CodexAdapter:
                         thread_id,
                         cwd=str(repository_path),
                         model=model,
-                        sandbox=Sandbox.workspace_write,
+                        sandbox=sandbox,
                         approval_mode=approval_mode,
                     )
                 else:
                     thread = codex.thread_start(
                         model=model,
                         cwd=str(repository_path),
-                        sandbox=Sandbox.workspace_write,
+                        sandbox=sandbox,
                         approval_mode=approval_mode,
                     )
                 result_thread_id = str(getattr(thread, "id", ""))
@@ -115,11 +180,12 @@ class CodexAdapter:
                 # an active worker instead of guessing from a pending row.
                 if hasattr(thread, "turn"):
                     turn = thread.turn(
-                        prompt,
+                        sdk_input,
                         cwd=str(repository_path),
                         model=model,
                         effort=effort,
-                        sandbox=Sandbox.workspace_write,
+                        sandbox=sandbox,
+                        **({"output_schema": output_schema} if output_schema is not None else {}),
                     )
                     result_turn_id = str(getattr(turn, "id", ""))
                     if not result_turn_id or result_turn_id == "None":
@@ -136,19 +202,45 @@ class CodexAdapter:
                     # tests and older test doubles; the published SDK path
                     # above is the production boundary.
                     result = thread.run(
-                        prompt,
+                        sdk_input,
                         cwd=str(repository_path),
                         model=model,
                         effort=effort,
-                        sandbox=Sandbox.workspace_write,
+                        sandbox=sandbox,
+                        **({"output_schema": output_schema} if output_schema is not None else {}),
                     )
         except RunnerError:
             raise
         except Exception as exc:
+            message = str(exc).lower()
+            if "does not exist or you do not have access" in message:
+                code = "sdk_model_unavailable"
+                description = "the requested model was rejected by the current Codex account or runtime"
+            elif "rate limit" in message or "429" in message:
+                code = "sdk_rate_limited"
+                description = "Codex SDK turn was rate limited"
+            elif "unauthorized" in message or "401" in message:
+                code = "sdk_authentication_failed"
+                description = "Codex SDK authentication failed"
+            elif "timed out" in message or "timeout" in message:
+                code = "sdk_timeout"
+                description = "Codex SDK turn timed out"
+            elif "invalid_json_schema" in message or "invalid schema" in message:
+                code = "sdk_schema_invalid"
+                description = "the SDK rejected the formal output schema"
+            else:
+                code = "sdk_execution_failed"
+                description = "Codex SDK failed while creating or running the worker"
             raise RunnerError(
-                "sdk_execution_failed",
-                "Codex SDK failed while creating or running the worker",
-                details={"exception_type": type(exc).__name__},
+                code,
+                description,
+                details={
+                    "exception_type": type(exc).__name__,
+                    "model": model,
+                    "thread_id": result_thread_id if "result_thread_id" in locals() else None,
+                    "turn_id": result_turn_id if "result_turn_id" in locals() else None,
+                    "external_result_requires_reconciliation": "result_turn_id" in locals(),
+                },
             ) from exc
 
         result_thread_id = str(getattr(thread, "id", result_thread_id if "result_thread_id" in locals() else ""))

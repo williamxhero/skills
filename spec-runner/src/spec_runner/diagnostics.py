@@ -15,7 +15,6 @@ EVIDENCE_KINDS = {"deterministic", "local_git", "live_sdk", "live_github", "wind
 _RELEASE_SUBJECT_SCALAR_FIELDS = {
     "build_digest",
     "config_contract",
-    "matt_lock_digest",
     "os",
     "trust_mode",
     "scenario_version",
