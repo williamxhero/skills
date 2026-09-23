@@ -220,7 +220,8 @@ def _planning_response(*, result: CodexWorkerResult, control_root: Path, config:
 
 
 def _execute_codex_planning(
-    *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store
+    *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store,
+    thread_id: str | None = None,
 ) -> RunRecord:
     """Run the production planning boundary and persist a validated SpecPlan."""
     step_name = "codex_planning"
@@ -236,11 +237,14 @@ def _execute_codex_planning(
         }, "required": ["key", "title", "body", "blocked_by", "covers", "route"], "additionalProperties": False}},
         "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}},
     }, "required": ["outcome", "requirements", "specs", "questions"], "additionalProperties": False}
+    answers = store.answers_for_run(run.run_id)
     prompt = "Produce a SpecPlan for this requirement. Do not publish issues, create branches, or modify files. If a user decision is required, return outcome needs_input and questions; otherwise return outcome planned with complete requirements and dependency-ordered specs.\n\n" + brief
+    if answers:
+        prompt += "\n\nRunner-recorded business answers (use as facts, do not ask again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
     result = _run_worker(
         adapter=CodexAdapter(), phase="to-spec", config=config, prompt=prompt,
         trusted={"brief_digest": brief_digest, "stage": step_name, "repository_scope": os.fspath(config.repository_path)},
-        repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=None,
+        repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=thread_id,
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
         schema=schema,
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
@@ -308,7 +312,7 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
 
 def _execute_codex_tickets(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
-    spec_plan: dict[str, object],
+    spec_plan: dict[str, object], thread_id: str | None = None,
 ) -> RunRecord:
     """Turn one dependency-ready SPEC into a validated local TicketPlan."""
     specs = spec_plan.get("specs")
@@ -339,10 +343,13 @@ def _execute_codex_tickets(
         "Return needs_input/questions when a real requirement fact is missing; otherwise return planned with concrete "
         "tickets, dependency keys, and acceptance IDs.\n\n" + json.dumps(spec, ensure_ascii=False, sort_keys=True)
     )
+    answers = store.answers_for_run(run.run_id)
+    if answers:
+        prompt += "\n\nRunner-recorded business answers:\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
     result = _run_worker(
         adapter=CodexAdapter(), phase="to-tickets", config=config, prompt=prompt,
         trusted={"brief_digest": brief_digest, "stage": step_name, "spec_key": spec_key, "base_sha": base_sha},
-        repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=None,
+        repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=thread_id,
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
         schema=schema,
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
@@ -811,6 +818,42 @@ def _resume_codex_stage(
             brief_digest=brief_digest,
             store=store,
         )
+    if run.current_step == "codex_planning":
+        resumed = _execute_codex_planning(
+            control_root=control_root, config=config, brief=brief, brief_digest=brief_digest,
+            run=run, store=store, thread_id=thread_id,
+        )
+        if resumed.state in {"needs_input", "paused", "cancelled"}:
+            return store.public_status(resumed.run_id)
+        if resumed.state != "planned":
+            raise RunnerError("planning_resume_not_ready", "resumed planning did not produce a planned state")
+        ticketed = _execute_codex_tickets(
+            control_root=control_root, config=config, brief_digest=brief_digest, run=resumed,
+            store=store, spec_plan=load_json(_safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"),
+            thread_id=None,
+        )
+        if ticketed.state == "tickets_ready" and config.workflow_mode == "production":
+            ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob("ticket-plan-*.json"))
+            return _execute_codex_implementation(
+                control_root=control_root, config=config, brief_digest=brief_digest, run=ticketed,
+                store=store, ticket_plan=load_json(ticket_files[0]),
+            )
+        return {"created": False, **store.public_status(ticketed.run_id)}
+    if run.current_step == "codex_ticket_planning":
+        plans = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob("spec-plan.json"))
+        if not plans:
+            raise RunnerError("spec_plan_missing", "ticket planning resume has no persisted SpecPlan")
+        resumed = _execute_codex_tickets(
+            control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store,
+            spec_plan=load_json(plans[0]), thread_id=thread_id,
+        )
+        if resumed.state == "tickets_ready" and config.workflow_mode == "production":
+            ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob("ticket-plan-*.json"))
+            return _execute_codex_implementation(
+                control_root=control_root, config=config, brief_digest=brief_digest, run=resumed,
+                store=store, ticket_plan=load_json(ticket_files[0]),
+            )
+        return store.public_status(resumed.run_id)
     if run.current_step == "codex_second":
         resumed = _execute_second_codex(
             control_root=control_root,
