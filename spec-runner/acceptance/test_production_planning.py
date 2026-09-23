@@ -27,7 +27,7 @@ def context():
         root = Path(directory)
         repository = Path(__file__).resolve().parents[2]
         config = RunnerConfig(repository, "HEAD", Path("artifacts"), "codex_sdk", ("production",),
-                              "fake", "high", (Path("artifacts"),), None, None, (), "production", "config")
+                              "fake", "high", (Path("artifacts"),), None, None, (), "example", "config")
         store = Store.open(root, create=True)
         timestamp = now()
         run = RunRecord("test-production", "launch", "brief", "config", str(repository), "HEAD", "artifacts",
@@ -49,6 +49,9 @@ def adapter(monkeypatch, documents, *, status="completed"):
     calls = []
 
     class Fake:
+        def archive_and_readback(self, **kwargs):
+            return {"thread_id": kwargs["thread_id"], "archived": True, "pages_read": 1}
+
         def run_semantic(self, **kwargs):
             calls.append(kwargs)
             thread = kwargs.get("thread_id") or f"thread-{len(calls)}"
@@ -103,6 +106,42 @@ def test_planner_business_question_waits_without_empty_plan_publication(context,
     waiting = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
     assert waiting.state == "needs_input"
     assert not (root / "artifacts" / run.run_id / "spec-plan.json").exists()
+
+
+def test_production_brief_runs_grill_before_spec_planning(context, monkeypatch):
+    root, config, store, run = context
+    config = replace(config, workflow_mode="production")
+    calls = adapter(monkeypatch, [{"outcome": "planned", "scope": "Implement R1 only",
+        "constraints": ["fixture only"], "acceptance": ["R1 functional oracle passes"], "questions": []}, spec_document()])
+    planned = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement",
+        brief_digest="brief", run=run, store=store)
+    assert planned.state == "planned"
+    assert [call["phase"] for call in calls] == ["grill", "to-spec"]
+    assert "Implement R1 only" in calls[1]["trusted"]["legacy_prompt"]
+    assert (root / "artifacts" / run.run_id / "grill-handoff.json").exists()
+
+
+def test_grill_question_stops_before_spec_and_resumes_same_thread(context, monkeypatch):
+    root, config, store, run = context
+    config = replace(config, workflow_mode="production")
+    calls = adapter(monkeypatch, [
+        {"outcome": "needs_input", "scope": "", "constraints": [], "acceptance": [],
+         "questions": [{"id": "Q1", "question": "Which format?", "options": ["json"]}]},
+        {"outcome": "planned", "scope": "JSON output", "constraints": [], "acceptance": ["Parse JSON"], "questions": []},
+        spec_document(),
+        {"outcome": "needs_input", "tickets": [], "questions": [{"id": "Q2", "question": "Which limits?", "options": []}]},
+    ])
+    waiting = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement",
+        brief_digest="brief", run=run, store=store)
+    assert waiting.state == "needs_input" and waiting.current_step == "codex_grill"
+    assert len(calls) == 1
+    store.submit_answer(run_id=run.run_id, question_id="Q1", value="json")
+    resumed = workflow._resume_codex_stage(control_root=root, config=config, run=waiting,
+        brief="Requirement", brief_digest="brief", store=store)
+    assert resumed["run"]["current_step"] == "codex_ticket_planning"
+    assert calls[1]["thread_id"] == "thread-1"
+    assert calls[1]["trusted"]["answers"][0]["value"] == "json"
+    assert [call["phase"] for call in calls] == ["grill", "grill", "to-spec", "to-tickets"]
 
 
 @pytest.mark.parametrize("mutation", ["empty", "blank_body", "unsafe_key", "order", "empty_coverage"])

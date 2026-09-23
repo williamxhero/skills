@@ -21,7 +21,7 @@ from .multi_spec import run_local_delivery
 from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_review, verify_candidate
 from .tracker import read_local, publish_local
 from .scope_lock import ScopeLock
-from .production_gates import implementation_artifacts, independent_review
+from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
 
 
 def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None, schema: dict[str, object] | None = None):
@@ -241,11 +241,70 @@ def _planning_response(*, result: CodexWorkerResult, control_root: Path, config:
     return document
 
 
+def _execute_codex_grill(*, control_root: Path, config: RunnerConfig, brief: str,
+                         brief_digest: str, run: RunRecord, store: Store,
+                         thread_id: str | None = None) -> RunRecord:
+    """Clarify a brief through the current read-only Skill, not a scheduler LLM."""
+    step = "codex_grill"
+    operation = f"grill:{run.run_id}"
+    worker = f"codex_sdk:{run.run_id}:{step}"
+    store.begin_stage(run.run_id, step_name=step, operation_id=operation, backend_kind="codex_sdk", worker_id=worker)
+    schema = {"type": "object", "properties": {
+        "outcome": {"type": "string", "enum": ["planned", "needs_input", "change_request", "failed"]},
+        "scope": {"type": "string"},
+        "constraints": {"type": "array", "items": {"type": "string"}},
+        "acceptance": {"type": "array", "items": {"type": "string"}},
+        "questions": {"type": "array", "items": {"type": "object", "properties": {
+            "id": {"type": "string"}, "question": {"type": "string"},
+            "options": {"type": "array", "items": {"type": "string"}},
+        }, "required": ["id", "question", "options"], "additionalProperties": False}},
+    }, "required": ["outcome", "scope", "constraints", "acceptance", "questions"], "additionalProperties": False}
+    result = _run_worker(adapter=CodexAdapter(), phase="grill", config=config,
+        prompt=("Clarify the supplied requirement into scope, constraints and observable acceptance. "
+                "Do not invent missing business facts or permissions. Return needs_input with stable question IDs "
+                "if a necessary fact is missing; otherwise return planned. Do not publish or change files.\n\n" + brief),
+        trusted={"stage": step, "brief_digest": brief_digest, "answers": store.answers_for_run(run.run_id)},
+        repository_path=config.repository_path, model=config.model_name, effort=config.effort,
+        thread_id=thread_id, schema=schema,
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id,
+            operation_id=operation, step_name=step, worker_id=worker, thread_id=thread_id, turn_id=turn_id))
+    document = _planning_response(result=result, control_root=control_root, config=config, run=run,
+        store=store, operation_id=operation, step_name=step, worker_id=worker, brief_digest=brief_digest)
+    if isinstance(document, RunRecord):
+        return document
+    if not isinstance(document.get("scope"), str) or not document["scope"].strip():
+        raise RunnerError("invalid_grill_handoff", "Grill must produce a non-empty scope")
+    for field in ("constraints", "acceptance"):
+        values = document.get(field)
+        if not isinstance(values, list) or (field == "acceptance" and not values) or any(not isinstance(value, str) or not value.strip() for value in values):
+            raise RunnerError("invalid_grill_handoff", f"Grill {field} must contain valid text")
+    document.update(schema_version="spec-runner-grill-handoff/v1", requirement_digest=brief_digest,
+                    thread_id=result.thread_id, turn_id=result.turn_id)
+    directory = _safe_artifact_directory(control_root, config, run.run_id)
+    (directory / "grill-handoff.json").write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    archive = CodexAdapter().archive_and_readback(thread_id=result.thread_id, repository_path=config.repository_path)
+    store.append_event(run_id=run.run_id, event_key=f"grill:{run.run_id}:archived", event_type="cleanup_readback", payload=archive)
+    return store.complete_codex_stage(run.run_id, operation, thread_id=result.thread_id,
+        turn_id=result.turn_id, state="clarified", step_name=step, worker_id=worker)
+
+
 def _execute_codex_planning(
     *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store,
     thread_id: str | None = None,
 ) -> RunRecord:
     """Run the production planning boundary and persist a validated SpecPlan."""
+    grill_path = _safe_artifact_directory(control_root, config, run.run_id) / "grill-handoff.json"
+    handoff = None
+    if config.workflow_mode == "production":
+        if not grill_path.exists():
+            clarified = _execute_codex_grill(control_root=control_root, config=config, brief=brief,
+                brief_digest=brief_digest, run=run, store=store)
+            if clarified.state != "clarified":
+                return clarified
+        handoff = load_json(grill_path)
+        if handoff.get("requirement_digest") != brief_digest:
+            raise RunnerError("stale_grill_handoff", "Grill handoff belongs to another requirement revision")
     step_name = "codex_planning"
     operation_id = f"planning:{run.run_id}"
     worker_id = f"codex_sdk:{run.run_id}:{step_name}"
@@ -261,6 +320,8 @@ def _execute_codex_planning(
     }, "required": ["outcome", "requirements", "specs", "questions"], "additionalProperties": False}
     answers = store.answers_for_run(run.run_id)
     prompt = "Produce a SpecPlan for this requirement. Do not publish issues, create branches, or modify files. If a user decision is required, return outcome needs_input and questions; otherwise return outcome planned with complete requirements and dependency-ordered specs.\n\n" + brief
+    if handoff:
+        prompt += "\n\nValidated Grill handoff:\n" + json.dumps(handoff, ensure_ascii=False, sort_keys=True)
     if answers:
         prompt += "\n\nRunner-recorded business answers (use as facts, do not ask again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
     result = _run_worker(
@@ -446,9 +507,14 @@ def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest:
         trusted={"brief_digest": brief_digest, "stage": step, "spec_key": spec_key, "review_findings": findings},
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation, step_name=step, worker_id=worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+        schema=IMPLEMENTATION_SCHEMA,
     )
-    if result.status != "completed":
-        raise RunnerError("repair_worker_failed", "bounded repair worker did not complete", details=result.public())
+    turn_key = hashlib.sha256(result.turn_id.encode("utf-8")).hexdigest()
+    (artifact_directory / f"repair-worker-{spec_key}-{turn_key}.json").write_text(
+        json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if result.thread_id != implementation_thread:
+        raise RunnerError("repair_owner_changed", "repair must resume the original implementation thread")
+    implementation_artifacts(result, workspace)
     if not _git_checked(workspace, "status", "--porcelain"):
         raise RunnerError("repair_no_progress", "repair worker produced no candidate changes")
     _git_checked(workspace, "add", "--all")
@@ -481,7 +547,7 @@ def _execute_codex_implementation(
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
     store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
-    schema = {"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers", "questions"], "additionalProperties": False}
+    schema = IMPLEMENTATION_SCHEMA
     result = _run_worker(
         adapter=CodexAdapter(), phase="implement", config=config,
         prompt=("Implement this SPEC in the assigned workspace. Work on the real code and tests; do not publish, merge, "
@@ -505,8 +571,6 @@ def _execute_codex_implementation(
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / f"candidate-{spec_key}.json").write_text(json.dumps(candidate_receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-    CodexAdapter().archive_and_readback(thread_id=result.thread_id, repository_path=workspace)
-
     validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
     repair_round = 0
     while not validated_review["approved"] and repair_round < 2:
@@ -515,6 +579,11 @@ def _execute_codex_implementation(
         validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
     if not validated_review["approved"]:
         raise RunnerError("review_blocked", "independent review remained blocked after bounded repair rounds", details={"findings": validated_review["blocking"], "repair_rounds": repair_round})
+    # Keep the implementation thread available throughout bounded repair;
+    # archive only after its final reviewed turn, never before resuming it.
+    archive = CodexAdapter().archive_and_readback(thread_id=result.thread_id, repository_path=workspace)
+    store.append_event(run_id=run.run_id, event_key=f"cleanup:{run.run_id}:{spec_key}:implementation:{candidate_sha}",
+                       event_type="cleanup_readback", payload=archive)
     if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
         raise RunnerError("candidate_changed_after_review", "candidate changed after the verified check/review pair")
     if git_sha(config.repository_path, str(workspace_info["branch"])) != candidate_sha:
@@ -885,7 +954,13 @@ def _resume_codex_stage(
             brief_digest=brief_digest,
             store=store,
         )
-    if run.current_step == "codex_planning":
+    if run.current_step in {"codex_grill", "codex_planning"}:
+        if run.current_step == "codex_grill":
+            clarified = _execute_codex_grill(control_root=control_root, config=config, brief=brief,
+                brief_digest=brief_digest, run=run, store=store, thread_id=thread_id)
+            if clarified.state != "clarified":
+                return store.public_status(run.run_id)
+            thread_id = None
         resumed = _execute_codex_planning(
             control_root=control_root, config=config, brief=brief, brief_digest=brief_digest,
             run=run, store=store, thread_id=thread_id,

@@ -9,6 +9,24 @@ from .delivery import validate_review
 from .errors import RunnerError
 
 
+IMPLEMENTATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "outcome": {"type": "string", "enum": ["completed", "needs_input", "blocked", "failed"]},
+        "artifacts": {"type": "array", "items": {"type": "string"}},
+        "blockers": {"type": "array", "items": {"type": "string"}},
+        "questions": {"type": "array", "items": {
+            "type": "object", "properties": {
+                "id": {"type": "string"}, "question": {"type": "string"},
+                "options": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["id", "question", "options"], "additionalProperties": False,
+        }},
+    },
+    "required": ["outcome", "artifacts", "blockers", "questions"],
+    "additionalProperties": False,
+}
+
+
 def worker_document(result: CodexWorkerResult) -> dict:
     if result.status != "completed" or result.error:
         raise RunnerError("worker_not_successful", "a failed or nonterminal worker cannot authorize delivery")
