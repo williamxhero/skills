@@ -15,8 +15,10 @@ from .codex_adapter import CodexAdapter, CodexWorkerResult
 from .errors import RunnerError
 from .store import RunRecord, Store, now
 from .verification import verify_run
-from .plans import load_json
+from .plans import load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
+from .delivery import git_sha
+from .tracker import read_local, publish_local
 
 
 def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None):
@@ -30,7 +32,7 @@ def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prom
             effort=effort,
             trusted={**trusted, "legacy_prompt": prompt},
             untrusted={},
-            schema={"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
+            schema={"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
             skill_roots=config.skill_roots,
             skill_config=(config.skill_config and (Path(config.skill_config))),
             thread_id=thread_id,
@@ -144,6 +146,17 @@ def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stag
             parsed = None
         if isinstance(parsed, dict):
             declared = parsed
+    questions = declared.get("questions", [])
+    if not isinstance(questions, list) or any(
+        not isinstance(question, dict)
+        or not isinstance(question.get("id"), str)
+        or not question["id"].strip()
+        or not isinstance(question.get("question"), str)
+        or not question["question"].strip()
+        or ("options" in question and (not isinstance(question["options"], list) or any(not isinstance(option, str) or not option.strip() for option in question["options"])))
+        for question in questions
+    ) or len({question["id"] for question in questions if isinstance(question, dict) and isinstance(question.get("id"), str)}) != len(questions):
+        raise RunnerError("invalid_worker_questions", "needs_input questions must have unique IDs and valid text/options")
     return {
         "schema_version": "spec-runner-worker-result/v1",
         "stage": stage,
@@ -151,7 +164,7 @@ def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stag
         "outcome": declared.get("outcome", "completed" if result.status == "completed" else result.status),
         "artifacts": declared.get("artifacts", []),
         "blockers": declared.get("blockers", [result.error] if result.error else []),
-        "questions": declared.get("questions", []),
+        "questions": questions,
         **result.public(),
     }
 
@@ -174,6 +187,160 @@ def _record_codex_turn_started(
         step_name=step_name,
         worker_id=worker_id,
     )
+
+
+def _execute_codex_planning(
+    *, control_root: Path, config: RunnerConfig, brief: str, brief_digest: str, run: RunRecord, store: Store
+) -> RunRecord:
+    """Run the production planning boundary and persist a validated SpecPlan."""
+    step_name = "codex_planning"
+    operation_id = f"planning:{run.run_id}"
+    worker_id = f"codex_sdk:{run.run_id}:{step_name}"
+    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="codex_sdk")
+    schema = {"type": "object", "properties": {
+        "outcome": {"type": "string"}, "requirements": {"type": "array", "items": {"type": "string"}},
+        "specs": {"type": "array", "items": {"type": "object", "properties": {
+            "key": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"},
+            "blocked_by": {"type": "array", "items": {"type": "string"}}, "covers": {"type": "array", "items": {"type": "string"}},
+            "route": {"type": "object", "properties": {"model": {"type": "string"}, "effort": {"type": "string"}, "reason": {"type": "string"}}, "required": ["model", "effort", "reason"], "additionalProperties": False},
+        }, "required": ["key", "title", "body", "blocked_by", "covers", "route"], "additionalProperties": False}},
+        "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}},
+    }, "required": ["outcome", "requirements", "specs", "questions"], "additionalProperties": False}
+    prompt = "Produce a SpecPlan for this requirement. Do not publish issues, create branches, or modify files. If a user decision is required, return outcome needs_input and questions; otherwise return outcome planned with complete requirements and dependency-ordered specs.\n\n" + brief
+    result = _run_worker(
+        adapter=CodexAdapter(), phase="to-spec", config=config, prompt=prompt,
+        trusted={"brief_digest": brief_digest, "stage": step_name, "repository_scope": os.fspath(config.repository_path)},
+        repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=None,
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
+    )
+    try:
+        document = json.loads(result.final_response or "null")
+    except json.JSONDecodeError as exc:
+        raise RunnerError("invalid_planning_output", "planning worker did not return JSON") from exc
+    if not isinstance(document, dict):
+        raise RunnerError("invalid_planning_output", "planning worker returned a non-object")
+    document["schema_version"] = "spec-runner-spec-plan/v1"
+    document["requirement_digest"] = brief_digest
+    validated = validate_spec_plan(document)
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    (artifact_directory / "spec-plan.json").write_text(json.dumps(validated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    completed = store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="planned", step_name=step_name, worker_id=worker_id)
+    store.write_log(control_root, run.run_id, {"event": "spec_plan_validated", "thread_id": result.thread_id, "turn_id": result.turn_id, "spec_count": len(validated["specs"])})
+    return completed
+
+
+def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], run_id: str) -> Path:
+    """Materialise a validated ticket plan as a local tracker source.
+
+    The model only supplies issue data.  The Runner writes the tracker
+    document with its own stable frontmatter and later publishes it through
+    the idempotent local tracker adapter.
+    """
+    source = artifact_directory / "ticket-source"
+    source.mkdir(parents=True, exist_ok=True)
+    spec_key = str(plan["spec_key"])
+    spec_metadata = {
+        "key": spec_key,
+        "kind": "spec",
+        "title": str(plan.get("spec_title") or spec_key),
+        "revision": str(plan["digest"]),
+        "blocked_by": [],
+        "comments": [f"spec-runner-run:{run_id}"],
+    }
+    spec_frontmatter = "---\n" + "\n".join(
+        f"{field}: {json.dumps(value, ensure_ascii=False, separators=(',', ':')) if isinstance(value, (list, dict)) else value}"
+        for field, value in spec_metadata.items()
+    ) + "\n---\n"
+    (source / ("".join(character if character.isalnum() or character in "._-" else "-" for character in spec_key) + ".md")).write_text(
+        spec_frontmatter + str(plan.get("spec_body") or "") + "\n", encoding="utf-8", newline="\n"
+    )
+    for ticket in plan["tickets"]:  # type: ignore[index]
+        key = str(ticket["key"])
+        filename = "".join(character if character.isalnum() or character in "._-" else "-" for character in key) + ".md"
+        body = str(ticket["body"])
+        metadata = {
+            "key": key,
+            "kind": "ticket",
+            "title": str(ticket.get("title") or key),
+            "revision": str(plan["digest"]),
+            "parent": str(plan["spec_key"]),
+            "blocked_by": list(ticket.get("blocked_by", [])),
+            "comments": [f"spec-runner-run:{run_id}"],
+        }
+        frontmatter = "---\n" + "\n".join(
+            f"{field}: {json.dumps(value, ensure_ascii=False, separators=(',', ':')) if isinstance(value, (list, dict)) else value}"
+            for field, value in metadata.items()
+        ) + "\n---\n"
+        (source / filename).write_text(frontmatter + body.rstrip() + "\n", encoding="utf-8", newline="\n")
+    return source
+
+
+def _execute_codex_tickets(
+    *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
+    spec_plan: dict[str, object],
+) -> RunRecord:
+    """Turn one dependency-ready SPEC into a validated local TicketPlan."""
+    specs = spec_plan.get("specs")
+    if not isinstance(specs, list) or not specs or not isinstance(specs[0], dict):
+        raise RunnerError("invalid_spec_plan", "cannot create tickets without a SPEC")
+    spec = specs[0]
+    spec_key = str(spec.get("key", ""))
+    base_sha = git_sha(config.repository_path, config.target_ref)
+    step_name = "codex_ticket_planning"
+    operation_id = f"tickets:{run.run_id}:{spec_key}"
+    worker_id = f"codex_sdk:{run.run_id}:{step_name}:{spec_key}"
+    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id, backend_kind="codex_sdk")
+    schema = {
+        "type": "object",
+        "properties": {
+            "outcome": {"type": "string"},
+            "tickets": {"type": "array", "items": {"type": "object", "properties": {
+                "key": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"},
+                "blocked_by": {"type": "array", "items": {"type": "string"}},
+                "acceptance": {"type": "array", "items": {"type": "string"}},
+            }, "required": ["key", "title", "body", "blocked_by", "acceptance"], "additionalProperties": False}},
+            "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}},
+        },
+        "required": ["outcome", "tickets", "questions"], "additionalProperties": False,
+    }
+    prompt = (
+        "Produce a TicketPlan for exactly this SPEC. Do not publish issues, create branches, or modify files. "
+        "Return needs_input/questions when a real requirement fact is missing; otherwise return planned with concrete "
+        "tickets, dependency keys, and acceptance IDs.\n\n" + json.dumps(spec, ensure_ascii=False, sort_keys=True)
+    )
+    result = _run_worker(
+        adapter=CodexAdapter(), phase="to-tickets", config=config, prompt=prompt,
+        trusted={"brief_digest": brief_digest, "stage": step_name, "spec_key": spec_key, "base_sha": base_sha},
+        repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=None,
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
+    )
+    try:
+        document = json.loads(result.final_response or "null")
+    except json.JSONDecodeError as exc:
+        raise RunnerError("invalid_ticket_planning_output", "ticket worker did not return JSON") from exc
+    if not isinstance(document, dict):
+        raise RunnerError("invalid_ticket_planning_output", "ticket worker returned a non-object")
+    questions = document.get("questions", [])
+    if document.get("outcome") == "needs_input" and questions:
+        artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+        artifact_directory.mkdir(parents=True, exist_ok=True)
+        (artifact_directory / "worker-result.json").write_text(json.dumps({"questions": questions, **result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="needs_input", step_name=step_name, worker_id=worker_id)
+    document.update({
+        "schema_version": "spec-runner-ticket-plan/v1", "spec_key": spec_key, "base_sha": base_sha,
+        "spec_title": str(spec.get("title") or spec_key), "spec_body": str(spec.get("body") or ""),
+    })
+    validated = validate_ticket_plan(document, expected_spec_key=spec_key, expected_base_sha=base_sha)
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    (artifact_directory / f"ticket-plan-{spec_key}.json").write_text(json.dumps(validated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    source = _ticket_plan_source(artifact_directory=artifact_directory, plan=validated, run_id=run.run_id)
+    published = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
+    store.write_log(control_root, run.run_id, {"event": "ticket_plan_published", "spec_key": spec_key, "ticket_count": len(validated["tickets"]), "tracker": published})
+    return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="tickets_ready", step_name=step_name, worker_id=worker_id)
 
 
 def _execute_codex_example(
@@ -665,6 +832,15 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
                 )
                 return {"created": False, **final_status}
+            if existing.state == "planned":
+                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
+                if not plan_path.is_file():
+                    raise RunnerError("spec_plan_missing", "planned run has no persisted SpecPlan")
+                ticketed = _execute_codex_tickets(
+                    control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
+                    store=store, spec_plan=load_json(plan_path),
+                )
+                return {"created": False, **store.public_status(ticketed.run_id)}
             if existing.state == "needs_input" and not store.control_for_run(existing.run_id):
                 worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
                 questions: list[dict[str, object]] = []
@@ -714,7 +890,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             raise RunnerError("run_id_conflict", "run_id already exists; choose another UUID")
 
         timestamp = now()
-        stage_name = "delivery_plan" if config.delivery_plan is not None else ("deterministic_example" if config.execution_backend == "deterministic_test" else "codex_example")
+        stage_name = "delivery_plan" if config.delivery_plan is not None else ("deterministic_example" if config.execution_backend == "deterministic_test" else ("codex_planning" if config.workflow_mode == "production" else "codex_example"))
         record = RunRecord(
             run_id=requested_run_id,
             launch_key=launch_key,
@@ -755,6 +931,10 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 finished = _execute_deterministic_example(
                     control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store
                 )
+            elif config.workflow_mode == "production":
+                finished = _execute_codex_planning(
+                    control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store
+                )
             else:
                 finished = _execute_codex_example(
                     control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store
@@ -768,6 +948,13 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             return {"created": True, **store.public_status(finished.run_id)}
         if finished.state == "needs_input":
             return {"created": True, **store.public_status(finished.run_id)}
+        if finished.state == "planned":
+            plan_path = _safe_artifact_directory(control_root, config, finished.run_id) / "spec-plan.json"
+            ticketed = _execute_codex_tickets(
+                control_root=control_root, config=config, brief_digest=brief_digest, run=finished,
+                store=store, spec_plan=load_json(plan_path),
+            )
+            return {"created": True, **store.public_status(ticketed.run_id)}
         _verify_and_archive(
             control_root=control_root,
             config=config,

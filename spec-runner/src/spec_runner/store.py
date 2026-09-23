@@ -331,8 +331,11 @@ class Store:
     def submit_answer(self, *, run_id: str, question_id: str, value: object) -> dict[str, object]:
         if not question_id or any(character.isspace() for character in question_id):
             raise RunnerError("invalid_answer", "question_id must be non-empty and contain no whitespace")
-        if self.find_by_run_id(run_id) is None:
+        record = self.find_by_run_id(run_id)
+        if record is None:
             raise RunnerError("unknown_run", f"run does not exist: {run_id}")
+        if record.state == "cancelled":
+            raise RunnerError("cancelled_run", "cancelled runs cannot be revived by an answer")
         value_json = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         import hashlib
 

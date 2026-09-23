@@ -78,6 +78,7 @@ class RunnerConfig:
     delivery_plan: Path | None
     skill_config: Path | None
     skill_roots: tuple[Path, ...]
+    workflow_mode: str
     digest: str
 
     @classmethod
@@ -148,6 +149,12 @@ class RunnerConfig:
         if not isinstance(raw_skill_roots, list) or any(not isinstance(item, str) for item in raw_skill_roots):
             raise RunnerError("invalid_config", "skills.roots must be a list of paths")
         skill_roots = tuple(Path(item).expanduser() for item in raw_skill_roots)
+        workflow = document.get("workflow", {})
+        if workflow is None:
+            workflow = {}
+        if not isinstance(workflow, dict) or workflow.get("mode", "example") not in {"example", "production"}:
+            raise RunnerError("invalid_config", "workflow.mode must be example or production")
+        workflow_mode = str(workflow.get("mode", "example"))
 
         normalized = {
             "schema_version": CONFIG_SCHEMA_VERSION,
@@ -160,6 +167,7 @@ class RunnerConfig:
             "authorization": {"artifact_roots": [root.as_posix() for root in authorization_roots]},
             "delivery": {"plan": delivery_plan.as_posix()} if delivery_plan else None,
             "skills": {"config": skill_config.as_posix() if skill_config else None, "roots": [os.fspath(item) for item in skill_roots]},
+            "workflow": {"mode": workflow_mode},
         }
         return cls(
             repository_path=repository_path,
@@ -173,6 +181,7 @@ class RunnerConfig:
             delivery_plan=delivery_plan,
             skill_config=(control_root / skill_config).resolve() if skill_config else None,
             skill_roots=skill_roots,
+            workflow_mode=workflow_mode,
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
         )
 
