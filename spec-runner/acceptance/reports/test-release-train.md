@@ -67,3 +67,13 @@ direct evidence is `acceptance/test_production_planning.py` and
 complete L1/L2 pytest passed (119 passed, 1 skipped, 23.17 seconds). No live
 production or GitHub side effect was performed in this source validation.
 Exact-wheel L3, release-train L4, and live L5 obligations remain open.
+
+L3 was subsequently run on the exact `0554dcd72d7a8807bade083ec0f500180eaf8dc1`
+artifact. A clean Windows venv installed the built wheel with its declared SDK
+dependency; the import resolved from `site-packages` with `PYTHONPATH` cleared
+and cwd outside the source tree. Package inspection passed, and two public-CLI
+fault-matrix replays each passed all 10 deterministic cases with identical
+report digest. Receipt and wheel SHA-256 are in
+`SRAC-20260923-9d21fca8837b-installed-wheel.json`. Live SDK process restart,
+Windows detached-parent exit, and GitHub merge queue remain explicitly
+unverified by this deterministic L3 gate.

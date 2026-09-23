@@ -1,0 +1,43 @@
+{
+  "run_marker": "SRAC-20260923-9d21fca8837b",
+  "schema_version": "spec-runner-installed-wheel-replay/v1",
+  "candidate": {
+    "commit": "0554dcd72d7a8807bade083ec0f500180eaf8dc1",
+    "wheel": "spec_runner-0.1.0-py3-none-any.whl",
+    "sha256": "e17aa8cdda2ffdb6941c29abc076bd0beaa48876ed8f65784d5f07745a06055a",
+    "package_diagnostic": "verified",
+    "forbidden_members": []
+  },
+  "environment": {
+    "os": "Windows",
+    "python": "3.13.5",
+    "source_unavailable": true,
+    "pythonpath_cleared": true,
+    "import_path": "acceptance/.runtime/SRAC-20260923-9d21fca8837b/venv/Lib/site-packages/spec_runner/__init__.py",
+    "sdk": "openai-codex==0.155.1"
+  },
+  "replays": [
+    {
+      "number": 1,
+      "seed": "SRAC-20260923-9d21fca8837b",
+      "schema_version": "spec-runner-fault-run/v1",
+      "passed": true,
+      "cases": 10,
+      "report_digest": "355f25005a3565af60ef950ece8a827ffb1dc2f2e66adb9a8c5b7f7175ad8b1a"
+    },
+    {
+      "number": 2,
+      "seed": "SRAC-20260923-9d21fca8837b",
+      "schema_version": "spec-runner-fault-run/v1",
+      "passed": true,
+      "cases": 10,
+      "report_digest": "355f25005a3565af60ef950ece8a827ffb1dc2f2e66adb9a8c5b7f7175ad8b1a"
+    }
+  ],
+  "replay_comparison": "identical report digest and per-case outcomes",
+  "unverified_scenarios": [
+    "live_codex_process_restart",
+    "windows_native_parent_exit",
+    "github_merge_queue"
+  ]
+}
