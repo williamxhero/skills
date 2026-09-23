@@ -226,7 +226,8 @@ def _record_codex_turn_started(
 
 def _planning_response(*, result: CodexWorkerResult, control_root: Path, config: RunnerConfig,
                        run: RunRecord, store: Store, operation_id: str, step_name: str,
-                       worker_id: str, brief_digest: str, persist_result: bool = True) -> dict[str, object] | RunRecord:
+                       worker_id: str, brief_digest: str, persist_result: bool = True,
+                       allow_ticket_confirmation: bool = False) -> dict[str, object] | RunRecord:
     directory = _safe_artifact_directory(control_root, config, run.run_id)
     directory.mkdir(parents=True, exist_ok=True)
     # Retain the actual transport result even if semantic validation fails.
@@ -258,12 +259,36 @@ def _planning_response(*, result: CodexWorkerResult, control_root: Path, config:
         # TicketPlan. Normalize that equivalent success form at the Runner
         # boundary; missing tickets remain a hard failure below.
         tickets = document.get("tickets")
-        if isinstance(tickets, list) and tickets:
+        if allow_ticket_confirmation and isinstance(tickets, list) and tickets:
             document["outcome"] = "planned"
         else:
             raise RunnerError("planning_not_ready", "only planned without unanswered questions may advance",
                               details={"outcome": document.get("outcome")})
     return document
+
+
+def _persist_implementation_input_gate(
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store,
+    result: CodexWorkerResult, brief_digest: str, operation_id: str,
+    step_name: str, worker_id: str, spec_key: str,
+) -> dict[str, object] | None:
+    """Persist an implementation worker's real question as a resumable gate."""
+    declared = _declared_model_result(result=result, brief_digest=brief_digest, stage=step_name)
+    if declared.get("outcome") != "needs_input":
+        return None
+    questions = declared.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise RunnerError("invalid_worker_questions", "implementation needs_input requires at least one question")
+    directory = _safe_artifact_directory(control_root, config, run.run_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "worker-result.json").write_text(
+        json.dumps(declared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+    store.complete_codex_stage(
+        run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id,
+        state="needs_input", step_name=step_name, worker_id=worker_id,
+    )
+    return {"state": "needs_input", "spec_key": spec_key, "questions": questions}
 
 
 def _persist_ticket_plan(*, control_root: Path, config: RunnerConfig,
@@ -405,7 +430,8 @@ def _execute_codex_planning(
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
     )
     document = _planning_response(result=result, control_root=control_root, config=config, run=run,
-        store=store, operation_id=operation_id, step_name=step_name, worker_id=worker_id, brief_digest=brief_digest)
+        store=store, operation_id=operation_id, step_name=step_name, worker_id=worker_id,
+        brief_digest=brief_digest)
     if isinstance(document, RunRecord):
         return document
     document["schema_version"] = "spec-runner-spec-plan/v1"
@@ -561,7 +587,8 @@ def _execute_codex_tickets(
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
     )
     document = _planning_response(result=result, control_root=control_root, config=config, run=run,
-        store=store, operation_id=operation_id, step_name=step_name, worker_id=worker_id, brief_digest=brief_digest)
+        store=store, operation_id=operation_id, step_name=step_name, worker_id=worker_id,
+        brief_digest=brief_digest, allow_ticket_confirmation=True)
     if isinstance(document, RunRecord):
         return document
     return _persist_ticket_plan(
@@ -756,7 +783,7 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
 
 def _execute_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
-    ticket_plan: dict[str, object], finalize_run: bool = True,
+    ticket_plan: dict[str, object], finalize_run: bool = True, thread_id: str | None = None,
 ) -> dict[str, object]:
     """Run one real implementation and independent review for the active SPEC.
 
@@ -776,18 +803,32 @@ def _execute_codex_implementation(
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
     store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
     schema = IMPLEMENTATION_SCHEMA
+    implementation_prompt = (
+        "Implement this SPEC in the assigned workspace. Work on the real code and tests; do not publish, merge, "
+        "or modify files outside this workspace. Return JSON only after the implementation is complete.\n\n"
+        + json.dumps(ticket_plan, ensure_ascii=False, sort_keys=True)
+    )
+    answers = store.answers_for_run(run.run_id)
+    if answers:
+        implementation_prompt += "\n\nRunner-recorded implementation answers (use these as decisions; do not ask them again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
     result = _run_worker(
         adapter=CodexAdapter(), phase="implement", config=config,
-        prompt=("Implement this SPEC in the assigned workspace. Work on the real code and tests; do not publish, merge, "
-                "or modify files outside this workspace. Return JSON only after the implementation is complete.\n\n" + json.dumps(ticket_plan, ensure_ascii=False, sort_keys=True)),
-        model=config.model_name, effort=config.effort, thread_id=None, repository_path=workspace,
-        trusted={"brief_digest": brief_digest, "stage": implementation_step, "spec_key": spec_key, "workspace": os.fspath(workspace), "ticket_plan_digest": ticket_plan["digest"]},
+        prompt=implementation_prompt,
+        model=config.model_name, effort=config.effort, thread_id=thread_id, repository_path=workspace,
+        trusted={"brief_digest": brief_digest, "stage": implementation_step, "spec_key": spec_key, "workspace": os.fspath(workspace), "ticket_plan_digest": ticket_plan["digest"], "answers": answers},
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=implementation_operation, step_name=implementation_step, worker_id=implementation_worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=schema,
     )
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / f"implementation-{spec_key}.json").write_text(json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    input_gate = _persist_implementation_input_gate(
+        control_root=control_root, config=config, run=run, store=store, result=result,
+        brief_digest=brief_digest, operation_id=implementation_operation, step_name=implementation_step,
+        worker_id=implementation_worker, spec_key=spec_key,
+    )
+    if input_gate is not None:
+        return input_gate
     implementation_artifacts(result, workspace)
     if _git_checked(workspace, "status", "--porcelain") == "":
         raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
@@ -1186,6 +1227,13 @@ def _resume_codex_stage(
             if str(worker.get("worker_id") or "").startswith(ticket_prefix)
             and (spec_key is None or str(worker.get("worker_id"))[len(ticket_prefix):] == spec_key)
         ]
+    elif run.current_step == "codex_implementation":
+        implementation_prefix = f"{worker_prefix}:codex_implementation:"
+        worker_matches = [
+            worker for worker in workers
+            if str(worker.get("worker_id") or "").startswith(implementation_prefix)
+            and (spec_key is None or str(worker.get("worker_id"))[len(implementation_prefix):] == spec_key)
+        ]
     else:
         expected_worker = f"{worker_prefix}:{run.current_step}"
         worker_matches = [worker for worker in workers if worker.get("worker_id") == expected_worker]
@@ -1293,6 +1341,19 @@ def _resume_codex_stage(
                 store=store, ticket_plan=load_json(ticket_path),
             )
         return store.public_status(resumed.run_id)
+    if run.current_step == "codex_implementation":
+        implementation_prefix = f"{worker_prefix}:codex_implementation:"
+        if spec_key is None:
+            spec_key = str(worker.get("worker_id") or "")[len(implementation_prefix):]
+        if not spec_key:
+            raise RunnerError("implementation_spec_missing", "implementation resume has no uniquely identified SPEC")
+        ticket_path = _safe_artifact_directory(control_root, config, run.run_id) / f"ticket-plan-{spec_key}.json"
+        if not ticket_path.is_file():
+            raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+        return _execute_codex_implementation(
+            control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store,
+            ticket_plan=load_json(ticket_path), thread_id=thread_id,
+        )
     if run.current_step == "codex_second":
         resumed = _execute_second_codex(
             control_root=control_root,
@@ -1378,6 +1439,7 @@ def _reconcile_completed_ticket_turn(*, control_root: Path, config: RunnerConfig
         result=result, control_root=control_root, config=config, run=run, store=store,
         operation_id=f"tickets:{run.run_id}:{spec_key}", step_name="codex_ticket_planning",
         worker_id=worker_id, brief_digest=brief_digest, persist_result=False,
+        allow_ticket_confirmation=True,
     )
     if isinstance(document, RunRecord):
         store.append_event(
@@ -1403,6 +1465,116 @@ def _reconcile_completed_ticket_turn(*, control_root: Path, config: RunnerConfig
                  "thread_id": thread_id, "turn_id": turn_id},
     )
     return recovered
+
+
+def _adopt_existing_ticket_plan(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                                store: Store, worker: dict[str, object]) -> RunRecord | None:
+    """Reuse a durable TicketPlan after a later duplicate planner attempt failed."""
+    worker_id = str(worker.get("worker_id") or "")
+    prefix = f"codex_sdk:{run.run_id}:codex_ticket_planning:"
+    if not worker_id.startswith(prefix):
+        return None
+    spec_key = worker_id[len(prefix):]
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
+    if not ticket_path.is_file():
+        return None
+    ticket = load_json(ticket_path)
+    base_sha = git_sha(config.repository_path, config.target_ref)
+    validated_ticket = validate_ticket_plan(ticket, expected_spec_key=spec_key, expected_base_sha=base_sha)
+    plan_path = artifact_directory / "spec-plan.json"
+    if not plan_path.is_file():
+        return None
+    full_plan = load_json(plan_path)
+    specs = full_plan.get("specs")
+    if not isinstance(specs, list):
+        return None
+    selected = [item for item in specs if isinstance(item, dict) and item.get("key") == spec_key]
+    if len(selected) != 1:
+        return None
+    if (validated_ticket.get("spec_title") != str(selected[0].get("title") or spec_key)
+            or validated_ticket.get("spec_body") != str(selected[0].get("body") or "")):
+        return None
+    current_turn_id = str(worker.get("external_turn_id") or "")
+    prior_results: list[dict[str, object]] = []
+    for path in sorted(artifact_directory.glob("codex_ticket_planning-*.json")):
+        try:
+            result = load_json(path)
+        except RunnerError:
+            continue
+        if (result.get("status") == "completed" and result.get("error") is None
+                and isinstance(result.get("thread_id"), str)
+                and isinstance(result.get("turn_id"), str)
+                and result.get("turn_id") != current_turn_id
+                and isinstance(result.get("final_response"), str)
+                and result.get("final_response")):
+            try:
+                prior_document = json.loads(str(result["final_response"]))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(prior_document, dict):
+                continue
+            try:
+                questions = prior_document.get("questions")
+                if not isinstance(questions, list) or questions:
+                    continue
+                if prior_document.get("outcome") != "planned":
+                    if not isinstance(prior_document.get("tickets"), list) or not prior_document["tickets"]:
+                        continue
+                    prior_document["outcome"] = "planned"
+                prior_document.update({
+                    "schema_version": "spec-runner-ticket-plan/v1", "spec_key": spec_key,
+                    "base_sha": base_sha,
+                    "spec_title": str(validated_ticket.get("spec_title") or spec_key),
+                    "spec_body": str(validated_ticket.get("spec_body") or ""),
+                })
+                prior_ticket = validate_ticket_plan(
+                    prior_document, expected_spec_key=spec_key, expected_base_sha=base_sha
+                )
+            except RunnerError:
+                continue
+            if prior_ticket.get("digest") == validated_ticket.get("digest"):
+                candidate = dict(result)
+                candidate["_ticket_document"] = prior_document
+                prior_results.append(candidate)
+    identities = {(str(item["thread_id"]), str(item["turn_id"])) for item in prior_results}
+    if len(identities) != 1:
+        return None
+    persisted = prior_results[0]
+    item_count = persisted.get("item_count", 0)
+    if isinstance(item_count, bool) or not isinstance(item_count, int) or item_count < 0:
+        return None
+    started_at = persisted.get("started_at")
+    completed_at = persisted.get("completed_at")
+    if (started_at is not None and (isinstance(started_at, bool) or not isinstance(started_at, int))) or (
+            completed_at is not None and (isinstance(completed_at, bool) or not isinstance(completed_at, int))):
+        return None
+    result = CodexWorkerResult(
+        thread_id=str(persisted["thread_id"]),
+        turn_id=str(persisted["turn_id"]),
+        status="completed",
+        error=None,
+        final_response=str(persisted["final_response"]),
+        item_count=item_count,
+        started_at=started_at,
+        completed_at=completed_at,
+        approval_mode=str(persisted.get("approval_mode") or "deny_all"),
+        skill_observation=persisted.get("skill_observation") if isinstance(persisted.get("skill_observation"), dict) else None,
+    )
+    adopted = _persist_ticket_plan(
+        control_root=control_root, config=config, run=run, store=store,
+        document=persisted["_ticket_document"], spec=selected[0], base_sha=base_sha,
+        operation_id=f"tickets:{run.run_id}:{spec_key}", step_name="codex_ticket_planning",
+        worker_id=worker_id, result=result,
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:existing-ticket-plan:{spec_key}",
+        event_type="existing_ticket_plan_reconciled",
+        payload={"spec_key": spec_key, "thread_id": prior_results[0]["thread_id"],
+                 "turn_id": prior_results[0]["turn_id"]},
+    )
+    return adopted
 
 
 def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
@@ -1447,6 +1619,12 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
             turn_id = str(worker.get("external_turn_id") or "") if worker else ""
             if not thread_id or not turn_id:
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            if run.current_step == "codex_ticket_planning" and worker is not None:
+                adopted = _adopt_existing_ticket_plan(
+                    control_root=control_root, config=config, run=run, store=store, worker=worker,
+                )
+                if adopted is not None:
+                    return {"created": False, **store.public_status(adopted.run_id)}
             try:
                 inspection = CodexAdapter().read_thread(
                     thread_id=thread_id,
@@ -1710,9 +1888,13 @@ def _run_production_queue_impl(*, control_root: Path, config: RunnerConfig, brie
             raise RunnerError("production_queue_blocked", "no dependency-ready SPEC remains")
         spec = ready[0]
         spec_key = str(spec["key"])
-        ticketed = _execute_codex_tickets(
-            control_root=control_root, config=config, brief_digest=brief_digest, run=run,
-            store=store, spec_plan={**spec_plan, "specs": [spec]})
+        ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob(f"ticket-plan-{spec_key}.json"))
+        if ticket_files and run.state == "tickets_ready":
+            ticketed = run
+        else:
+            ticketed = _execute_codex_tickets(
+                control_root=control_root, config=config, brief_digest=brief_digest, run=run,
+                store=store, spec_plan={**spec_plan, "specs": [spec]})
         if ticketed.state != "tickets_ready":
             return store.public_status(run.run_id)
         ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob(f"ticket-plan-{spec_key}.json"))
@@ -1819,7 +2001,11 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
     try:
         existing = store.find_by_launch_key(launch_key)
         if existing:
-            if existing.input_digest != brief_digest or existing.config_digest != config.digest:
+            config_matches_legacy_acceptance_upgrade = _acceptance_upgrade_compatible(existing, config)
+            if existing.input_digest != brief_digest or (
+                existing.config_digest != config.digest
+                and not config_matches_legacy_acceptance_upgrade
+            ):
                 raise RunnerError(
                     "launch_key_input_conflict",
                     "launch_key already belongs to different normalized input",
@@ -2019,6 +2205,16 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             pass
         _release_global_lease(global_lease, owner_token)
         store.close()
+
+
+def _acceptance_upgrade_compatible(existing: RunRecord, config: RunnerConfig) -> bool:
+    """Allow only the SR-08 empty-to-required acceptance config migration."""
+    return (
+        config.workflow_mode == "production"
+        and bool(config.acceptance_ids)
+        and bool(config.acceptance_checks)
+        and existing.config_digest == config.legacy_acceptance_digest
+    )
 
 
 def control(*, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:

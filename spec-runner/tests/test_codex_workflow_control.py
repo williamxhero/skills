@@ -64,6 +64,48 @@ class FakeResumableAdapter:
 
 
 class CodexWorkflowControlTests(unittest.TestCase):
+    def test_production_acceptance_upgrade_preserves_existing_run_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repository = root / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+            config_file = root / "runner.json"
+            config_file.write_text(json.dumps({
+                "schema_version": "spec-runner-config/v1",
+                "repository_path": str(repository),
+                "target_ref": "HEAD",
+                "artifact_root": "artifacts",
+                "execution_backend": "codex_sdk",
+                "allowed_stages": ["implement"],
+                "model": {"name": "fake", "effort": "high"},
+                "authorization": {"artifact_roots": ["artifacts"]},
+                "workflow": {"mode": "production", "acceptance": {
+                    "ids": ["PROJECT_TESTS"],
+                    "checks": [{"command": [sys.executable, "-c", "pass"], "acceptance": ["PROJECT_TESTS"]}],
+                }},
+            }), encoding="utf-8")
+            config = RunnerConfig.from_file(config_file, root / "control")
+            self.assertTrue(config.acceptance_ids)
+            self.assertNotEqual(config.digest, config.legacy_acceptance_digest)
+            existing = RunRecord(
+                run_id="44444444-4444-4444-4444-444444444444",
+                launch_key="legacy",
+                input_digest="brief",
+                config_digest=config.legacy_acceptance_digest,
+                repository_path=str(repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="codex_sdk",
+                state="failed",
+                current_step="codex_ticket_planning",
+                log_path="logs/run.jsonl",
+                created_at=now(),
+                updated_at=now(),
+            )
+            self.assertTrue(workflow._acceptance_upgrade_compatible(existing, config))
+            self.assertFalse(workflow._acceptance_upgrade_compatible(existing, replace(config, acceptance_ids=(), acceptance_checks=())))
+
     def _failed_sdk_run(self, root: Path) -> tuple[RunnerConfig, RunRecord, Store]:
         repository = root / "repo"
         repository.mkdir()

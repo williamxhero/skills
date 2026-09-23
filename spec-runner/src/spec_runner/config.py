@@ -87,6 +87,11 @@ class RunnerConfig:
     github_receipt_root: Path | None = None
     github_base: str | None = None
     github_merge_authorized: bool = False
+    # SR-08 added mandatory production acceptance checks after some runs had
+    # already persisted their config fingerprint.  Keep the fingerprint of
+    # the same config with an empty acceptance section so those runs can be
+    # resumed through the public CLI after the required checks are supplied.
+    legacy_acceptance_digest: str = ""
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -215,6 +220,8 @@ class RunnerConfig:
             "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks}},
             "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized},
         }
+        compatibility_normalized = json.loads(_canonical_json(normalized))
+        compatibility_normalized["workflow"]["acceptance"] = {"ids": [], "checks": []}
         return cls(
             repository_path=repository_path,
             target_ref=target_ref,
@@ -231,6 +238,7 @@ class RunnerConfig:
             acceptance_checks=tuple(dict(item) for item in checks),
             acceptance_ids=tuple(acceptance_ids),
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
+            legacy_acceptance_digest=digest_bytes(_canonical_json(compatibility_normalized).encode("utf-8")),
             github_repository=github_repository,
             github_required_checks=tuple(github_checks),
             github_receipt_root=(control_root / github_receipt).resolve() if github_receipt else None,

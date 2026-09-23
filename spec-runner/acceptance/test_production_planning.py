@@ -155,6 +155,8 @@ def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatc
     artifact_root = root / "artifacts" / run.run_id
     artifact_root.mkdir(parents=True, exist_ok=True)
     (artifact_root / "spec-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    # A stale plan file alone must not bypass the durable ticket stage.
+    (artifact_root / "ticket-plan-S1.json").write_text(json.dumps({"spec_key": "S1"}), encoding="utf-8")
     calls = []
 
     def fake_tickets(*, run, spec_plan, **kwargs):
@@ -317,6 +319,8 @@ def test_planner_cannot_promote_non_planned_outcome(context, monkeypatch, outcom
     root, config, store, run = context
     document = spec_document()
     document["outcome"] = outcome
+    document["tickets"] = [{"key": "T1", "title": "Ticket", "body": "Implement R1",
+                            "acceptance": ["R1"], "blocked_by": []}]
     adapter(monkeypatch, [document])
     with pytest.raises(RunnerError):
         workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
