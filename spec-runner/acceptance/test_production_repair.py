@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -31,11 +32,19 @@ def test_repair_cannot_commit_unverified_semantic_result(monkeypatch, case, expe
         root = Path(directory)
         workspace = root / "workspace"
         workspace.mkdir()
-        (workspace / "result.py").write_text("result = 1\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+        subprocess.run(["git", "-C", str(workspace), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(workspace), "config", "user.name", "Spec Runner Test"], check=True)
+        scope = workspace / "scope"
+        scope.mkdir()
+        (scope / "result.py").write_text("result = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(workspace), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(workspace), "commit", "-qm", "base"], check=True)
         artifacts = root / "artifacts"
         artifacts.mkdir()
         config = RunnerConfig(workspace, "HEAD", Path("artifacts"), "codex_sdk", ("production",),
-            "fake", "high", (Path("artifacts"),), None, None, (), "production", "config")
+            "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
+            acceptance_paths=("scope",))
         store = Store.open(root, create=True)
         timestamp = now()
         run = RunRecord("repair-run", "repair-launch", "brief", "config", str(workspace), "HEAD", "artifacts",
@@ -49,6 +58,7 @@ def test_repair_cannot_commit_unverified_semantic_result(monkeypatch, case, expe
         class Fake:
             def run_semantic(self, **kwargs):
                 assert kwargs["thread_id"] == "owner"
+                assert kwargs["repository_path"] == scope
                 assert "questions" in kwargs["schema"]["required"]
                 thread = "other" if case == "wrong_owner" else "owner"
                 kwargs["on_turn_started"](thread, "repair-turn")

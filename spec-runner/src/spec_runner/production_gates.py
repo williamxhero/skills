@@ -41,7 +41,8 @@ def worker_document(result: CodexWorkerResult) -> dict:
     return document
 
 
-def implementation_artifacts(result: CodexWorkerResult, workspace: Path, *, allow_blocked: bool = False) -> dict:
+def implementation_artifacts(result: CodexWorkerResult, workspace: Path, *, allow_blocked: bool = False,
+                             artifact_root: Path | None = None) -> dict:
     document = worker_document(result)
     incomplete_but_deliverable = (
         allow_blocked
@@ -57,7 +58,7 @@ def implementation_artifacts(result: CodexWorkerResult, workspace: Path, *, allo
     artifacts = document.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         raise RunnerError("implementation_artifacts_missing", "implementation must identify real artifacts")
-    root = workspace.resolve()
+    root = (artifact_root or workspace).resolve()
     for item in artifacts:
         if not isinstance(item, str) or not item.strip():
             raise RunnerError("implementation_artifact_invalid", "artifact must be a relative path")

@@ -5,7 +5,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .errors import RunnerError
@@ -93,6 +93,7 @@ class RunnerConfig:
     # resumed through the public CLI after the required checks are supplied.
     legacy_acceptance_digest: str = ""
     acceptance_timeout_compatible_digest: str = ""
+    acceptance_paths: tuple[str, ...] = ()
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -175,10 +176,25 @@ class RunnerConfig:
             raise RunnerError("invalid_config", "workflow.acceptance must be an object")
         acceptance_ids = raw_acceptance.get("ids", [])
         checks = raw_acceptance.get("checks", [])
+        raw_paths = raw_acceptance.get("write_scope", [])
         if not isinstance(acceptance_ids, list) or any(not isinstance(item, str) or not item.strip() for item in acceptance_ids):
             raise RunnerError("invalid_config", "workflow.acceptance.ids must be a list of non-empty strings")
         if not isinstance(checks, list) or any(not isinstance(item, dict) for item in checks):
             raise RunnerError("invalid_config", "workflow.acceptance.checks must be a list of objects")
+        if not isinstance(raw_paths, list) or any(not isinstance(item, str) or not item.strip() for item in raw_paths):
+            raise RunnerError("invalid_config", "workflow.acceptance.write_scope must be a list of repository-relative paths")
+        acceptance_paths: list[str] = []
+        for item in raw_paths:
+            if "\\" in item:
+                raise RunnerError("invalid_config", "workflow.acceptance.write_scope paths must use forward slashes")
+            path = PurePosixPath(item)
+            if path.is_absolute() or ".." in path.parts or not path.parts or str(path) in {".", ""} or ":" in item:
+                raise RunnerError("invalid_config", "workflow.acceptance.write_scope paths must stay inside the repository")
+            normalized_path = path.as_posix().rstrip("/")
+            if normalized_path not in acceptance_paths:
+                acceptance_paths.append(normalized_path)
+        if workflow_mode == "production" and backend == "codex_sdk" and len(acceptance_paths) != 1:
+            raise RunnerError("invalid_config", "production workflow requires exactly one workflow.acceptance.write_scope root")
         for check in checks:
             command = check.get("command")
             mapped = check.get("acceptance")
@@ -218,7 +234,7 @@ class RunnerConfig:
             "authorization": {"artifact_roots": [root.as_posix() for root in authorization_roots]},
             "delivery": {"plan": delivery_plan.as_posix()} if delivery_plan else None,
             "skills": {"config": skill_config.as_posix() if skill_config else None, "roots": [os.fspath(item) for item in skill_roots]},
-            "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks}},
+            "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks, "write_scope": acceptance_paths}},
             "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized},
         }
         compatibility_normalized = json.loads(_canonical_json(normalized))
@@ -246,6 +262,7 @@ class RunnerConfig:
             acceptance_timeout_compatible_digest=digest_bytes(
                 _canonical_json(timeout_compatible_normalized).encode("utf-8")
             ),
+            acceptance_paths=tuple(acceptance_paths),
             github_repository=github_repository,
             github_required_checks=tuple(github_checks),
             github_receipt_root=(control_root / github_receipt).resolve() if github_receipt else None,

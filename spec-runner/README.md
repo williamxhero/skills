@@ -77,6 +77,13 @@ The live SDK case is intentionally not run by ordinary tests because it requires
 the operator's existing Codex authentication. Set `execution_backend` to
 `codex_sdk` for that explicit run.
 
+A production semantic run must define `workflow.acceptance.ids`, trusted
+`workflow.acceptance.checks`, and exactly one repository-relative
+`workflow.acceptance.write_scope` root. The implementation and repair workers
+start with that directory as their SDK working directory. Before checks, review,
+or publication, the Runner compares committed, staged, untracked, ignored,
+and symlinked candidate paths against the same scope and rejects any escape.
+
 For an authenticated SDK run, `pause` and `cancel` are applied to the active
 `TurnHandle` through the SDK's `interrupt()` operation. A paused run persists
 its formal thread/turn identity and `resume` continues that same thread; a

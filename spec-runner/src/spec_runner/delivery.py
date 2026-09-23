@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .errors import RunnerError
@@ -248,12 +248,71 @@ def _run_check(workspace: Path, command: list[str], timeout: int) -> dict[str, o
     return {"command": command, "exit_code": code, "timed_out": timed_out, "duration_seconds": round(time.monotonic() - started, 3), "stdout_digest": hashlib.sha256(str(stdout).encode()).hexdigest(), "stderr_digest": hashlib.sha256(str(stderr).encode()).hexdigest(), "stdout_tail": tail(stdout), "stderr_tail": tail(stderr), "passed": not timed_out and code == 0}
 
 
-def verify_candidate(*, workspace: Path, candidate_sha: str, acceptance_version: str, checks: list[dict[str, Any]], acceptance: list[str]) -> dict[str, object]:
+def validate_candidate_write_scope(*, workspace: Path, base_sha: str, allowed_paths: tuple[str, ...] | list[str]) -> list[str]:
+    if not allowed_paths:
+        raise RunnerError("write_scope_missing", "production candidate requires a trusted write scope")
+    changed: set[str] = set()
+    for arguments in (
+        ("diff", "--name-only", "-z", base_sha, "HEAD"),
+        ("diff", "--name-only", "-z", "HEAD"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+        ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"),
+    ):
+        try:
+            result = subprocess.run(
+                ["git", "-C", os.fspath(workspace), *arguments],
+                check=True,
+                capture_output=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise RunnerError("candidate_scope_unreadable", "Runner could not read candidate paths") from exc
+        changed.update(path.decode("utf-8", errors="surrogateescape") for path in result.stdout.split(b"\0") if path)
+    allowed = tuple(path.rstrip("/") for path in allowed_paths)
+    rejected = {
+        path for path in changed
+        if not any(path == scope or path.startswith(scope + "/") for scope in allowed)
+    }
+    workspace_root = workspace.resolve()
+    for path in changed - rejected:
+        relative = PurePosixPath(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            rejected.add(path)
+            continue
+        current = workspace_root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                rejected.add(path)
+                break
+            if current.exists():
+                try:
+                    if workspace_root not in current.resolve().parents:
+                        rejected.add(path)
+                        break
+                except OSError as exc:
+                    raise RunnerError("candidate_scope_unreadable", "Runner could not resolve a candidate path") from exc
+    rejected_paths = sorted(rejected)
+    if rejected_paths:
+        raise RunnerError(
+            "candidate_scope_violation",
+            "candidate changes files outside the trusted write scope",
+            details={"rejected_paths": rejected_paths},
+        )
+    return sorted(changed)
+
+
+def verify_candidate(*, workspace: Path, candidate_sha: str, acceptance_version: str,
+                     checks: list[dict[str, Any]], acceptance: list[str],
+                     base_sha: str | None = None,
+                     allowed_paths: tuple[str, ...] | list[str] = ()) -> dict[str, object]:
     if not acceptance or any(not isinstance(value, str) or not value for value in acceptance):
         raise RunnerError("missing_acceptance_coverage", "candidate verification requires acceptance IDs")
     actual_before = git_sha(workspace)
     if actual_before != candidate_sha:
         raise RunnerError("candidate_sha_mismatch", "workspace HEAD differs from candidate SHA")
+    scoped_paths = validate_candidate_write_scope(
+        workspace=workspace, base_sha=base_sha or candidate_sha, allowed_paths=allowed_paths
+    ) if allowed_paths else []
     results = []
     covered: set[str] = set()
     for check in checks:
@@ -269,11 +328,15 @@ def verify_candidate(*, workspace: Path, candidate_sha: str, acceptance_version:
     actual_after = git_sha(workspace)
     if actual_after != candidate_sha or _git(workspace, "status", "--porcelain"):
         raise RunnerError("candidate_changed_during_verification", "candidate changed while checks ran")
+    if allowed_paths:
+        scoped_paths = validate_candidate_write_scope(
+            workspace=workspace, base_sha=base_sha or candidate_sha, allowed_paths=allowed_paths
+        )
     if set(acceptance) - covered:
         raise RunnerError("missing_acceptance_coverage", "acceptance IDs lack trusted evidence", details={"missing": sorted(set(acceptance)-covered)})
     if not results or not all(result["passed"] for result in results):
         raise RunnerError("candidate_verification_failed", "one or more required candidate checks failed", details={"checks": results})
-    return {"schema_version": "spec-runner-candidate-receipt/v1", "candidate_sha": candidate_sha, "acceptance_version": acceptance_version, "checks": results, "test_plan_digest": digest(checks), "environment": {"os_name": os.name, "python": os.sys.version.split()[0]}, "outcome": "verified"}
+    return {"schema_version": "spec-runner-candidate-receipt/v1", "candidate_sha": candidate_sha, "acceptance_version": acceptance_version, "checks": results, "test_plan_digest": digest(checks), "write_scope": {"allowed_paths": list(allowed_paths), "changed_paths": scoped_paths}, "environment": {"os_name": os.name, "python": os.sys.version.split()[0]}, "outcome": "verified"}
 
 
 def validate_review(*, result: dict[str, Any], candidate_sha: str, acceptance_version: str, blocking_severity: set[str] = frozenset({"critical", "high"})) -> dict[str, object]:

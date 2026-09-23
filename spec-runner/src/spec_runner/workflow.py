@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .config import RunnerConfig, read_brief
 from .codex_adapter import CodexAdapter, CodexWorkerResult
@@ -18,13 +18,34 @@ from .store import RunRecord, Store, now
 from .verification import verify_run
 from .plans import load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
-from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_review, verify_candidate
+from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_candidate_write_scope, validate_review, verify_candidate
 from .tracker import read_local, publish_local
 from .github_tracker import GitHubTracker
 from .scope_lock import ScopeLock
 from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
 from .github_delivery import GitHubDelivery
 from .store import _process_alive
+
+
+def _implementation_write_root(*, workspace: Path, config: RunnerConfig, create: bool) -> Path:
+    if len(config.acceptance_paths) != 1:
+        raise RunnerError("write_scope_missing", "production implementation requires exactly one trusted write-scope root")
+    root = workspace.resolve()
+    relative = PurePosixPath(config.acceptance_paths[0])
+    target = root.joinpath(*relative.parts)
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            raise RunnerError("write_scope_invalid", "trusted write-scope path crosses a symlink")
+    resolved = target.resolve(strict=False)
+    if root not in resolved.parents:
+        raise RunnerError("write_scope_invalid", "trusted write-scope path escapes the implementation workspace")
+    if create:
+        resolved.mkdir(parents=True, exist_ok=True)
+    elif not resolved.is_dir():
+        raise RunnerError("write_scope_missing", "persisted implementation write-scope directory is missing")
+    return resolved
 
 
 def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None, schema: dict[str, object] | None = None):
@@ -683,6 +704,7 @@ def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest:
     operation = f"repair:{run.run_id}:{spec_key}:{len(store.operations_for_run(run.run_id))}"
     step = "codex_repair"
     worker = f"codex_sdk:{run.run_id}:{step}:{spec_key}"
+    write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
     store.begin_stage(run.run_id, step_name=step, operation_id=operation, backend_kind="codex_sdk", worker_id=worker)
     adapter = CodexAdapter()
     if not start_new_thread:
@@ -697,15 +719,17 @@ def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest:
             unarchive(thread_id=implementation_thread, repository_path=workspace)
     result = _run_worker(
         adapter=adapter, phase="implement", config=config,
-        prompt=("Fix only these independent review findings in the existing assigned workspace. Preserve all acceptance "
-                "requirements and do not publish, merge, or edit outside the workspace. "
-                "The structured artifacts array must contain only existing workspace-relative file paths; "
+        prompt=("Fix only these independent review findings in the existing assigned write-scope directory. Preserve all acceptance "
+                "requirements and do not publish, merge, or edit outside that directory. "
+                "The structured artifacts array must contain only existing write-scope-relative file paths; "
                 "never include test summaries, prose, or other non-path text in artifacts.\n\n"
                 + json.dumps(findings, ensure_ascii=False, sort_keys=True)),
         model=config.model_name, effort=config.effort,
         thread_id=None if start_new_thread else implementation_thread,
-        repository_path=workspace,
-        trusted={"brief_digest": brief_digest, "stage": step, "spec_key": spec_key, "review_findings": findings},
+        repository_path=write_root,
+        trusted={"brief_digest": brief_digest, "stage": step, "spec_key": spec_key,
+                 "workspace": os.fspath(workspace), "write_scope": os.fspath(write_root),
+                 "review_findings": findings},
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation, step_name=step, worker_id=worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
         schema=IMPLEMENTATION_SCHEMA,
@@ -736,8 +760,12 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
     """Commit and verify one already persisted repair result exactly once."""
     spec_key = str(ticket_plan["spec_key"])
     step = "codex_repair"
+    write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
+    base_sha = str(ticket_plan.get("base_sha") or "")
+    if not base_sha:
+        base_sha = git_sha(config.repository_path, config.target_ref)
     try:
-        implementation_artifacts(result, workspace)
+        implementation_artifacts(result, workspace, artifact_root=write_root)
         workspace_status = _git_checked(workspace, "status", "--porcelain")
     except RunnerError as exc:
         # A blocked worker is admissible only when it actually produced a
@@ -757,7 +785,8 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
         workspace_status = _git_checked(workspace, "status", "--porcelain")
         if not workspace_status:
             raise exc
-        implementation_artifacts(result, workspace, allow_blocked=True)
+        implementation_artifacts(result, workspace, allow_blocked=True, artifact_root=write_root)
+    validate_candidate_write_scope(workspace=workspace, base_sha=base_sha, allowed_paths=config.acceptance_paths)
     if workspace_status:
         _git_checked(workspace, "add", "--all")
         _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: repair {spec_key}")
@@ -768,7 +797,9 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
         if candidate_sha == str(ticket_plan.get("base_sha") or ""):
             raise RunnerError("repair_no_progress", "repair worker produced no candidate changes")
     candidate_sha = git_sha(workspace)
-    candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks), acceptance=list(config.acceptance_ids))
+    candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha,
+        acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks),
+        acceptance=list(config.acceptance_ids), base_sha=base_sha, allowed_paths=config.acceptance_paths)
     store.complete_codex_stage(run.run_id, operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=step, worker_id=worker)
     (artifact_directory / f"repair-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps({"candidate": candidate_receipt, "worker": result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return candidate_sha, candidate_receipt
@@ -967,7 +998,12 @@ def _finish_codex_implementation(
     implementation_operation = f"implementation:{run.run_id}:{spec_key}"
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
-    implementation_artifacts(result, workspace)
+    write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
+    implementation_artifacts(result, workspace, artifact_root=write_root)
+    validate_candidate_write_scope(
+        workspace=workspace, base_sha=str(workspace_info["base_sha"]),
+        allowed_paths=config.acceptance_paths,
+    )
     workspace_status = _git_checked(workspace, "status", "--porcelain")
     if workspace_status:
         _git_checked(workspace, "add", "--all")
@@ -981,7 +1017,12 @@ def _finish_codex_implementation(
         if existing_sha == str(workspace_info["base_sha"]):
             raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
     candidate_sha = git_sha(workspace)
-    candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks), acceptance=list(config.acceptance_ids))
+    candidate_receipt = verify_candidate(
+        workspace=workspace, candidate_sha=candidate_sha,
+        acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks),
+        acceptance=list(config.acceptance_ids), base_sha=str(workspace_info["base_sha"]),
+        allowed_paths=config.acceptance_paths,
+    )
     store.complete_codex_stage(run.run_id, implementation_operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=implementation_step, worker_id=implementation_worker)
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=True)
@@ -1057,21 +1098,24 @@ def _execute_codex_implementation(
     """
     if not config.acceptance_ids or not config.acceptance_checks:
         raise RunnerError("acceptance_config_missing", "production implementation requires workflow.acceptance ids and checks")
+    if len(config.acceptance_paths) != 1:
+        raise RunnerError("write_scope_missing", "production implementation requires exactly one trusted write-scope root")
     spec_key = str(ticket_plan["spec_key"])
     workspace_info = prepare_workspace(
         repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
         run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
     )
     workspace = Path(str(workspace_info["workspace"]))
+    write_root = _implementation_write_root(workspace=workspace, config=config, create=True)
     implementation_operation = f"implementation:{run.run_id}:{spec_key}"
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
     store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
     schema = IMPLEMENTATION_SCHEMA
     implementation_prompt = (
-        "Implement this SPEC in the assigned workspace. Work on the real code and tests; do not publish, merge, "
-        "or modify files outside this workspace. Return JSON only after the implementation is complete. "
-        "The artifacts array must contain one or more workspace-relative file paths to real files you changed "
+        "Implement this SPEC only in the assigned write-scope directory. Work on the real code and tests there; do not publish, merge, "
+        "or modify files outside that directory. Return JSON only after the implementation is complete. "
+        "The artifacts array must contain one or more paths relative to the assigned write-scope directory to real files you changed "
         "(for example, src/module.py); do not put descriptions, summaries, or links in artifacts.\n\n"
         + json.dumps(ticket_plan, ensure_ascii=False, sort_keys=True)
     )
@@ -1081,8 +1125,10 @@ def _execute_codex_implementation(
     result = _run_worker(
         adapter=CodexAdapter(), phase="implement", config=config,
         prompt=implementation_prompt,
-        model=config.model_name, effort=config.effort, thread_id=thread_id, repository_path=workspace,
-        trusted={"brief_digest": brief_digest, "stage": implementation_step, "spec_key": spec_key, "workspace": os.fspath(workspace), "ticket_plan_digest": ticket_plan["digest"], "answers": answers},
+        model=config.model_name, effort=config.effort, thread_id=thread_id, repository_path=write_root,
+        trusted={"brief_digest": brief_digest, "stage": implementation_step, "spec_key": spec_key,
+                 "workspace": os.fspath(workspace), "write_scope": os.fspath(write_root),
+                 "ticket_plan_digest": ticket_plan["digest"], "answers": answers},
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=implementation_operation, step_name=implementation_step, worker_id=implementation_worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=schema,
     )

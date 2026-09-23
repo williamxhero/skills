@@ -11,7 +11,7 @@ from pathlib import Path
 
 from spec_runner.errors import RunnerError
 
-from spec_runner.delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, verify_candidate
+from spec_runner.delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_candidate_write_scope, verify_candidate
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
@@ -122,6 +122,49 @@ class ProductBoundaryTests(unittest.TestCase):
             sha = git_sha(repo)
             receipt = verify_candidate(workspace=repo, candidate_sha=sha, acceptance_version="a1", checks=[{"command": ["python", "test.py"], "acceptance": ["A1"]}], acceptance=["A1"])
             self.assertEqual(receipt["candidate_sha"], sha)
+
+    def test_candidate_scope_rejects_committed_and_untracked_paths_outside_allowlist(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Spec Runner Test"], check=True)
+            scope = repo / "fixture-app" / "run-1"
+            scope.mkdir(parents=True)
+            (scope / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+            base_sha = git_sha(repo)
+
+            (scope / "test.py").write_text("assert True\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "in scope"], check=True)
+            changed = validate_candidate_write_scope(workspace=repo, base_sha=base_sha, allowed_paths=("fixture-app/run-1",))
+            self.assertEqual(changed, ["fixture-app/run-1/test.py"])
+
+            committed_outside = repo / "spec-runner" / "src" / "committed.py"
+            committed_outside.parent.mkdir(parents=True)
+            committed_outside.write_text("committed = True\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", "out of scope"], check=True)
+            with self.assertRaisesRegex(RunnerError, "outside the trusted write scope") as error:
+                validate_candidate_write_scope(workspace=repo, base_sha=base_sha, allowed_paths=("fixture-app/run-1",))
+            self.assertEqual(error.exception.details["rejected_paths"], ["spec-runner/src/committed.py"])
+
+            untracked_outside = repo / "docs" / "untracked.py"
+            untracked_outside.parent.mkdir(parents=True)
+            untracked_outside.write_text("untracked = True\n", encoding="utf-8")
+            with self.assertRaisesRegex(RunnerError, "outside the trusted write scope") as error:
+                validate_candidate_write_scope(workspace=repo, base_sha=base_sha, allowed_paths=("fixture-app/run-1",))
+            self.assertEqual(error.exception.details["rejected_paths"], ["docs/untracked.py", "spec-runner/src/committed.py"])
+
+    def test_candidate_scope_requires_explicit_allowlist(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            with self.assertRaisesRegex(RunnerError, "requires a trusted write scope"):
+                validate_candidate_write_scope(workspace=repo, base_sha="HEAD", allowed_paths=())
 
     def test_workspace_and_guarded_local_merge_preserve_main_checkout(self):
         with tempfile.TemporaryDirectory() as temp:

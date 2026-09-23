@@ -82,6 +82,7 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 "authorization": {"artifact_roots": ["artifacts"]},
                 "workflow": {"mode": "production", "acceptance": {
                     "ids": ["PROJECT_TESTS"],
+                    "write_scope": ["fixture-app/run-1"],
                     "checks": [{"command": [sys.executable, "-c", "pass"], "acceptance": ["PROJECT_TESTS"]}],
                 }},
             }), encoding="utf-8")
@@ -733,6 +734,7 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
                 acceptance_checks=({"command": [sys.executable, "-c", "pass"], "acceptance": ["PROJECT_TESTS"]},),
                 acceptance_ids=("PROJECT_TESTS",),
+                acceptance_paths=("implemented",),
             )
             run_id = "77777777-7777-7777-7777-777777777777"
             run = RunRecord(
@@ -758,9 +760,10 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     run_id=run_id, spec_key="SPEC-95", base_ref="HEAD",
                 )
                 workspace = Path(str(workspace_info["workspace"]))
-                artifact_path = workspace / "implemented.txt"
+                artifact_path = workspace / "implemented" / "implemented.txt"
+                artifact_path.parent.mkdir(parents=True)
                 artifact_path.write_text("already committed\n", encoding="utf-8")
-                subprocess.run(["git", "-C", str(workspace), "add", "implemented.txt"], check=True)
+                subprocess.run(["git", "-C", str(workspace), "add", "implemented/implemented.txt"], check=True)
                 subprocess.run(
                     ["git", "-C", str(workspace), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "implementation"],
                     check=True,
@@ -838,6 +841,7 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
                 acceptance_checks=({"command": [sys.executable, "-c", "pass"], "acceptance": ["PROJECT_TESTS"]},),
                 acceptance_ids=("PROJECT_TESTS",),
+                acceptance_paths=("scope",),
             )
             run_id = "99999999-9999-9999-9999-999999999999"
             run = RunRecord(
@@ -866,7 +870,8 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     run_id=run_id, spec_key="SPEC-95", base_ref="HEAD",
                 )
                 workspace = Path(str(workspace_info["workspace"]))
-                (workspace / "repaired.txt").write_text("repair\n", encoding="utf-8")
+                (workspace / "scope").mkdir()
+                (workspace / "scope" / "repaired.txt").write_text("repair\n", encoding="utf-8")
                 result = CodexWorkerResult(
                     thread_id="implementation-thread",
                     turn_id="repair-turn",
