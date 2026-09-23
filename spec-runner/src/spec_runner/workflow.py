@@ -407,7 +407,7 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
 
 
 def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict[str, object],
-                         operation_id: str, run_id: str) -> dict[str, object]:
+                         operation_id: str, run_id: str, store: Store) -> dict[str, object]:
     """Publish the validated plan through the configured tracker boundary.
 
     GitHub publication is deliberately a separate receipt-backed operation. It
@@ -433,9 +433,22 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
     draft = {"umbrella": specs[0], "specs": specs[1:]}
     if not config.github_repository or not config.github_receipt_root:
         raise RunnerError("github_config_incomplete", "GitHub tracker publication requires repository and receipt root")
-    return GitHubTracker().publish_draft(repository=config.github_repository, draft=draft,
+    draft_digest = hashlib.sha256(json.dumps(draft, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+    persisted = store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
+        operation_kind="github_issue_publication", repository=config.github_repository,
+        input_digest=draft_digest)
+    if persisted["state"] == "completed":
+        saved = store.external_operation(operation_id)
+        assert saved is not None and isinstance(saved.get("receipt"), dict)
+        return {"created": False, "receipt": saved["receipt"], "recovered_from_store": True}
+    result = GitHubTracker().publish_draft(repository=config.github_repository, draft=draft,
         operation_id=operation_id, receipt_root=config.github_receipt_root,
         relation_mode="body_links")
+    receipt = result.get("receipt")
+    if not isinstance(receipt, dict) or receipt.get("complete") is not True:
+        raise RunnerError("github_publish_unconfirmed", "GitHub publication did not return a complete operation receipt")
+    return result
 
 
 def _execute_codex_tickets(
@@ -497,12 +510,16 @@ def _execute_codex_tickets(
     source = _ticket_plan_source(artifact_directory=artifact_directory, plan=validated, run_id=run.run_id)
     published = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
     tracker_receipts: dict[str, object] = {"local": published}
+    external_receipt: tuple[str, dict[str, object]] | None = None
     if config.github_repository is not None:
         tracker_receipts["github"] = _publish_ticket_plan(
             config=config, control_root=control_root, plan=validated,
-            operation_id=operation_id, run_id=run.run_id)
+            operation_id=operation_id, run_id=run.run_id, store=store)
+        github_receipt = tracker_receipts["github"].get("receipt")
+        assert isinstance(github_receipt, dict)
+        external_receipt = (operation_id, github_receipt)
     store.write_log(control_root, run.run_id, {"event": "ticket_plan_published", "spec_key": spec_key, "ticket_count": len(validated["tickets"]), "tracker": tracker_receipts})
-    return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="tickets_ready", step_name=step_name, worker_id=worker_id)
+    return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="tickets_ready", step_name=step_name, worker_id=worker_id, external_operation=external_receipt)
 
 
 def _git_checked(repository: Path, *args: str) -> str:

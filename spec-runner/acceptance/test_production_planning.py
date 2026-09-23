@@ -91,7 +91,8 @@ def test_github_tracker_is_published_after_local_plan_and_keeps_body_link_mode(c
     class FakeGitHubTracker:
         def publish_draft(self, **kwargs):
             published.append(kwargs)
-            return {"created": True, "receipt": {"operation_id": kwargs["operation_id"], "complete": True}}
+            return {"created": True, "receipt": {"operation_id": kwargs["operation_id"], "complete": True,
+                "draft_digest": "verified-draft", "repository": kwargs["repository"], "issues": [{"number": 7}]}}
 
     monkeypatch.setattr(workflow, "GitHubTracker", FakeGitHubTracker)
     planned = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
@@ -102,6 +103,10 @@ def test_github_tracker_is_published_after_local_plan_and_keeps_body_link_mode(c
     assert published[0]["relation_mode"] == "body_links"
     assert published[0]["draft"]["umbrella"]["key"] == "S1"
     assert published[0]["draft"]["specs"][0]["key"] == "T1"
+    operation = store.external_operation("tickets:test-production:S1")
+    assert operation["state"] == "completed"
+    assert operation["repository"] == "williamxhero/skills"
+    assert operation["receipt"]["issues"] == [{"number": 7}]
 
 
 def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatch(context, monkeypatch):
@@ -160,6 +165,33 @@ def test_production_completion_receipt_conflict_is_rejected_atomically(context):
         store.complete_production_spec(run_id=run.run_id, spec_key="S1", plan_digest="changed", delivery_digest="delivery")
     assert store.production_completed_specs(run.run_id) == {"S1"}
     assert store.find_by_run_id(run.run_id).state == "spec_completed"
+
+
+def test_github_publication_intent_and_receipt_are_durable_and_identity_bound(context):
+    _, _, store, run = context
+    intent = store.prepare_external_operation(operation_id="github:run:S1", run_id=run.run_id,
+        operation_kind="github_issue_publication", repository="williamxhero/skills", input_digest="draft")
+    assert intent["state"] == "intent"
+    store.complete_external_operation(operation_id="github:run:S1", receipt={"complete": True, "issues": [7]})
+    assert store.external_operation("github:run:S1")["receipt"] == {"complete": True, "issues": [7]}
+    with pytest.raises(RunnerError, match="different identity"):
+        store.prepare_external_operation(operation_id="github:run:S1", run_id=run.run_id,
+            operation_kind="github_issue_publication", repository="someone/else", input_digest="draft")
+
+
+def test_github_receipt_and_stage_transition_roll_back_together(context):
+    _, _, store, run = context
+    operation_id = "github:atomic:S1"
+    store.begin_stage(run.run_id, step_name="atomic_test", operation_id="stage:atomic",
+        backend_kind="codex_sdk", worker_id="worker:atomic")
+    store.prepare_external_operation(operation_id=operation_id, run_id=run.run_id,
+        operation_kind="github_issue_publication", repository="williamxhero/skills", input_digest="draft")
+    with pytest.raises(RunnerError, match="worker"):
+        store.complete_codex_stage(run.run_id, "stage:atomic", thread_id="thread", turn_id="turn",
+            state="tickets_ready", step_name="atomic_test", worker_id="missing-worker",
+            external_operation=(operation_id, {"complete": True}))
+    assert store.external_operation(operation_id)["state"] == "intent"
+    assert store.find_by_run_id(run.run_id).state == "starting"
 
 
 def test_production_cleanup_pending_retries_cleanup_without_implementation(context, monkeypatch):

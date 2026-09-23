@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import os
 import socket
@@ -220,6 +221,17 @@ class Store:
                     delivery_digest TEXT NOT NULL,
                     completed_at TEXT NOT NULL,
                     PRIMARY KEY(run_id, spec_key)
+                );
+                CREATE TABLE IF NOT EXISTS external_operations (
+                    operation_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    operation_kind TEXT NOT NULL,
+                    repository TEXT NOT NULL,
+                    input_digest TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    receipt_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 """
             )
@@ -441,6 +453,51 @@ class Store:
         return {str(row[0]) for row in self.connection.execute(
             "SELECT spec_key FROM production_spec_completions WHERE run_id = ?", (run_id,))}
 
+    def prepare_external_operation(self, *, operation_id: str, run_id: str,
+                                   operation_kind: str, repository: str,
+                                   input_digest: str) -> dict[str, object]:
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?",
+                                                (operation_id,)).fetchone()
+            identity = (run_id, operation_kind, repository, input_digest)
+            if existing and tuple(existing[key] for key in ("run_id", "operation_kind", "repository", "input_digest")) != identity:
+                raise RunnerError("external_operation_conflict", "external operation ID was reused with different identity")
+            if not existing:
+                self.connection.execute("INSERT INTO external_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (operation_id, run_id, operation_kind, repository, input_digest, "intent", None, timestamp, timestamp))
+                self._insert_event(run_id=run_id, event_key=f"external:{operation_id}:intent",
+                    event_type="external_operation_intent", payload={"operation_id": operation_id,
+                        "operation_kind": operation_kind, "repository": repository, "input_digest": input_digest})
+            row = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()
+            return dict(row)
+
+    def complete_external_operation(self, *, operation_id: str, receipt: dict[str, object]) -> dict[str, object]:
+        timestamp = now()
+        receipt_json = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+        with self.transaction():
+            existing = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()
+            if existing is None:
+                raise RunnerError("external_operation_missing", "external operation intent was not persisted")
+            if existing["state"] == "completed" and existing["receipt_json"] != receipt_json:
+                raise RunnerError("external_receipt_conflict", "completed external operation receipt changed")
+            self.connection.execute("UPDATE external_operations SET state = ?, receipt_json = ?, updated_at = ? WHERE operation_id = ?",
+                ("completed", receipt_json, timestamp, operation_id))
+            self._insert_event(run_id=existing["run_id"], event_key=f"external:{operation_id}:completed",
+                event_type="external_operation_completed", payload={"operation_id": operation_id,
+                    "receipt_digest": hashlib.sha256(receipt_json.encode("utf-8")).hexdigest()})
+            row = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()
+            return dict(row)
+
+    def external_operation(self, operation_id: str) -> dict[str, object] | None:
+        row = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        if result.get("receipt_json"):
+            result["receipt"] = json.loads(str(result.pop("receipt_json")))
+        return result
+
     def create_run(self, run: RunRecord, operation_id: str) -> None:
         with self.transaction():
             self.connection.execute(
@@ -497,10 +554,29 @@ class Store:
 
     def complete_codex_stage(
         self, run_id: str, operation_id: str, *, thread_id: str, turn_id: str, state: str,
-        step_name: str = "codex_example", worker_id: str | None = None
+        step_name: str = "codex_example", worker_id: str | None = None,
+        external_operation: tuple[str, dict[str, object]] | None = None,
     ) -> RunRecord:
         timestamp = now()
         with self.transaction():
+            if external_operation is not None:
+                external_id, receipt = external_operation
+                receipt_json = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+                external = self.connection.execute(
+                    "SELECT * FROM external_operations WHERE operation_id = ? AND run_id = ?",
+                    (external_id, run_id),
+                ).fetchone()
+                if external is None:
+                    raise RunnerError("external_operation_missing", "cannot complete stage without its external operation intent")
+                if external["state"] == "completed" and external["receipt_json"] != receipt_json:
+                    raise RunnerError("external_receipt_conflict", "completed external operation receipt changed")
+                self.connection.execute(
+                    "UPDATE external_operations SET state = ?, receipt_json = ?, updated_at = ? WHERE operation_id = ?",
+                    ("completed", receipt_json, timestamp, external_id),
+                )
+                self._insert_event(run_id=run_id, event_key=f"external:{external_id}:completed",
+                    event_type="external_operation_completed", payload={"operation_id": external_id,
+                        "receipt_digest": hashlib.sha256(receipt_json.encode("utf-8")).hexdigest()})
             operation_updated = self.connection.execute(
                 "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ?",
                 (state, timestamp, operation_id),
