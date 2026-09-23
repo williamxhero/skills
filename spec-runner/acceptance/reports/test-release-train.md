@@ -90,7 +90,7 @@ answer-only calls retain their prior behavior.
 Impact: `store.py` answer/control transaction and `cli.py` answer route.
 Selection `acceptance/test_production_planning.py`, `tests/test_cli.py`, and
 `tests/test_store.py`: 40 passed in 9.36 seconds; full suite 120 passed, 1
-skipped in 23.35 seconds. This verifies transactional protocol and same-stage
+skipped in 23.41 seconds. This verifies transactional protocol and same-stage
 resume path under the acceptance fake adapter, not yet the user's real
 business-answer SDK turn required by #254. L0 diff check passed; exact installed
 artifact proof is due after source changes are finalized.
