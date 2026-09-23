@@ -435,16 +435,21 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
         raise RunnerError("github_config_incomplete", "GitHub tracker publication requires repository and receipt root")
     draft_digest = hashlib.sha256(json.dumps(draft, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
-    persisted = store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
+    store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
         operation_kind="github_issue_publication", repository=config.github_repository,
         input_digest=draft_digest)
-    if persisted["state"] == "completed":
-        saved = store.external_operation(operation_id)
-        assert saved is not None and isinstance(saved.get("receipt"), dict)
-        return {"created": False, "receipt": saved["receipt"], "recovered_from_store": True}
+    def prepare_issue_operation(*, operation_id: str, operation_kind: str, repository: str,
+                                input_digest: str) -> dict[str, object]:
+        return store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
+            operation_kind=operation_kind, repository=repository, input_digest=input_digest)
+
+    def complete_issue_operation(*, operation_id: str, receipt: dict[str, object]) -> None:
+        store.complete_external_operation(operation_id=operation_id, receipt=receipt)
+
     result = GitHubTracker().publish_draft(repository=config.github_repository, draft=draft,
         operation_id=operation_id, receipt_root=config.github_receipt_root,
-        relation_mode="body_links")
+        relation_mode="body_links", operation_intent=prepare_issue_operation,
+        operation_completed=complete_issue_operation)
     receipt = result.get("receipt")
     if not isinstance(receipt, dict) or receipt.get("complete") is not True:
         raise RunnerError("github_publish_unconfirmed", "GitHub publication did not return a complete operation receipt")

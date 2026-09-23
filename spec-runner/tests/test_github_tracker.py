@@ -101,6 +101,9 @@ class GitHubTrackerTests(unittest.TestCase):
                 raise RunnerError("github_delivery_failed", "simulated lost response")
             if "issues?state=all" in arguments[-1]:
                 return json.dumps([[umbrella, first, second]])
+            if len(arguments) == 2 and arguments[1].startswith("repos/acme/demo/issues/"):
+                number = int(arguments[1].rsplit("/", 1)[1])
+                return json.dumps({9: umbrella, 10: first, 11: second}[number])
             raise AssertionError(arguments)
 
         with tempfile.TemporaryDirectory() as temp:

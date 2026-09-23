@@ -163,7 +163,9 @@ class GitHubTracker:
             relation_evidence={"native": False, "body_links": body_links, "body_relations": body_relations, "unresolved_relations": unresolved_relations, "complete_pagination": True},
         )
 
-    def publish_draft(self, *, repository: str, draft: dict[str, Any], operation_id: str, receipt_root: Path, relation_mode: str = "body_links") -> dict[str, object]:
+    def publish_draft(self, *, repository: str, draft: dict[str, Any], operation_id: str, receipt_root: Path, relation_mode: str = "body_links",
+                      operation_intent: Callable[..., dict[str, object]] | None = None,
+                      operation_completed: Callable[..., None] | None = None) -> dict[str, object]:
         """Publish only a validated draft and reconcile every response.
 
         GitHub installations differ in availability of sub-issue and dependency
@@ -256,6 +258,31 @@ class GitHubTracker:
             if not all(isinstance(value, str) and value.strip() for value in (key, title, body)):
                 raise RunnerError("invalid_publish_draft", "each issue needs key, title, and body")
             marker = f"<!-- spec-runner-key:{key} operation:{operation_id} -->"
+            rendered_body = f"{marker}\n{body}"
+            item_operation_id = f"{operation_id}:issue:{key}"
+            operation_state: dict[str, object] | None = None
+            if operation_intent is not None:
+                operation_state = operation_intent(
+                    operation_id=item_operation_id,
+                    operation_kind="github_issue_publication",
+                    repository=repository,
+                    input_digest=_digest({"key": key, "title": title, "body": rendered_body}),
+                )
+            if operation_state and operation_state.get("state") == "completed":
+                operation_receipt = operation_state.get("receipt")
+                if not isinstance(operation_receipt, dict) or not operation_receipt.get("number"):
+                    raise RunnerError("github_receipt_corrupt", "completed issue operation has no issue identity")
+                current = self._issue(repository, int(operation_receipt["number"]))
+                if current.get("pull_request") or current.get("title") != title or current.get("body") != rendered_body:
+                    raise RunnerError("github_publish_conflict", "SQLite issue receipt no longer matches the GitHub issue")
+                item_receipt = operation_receipt
+                published_by_key[key] = item_receipt
+                if item_receipt not in published:
+                    published.append(item_receipt)
+                receipt["issues"] = published
+                receipt["unknown_keys"] = [unknown for unknown in receipt["unknown_keys"] if unknown != key]
+                save_progress()
+                continue
             prior = published_by_key.get(key)
             if prior:
                 if prior.get("marker") != marker:
@@ -288,9 +315,12 @@ class GitHubTracker:
                     raise RunnerError("github_publish_unknown", "issue creation outcome is unknown and no unique marker readback exists") from exc
             if not isinstance(response, dict) or not response.get("number") or str(response.get("repository_url") or "").split("/repos/")[-1] != repository:
                 raise RunnerError("github_publish_unconfirmed", "GitHub create response lacks matching repository identity")
-            if str(response.get("body") or "") != f"{marker}\n{body}" or str(response.get("title") or "") != title:
+            response = self._issue(repository, int(response["number"]))
+            if response.get("pull_request") or str(response.get("body") or "") != rendered_body or str(response.get("title") or "") != title:
                 raise RunnerError("github_publish_conflict", "GitHub create response does not match the submitted issue")
             item_receipt = {"key": key, "number": int(response["number"]), "node_id": response.get("node_id"), "marker": marker}
+            if operation_completed is not None:
+                operation_completed(operation_id=item_operation_id, receipt=item_receipt)
             published.append(item_receipt)
             published_by_key[key] = item_receipt
             receipt["unknown_keys"] = [unknown for unknown in receipt["unknown_keys"] if unknown != key]

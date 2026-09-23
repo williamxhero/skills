@@ -110,3 +110,35 @@ def test_transport_timeout_is_structured(monkeypatch):
     with pytest.raises(RunnerError) as error:
         GitHubTracker._run_gh(["api", "repos/williamxhero/skills/issues"])
     assert error.value.code == "github_timeout"
+
+
+def test_issue_operations_are_independently_durable_and_read_back(tmp_path):
+    transport = Transport()
+    operations = {}
+
+    def intent(**identity):
+        existing = operations.get(identity["operation_id"])
+        if existing:
+            assert {key: existing[key] for key in ("operation_kind", "repository", "input_digest")} == {
+                key: identity[key] for key in ("operation_kind", "repository", "input_digest")}
+            return existing
+        operations[identity["operation_id"]] = {**identity, "state": "intent"}
+        return operations[identity["operation_id"]]
+
+    def completed(*, operation_id, receipt):
+        operations[operation_id].update(state="completed", receipt=receipt)
+
+    def run():
+        return GitHubTracker(runner=transport).publish_draft(
+            repository="williamxhero/skills", draft=draft(),
+            operation_id="SRAC-per-object", receipt_root=tmp_path,
+            operation_intent=intent, operation_completed=completed)
+
+    first = run()
+    assert set(operations) == {"SRAC-per-object:issue:S1", "SRAC-per-object:issue:T1"}
+    assert all(value["state"] == "completed" for value in operations.values())
+    transport.issues[1]["body"] += "\nmanual edit"
+    with pytest.raises(RunnerError, match="SQLite issue receipt"):
+        run()
+    assert first["receipt"]["complete"]
+    assert transport.posts == 2
