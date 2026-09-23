@@ -495,7 +495,8 @@ def _execute_codex_tickets(
     prompt = (
         "Produce a TicketPlan for exactly this SPEC. Do not publish issues, create branches, or modify files. "
         "Return needs_input/questions when a real requirement fact is missing; otherwise return planned with concrete "
-        "tickets, dependency keys, and acceptance IDs.\n\n" + json.dumps(spec, ensure_ascii=False, sort_keys=True)
+        "tickets, dependency keys, and acceptance IDs. Ticket keys must be unique and must not equal the parent "
+        "spec_key; use a child key such as <spec_key>.1.\n\n" + json.dumps(spec, ensure_ascii=False, sort_keys=True)
     )
     answers = store.answers_for_run(run.run_id)
     if answers:

@@ -108,6 +108,7 @@ def test_planning_persists_real_callback_identity_and_publishes_local_parent(con
     assert [call["phase"] for call in calls] == ["to-spec", "to-tickets"]
     assert "specs" in calls[0]["schema"]["properties"]
     assert "tickets" in calls[1]["schema"]["properties"]
+    assert "must not equal the parent spec_key" in calls[1]["trusted"]["legacy_prompt"]
     records = {item.key: item for item in read_local(root / "tracker").records}
     assert records["T1"].parent == "S1"
     workers = store.workers_for_run(run.run_id)
