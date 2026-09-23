@@ -145,6 +145,28 @@ def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatc
     assert json.loads((root / "artifacts" / run.run_id / "completed-specs.json").read_text())["specs"] == ["S1", "S2", "S3"]
 
 
+def test_production_cleanup_pending_retries_cleanup_without_implementation(context, monkeypatch):
+    root, config, store, run = context
+    artifact = root / "artifacts" / run.run_id
+    artifact.mkdir(parents=True)
+    (artifact / "ticket-plan-S1.json").write_text(json.dumps({"spec_key": "S1"}), encoding="utf-8")
+    workspaces = root / "delivery-workspaces"
+    workspaces.mkdir()
+    workspace = workspaces / "run-S1"
+    workspace.mkdir()
+    manifest = workspaces / "run-S1.manifest.json"
+    manifest.write_text(json.dumps({"run_id": run.run_id, "workspace": str(workspace)}), encoding="utf-8")
+    store.set_run_state(run.run_id, "cleanup_pending")
+    calls = []
+    monkeypatch.setattr(workflow, "cleanup_managed_workspace", lambda **kwargs: calls.append(kwargs) or {"outcome": "cleaned"})
+    current = store.find_by_run_id(run.run_id)
+    assert current is not None
+    result = workflow._retry_production_cleanup(control_root=root, config=config, run=current, store=store)
+    assert result["state"] == "spec_completed"
+    assert len(calls) == 1
+    assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S1"]
+
+
 @pytest.mark.parametrize("status", ["failed", "interrupted", "unknown"])
 def test_nonterminal_or_failed_planner_cannot_publish_valid_looking_plan(context, monkeypatch, status):
     root, config, store, run = context

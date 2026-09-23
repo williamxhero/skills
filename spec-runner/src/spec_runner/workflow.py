@@ -1314,6 +1314,38 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
     return store.public_status(run.run_id)
 
 
+def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                              store: Store) -> dict[str, object]:
+    """Retry only Runner-owned cleanup after a production process exit."""
+    root = control_root / "delivery-workspaces"
+    manifests: list[Path] = []
+    for manifest in root.glob("*.manifest.json"):
+        try:
+            document = load_json(manifest)
+        except RunnerError:
+            continue
+        if document.get("run_id") == run.run_id:
+            manifests.append(manifest)
+    if not manifests:
+        raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no owned workspace manifest")
+    results = []
+    for manifest in manifests:
+        document = load_json(manifest)
+        results.append(cleanup_managed_workspace(
+            repository=config.repository_path, workspace_root=root,
+            workspace=Path(str(document["workspace"])), manifest=manifest))
+    if any(item.get("outcome") != "cleaned" for item in results):
+        return {"state": "cleanup_pending", "cleanup": results}
+    plan_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob("ticket-plan-*.json"))
+    if not plan_files:
+        raise RunnerError("ticket_plan_missing", "cleaned production run has no ticket plan")
+    spec_key = str(load_json(plan_files[-1])["spec_key"])
+    _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+        spec_key=spec_key, plan_digest="recovered")
+    store.set_run_state(run.run_id, "spec_completed")
+    return {"state": "spec_completed", "spec_key": spec_key, "cleanup": results}
+
+
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str, run_id: str | None = None) -> dict[str, object]:
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
@@ -1382,6 +1414,15 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
                     store=store, spec_plan=load_json(plan_path))}
+            if existing.state == "cleanup_pending" and config.workflow_mode == "production":
+                cleanup = _retry_production_cleanup(control_root=control_root, config=config, run=existing, store=store)
+                if cleanup.get("state") == "spec_completed":
+                    plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
+                    current = store.find_by_run_id(existing.run_id)
+                    assert current is not None
+                    return {"created": False, **_run_production_queue(control_root=control_root, config=config,
+                        brief_digest=brief_digest, run=current, store=store, spec_plan=load_json(plan_path))}
+                return {"created": False, **cleanup}
             if existing.state == "needs_input" and not store.control_for_run(existing.run_id):
                 worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
                 questions: list[dict[str, object]] = []
