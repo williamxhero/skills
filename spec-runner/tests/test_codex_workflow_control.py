@@ -164,6 +164,7 @@ class CodexWorkflowControlTests(unittest.TestCase):
 
     def test_recovery_blocks_unknown_or_in_flight_sdk_results(self) -> None:
         rejected_inspections = [
+            None,
             self._failed_turn_inspection(turns=[{"turn_id": "turn-other", "status": "failed"}]),
             self._failed_turn_inspection(turns=[{"turn_id": "turn-failed", "status": "running"}]),
             self._failed_turn_inspection(thread_status="busy"),
@@ -178,7 +179,7 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 config, run, store = self._failed_sdk_run(root)
 
                 class ReadOnlyAdapter:
-                    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                    def read_thread(self, *, thread_id: str, repository_path: Path) -> object:
                         return inspection
 
                 try:
@@ -186,7 +187,7 @@ class CodexWorkflowControlTests(unittest.TestCase):
                         patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
                         patch.object(workflow, "_execute_codex_planning") as retry,
                     ):
-                        with self.assertRaisesRegex(RunnerError, "no uniquely recoverable external result"):
+                        with self.assertRaises(RunnerError):
                             workflow._recover_after_process_exit(
                                 control_root=root / "control",
                                 config=config,
@@ -198,6 +199,64 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     retry.assert_not_called()
                 finally:
                     store.close()
+
+    def test_ticket_recovery_scopes_the_plan_to_the_failed_spec(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-codex-ticket-recovery-") as temp:
+            root = Path(temp)
+            config, run, store = self._failed_sdk_run(root)
+            config = replace(config, workflow_mode="example")
+            store.close()
+            store = Store.open(root / "control", create=False)
+            try:
+                store.connection.execute("DELETE FROM workers WHERE run_id = ?", (run.run_id,))
+                store.connection.commit()
+                store.begin_stage(
+                    run.run_id,
+                    step_name="codex_ticket_planning",
+                    operation_id=f"tickets:{run.run_id}:SPEC-2",
+                    backend_kind="codex_sdk",
+                    worker_id=f"codex_sdk:{run.run_id}:codex_ticket_planning:SPEC-2",
+                )
+                store.record_codex_turn_started(
+                    run.run_id,
+                    f"tickets:{run.run_id}:SPEC-2",
+                    thread_id="thread-failed",
+                    turn_id="turn-failed",
+                    step_name="codex_ticket_planning",
+                    worker_id=f"codex_sdk:{run.run_id}:codex_ticket_planning:SPEC-2",
+                )
+                store.fail_run(run.run_id, f"tickets:{run.run_id}:SPEC-2")
+                failed = store.find_by_run_id(run.run_id)
+                assert failed is not None
+                (root / "control" / "artifacts" / run.run_id).mkdir(parents=True)
+                (root / "control" / "artifacts" / run.run_id / "spec-plan.json").write_text(
+                    json.dumps({"specs": [{"key": "SPEC-1"}, {"key": "SPEC-2"}]}), encoding="utf-8"
+                )
+                selected: list[dict[str, object]] = []
+
+                class ReadOnlyAdapter:
+                    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                        return CodexWorkflowControlTests._failed_turn_inspection()
+
+                def retry_tickets(**kwargs: object) -> RunRecord:
+                    selected.extend(kwargs["spec_plan"]["specs"])
+                    return replace(failed, state="tickets_ready")
+
+                with (
+                    patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                    patch.object(workflow, "_execute_codex_tickets", side_effect=retry_tickets),
+                ):
+                    workflow._recover_after_process_exit(
+                        control_root=root / "control",
+                        config=config,
+                        run=failed,
+                        brief="brief",
+                        brief_digest="brief",
+                        store=store,
+                    )
+                self.assertEqual(selected, [{"key": "SPEC-2"}])
+            finally:
+                store.close()
 
     def test_process_exit_in_running_sdk_stage_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-recovery-") as temp:
@@ -236,6 +295,92 @@ class CodexWorkflowControlTests(unittest.TestCase):
                         brief_digest="brief",
                         store=store,
                     )
+            finally:
+                store.close()
+
+    def test_process_exit_reconciles_completed_ticket_turn(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-codex-completed-ticket-recovery-") as temp:
+            root = Path(temp)
+            config, failed, store = self._failed_sdk_run(root)
+            try:
+                store.connection.execute("DELETE FROM workers WHERE run_id = ?", (failed.run_id,))
+                store.connection.commit()
+                operation_id = f"tickets:{failed.run_id}:SPEC-2"
+                worker_id = f"codex_sdk:{failed.run_id}:codex_ticket_planning:SPEC-2"
+                store.begin_stage(
+                    failed.run_id,
+                    step_name="codex_ticket_planning",
+                    operation_id=operation_id,
+                    backend_kind="codex_sdk",
+                    worker_id=worker_id,
+                )
+                store.record_codex_turn_started(
+                    failed.run_id,
+                    operation_id,
+                    thread_id="thread-completed",
+                    turn_id="turn-completed",
+                    step_name="codex_ticket_planning",
+                    worker_id=worker_id,
+                )
+                running = store.find_by_run_id(failed.run_id)
+                assert running is not None
+                config = replace(config, workflow_mode="test")
+                artifact = root / "control" / "artifacts" / running.run_id
+                artifact.mkdir(parents=True)
+                worker_result = CodexWorkerResult(
+                    thread_id="thread-completed",
+                    turn_id="turn-completed",
+                    status="completed",
+                    error=None,
+                    final_response=json.dumps({
+                        "outcome": "planned",
+                        "tickets": [{
+                            "key": "SPEC-2.1",
+                            "title": "Implement the coordinator slice",
+                            "body": "Make the coordinator slice verifiable.",
+                            "blocked_by": [],
+                            "acceptance": ["The coordinator slice is verifiable."],
+                        }],
+                        "questions": [],
+                    }),
+                    item_count=1,
+                    started_at=1,
+                    completed_at=2,
+                )
+                (artifact / "codex_ticket_planning-recovered.json").write_text(
+                    json.dumps(worker_result.public()), encoding="utf-8"
+                )
+
+                class ReadOnlyAdapter:
+                    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                        return {
+                            **CodexWorkflowControlTests._failed_turn_inspection(
+                                thread_id="thread-completed",
+                                turns=[{"turn_id": "turn-completed", "status": "completed"}],
+                            ),
+                            "thread_status": "idle",
+                        }
+
+                with (
+                    patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                    patch.object(workflow, "git_sha", return_value="base-sha"),
+                ):
+                    recovered = workflow._recover_after_process_exit(
+                        control_root=root / "control",
+                        config=config,
+                        run=running,
+                        brief="brief",
+                        brief_digest="brief",
+                        store=store,
+                    )
+
+                assert recovered is not None
+                self.assertEqual(recovered["run"]["state"], "tickets_ready")
+                self.assertTrue((artifact / "ticket-plan-SPEC-2.json").is_file())
+                self.assertIn(
+                    "completed_sdk_turn_reconciled",
+                    [event["event_type"] for event in store.events_for_run(running.run_id)],
+                )
             finally:
                 store.close()
 

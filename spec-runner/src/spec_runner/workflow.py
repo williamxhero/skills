@@ -1132,7 +1132,7 @@ def _advance_second_stage(*, control_root: Path, config: RunnerConfig, run: RunR
 
 def _resume_codex_stage(
     *, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store,
-    thread_id: str | None = None,
+    thread_id: str | None = None, spec_key: str | None = None,
 ) -> dict[str, object]:
     """Continue the current SDK stage on its persisted thread.
 
@@ -1140,7 +1140,23 @@ def _resume_codex_stage(
     thread. The formal thread identity persisted by ``Thread.turn()`` is the
     only identity accepted for this continuation or a reconciled retry.
     """
-    worker = store.workers_for_run(run.run_id)[-1]
+    workers = store.workers_for_run(run.run_id)
+    worker_prefix = f"codex_sdk:{run.run_id}"
+    if run.current_step == "codex_example":
+        worker_matches = [worker for worker in workers if worker.get("worker_id") == worker_prefix]
+    elif run.current_step == "codex_ticket_planning":
+        ticket_prefix = f"{worker_prefix}:codex_ticket_planning:"
+        worker_matches = [
+            worker for worker in workers
+            if str(worker.get("worker_id") or "").startswith(ticket_prefix)
+            and (spec_key is None or str(worker.get("worker_id"))[len(ticket_prefix):] == spec_key)
+        ]
+    else:
+        expected_worker = f"{worker_prefix}:{run.current_step}"
+        worker_matches = [worker for worker in workers if worker.get("worker_id") == expected_worker]
+    if not worker_matches:
+        raise RunnerError("resume_worker_missing", "the current SDK stage has no uniquely identified worker")
+    worker = worker_matches[-1]
     thread_id = thread_id or str(worker.get("external_thread_id") or "")
     if not thread_id:
         raise RunnerError("resume_thread_missing", "paused Codex run has no persisted thread identity")
@@ -1211,15 +1227,35 @@ def _resume_codex_stage(
         plans = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob("spec-plan.json"))
         if not plans:
             raise RunnerError("spec_plan_missing", "ticket planning resume has no persisted SpecPlan")
+        if spec_key is None:
+            prefix = f"codex_sdk:{run.run_id}:codex_ticket_planning:"
+            matching_workers = [
+                candidate for candidate in reversed(workers)
+                if str(candidate.get("worker_id") or "").startswith(prefix)
+            ]
+            if matching_workers:
+                spec_key = str(matching_workers[0]["worker_id"])[len(prefix):]
+        if not spec_key:
+            raise RunnerError("ticket_spec_missing", "ticket planning resume has no uniquely identified SPEC")
+        full_plan = load_json(plans[0])
+        specs = full_plan.get("specs")
+        if not isinstance(specs, list):
+            raise RunnerError("invalid_spec_plan", "ticket planning resume requires a SPEC list")
+        selected = [item for item in specs if isinstance(item, dict) and item.get("key") == spec_key]
+        if len(selected) != 1:
+            raise RunnerError("ticket_spec_missing", "ticket planning resume could not match its persisted SPEC")
+        scoped_plan = {**full_plan, "specs": selected}
         resumed = _execute_codex_tickets(
             control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store,
-            spec_plan=load_json(plans[0]), thread_id=thread_id,
+            spec_plan=scoped_plan, thread_id=thread_id,
         )
         if resumed.state == "tickets_ready" and config.workflow_mode == "production":
-            ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob("ticket-plan-*.json"))
+            ticket_path = _safe_artifact_directory(control_root, config, run.run_id) / f"ticket-plan-{spec_key}.json"
+            if not ticket_path.is_file():
+                raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
             return _execute_codex_implementation(
                 control_root=control_root, config=config, brief_digest=brief_digest, run=resumed,
-                store=store, ticket_plan=load_json(ticket_files[0]),
+                store=store, ticket_plan=load_json(ticket_path),
             )
         return store.public_status(resumed.run_id)
     if run.current_step == "codex_second":
@@ -1292,6 +1328,8 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     "the persisted SDK thread could not be reconciled; inspect it before retry",
                     details={"inspection_error": exc.code},
                 ) from exc
+            if not isinstance(inspection, dict):
+                raise RunnerError("recovery_blocked", "the persisted SDK thread inspection was not a structured result")
             turns = inspection.get("turns")
             turn_count = inspection.get("turn_count")
             reconciled = (
@@ -1332,6 +1370,12 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     brief_digest=brief_digest,
                     store=store,
                     thread_id=thread_id,
+                    spec_key=(
+                        str(worker["worker_id"])[len(f"{worker_prefix}:codex_ticket_planning:"):]
+                        if run.current_step == "codex_ticket_planning"
+                        and str(worker["worker_id"]).startswith(f"{worker_prefix}:codex_ticket_planning:")
+                        else None
+                    ),
                 ),
             }
         if run.state in {"starting", "running", "cleanup_pending"}:
