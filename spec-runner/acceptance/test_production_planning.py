@@ -97,6 +97,54 @@ def test_planning_prompt_binds_covers_to_exact_requirements(context, monkeypatch
     assert "Every requirement must appear in at least one covers list" in prompt
 
 
+def test_production_implementation_prompt_keeps_checks_and_other_runners_outside_worker(monkeypatch, context):
+    root, config, store, run = context
+    config = replace(
+        config,
+        workflow_mode="production",
+        acceptance_ids=("A1",),
+        acceptance_checks=({"command": ["python", "-m", "pytest"], "acceptance": ["A1"]},),
+        acceptance_paths=("fixture-app/run-1",),
+    )
+    workspace = root / "workspace"
+    (workspace / "fixture-app" / "run-1").mkdir(parents=True)
+    monkeypatch.setattr(workflow, "prepare_workspace", lambda **kwargs: {
+        "workspace": str(workspace),
+        "base_sha": "base",
+        "branch": "spec-runner/S1",
+        "manifest": str(root / "workspace.manifest.json"),
+    })
+    captured = {}
+
+    def fake_worker(**kwargs):
+        captured["prompt"] = kwargs["prompt"]
+        kwargs["on_turn_started"]("implementation-thread", "implementation-turn")
+        return CodexWorkerResult(
+            "implementation-thread", "implementation-turn", "completed", None,
+            json.dumps({
+                "outcome": "needs_input",
+                "questions": [{"id": "Q1", "question": "Need a fact?", "options": []}],
+                "artifacts": [],
+                "blockers": [],
+            }),
+            1, 1, 2,
+        )
+
+    monkeypatch.setattr(workflow, "_run_worker", fake_worker)
+    result = workflow._execute_codex_implementation(
+        control_root=root,
+        config=config,
+        brief_digest="brief",
+        run=run,
+        store=store,
+        ticket_plan={"spec_key": "S1", "digest": "ticket-digest", "tickets": []},
+    )
+    assert result["state"] == "needs_input"
+    assert "Do not run repository-wide test discovery" in captured["prompt"]
+    assert "start another Runner" in captured["prompt"]
+    assert "Runner will execute the exact trusted acceptance checks" in captured["prompt"]
+
+
 def test_planning_persists_real_callback_identity_and_publishes_local_parent(context, monkeypatch):
     root, config, store, run = context
     calls = adapter(monkeypatch, [spec_document(), {"outcome": "planned", "questions": [], "tickets": [

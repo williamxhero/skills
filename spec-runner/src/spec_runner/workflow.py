@@ -720,7 +720,9 @@ def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest:
     result = _run_worker(
         adapter=adapter, phase="implement", config=config,
         prompt=("Fix only these independent review findings in the existing assigned write-scope directory. Preserve all acceptance "
-                "requirements and do not publish, merge, or edit outside that directory. "
+                "requirements and do not publish, merge, or edit outside that directory. Do not run repository-wide test discovery, "
+                "invoke pytest from a parent project, start another Runner, or operate on any external repository. Runner will execute "
+                "the exact trusted acceptance checks after this turn. "
                 "The structured artifacts array must contain only existing write-scope-relative file paths; "
                 "never include test summaries, prose, or other non-path text in artifacts.\n\n"
                 + json.dumps(findings, ensure_ascii=False, sort_keys=True)),
@@ -1114,7 +1116,9 @@ def _execute_codex_implementation(
     schema = IMPLEMENTATION_SCHEMA
     implementation_prompt = (
         "Implement this SPEC only in the assigned write-scope directory. Work on the real code and tests there; do not publish, merge, "
-        "or modify files outside that directory. Return JSON only after the implementation is complete. "
+        "or modify files outside that directory. Do not run repository-wide test discovery, invoke pytest from a parent project, "
+        "start another Runner, or operate on any external repository. Runner will execute the exact trusted acceptance checks after "
+        "this turn. Return JSON only after the implementation is complete. "
         "The artifacts array must contain one or more paths relative to the assigned write-scope directory to real files you changed "
         "(for example, src/module.py); do not put descriptions, summaries, or links in artifacts.\n\n"
         + json.dumps(ticket_plan, ensure_ascii=False, sort_keys=True)
