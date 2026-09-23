@@ -226,13 +226,14 @@ def _record_codex_turn_started(
 
 def _planning_response(*, result: CodexWorkerResult, control_root: Path, config: RunnerConfig,
                        run: RunRecord, store: Store, operation_id: str, step_name: str,
-                       worker_id: str, brief_digest: str) -> dict[str, object] | RunRecord:
+                       worker_id: str, brief_digest: str, persist_result: bool = True) -> dict[str, object] | RunRecord:
     directory = _safe_artifact_directory(control_root, config, run.run_id)
     directory.mkdir(parents=True, exist_ok=True)
     # Retain the actual transport result even if semantic validation fails.
     turn_key = hashlib.sha256(result.turn_id.encode("utf-8")).hexdigest()
-    (directory / f"{step_name}-{turn_key}.json").write_text(
-        json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if persist_result:
+        (directory / f"{step_name}-{turn_key}.json").write_text(
+            json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if result.status != "completed" or result.error:
         raise RunnerError("planning_worker_failed", "planning requires a successful terminal SDK turn")
     try:
@@ -248,10 +249,60 @@ def _planning_response(*, result: CodexWorkerResult, control_root: Path, config:
         (directory / "worker-result.json").write_text(json.dumps(declared, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id,
             turn_id=result.turn_id, state="needs_input", step_name=step_name, worker_id=worker_id)
-    if document.get("outcome") != "planned" or declared["questions"]:
+    if declared["questions"]:
         raise RunnerError("planning_not_ready", "only planned without unanswered questions may advance",
                           details={"outcome": document.get("outcome")})
+    if document.get("outcome") != "planned":
+        # The to-tickets Skill may use a human-readable confirmation sentence
+        # in the outcome field while still returning the complete structured
+        # TicketPlan. Normalize that equivalent success form at the Runner
+        # boundary; missing tickets remain a hard failure below.
+        tickets = document.get("tickets")
+        if isinstance(tickets, list) and tickets:
+            document["outcome"] = "planned"
+        else:
+            raise RunnerError("planning_not_ready", "only planned without unanswered questions may advance",
+                              details={"outcome": document.get("outcome")})
     return document
+
+
+def _persist_ticket_plan(*, control_root: Path, config: RunnerConfig,
+                         run: RunRecord, store: Store, document: dict[str, object],
+                         spec: dict[str, object], base_sha: str, operation_id: str,
+                         step_name: str, worker_id: str, result: CodexWorkerResult) -> RunRecord:
+    spec_key = str(spec.get("key", ""))
+    document.update({
+        "schema_version": "spec-runner-ticket-plan/v1", "spec_key": spec_key, "base_sha": base_sha,
+        "spec_title": str(spec.get("title") or spec_key), "spec_body": str(spec.get("body") or ""),
+    })
+    validated = validate_ticket_plan(document, expected_spec_key=spec_key, expected_base_sha=base_sha)
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    (artifact_directory / f"ticket-plan-{spec_key}.json").write_text(
+        json.dumps(validated, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8", newline="\n"
+    )
+    source = _ticket_plan_source(artifact_directory=artifact_directory, plan=validated, run_id=run.run_id)
+    published = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
+    tracker_receipts: dict[str, object] = {"local": published}
+    external_receipt: tuple[str, dict[str, object]] | None = None
+    if config.github_repository is not None:
+        tracker_receipts["github"] = _publish_ticket_plan(
+            config=config, control_root=control_root, plan=validated,
+            operation_id=operation_id, run_id=run.run_id, store=store
+        )
+        github_receipt = tracker_receipts["github"].get("receipt")
+        assert isinstance(github_receipt, dict)
+        external_receipt = (operation_id, github_receipt)
+    store.write_log(control_root, run.run_id, {
+        "event": "ticket_plan_published", "spec_key": spec_key,
+        "ticket_count": len(validated["tickets"]), "tracker": tracker_receipts,
+    })
+    return store.complete_codex_stage(
+        run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id,
+        state="tickets_ready", step_name=step_name, worker_id=worker_id,
+        external_operation=external_receipt,
+    )
 
 
 def _execute_codex_grill(*, control_root: Path, config: RunnerConfig, brief: str,
@@ -513,27 +564,11 @@ def _execute_codex_tickets(
         store=store, operation_id=operation_id, step_name=step_name, worker_id=worker_id, brief_digest=brief_digest)
     if isinstance(document, RunRecord):
         return document
-    document.update({
-        "schema_version": "spec-runner-ticket-plan/v1", "spec_key": spec_key, "base_sha": base_sha,
-        "spec_title": str(spec.get("title") or spec_key), "spec_body": str(spec.get("body") or ""),
-    })
-    validated = validate_ticket_plan(document, expected_spec_key=spec_key, expected_base_sha=base_sha)
-    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
-    artifact_directory.mkdir(parents=True, exist_ok=True)
-    (artifact_directory / f"ticket-plan-{spec_key}.json").write_text(json.dumps(validated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-    source = _ticket_plan_source(artifact_directory=artifact_directory, plan=validated, run_id=run.run_id)
-    published = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
-    tracker_receipts: dict[str, object] = {"local": published}
-    external_receipt: tuple[str, dict[str, object]] | None = None
-    if config.github_repository is not None:
-        tracker_receipts["github"] = _publish_ticket_plan(
-            config=config, control_root=control_root, plan=validated,
-            operation_id=operation_id, run_id=run.run_id, store=store)
-        github_receipt = tracker_receipts["github"].get("receipt")
-        assert isinstance(github_receipt, dict)
-        external_receipt = (operation_id, github_receipt)
-    store.write_log(control_root, run.run_id, {"event": "ticket_plan_published", "spec_key": spec_key, "ticket_count": len(validated["tickets"]), "tracker": tracker_receipts})
-    return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="tickets_ready", step_name=step_name, worker_id=worker_id, external_operation=external_receipt)
+    return _persist_ticket_plan(
+        control_root=control_root, config=config,
+        run=run, store=store, document=document, spec=spec, base_sha=base_sha,
+        operation_id=operation_id, step_name=step_name, worker_id=worker_id, result=result,
+    )
 
 
 def _git_checked(repository: Path, *args: str) -> str:
@@ -1275,6 +1310,101 @@ def _resume_codex_stage(
     raise RunnerError("resume_stage_unknown", f"paused Codex run has unsupported step: {run.current_step}")
 
 
+def _reconcile_completed_ticket_turn(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                                     brief_digest: str, store: Store, worker: dict[str, object],
+                                     thread_id: str, turn_id: str) -> RunRecord:
+    """Consume a completed ticket turn that outlived the Runner process.
+
+    The SDK turn output is already durable in the run artifact. Reconstructing
+    the worker result from that receipt lets recovery finish the stage without
+    replaying a completed external turn.
+    """
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    candidates: list[dict[str, object]] = []
+    for path in sorted(artifact_directory.glob("codex_ticket_planning-*.json")):
+        try:
+            document = load_json(path)
+        except RunnerError:
+            continue
+        if document.get("thread_id") == thread_id and document.get("turn_id") == turn_id:
+            candidates.append(document)
+    if len(candidates) != 1:
+        raise RunnerError("recovery_blocked", "completed ticket turn lacks a unique persisted worker result")
+    persisted = candidates[0]
+    if persisted.get("status") != "completed" or persisted.get("error") is not None:
+        raise RunnerError("recovery_blocked", "completed ticket turn has no successful persisted result")
+    final_response = persisted.get("final_response")
+    if not isinstance(final_response, str) or not final_response.strip():
+        raise RunnerError("recovery_blocked", "completed ticket turn lacks useful persisted output")
+    worker_id = str(worker.get("worker_id") or "")
+    prefix = f"codex_sdk:{run.run_id}:codex_ticket_planning:"
+    if not worker_id.startswith(prefix):
+        raise RunnerError("recovery_blocked", "completed ticket worker identity is not scoped to a SPEC")
+    spec_key = worker_id[len(prefix):]
+    if not spec_key:
+        raise RunnerError("recovery_blocked", "completed ticket worker has no SPEC identity")
+    plan_path = artifact_directory / "spec-plan.json"
+    if not plan_path.is_file():
+        raise RunnerError("spec_plan_missing", "ticket planning recovery has no persisted SpecPlan")
+    full_plan = load_json(plan_path)
+    specs = full_plan.get("specs")
+    if not isinstance(specs, list):
+        raise RunnerError("invalid_spec_plan", "ticket planning recovery requires a SPEC list")
+    selected = [item for item in specs if isinstance(item, dict) and item.get("key") == spec_key]
+    if len(selected) != 1:
+        raise RunnerError("ticket_spec_missing", "ticket planning recovery could not match its persisted SPEC")
+    item_count = persisted.get("item_count", 0)
+    if isinstance(item_count, bool) or not isinstance(item_count, int) or item_count < 0:
+        raise RunnerError("recovery_blocked", "completed ticket turn has an invalid persisted item count")
+    started_at = persisted.get("started_at")
+    completed_at = persisted.get("completed_at")
+    if started_at is not None and (isinstance(started_at, bool) or not isinstance(started_at, int)):
+        raise RunnerError("recovery_blocked", "completed ticket turn has an invalid persisted start time")
+    if completed_at is not None and (isinstance(completed_at, bool) or not isinstance(completed_at, int)):
+        raise RunnerError("recovery_blocked", "completed ticket turn has an invalid persisted completion time")
+    result = CodexWorkerResult(
+        thread_id=thread_id,
+        turn_id=turn_id,
+        status=str(persisted.get("status") or "unknown"),
+        error=(str(persisted["error"]) if persisted.get("error") is not None else None),
+        final_response=final_response,
+        item_count=item_count,
+        started_at=started_at,
+        completed_at=completed_at,
+        approval_mode=str(persisted.get("approval_mode") or "deny_all"),
+        skill_observation=persisted.get("skill_observation") if isinstance(persisted.get("skill_observation"), dict) else None,
+    )
+    document = _planning_response(
+        result=result, control_root=control_root, config=config, run=run, store=store,
+        operation_id=f"tickets:{run.run_id}:{spec_key}", step_name="codex_ticket_planning",
+        worker_id=worker_id, brief_digest=brief_digest, persist_result=False,
+    )
+    if isinstance(document, RunRecord):
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:completed-ticket-turn:{turn_id}",
+            event_type="completed_sdk_turn_reconciled",
+            payload={"step": "codex_ticket_planning", "spec_key": spec_key,
+                     "thread_id": thread_id, "turn_id": turn_id},
+        )
+        return document
+    base_sha = git_sha(config.repository_path, config.target_ref)
+    recovered = _persist_ticket_plan(
+        control_root=control_root, config=config, run=run, store=store,
+        document=document, spec=selected[0], base_sha=base_sha,
+        operation_id=f"tickets:{run.run_id}:{spec_key}", step_name="codex_ticket_planning",
+        worker_id=worker_id, result=result,
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:completed-ticket-turn:{turn_id}",
+        event_type="completed_sdk_turn_reconciled",
+        payload={"step": "codex_ticket_planning", "spec_key": spec_key,
+                 "thread_id": thread_id, "turn_id": turn_id},
+    )
+    return recovered
+
+
 def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
     """Reconcile only evidence that can be proven locally; never replay an unknown SDK call."""
     if config.delivery_plan is not None:
@@ -1329,7 +1459,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     details={"inspection_error": exc.code},
                 ) from exc
             if not isinstance(inspection, dict):
-                raise RunnerError("recovery_blocked", "the persisted SDK thread inspection was not a structured result")
+                raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
             turns = inspection.get("turns")
             turn_count = inspection.get("turn_count")
             reconciled = (
@@ -1378,6 +1508,55 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     ),
                 ),
             }
+        if run.state in {"running", "cleanup_pending"} and run.current_step == "codex_ticket_planning":
+            workers = store.workers_for_run(run.run_id)
+            worker_prefix = f"codex_sdk:{run.run_id}:codex_ticket_planning:"
+            stage_workers = [
+                worker for worker in workers
+                if worker.get("backend_kind") == "codex_sdk"
+                and worker.get("state") == "running"
+                and str(worker.get("worker_id") or "").startswith(worker_prefix)
+            ]
+            worker = stage_workers[-1] if stage_workers else None
+            thread_id = str(worker.get("external_thread_id") or "") if worker else ""
+            turn_id = str(worker.get("external_turn_id") or "") if worker else ""
+            if worker is None or not thread_id or not turn_id:
+                raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            try:
+                inspection = CodexAdapter().read_thread(
+                    thread_id=thread_id,
+                    repository_path=config.repository_path,
+                )
+            except RunnerError as exc:
+                raise RunnerError(
+                    "recovery_blocked",
+                    "the persisted SDK thread could not be reconciled; inspect it before retry",
+                    details={"inspection_error": exc.code},
+                ) from exc
+            turns = inspection.get("turns") if isinstance(inspection, dict) else None
+            turn_count = inspection.get("turn_count") if isinstance(inspection, dict) else None
+            completed = (
+                isinstance(inspection, dict)
+                and inspection.get("started_turn") is False
+                and inspection.get("thread_id") == thread_id
+                and inspection.get("thread_status") == "idle"
+                and inspection.get("active_flags") == []
+                and isinstance(turns, list)
+                and isinstance(turn_count, int)
+                and not isinstance(turn_count, bool)
+                and turn_count == len(turns)
+                and bool(turns)
+                and isinstance(turns[-1], dict)
+                and turns[-1].get("turn_id") == turn_id
+                and turns[-1].get("status") == "completed"
+            )
+            if not completed:
+                raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            recovered = _reconcile_completed_ticket_turn(
+                control_root=control_root, config=config, run=run, brief_digest=brief_digest,
+                store=store, worker=worker, thread_id=thread_id, turn_id=turn_id,
+            )
+            return {"created": False, **store.public_status(recovered.run_id)}
         if run.state in {"starting", "running", "cleanup_pending"}:
             raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
         return None

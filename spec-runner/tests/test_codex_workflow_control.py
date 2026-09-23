@@ -327,13 +327,17 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 config = replace(config, workflow_mode="test")
                 artifact = root / "control" / "artifacts" / running.run_id
                 artifact.mkdir(parents=True)
+                (artifact / "spec-plan.json").write_text(
+                    json.dumps({"specs": [{"key": "SPEC-2", "title": "Coordinator", "body": "Coordinator"}]}),
+                    encoding="utf-8",
+                )
                 worker_result = CodexWorkerResult(
                     thread_id="thread-completed",
                     turn_id="turn-completed",
                     status="completed",
                     error=None,
                     final_response=json.dumps({
-                        "outcome": "planned",
+                        "outcome": "generated a planning draft without publishing or modifying files",
                         "tickets": [{
                             "key": "SPEC-2.1",
                             "title": "Implement the coordinator slice",
@@ -350,7 +354,6 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 (artifact / "codex_ticket_planning-recovered.json").write_text(
                     json.dumps(worker_result.public()), encoding="utf-8"
                 )
-
                 class ReadOnlyAdapter:
                     def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
                         return {
@@ -377,6 +380,10 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 assert recovered is not None
                 self.assertEqual(recovered["run"]["state"], "tickets_ready")
                 self.assertTrue((artifact / "ticket-plan-SPEC-2.json").is_file())
+                self.assertEqual(
+                    len(list(artifact.glob("codex_ticket_planning-*.json"))),
+                    1,
+                )
                 self.assertIn(
                     "completed_sdk_turn_reconciled",
                     [event["event_type"] for event in store.events_for_run(running.run_id)],
