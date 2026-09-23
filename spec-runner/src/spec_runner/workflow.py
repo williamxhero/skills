@@ -55,7 +55,7 @@ def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str, 
     stop = threading.Event()
 
     def beat() -> None:
-        while not stop.wait(5.0):
+        while not stop.wait(1.0):
             if global_path is not None:
                 _touch_global_lease(global_path)
             try:
