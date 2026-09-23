@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spec_runner import workflow
 from spec_runner.codex_adapter import CodexWorkerResult
 from spec_runner.config import RunnerConfig, read_brief
+from spec_runner.errors import RunnerError
 from spec_runner.store import RunRecord, Store, now
 
 
@@ -62,6 +63,46 @@ class FakeResumableAdapter:
 
 
 class CodexWorkflowControlTests(unittest.TestCase):
+    def test_process_exit_in_running_sdk_stage_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-codex-recovery-") as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            config = RunnerConfig(
+                repository, "HEAD", Path("artifacts"), "codex_sdk", ("production",),
+                "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
+            )
+            timestamp = now()
+            run = RunRecord(
+                run_id="22222222-2222-2222-2222-222222222222",
+                launch_key="recovery-running",
+                input_digest="brief",
+                config_digest="config",
+                repository_path=str(repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="codex_sdk",
+                state="running",
+                current_step="codex_grill",
+                log_path="logs/run.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            store = Store.open(root / "control", create=True)
+            try:
+                store.create_run(run, "start:recovery-running")
+                with self.assertRaisesRegex(RunnerError, "no uniquely recoverable external result"):
+                    workflow._recover_after_process_exit(
+                        control_root=root / "control",
+                        config=config,
+                        run=run,
+                        brief="brief",
+                        brief_digest="brief",
+                        store=store,
+                    )
+            finally:
+                store.close()
+
     def test_pause_resume_reuses_persisted_thread_and_finishes_second_stage(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-control-") as temp:
             root = Path(temp)

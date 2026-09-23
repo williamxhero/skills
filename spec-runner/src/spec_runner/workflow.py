@@ -1240,7 +1240,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
         )
         return {"created": False, **_run_delivery_plan(control_root=control_root, config=config, run=run, store=store)}
     if config.execution_backend != "deterministic_test":
-        if run.state in {"starting", "failed", "cleanup_pending"}:
+        if run.state in {"starting", "running", "failed", "cleanup_pending"}:
             raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
         return None
     store.append_event(
