@@ -112,6 +112,9 @@ def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatc
         {"key": "S2", "title": "Second", "body": "two", "blocked_by": ["S1"]},
         {"key": "S3", "title": "Third", "body": "three", "blocked_by": ["S2"]},
     ]}
+    artifact_root = root / "artifacts" / run.run_id
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    (artifact_root / "spec-plan.json").write_text(json.dumps(plan), encoding="utf-8")
     calls = []
 
     def fake_tickets(*, run, spec_plan, **kwargs):
@@ -119,7 +122,7 @@ def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatc
         calls.append(("tickets", key))
         artifact = root / "artifacts" / run.run_id
         artifact.mkdir(parents=True, exist_ok=True)
-        (artifact / f"ticket-plan-{key}.json").write_text(json.dumps({"spec_key": key}), encoding="utf-8")
+        (artifact / f"ticket-plan-{key}.json").write_text(json.dumps({"spec_key": key, "digest": f"ticket-{key}"}), encoding="utf-8")
         store.set_run_state(run.run_id, "tickets_ready")
         current = store.find_by_run_id(run.run_id)
         assert current is not None
@@ -128,6 +131,10 @@ def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatc
     def fake_implementation(*, run, ticket_plan, **kwargs):
         key = ticket_plan["spec_key"]
         calls.append(("implementation", key))
+        (artifact_root / f"delivery-{key}.json").write_text(json.dumps({
+            "run_id": run.run_id, "spec_key": key, "plan_digest": "plan-2",
+            "ticket_plan_digest": f"ticket-{key}", "candidate": {"sha": f"candidate-{key}"},
+            "review": {"approved": True}, "merge": {"merged": True}}), encoding="utf-8")
         store.set_run_state(run.run_id, "spec_completed")
         return {"state": "spec_completed", "spec_key": key}
 
@@ -143,6 +150,16 @@ def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatc
     assert result["run"]["state"] == "completed"
     assert calls == [("tickets", "S1"), ("implementation", "S1"), ("tickets", "S2"), ("implementation", "S2"), ("tickets", "S3"), ("implementation", "S3")]
     assert json.loads((root / "artifacts" / run.run_id / "completed-specs.json").read_text())["specs"] == ["S1", "S2", "S3"]
+    assert store.production_completed_specs(run.run_id) == {"S1", "S2", "S3"}
+
+
+def test_production_completion_receipt_conflict_is_rejected_atomically(context):
+    _, _, store, run = context
+    store.complete_production_spec(run_id=run.run_id, spec_key="S1", plan_digest="plan", delivery_digest="delivery")
+    with pytest.raises(RunnerError, match="conflicting evidence"):
+        store.complete_production_spec(run_id=run.run_id, spec_key="S1", plan_digest="changed", delivery_digest="delivery")
+    assert store.production_completed_specs(run.run_id) == {"S1"}
+    assert store.find_by_run_id(run.run_id).state == "spec_completed"
 
 
 def test_production_cleanup_pending_retries_cleanup_without_implementation(context, monkeypatch):

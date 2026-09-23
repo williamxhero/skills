@@ -651,7 +651,7 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
             store.mark_archived(run.run_id, state="completed")
         else:
             plan = load_json(artifact / "spec-plan.json")
-            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
                 spec_key=str(result["spec_key"]), plan_digest=str(plan.get("digest", "")))
             store.set_run_state(run.run_id, "spec_completed")
     if not finalize_run and result.get("state") == "github_completed":
@@ -1254,22 +1254,29 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
     return None
 
 
-def _production_completed_specs(*, control_root: Path, config: RunnerConfig, run_id: str) -> set[str]:
+def _production_completed_specs(*, control_root: Path, config: RunnerConfig, run_id: str, store: Store) -> set[str]:
+    persisted = store.production_completed_specs(run_id)
     path = _safe_artifact_directory(control_root, config, run_id) / "completed-specs.json"
     if not path.exists():
-        return set()
+        return persisted
     document = load_json(path)
     values = document.get("specs", [])
     if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
         raise RunnerError("completed_specs_corrupt", "completed SPEC record is invalid")
-    return set(values)
+    # The file is only a human-readable projection; only transactional Store
+    # receipts may advance the production queue.
+    return persisted
 
 
 def _record_production_spec(*, control_root: Path, config: RunnerConfig, run_id: str, spec_key: str,
-                            plan_digest: str) -> None:
+                            plan_digest: str, store: Store) -> None:
     directory = _safe_artifact_directory(control_root, config, run_id)
-    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run_id)
+    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run_id, store=store)
     completed.add(spec_key)
+    receipt = load_json(directory / f"delivery-{spec_key}.json")
+    delivery_digest = hashlib.sha256(json.dumps(receipt, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    store.complete_production_spec(run_id=run_id, spec_key=spec_key, plan_digest=plan_digest,
+                                   delivery_digest=delivery_digest)
     path = directory / "completed-specs.json"
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps({"schema_version": "spec-runner-completed-specs/v1",
@@ -1305,7 +1312,7 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
     specs = spec_plan.get("specs")
     if not isinstance(specs, list) or any(not isinstance(item, dict) for item in specs):
         raise RunnerError("invalid_spec_plan", "production queue requires keyed SPEC objects")
-    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run.run_id)
+    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run.run_id, store=store)
     while len(completed) < len(specs):
         ready = [item for item in specs if str(item.get("key")) not in completed and
                  set(item.get("blocked_by", [])) <= completed]
@@ -1329,7 +1336,7 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
         # A completed SPEC may have been recovered from a completed CI wait.
         # Persist that fact before selecting another queue item.
         if delivered.get("state") == "spec_completed" and str(delivered.get("spec_key")) == spec_key:
-            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
                 spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
             completed.add(spec_key)
             current = store.find_by_run_id(run.run_id)
@@ -1339,7 +1346,7 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
             continue
         if delivered.get("state") != "spec_completed":
             return delivered
-        _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+        _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
             spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
         completed.add(spec_key)
         current = store.find_by_run_id(run.run_id)
@@ -1390,7 +1397,7 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
         workspace=Path(str(document["workspace"])), manifest=manifest)]
     if any(item.get("outcome") != "cleaned" for item in results):
         return {"state": "cleanup_pending", "cleanup": results}
-    _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+    _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
         spec_key=spec_key, plan_digest=str(plan["digest"]))
     store.set_run_state(run.run_id, "spec_completed")
     return {"state": "spec_completed", "spec_key": spec_key, "cleanup": results}

@@ -213,6 +213,14 @@ class Store:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (run_id, question_id)
                 );
+                CREATE TABLE IF NOT EXISTS production_spec_completions (
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    spec_key TEXT NOT NULL,
+                    plan_digest TEXT NOT NULL,
+                    delivery_digest TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    PRIMARY KEY(run_id, spec_key)
+                );
                 """
             )
             verification_sql = self.connection.execute(
@@ -389,6 +397,31 @@ class Store:
                 event_type="state_changed",
                 payload={"state": state},
             )
+
+    def complete_production_spec(self, *, run_id: str, spec_key: str,
+                                 plan_digest: str, delivery_digest: str) -> None:
+        """Atomically persist SPEC completion evidence and the queue state."""
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT plan_digest, delivery_digest FROM production_spec_completions WHERE run_id = ? AND spec_key = ?",
+                (run_id, spec_key),
+            ).fetchone()
+            if existing and (existing["plan_digest"] != plan_digest or existing["delivery_digest"] != delivery_digest):
+                raise RunnerError("production_completion_conflict", "SPEC completion identity has conflicting evidence")
+            self.connection.execute(
+                "INSERT OR IGNORE INTO production_spec_completions VALUES (?, ?, ?, ?, ?)",
+                (run_id, spec_key, plan_digest, delivery_digest, timestamp),
+            )
+            self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
+                                    ("spec_completed", timestamp, run_id))
+            self._insert_event(run_id=run_id, event_key=f"production-spec:{run_id}:{spec_key}:completed",
+                event_type="production_spec_completed", payload={"spec_key": spec_key,
+                    "plan_digest": plan_digest, "delivery_digest": delivery_digest})
+
+    def production_completed_specs(self, run_id: str) -> set[str]:
+        return {str(row[0]) for row in self.connection.execute(
+            "SELECT spec_key FROM production_spec_completions WHERE run_id = ?", (run_id,))}
 
     def create_run(self, run: RunRecord, operation_id: str) -> None:
         with self.transaction():

@@ -52,3 +52,18 @@ verified archived-list readback (one page). Receipt:
 Remaining for this train: exact-wheel L3 and two replays; six-SPEC tail L4;
 live GitHub source/takeover and Windows control DB/log recovery L5. None is
 discharged by these unit/acceptance tests.
+
+## Transactional production completion frontier (2026-09-23)
+
+The SQLite Store is now authoritative for per-SPEC completion: plan and
+delivery digests, queue state, and the event are committed in one transaction.
+`completed-specs.json` is only a projection and cannot independently advance
+the queue. Conflicting receipts fail closed. Cleanup recovery records a SPEC
+only after validating its persisted delivery evidence and completing cleanup.
+
+Impact selection: `store.py` schema/transaction and `workflow.py` queue/recovery;
+direct evidence is `acceptance/test_production_planning.py` and
+`acceptance/test_github_production_boundary.py`. L0 `git diff --check` passed;
+complete L1/L2 pytest passed (119 passed, 1 skipped, 23.17 seconds). No live
+production or GitHub side effect was performed in this source validation.
+Exact-wheel L3, release-train L4, and live L5 obligations remain open.
