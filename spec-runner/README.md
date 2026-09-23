@@ -5,7 +5,7 @@ over cross-stage delivery from the existing `implement-needs` Skill.  It is not
 an import or wrapper around that Skill.
 
 The first vertical slice supports an explicit `deterministic_test` backend and
-the pinned `openai-codex==0.155.1` SDK backend. The deterministic backend is
+the validated `openai-codex==0.155.1` SDK backend. The deterministic backend is
 useful for isolated contract tests; the SDK backend creates a real local Codex
 thread when the operator has authenticated Codex. No deterministic result is
 represented as a Codex thread or turn.
@@ -83,7 +83,7 @@ its formal thread/turn identity and `resume` continues that same thread; a
 cancelled run retains its artifacts and performs thread archive readback without
 advancing to another stage.
 
-The pinned SDK path starts and resumes threads with the explicit `deny_all`
+The validated SDK path starts and resumes threads with the explicit `deny_all`
 approval policy. The Runner never silently grants a tool approval. SDK
 0.155.1 exposes no public user-input request callback in this adapter boundary;
 such a path remains `not_verified` and is not treated as a completed run.
@@ -127,8 +127,8 @@ Git SHA before and after execution. A worker's `passed` text is not a receipt.
 does not reset or overwrite a dirty user checkout. GitHub publication uses an
 operation receipt and is explicit about body-link versus native relation mode.
 
-The pinned adapter manifest is `dependencies.lock.json`. Its source digests are
-checked before prompt rendering. Live GitHub, live SDK, Windows-native and
+The SDK adapter manifest is `dependencies.lock.json`; it records the SDK/runtime
+combination, not a Matt Skill version gate. Live GitHub, live SDK, Windows-native and
 provider-specific capabilities are reported as `not_verified` unless they have
 their own real evidence; deterministic tests never fill those gaps.
 

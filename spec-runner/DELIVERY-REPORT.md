@@ -1,6 +1,6 @@
 # Spec Runner delivery and acceptance report
 
-Updated 2026-09-23. This is an evidence index, not a claim that every live
+Updated 2026-09-23 after commits `53a044c`, `9653b70`, and `9a7a831`. This is an evidence index, not a claim that every live
 acceptance gate is complete. The authoritative runtime behavior baseline is
 `fae55797f627e49bd8b453686a464aaf34ad89da`, including managed-worktree cleanup
 recovery and release-subject qualification. PR #242 adds native lock coverage
@@ -16,7 +16,7 @@ The implementation followed the required order:
 | --- | --- | --- | --- |
 | SR-01 / #165 | #166–#169 | PR #211, installable CLI and SDK adapter | deterministic and direct SDK slice verified; full parent-free two-stage live run not verified |
 | SR-02 / #170 | #171–#174 | PRs #211, #213, #214 | SQLite, lease, detached launch, restart and controls verified; native cleanup probes cover SQLite, log, and artifact-directory locks, while the broader cross-process matrix remains not verified |
-| SR-03 / #175 | #176–#179 | PRs #212, #220 | local tracker and GitHub read/error contracts verified; live sandbox publication not verified |
+| SR-03 / #175 | #176–#179 | PRs #212, #220, current production tracker wiring | local tracker and GitHub read/error contracts verified; live same-repository publication not verified |
 | SR-04 / #180 | #181–#184 | PR #211 and locked skill/prompt assets | deterministic prompt/plan contracts verified; upstream Matt invocation not verified |
 | SR-05 / #185 | #186–#189 | PRs #211, #212 | local workspace/candidate/review contracts verified; independent live implementation/review not verified |
 | SR-06 / #190 | #191–#194 | PRs #212, #222, #223 | local three-SPEC delivery and merge reconciliation verified; GitHub PR/CI/merge queue not verified |
@@ -80,7 +80,7 @@ hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
   implementation or merge.
 - a clean isolated wheel previously passed `--version`, `diagnose package`,
   and all 10 deterministic public fault cases.
-- release reports now canonically bind build, SDK package/version, Matt lock,
+- release reports now canonically bind build, SDK package/version, current Skill observation,
   prompt/schema/validator digests, configuration, OS, trust mode, and scenario
   version. The report rejects subject-digest tampering, and a required evidence
   kind that is not passed returns `eligible: false`.
@@ -135,13 +135,14 @@ hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
 
 These are explicit gaps, not simulated passes:
 
-- real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in a
-  dedicated authorized sandbox repository;
+- real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in the
+  authorized `williamxhero/skills` acceptance scope;
 * Windows control-database and launcher-log locks across a detached Runner
   restart or host/process failure (single-file, managed-worktree cleanup/retry,
   direct SQLite/log/artifact-directory locks, and a detached artifact-lock
   process are verified);
-- upstream Matt Skill invocation against the locked external sources;
+- real production Matt Skill invocation and three-SPEC acceptance against the
+  current local Skill installation;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
 - SDK user-input turn paths; the pinned SDK exposes no public request callback
