@@ -212,6 +212,7 @@ def _execute_codex_planning(
         trusted={"brief_digest": brief_digest, "stage": step_name, "repository_scope": os.fspath(config.repository_path)},
         repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=None,
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+        schema=schema,
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
     )
     try:
@@ -315,6 +316,7 @@ def _execute_codex_tickets(
         trusted={"brief_digest": brief_digest, "stage": step_name, "spec_key": spec_key, "base_sha": base_sha},
         repository_path=config.repository_path, model=config.model_name, effort=config.effort, thread_id=None,
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
+        schema=schema,
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=operation_id, step_name=step_name, worker_id=worker_id, thread_id=thread_id, turn_id=turn_id),
     )
     try:
