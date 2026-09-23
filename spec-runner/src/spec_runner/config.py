@@ -80,6 +80,8 @@ class RunnerConfig:
     skill_roots: tuple[Path, ...]
     workflow_mode: str
     digest: str
+    acceptance_checks: tuple[dict[str, Any], ...] = ()
+    acceptance_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -155,6 +157,24 @@ class RunnerConfig:
         if not isinstance(workflow, dict) or workflow.get("mode", "example") not in {"example", "production"}:
             raise RunnerError("invalid_config", "workflow.mode must be example or production")
         workflow_mode = str(workflow.get("mode", "example"))
+        raw_acceptance = workflow.get("acceptance", {})
+        if raw_acceptance is None:
+            raw_acceptance = {}
+        if not isinstance(raw_acceptance, dict):
+            raise RunnerError("invalid_config", "workflow.acceptance must be an object")
+        acceptance_ids = raw_acceptance.get("ids", [])
+        checks = raw_acceptance.get("checks", [])
+        if not isinstance(acceptance_ids, list) or any(not isinstance(item, str) or not item.strip() for item in acceptance_ids):
+            raise RunnerError("invalid_config", "workflow.acceptance.ids must be a list of non-empty strings")
+        if not isinstance(checks, list) or any(not isinstance(item, dict) for item in checks):
+            raise RunnerError("invalid_config", "workflow.acceptance.checks must be a list of objects")
+        for check in checks:
+            command = check.get("command")
+            mapped = check.get("acceptance")
+            if not isinstance(command, list) or not command or any(not isinstance(part, str) or not part for part in command):
+                raise RunnerError("invalid_config", "workflow acceptance checks need command arrays")
+            if not isinstance(mapped, list) or not mapped or any(item not in acceptance_ids for item in mapped):
+                raise RunnerError("invalid_config", "workflow acceptance checks need valid acceptance IDs")
 
         normalized = {
             "schema_version": CONFIG_SCHEMA_VERSION,
@@ -167,7 +187,7 @@ class RunnerConfig:
             "authorization": {"artifact_roots": [root.as_posix() for root in authorization_roots]},
             "delivery": {"plan": delivery_plan.as_posix()} if delivery_plan else None,
             "skills": {"config": skill_config.as_posix() if skill_config else None, "roots": [os.fspath(item) for item in skill_roots]},
-            "workflow": {"mode": workflow_mode},
+            "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks}},
         }
         return cls(
             repository_path=repository_path,
@@ -182,6 +202,8 @@ class RunnerConfig:
             skill_config=(control_root / skill_config).resolve() if skill_config else None,
             skill_roots=skill_roots,
             workflow_mode=workflow_mode,
+            acceptance_checks=tuple(dict(item) for item in checks),
+            acceptance_ids=tuple(acceptance_ids),
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
         )
 

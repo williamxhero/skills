@@ -17,11 +17,11 @@ from .store import RunRecord, Store, now
 from .verification import verify_run
 from .plans import load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
-from .delivery import git_sha
+from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_review, verify_candidate
 from .tracker import read_local, publish_local
 
 
-def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None):
+def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prompt: str, model: str, effort: str, thread_id: str | None, repository_path: Path, trusted: dict[str, object], on_turn_started, control_state, on_control_applied=None, schema: dict[str, object] | None = None):
     """Use the live Skill boundary when available; retain test-double compatibility."""
     semantic = getattr(adapter, "run_semantic", None)
     if callable(semantic):
@@ -32,7 +32,7 @@ def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prom
             effort=effort,
             trusted={**trusted, "legacy_prompt": prompt},
             untrusted={},
-            schema={"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
+            schema=schema or {"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers"], "additionalProperties": False},
             skill_roots=config.skill_roots,
             skill_config=(config.skill_config and (Path(config.skill_config))),
             thread_id=thread_id,
@@ -341,6 +341,96 @@ def _execute_codex_tickets(
     published = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
     store.write_log(control_root, run.run_id, {"event": "ticket_plan_published", "spec_key": spec_key, "ticket_count": len(validated["tickets"]), "tracker": published})
     return store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="tickets_ready", step_name=step_name, worker_id=worker_id)
+
+
+def _git_checked(repository: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(["git", "-C", os.fspath(repository), *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RunnerError("implementation_git_failed", "Runner could not reconcile the implementation workspace", details={"args": list(args)}) from exc
+    return result.stdout.strip()
+
+
+def _execute_codex_implementation(
+    *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
+    ticket_plan: dict[str, object],
+) -> dict[str, object]:
+    """Run one real implementation and independent review for the active SPEC.
+
+    The worker may write only its managed worktree.  Commit, candidate
+    verification, review binding, merge and cleanup remain Runner operations.
+    """
+    if not config.acceptance_ids or not config.acceptance_checks:
+        raise RunnerError("acceptance_config_missing", "production implementation requires workflow.acceptance ids and checks")
+    spec_key = str(ticket_plan["spec_key"])
+    workspace_info = prepare_workspace(
+        repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
+        run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+    )
+    workspace = Path(str(workspace_info["workspace"]))
+    implementation_operation = f"implementation:{run.run_id}:{spec_key}"
+    implementation_step = "codex_implementation"
+    implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
+    store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk")
+    schema = {"type": "object", "properties": {"outcome": {"type": "string"}, "artifacts": {"type": "array", "items": {"type": "string"}}, "blockers": {"type": "array", "items": {"type": "string"}}, "questions": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "question": {"type": "string"}}, "required": ["id", "question"], "additionalProperties": False}}}, "required": ["outcome", "artifacts", "blockers", "questions"], "additionalProperties": False}
+    result = _run_worker(
+        adapter=CodexAdapter(), phase="implement", config=config,
+        prompt=("Implement this SPEC in the assigned workspace. Work on the real code and tests; do not publish, merge, "
+                "or modify files outside this workspace. Return JSON only after the implementation is complete.\n\n" + json.dumps(ticket_plan, ensure_ascii=False, sort_keys=True)),
+        model=config.model_name, effort=config.effort, thread_id=None, repository_path=workspace,
+        trusted={"brief_digest": brief_digest, "stage": implementation_step, "spec_key": spec_key, "workspace": os.fspath(workspace), "ticket_plan_digest": ticket_plan["digest"]},
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=implementation_operation, step_name=implementation_step, worker_id=implementation_worker, thread_id=thread_id, turn_id=turn_id),
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=schema,
+    )
+    if result.status != "completed":
+        raise RunnerError("implementation_worker_failed", "implementation worker did not complete", details=result.public())
+    if _git_checked(workspace, "status", "--porcelain") == "":
+        raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
+    _git_checked(workspace, "add", "--all")
+    _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: implement {spec_key}")
+    candidate_sha = git_sha(workspace)
+    candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks), acceptance=list(config.acceptance_ids))
+    store.complete_codex_stage(run.run_id, implementation_operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=implementation_step, worker_id=implementation_worker)
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    (artifact_directory / f"candidate-{spec_key}.json").write_text(json.dumps(candidate_receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    CodexAdapter().archive_and_readback(thread_id=result.thread_id, repository_path=workspace)
+
+    review_operation = f"review:{run.run_id}:{spec_key}:{candidate_sha}"
+    review_step = "codex_review"
+    review_worker = f"codex_sdk:{run.run_id}:{review_step}:{spec_key}"
+    store.begin_stage(run.run_id, step_name=review_step, operation_id=review_operation, backend_kind="codex_sdk")
+    review_schema = {"type": "object", "properties": {"schema_version": {"type": "string"}, "candidate_sha": {"type": "string"}, "acceptance_version": {"type": "string"}, "findings": {"type": "array"}}, "required": ["schema_version", "candidate_sha", "acceptance_version", "findings"], "additionalProperties": True}
+    review_result = _run_worker(
+        adapter=CodexAdapter(), phase="review", config=config,
+        prompt=("Review the candidate in this read-only workspace against the SPEC and the attached real check receipt. "
+                "Return schema_version spec-runner-review-result/v1, candidate_sha, acceptance_version and findings. "
+                "Do not edit files, publish, or merge.\n\n" + json.dumps({"spec": ticket_plan, "candidate": candidate_receipt}, ensure_ascii=False, sort_keys=True)),
+        model=config.model_name, effort=config.effort, thread_id=None, repository_path=workspace,
+        trusted={"brief_digest": brief_digest, "stage": review_step, "spec_key": spec_key, "candidate_sha": candidate_sha, "acceptance_version": ticket_plan["digest"]},
+        on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=review_operation, step_name=review_step, worker_id=review_worker, thread_id=thread_id, turn_id=turn_id),
+        control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=review_schema,
+    )
+    try:
+        review_document = json.loads(review_result.final_response or "null")
+    except json.JSONDecodeError as exc:
+        raise RunnerError("invalid_review_output", "review worker did not return JSON") from exc
+    if not isinstance(review_document, dict):
+        raise RunnerError("invalid_review_output", "review worker returned a non-object")
+    validated_review = validate_review(result=review_document, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
+    store.complete_codex_stage(run.run_id, review_operation, thread_id=review_result.thread_id, turn_id=review_result.turn_id, state="reviewed", step_name=review_step, worker_id=review_worker)
+    (artifact_directory / f"review-{spec_key}.json").write_text(json.dumps({**validated_review, "worker": review_result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    CodexAdapter().archive_and_readback(thread_id=review_result.thread_id, repository_path=workspace)
+    if not validated_review["approved"]:
+        raise RunnerError("review_blocked", "independent review has unresolved blocking findings", details={"findings": validated_review["blocking"]})
+    expected_target_sha = git_sha(config.repository_path, config.target_ref)
+    merged = merge_local(repository=config.repository_path, candidate_branch=str(workspace_info["branch"]), target_ref=config.target_ref, expected_target_sha=expected_target_sha, workspace_root=control_root / "delivery-workspaces", run_id=run.run_id)
+    cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=control_root / "delivery-workspaces", workspace=workspace, manifest=Path(str(workspace_info["manifest"])))
+    if cleanup.get("outcome") != "cleaned":
+        store.mark_cleanup_pending(run.run_id)
+        return {"state": "cleanup_pending", "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
+    store.mark_archived(run.run_id, state="completed")
+    return {"state": "completed", "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
 
 
 def _execute_codex_example(
@@ -841,6 +931,15 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     store=store, spec_plan=load_json(plan_path),
                 )
                 return {"created": False, **store.public_status(ticketed.run_id)}
+            if existing.state == "tickets_ready" and config.workflow_mode == "production":
+                ticket_files = sorted(_safe_artifact_directory(control_root, config, existing.run_id).glob("ticket-plan-*.json"))
+                if not ticket_files:
+                    raise RunnerError("ticket_plan_missing", "tickets_ready run has no persisted TicketPlan")
+                delivered = _execute_codex_implementation(
+                    control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
+                    store=store, ticket_plan=load_json(ticket_files[0]),
+                )
+                return {"created": False, **delivered}
             if existing.state == "needs_input" and not store.control_for_run(existing.run_id):
                 worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
                 questions: list[dict[str, object]] = []
@@ -954,6 +1053,13 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 control_root=control_root, config=config, brief_digest=brief_digest, run=finished,
                 store=store, spec_plan=load_json(plan_path),
             )
+            if ticketed.state == "tickets_ready" and config.workflow_mode == "production":
+                ticket_files = sorted(_safe_artifact_directory(control_root, config, ticketed.run_id).glob("ticket-plan-*.json"))
+                delivered = _execute_codex_implementation(
+                    control_root=control_root, config=config, brief_digest=brief_digest, run=ticketed,
+                    store=store, ticket_plan=load_json(ticket_files[0]),
+                )
+                return {"created": True, **delivered}
             return {"created": True, **store.public_status(ticketed.run_id)}
         _verify_and_archive(
             control_root=control_root,
