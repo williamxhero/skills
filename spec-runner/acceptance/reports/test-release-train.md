@@ -327,6 +327,25 @@ three-SPEC GitHub delivery, source-thread takeover, or Windows control DB/log
 recovery; each remains `not_verified`. GitHub issue #256 remains OPEN with its
 acceptance checklist unchecked.
 
+## Exact-wheel replay at `2377386` (2026-09-25)
+
+The current pushed source was built into `spec_runner-0.1.0-py3-none-any.whl`
+under marker `SRAC-20260925-l3-2377386`. The wheel was installed into a clean
+Windows Python 3.13.5 virtual environment with `PYTHONPATH` cleared and the
+declared `openai-codex==0.155.1` dependency installed. Import resolved from
+that environment's `site-packages`; package inspection passed with 32 members
+and no forbidden members. Wheel SHA-256:
+`4b592f9756f04b83de5c897976cbaabf8b77ca5deaa8a5eb7956f021e10ab691`.
+
+Two installed-wheel public-CLI fault-matrix replays each passed all 10
+deterministic cases with identical report digest
+`38c1df021ba884a99c5769bc2e11c24be05dbecffd689970a854c0c350643a7a`.
+The durable receipt is
+`SRAC-20260925-l3-2377386-installed-wheel.json`. These deterministic L3
+replays do not establish live Codex process restart, Windows native parent
+exit, GitHub merge queue, complete three-SPEC GitHub delivery, source-thread
+takeover, or Windows control DB/log recovery; each remains `not_verified`.
+
 ## CI recovery check corrections (2026-09-24)
 
 GitHub Actions run `35961463445` failed on Ubuntu and Windows. Both jobs lacked

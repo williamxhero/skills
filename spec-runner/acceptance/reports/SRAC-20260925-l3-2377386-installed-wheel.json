@@ -1,0 +1,48 @@
+{
+  "schema_version": "spec-runner-installed-wheel-replay/v1",
+  "run_marker": "SRAC-20260925-l3-2377386",
+  "candidate": {
+    "commit": "2377386b76fec69f0da8d686b17f7fa8e6efc632",
+    "wheel": "spec_runner-0.1.0-py3-none-any.whl",
+    "sha256": "4b592f9756f04b83de5c897976cbaabf8b77ca5deaa8a5eb7956f021e10ab691",
+    "archive_digest": "10cc7285f6efae6b39ee5a09d28c694b6116bb06b0e98f51a8e27d7df609b7ff",
+    "member_count": 32,
+    "package_diagnostic": "verified",
+    "forbidden_members": []
+  },
+  "environment": {
+    "os": "Windows",
+    "python": "3.13.5",
+    "source_unavailable": true,
+    "pythonpath_cleared": true,
+    "import_path": "C:\\Users\\will\\.codex\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260925-l3-2377386\\venv\\Lib\\site-packages\\spec_runner\\__init__.py",
+    "sdk": "openai-codex==0.155.1"
+  },
+  "replays": [
+    {
+      "number": 1,
+      "seed": "SRAC-20260925-l3-2377386-deterministic",
+      "schema_version": "spec-runner-fault-run/v1",
+      "passed": true,
+      "cases": 10,
+      "report_digest": "38c1df021ba884a99c5769bc2e11c24be05dbecffd689970a854c0c350643a7a"
+    },
+    {
+      "number": 2,
+      "seed": "SRAC-20260925-l3-2377386-deterministic",
+      "schema_version": "spec-runner-fault-run/v1",
+      "passed": true,
+      "cases": 10,
+      "report_digest": "38c1df021ba884a99c5769bc2e11c24be05dbecffd689970a854c0c350643a7a"
+    }
+  ],
+  "replay_comparison": "identical report digest and per-case outcomes",
+  "unverified_scenarios": [
+    "live_codex_process_restart",
+    "windows_native_parent_exit",
+    "github_merge_queue",
+    "complete_three_spec_github_delivery",
+    "windows_control_db_and_log_recovery",
+    "source_thread_takeover"
+  ]
+}
