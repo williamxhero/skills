@@ -197,3 +197,30 @@ The durable receipt is
 replays do not establish live Codex process restart, Windows native parent
 exit, GitHub merge queue, full three-SPEC GitHub delivery, source-thread
 takeover, or Windows control DB/log recovery; each remains `not_verified`.
+
+## Exact-wheel replay at `4892797` (2026-09-24)
+
+The exact `48927971cb62498bc03fb363b7e2c48fbcb2df84` source was built into
+`spec_runner-0.1.0-py3-none-any.whl` under marker
+`SRAC-20260924-b986df18bf51`. The wheel was installed into a fresh Windows
+Python 3.13.5 virtual environment with `PYTHONPATH` cleared and the working
+directory outside the repository. Import resolved from that environment's
+`site-packages`; `openai-codex==0.155.1` was installed. Package inspection
+passed with 32 members and no forbidden members. Wheel SHA-256:
+`02414068cd52d4e68f59cd7872953b68f4a8e4b64669286f244862f34cb2521d`.
+
+Two installed public-CLI fault-matrix replays passed all 10 deterministic
+cases with identical report digest
+`04c608146b93dc114bebb8b306120f9a57709b2124b10d57b90c61ebb0545b5a`.
+The durable receipt is
+`SRAC-20260924-b986df18bf51-installed-wheel.json`. The source suite passed
+`166 passed, 1 skipped, 1 deselected` in 52.05 seconds; the deselected test
+requires the Codex SDK to be absent, while the current development environment
+has it installed. An initial unfiltered run therefore failed only that
+environment-specific assertion; no product failure was observed.
+
+This L3 evidence is bound to `4892797` and does not establish live Codex
+process restart, Windows native parent exit, GitHub merge queue, complete
+three-SPEC GitHub delivery, source-thread takeover, or Windows control DB/log
+recovery; each remains `not_verified`. GitHub issue #256 remains OPEN with its
+acceptance checklist unchecked.
