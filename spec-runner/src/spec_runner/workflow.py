@@ -1415,9 +1415,13 @@ def _finish_codex_implementation(
         store.append_event(run_id=run.run_id, event_key=archive_event_key,
                            event_type="cleanup_readback", payload=archive)
     if config.github_repository is not None:
+        review_projection = {
+            key: validated_review.get(key)
+            for key in ("approved", "blocking", "candidate_sha", "findings", "review_digest")
+        }
         github_result = _execute_github_delivery(control_root=control_root, config=config, run=run,
             spec_key=spec_key, candidate_sha=candidate_sha, branch=str(workspace_info["branch"]),
-            candidate_receipt=candidate_receipt, review=validated_review)
+            candidate_receipt=candidate_receipt, review=review_projection)
         artifact_directory.joinpath(f"github-{spec_key}.json").write_text(
             json.dumps(github_result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if github_result["state"] == "waiting_ci":
