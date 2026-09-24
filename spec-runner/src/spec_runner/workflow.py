@@ -2237,7 +2237,6 @@ def _reconcile_rejected_review(*, control_root: Path, config: RunnerConfig,
             continue
         if str(document.get("candidate_sha") or "").startswith(candidate_sha):
             matching_candidate = document
-            spec_key = path.stem.removeprefix("candidate-")
             break
     if matching_candidate is None:
         for path in sorted(artifact_directory.glob(f"repair-{spec_key}-*.json")):
