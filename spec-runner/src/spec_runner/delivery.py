@@ -196,16 +196,20 @@ def cleanup_managed_workspace(*, repository: Path, workspace_root: Path, workspa
     }
 
 
-def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, spec_key: str, base_ref: str, branch: str | None = None) -> dict[str, object]:
+def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, spec_key: str,
+                      base_ref: str, branch: str | None = None,
+                      workspace_suffix: str = "") -> dict[str, object]:
     repository = repository.resolve()
     base_sha = git_sha(repository, base_ref)
     workspace_root.mkdir(parents=True, exist_ok=True)
     if workspace_root.is_symlink():
         raise RunnerError("workspace_path_escape", "workspace root cannot be a symbolic link")
     safe_key = "".join(char if char.isalnum() or char in "._-" else "-" for char in spec_key)
-    workspace = _safe_child(workspace_root, workspace_root / f"{safe_key}-{run_id[:8]}")
-    branch = branch or f"spec-runner/{safe_key}-{run_id[:8]}"
-    manifest = workspace_root / f"{safe_key}-{run_id[:8]}.manifest.json"
+    safe_suffix = "".join(char if char.isalnum() or char in "._-" else "-" for char in workspace_suffix)
+    workspace_key = f"{safe_key}{safe_suffix}"
+    workspace = _safe_child(workspace_root, workspace_root / f"{workspace_key}-{run_id[:8]}")
+    branch = branch or f"spec-runner/{workspace_key}-{run_id[:8]}"
+    manifest = workspace_root / f"{workspace_key}-{run_id[:8]}.manifest.json"
     if manifest.exists():
         previous = json.loads(manifest.read_text(encoding="utf-8"))
         if previous.get("run_id") != run_id or Path(str(previous.get("workspace", ""))).resolve() != workspace:

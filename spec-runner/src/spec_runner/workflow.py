@@ -149,6 +149,17 @@ def _safe_artifact_directory(control_root: Path, config: RunnerConfig, run_id: s
     return directory
 
 
+def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    temporary.replace(path)
+
+
 def _test_fault_pause(*, control_root: Path, run_id: str, point: str) -> None:
     """Pause only when an explicit deterministic fault test asks for it."""
     if os.environ.get("SPEC_RUNNER_FAULT_POINT") != point:
@@ -634,6 +645,17 @@ def _git_checked(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _git_binary(repository: Path, *args: str) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", "-c", "core.longpaths=true", "-C", os.fspath(repository), *args],
+            check=True, capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RunnerError("implementation_git_failed", "Runner could not reconcile the implementation workspace", details={"args": list(args)}) from exc
+    return result.stdout
+
+
 def _reconcile_github_base(*, repository: Path, target_ref: str, base: str) -> dict[str, object]:
     """Advance the local delivery base to the exact remote merge result.
 
@@ -931,7 +953,7 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
     checks = delivery.checks(repository=repository, candidate_sha=candidate_sha,
         required=list(config.github_required_checks))
     if not checks["ready"]:
-        return {"state": "waiting_ci", "spec_key": spec_key, "pr": pr_receipt, "checks": checks,
+        return {"state": "waiting_ci", "spec_key": spec_key, "branch": branch, "pr": pr_receipt, "checks": checks,
                 "candidate": candidate_receipt, "review": review}
     if not config.github_merge_authorized:
         raise RunnerError("github_merge_not_authorized", "GitHub checks passed but merge authorization is not configured")
@@ -940,8 +962,267 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
         candidate_receipt=candidate_receipt, review=review, checks=checks, allow=True)
     merged["base_sync"] = _reconcile_github_base(repository=config.repository_path,
                                                   target_ref=config.target_ref, base=base)
-    return {"state": "github_completed", "spec_key": spec_key, "pr": pr_receipt, "checks": checks,
+    return {"state": "github_completed", "spec_key": spec_key, "branch": branch, "pr": pr_receipt, "checks": checks,
             "merge": merged, "candidate": candidate_receipt, "review": review}
+
+
+def _definitive_failed_github_checks(*, checks: object, candidate_sha: str) -> bool:
+    """Recognize a terminal failure for the exact candidate under review."""
+    if not isinstance(checks, dict) or checks.get("candidate_sha") != candidate_sha:
+        return False
+    if checks.get("ready") is not False:
+        return False
+    required = checks.get("required")
+    failed = checks.get("failed")
+    states = checks.get("states")
+    if (not isinstance(required, list) or not required
+            or any(not isinstance(item, str) or not item for item in required)
+            or not isinstance(failed, list) or not failed
+            or any(not isinstance(item, str) or item not in required for item in failed)
+            or not isinstance(states, dict)):
+        return False
+    for key in ("missing", "wrong_sha", "pending", "unknown"):
+        values = checks.get(key)
+        if not isinstance(values, list) or values:
+            return False
+    for name in failed:
+        state = states.get(name)
+        if not isinstance(state, dict) or state.get("sha") != candidate_sha:
+            return False
+        terminal_failure = (
+            state.get("source") == "check_run"
+            and state.get("status") == "completed"
+            and state.get("conclusion") not in {None, "success", "neutral", "skipped"}
+        ) or (
+            state.get("source") == "status_context"
+            and state.get("status") in {"error", "failure"}
+        )
+        if not terminal_failure:
+            return False
+    return True
+
+
+def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                                     store: Store, spec_key: str, candidate: dict[str, object],
+                                     review: dict[str, object], github: dict[str, object],
+                                     failed_checks: dict[str, object], manifest_path: Path,
+                                     manifest: dict[str, object]) -> dict[str, object]:
+    """Rebase a failed GitHub candidate and restart the guarded delivery gate.
+
+    The failed candidate and PR remain immutable evidence. A new managed
+    workspace, branch, candidate receipt, review receipt, and GitHub operation
+    are created for the current target ref.
+    """
+    old_candidate_sha = candidate.get("candidate_sha")
+    old_branch = manifest.get("branch")
+    old_base_sha = manifest.get("base_sha")
+    if (not isinstance(old_candidate_sha, str) or len(old_candidate_sha) != 40
+            or not isinstance(old_branch, str) or not old_branch
+            or not isinstance(old_base_sha, str) or not old_base_sha):
+        raise RunnerError("github_recovery_evidence_invalid", "failed GitHub candidate lacks a complete workspace identity")
+    if not _definitive_failed_github_checks(checks=failed_checks, candidate_sha=old_candidate_sha):
+        raise RunnerError("github_recovery_evidence_invalid", "failed GitHub checks are not definitive for the candidate")
+    github_candidate = github.get("candidate")
+    if (candidate.get("outcome") != "verified"
+            or not isinstance(github_candidate, dict)
+            or candidate.get("acceptance_version") != github_candidate.get("acceptance_version")
+            or review.get("approved") is not True
+            or review.get("candidate_sha") != old_candidate_sha):
+        raise RunnerError("github_recovery_evidence_invalid", "failed GitHub candidate or review receipt is inconsistent")
+    artifact = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact.mkdir(parents=True, exist_ok=True)
+    old_short = old_candidate_sha[:12]
+    failed_path = artifact / f"github-failed-{spec_key}-{old_short}.json"
+    historical_candidate_path = artifact / f"candidate-{spec_key}-{old_short}.json"
+    if not historical_candidate_path.is_file():
+        _write_json_atomic(historical_candidate_path, candidate)
+    failed_record = {
+        "schema_version": "spec-runner-github-failed-delivery/v1",
+        "run_id": run.run_id,
+        "spec_key": spec_key,
+        "candidate": candidate,
+        "review": review,
+        "checks": failed_checks,
+        "delivery": github,
+        "pr": github.get("pr"),
+        "reason": "required_check_failed",
+    }
+    if not failed_path.is_file():
+        _write_json_atomic(failed_path, failed_record)
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"github-recovery:{run.run_id}:{spec_key}:{old_candidate_sha}:intent",
+        event_type="github_candidate_recovery_intent",
+        payload={"spec_key": spec_key, "candidate_sha": old_candidate_sha,
+                 "failed_receipt": os.fspath(failed_path)},
+    )
+
+    workspace_root = (control_root / "delivery-workspaces").resolve()
+    old_workspace = Path(str(manifest.get("workspace", ""))).resolve()
+    if (workspace_root not in old_workspace.parents or not old_workspace.is_dir()
+            or Path(str(manifest.get("repository", ""))).resolve() != config.repository_path.resolve()
+            or manifest_path.resolve().parent != workspace_root):
+        raise RunnerError("github_recovery_evidence_invalid", "failed GitHub workspace manifest is outside the managed repository scope")
+    if git_sha(old_workspace) != old_candidate_sha or git_sha(config.repository_path, old_branch) != old_candidate_sha:
+        raise RunnerError("github_recovery_evidence_invalid", "failed GitHub workspace no longer names its recorded candidate")
+    if _git_checked(old_workspace, "status", "--porcelain"):
+        raise RunnerError("github_recovery_evidence_invalid", "failed GitHub workspace is dirty")
+
+    base_sync = _reconcile_github_base(
+        repository=config.repository_path, target_ref=config.target_ref,
+        base=config.github_base.removeprefix("refs/heads/"),
+    )
+    recovery_suffix = f"-recovery-{old_short}"
+    recovery_branch = f"{old_branch}{recovery_suffix}"
+    recovery_workspace = prepare_workspace(
+        repository=config.repository_path,
+        workspace_root=workspace_root,
+        run_id=run.run_id,
+        spec_key=spec_key,
+        base_ref=config.target_ref,
+        branch=recovery_branch,
+        workspace_suffix=recovery_suffix,
+    )
+    recovery_path = artifact / f"candidate-{spec_key}-recovery-{old_short}.json"
+    recovery_workspace_path = Path(str(recovery_workspace["workspace"]))
+    if recovery_path.is_file():
+        recovery_candidate = load_json(recovery_path)
+        recovery_sha = recovery_candidate.get("candidate_sha")
+        if (recovery_candidate.get("outcome") != "verified"
+                or not isinstance(recovery_sha, str) or len(recovery_sha) != 40
+                or git_sha(recovery_workspace_path) != recovery_sha
+                or _git_checked(recovery_workspace_path, "status", "--porcelain")):
+            raise RunnerError("github_recovery_evidence_invalid", "persisted rebased candidate does not match its workspace")
+    else:
+        patch_path = artifact / f"github-recovery-{spec_key}-{old_short}.patch"
+        if not patch_path.is_file():
+            patch = _git_binary(config.repository_path, "diff", "--binary", f"{old_base_sha}..{old_candidate_sha}")
+            if not patch:
+                raise RunnerError("github_recovery_no_changes", "failed GitHub candidate has no changes to recover")
+            patch_path.write_bytes(patch)
+        recovery_base_sha = str(recovery_workspace["base_sha"])
+        recovery_head = git_sha(recovery_workspace_path)
+        recovery_status = _git_checked(recovery_workspace_path, "status", "--porcelain")
+        if recovery_head == recovery_base_sha and not recovery_status:
+            _git_checked(recovery_workspace_path, "apply", "--index", os.fspath(patch_path))
+            recovery_status = _git_checked(recovery_workspace_path, "status", "--porcelain")
+        elif recovery_head == recovery_base_sha and recovery_status:
+            staged_patch = _git_binary(recovery_workspace_path, "diff", "--cached", "--binary")
+            unstaged = _git_binary(recovery_workspace_path, "diff", "--binary")
+            if staged_patch != patch_path.read_bytes() or unstaged:
+                raise RunnerError("github_recovery_evidence_invalid", "recovery workspace has changes that do not match its persisted patch")
+        elif recovery_status:
+            raise RunnerError("github_recovery_evidence_invalid", "recovery workspace has unrecorded changes")
+        if recovery_head == recovery_base_sha:
+            if not recovery_status:
+                raise RunnerError("github_recovery_no_changes", "rebased recovery workspace has no candidate changes")
+            _git_checked(recovery_workspace_path, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost",
+                         "commit", "-m", f"spec-runner: recover {spec_key} after failed CI")
+        recovery_sha = git_sha(recovery_workspace_path)
+        recovery_candidate = verify_candidate(
+            workspace=recovery_workspace_path,
+            candidate_sha=recovery_sha,
+            acceptance_version=str(candidate.get("acceptance_version") or ""),
+            checks=list(config.acceptance_checks),
+            acceptance=list(config.acceptance_ids),
+            base_sha=str(recovery_workspace["base_sha"]),
+            allowed_paths=config.acceptance_paths,
+        )
+        _write_json_atomic(recovery_path, recovery_candidate)
+
+    ticket_path = artifact / f"ticket-plan-{spec_key}.json"
+    if not ticket_path.is_file():
+        raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+    ticket_plan = validate_ticket_plan(load_json(ticket_path), expected_spec_key=spec_key)
+    if candidate.get("acceptance_version") != ticket_plan.get("digest"):
+        raise RunnerError("github_recovery_evidence_invalid", "failed candidate is bound to a different TicketPlan")
+    implementation_prefix = f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}"
+    implementation_workers = [
+        item for item in store.workers_for_run(run.run_id)
+        if str(item.get("worker_id") or "") == implementation_prefix
+        and item.get("external_thread_id")
+    ]
+    if not implementation_workers:
+        raise RunnerError("github_recovery_owner_missing", "failed GitHub candidate has no implementation owner")
+    implementation_thread = str(implementation_workers[-1]["external_thread_id"])
+    recovery_sha = str(recovery_candidate["candidate_sha"])
+    review_path = artifact / f"review-{spec_key}-{recovery_sha[:12]}.json"
+    if review_path.is_file():
+        recovery_review_document = load_json(review_path)
+        review_worker_path = artifact / f"review-worker-{spec_key}-{recovery_sha[:12]}.json"
+        review_worker_document = load_json(review_worker_path) if review_worker_path.is_file() else {}
+        embedded_worker = recovery_review_document.get("worker")
+        if (recovery_review_document.get("approved") is not True
+                or recovery_review_document.get("candidate_sha") != recovery_sha
+                or not isinstance(embedded_worker, dict)
+                or embedded_worker != review_worker_document
+                or embedded_worker.get("status") != "completed"
+                or embedded_worker.get("error") is not None
+                or not isinstance(embedded_worker.get("thread_id"), str)
+                or embedded_worker.get("thread_id") == implementation_thread
+                or not isinstance(embedded_worker.get("turn_id"), str)
+                or not isinstance(embedded_worker.get("final_response"), str)):
+            raise RunnerError("github_recovery_evidence_invalid", "persisted recovery review does not approve its candidate")
+        review_result = CodexWorkerResult(
+            thread_id=str(embedded_worker["thread_id"]), turn_id=str(embedded_worker["turn_id"]),
+            status="completed", error=None, final_response=str(embedded_worker["final_response"]),
+            item_count=int(embedded_worker.get("item_count", 0)),
+            started_at=int(embedded_worker.get("started_at", 0)),
+            completed_at=int(embedded_worker.get("completed_at", 0)),
+            approval_mode=str(embedded_worker.get("approval_mode") or "deny_all"),
+            skill_observation=embedded_worker.get("skill_observation") if isinstance(embedded_worker.get("skill_observation"), dict) else None,
+        )
+        try:
+            expected_review = independent_review(
+                review_result, implementation_thread=implementation_thread,
+                candidate_sha=recovery_sha, acceptance_version=str(ticket_plan["digest"]),
+            )
+        except (RunnerError, ValueError, TypeError) as exc:
+            raise RunnerError("github_recovery_evidence_invalid", "persisted recovery review failed revalidation") from exc
+        if any(recovery_review_document.get(key) != value for key, value in expected_review.items()):
+            raise RunnerError("github_recovery_evidence_invalid", "persisted recovery review changed")
+        recovery_review = recovery_review_document
+    else:
+        recovery_review, _ = _execute_independent_review(
+            control_root=control_root, config=config, brief_digest=run.input_digest,
+            run=run, store=store, ticket_plan=ticket_plan,
+            workspace=recovery_workspace_path, candidate_sha=recovery_sha,
+            candidate_receipt=recovery_candidate, implementation_thread=implementation_thread,
+            artifact_directory=artifact,
+        )
+        if recovery_review.get("approved") is not True:
+            raise RunnerError("review_blocked", "fresh recovery review has blocking findings",
+                              details={"findings": recovery_review.get("blocking")})
+    review_projection = {
+        key: recovery_review.get(key)
+        for key in ("approved", "blocking", "candidate_sha", "findings", "review_digest")
+    }
+    recovered = _execute_github_delivery(
+        control_root=control_root, config=config, run=run, spec_key=spec_key,
+        candidate_sha=recovery_sha, branch=str(recovery_workspace["branch"]),
+        candidate_receipt=recovery_candidate, review=review_projection,
+    )
+    recovery_metadata = {
+        "candidate_sha": old_candidate_sha,
+        "pr": github.get("pr"),
+        "checks": failed_checks,
+        "failed_receipt": os.fspath(failed_path),
+        "workspace_manifest": os.fspath(manifest_path),
+        "base_sync": base_sync,
+    }
+    recovered = {**recovered, "recovered_from": recovery_metadata}
+    _write_json_atomic(artifact / f"candidate-{spec_key}.json", recovery_candidate)
+    _write_json_atomic(artifact / f"github-{spec_key}.json", recovered)
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"github-recovery:{run.run_id}:{spec_key}:{old_candidate_sha}:published:{recovery_sha}",
+        event_type="github_candidate_recovery_published",
+        payload={"spec_key": spec_key, "failed_candidate_sha": old_candidate_sha,
+                 "candidate_sha": recovery_sha, "branch": recovery_workspace["branch"],
+                 "state": recovered.get("state"), "base_sync": base_sync},
+    )
+    recovered["_workspace_manifest"] = os.fspath(recovery_workspace["manifest"])
+    return recovered
 
 
 def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: RunRecord,
@@ -994,14 +1275,33 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
             or not isinstance(review.get("review_digest"), str) or not review["review_digest"].strip()
             or not isinstance(github_review, dict) or github_review != review_projection):
         raise RunnerError("github_waiting_evidence_invalid", "waiting GitHub receipt does not match its validated independent review")
-    matching_manifests = [item for item in manifests if item[1].get("spec_key") == spec_key]
+    github_branch = github.get("branch")
+    matching_manifests = [
+        item for item in manifests
+        if item[1].get("spec_key") == spec_key
+        and (github_branch is None or item[1].get("branch") == github_branch)
+    ]
     if len(matching_manifests) != 1:
         raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run needs one workspace manifest for its SPEC")
     manifest_path, manifest = matching_manifests[0]
     result = _execute_github_delivery(control_root=control_root, config=config, run=run,
         spec_key=spec_key, candidate_sha=candidate_sha, branch=str(manifest["branch"]),
         candidate_receipt=candidate, review=review_projection, push=False)
+    if _definitive_failed_github_checks(checks=result.get("checks"), candidate_sha=candidate_sha):
+        result = _recover_failed_github_candidate(
+            control_root=control_root, config=config, run=run, store=store,
+            spec_key=spec_key, candidate=candidate, review=review_projection,
+            github={**github, **result}, failed_checks=result["checks"],
+            manifest_path=manifest_path, manifest=manifest,
+        )
+        recovery_manifest = result.pop("_workspace_manifest", None)
+        if not isinstance(recovery_manifest, str) or not recovery_manifest:
+            raise RunnerError("github_recovery_evidence_invalid", "recovered delivery has no cleanup manifest")
+        manifest_path = Path(recovery_manifest)
+        manifest = load_json(manifest_path)
     if result["state"] != "github_completed":
+        if result.get("state") == "waiting_ci":
+            _write_json_atomic(artifact / f"github-{spec_key}.json", result)
         return result
     _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
                                spec_key=str(result["spec_key"]), delivery=result)

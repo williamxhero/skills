@@ -114,9 +114,9 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     assert run is not None
     calls = []
     responses = iter([
-        {"state": "waiting_ci", "spec_key": "S1"},
-        {"state": "github_completed", "spec_key": "S1", "candidate": {"candidate_sha": "abc1234"},
-         "review": {"approved": True}, "merge": {"merged": True}},
+        {"state": "waiting_ci", "spec_key": "S1", "candidate": candidate, "review": review},
+        {"state": "github_completed", "spec_key": "S1", "candidate": candidate,
+         "review": review, "merge": {"merged": True}},
     ])
 
     def fake_delivery(**kwargs):
@@ -136,6 +136,62 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     assert calls[1]["push"] is False
     assert store.find_by_run_id(run.run_id).state == "spec_completed"
     assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S0", "S1"]
+
+
+def test_waiting_ci_resume_recovers_a_definitive_failed_candidate(monkeypatch, github_context):
+    root, config, store, run = github_context
+    artifact = root / "artifacts" / run.run_id
+    artifact.mkdir(parents=True)
+    candidate_sha = "a" * 40
+    candidate = {"outcome": "verified", "candidate_sha": candidate_sha, "acceptance_version": "ticket-1"}
+    review = {
+        "approved": True, "blocking": [], "candidate_sha": candidate_sha,
+        "findings": [], "review_digest": "review-digest",
+    }
+    (artifact / "github-S1.json").write_text(json.dumps({
+        "spec_key": "S1", "state": "waiting_ci", "candidate": candidate, "review": review,
+    }), encoding="utf-8")
+    (artifact / "candidate-S1.json").write_text(json.dumps(candidate), encoding="utf-8")
+    (artifact / f"review-S1-{candidate_sha[:12]}.json").write_text(json.dumps(review), encoding="utf-8")
+    (artifact / "spec-plan.json").write_text(json.dumps({"digest": "plan-1", "specs": [{"key": "S1"}]}), encoding="utf-8")
+    (artifact / "ticket-plan-S1.json").write_text(json.dumps({"digest": "ticket-1", "spec_key": "S1"}), encoding="utf-8")
+    workspaces = root / "delivery-workspaces"
+    workspaces.mkdir()
+    manifest = workspaces / "run.manifest.json"
+    manifest.write_text(json.dumps({"run_id": run.run_id, "spec_key": "S1", "branch": "spec-runner/S1", "workspace": str(root / "workspace")}), encoding="utf-8")
+    store.set_run_state(run.run_id, "waiting_ci")
+    run = store.find_by_run_id(run.run_id)
+    assert run is not None
+    failed_checks = {
+        "candidate_sha": candidate_sha,
+        "required": ["ci"],
+        "states": {"ci": {"source": "check_run", "status": "completed", "conclusion": "failure", "sha": candidate_sha}},
+        "missing": [], "wrong_sha": [], "pending": [], "failed": ["ci"], "unknown": [],
+        "ready": False,
+    }
+    monkeypatch.setattr(workflow, "_execute_github_delivery", lambda **kwargs: {
+        "state": "waiting_ci", "spec_key": "S1", "pr": {"number": 7},
+        "checks": failed_checks, "candidate": candidate, "review": review,
+    })
+    recovery = {}
+
+    def fake_recovery(**kwargs):
+        recovery.update(kwargs)
+        return {
+            "state": "waiting_ci", "spec_key": "S1", "pr": {"number": 8},
+            "checks": {**failed_checks, "candidate_sha": "b" * 40, "states": {}, "failed": [], "pending": ["ci"], "ready": False},
+            "candidate": {"outcome": "verified", "candidate_sha": "b" * 40},
+            "review": {"approved": True, "candidate_sha": "b" * 40, "blocking": [], "findings": [], "review_digest": "fresh"},
+            "_workspace_manifest": str(manifest),
+        }
+
+    monkeypatch.setattr(workflow, "_recover_failed_github_candidate", fake_recovery)
+    result = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
+
+    assert result["state"] == "waiting_ci"
+    assert result["candidate"]["candidate_sha"] == "b" * 40
+    assert recovery["failed_checks"] == failed_checks
+    assert recovery["candidate"]["candidate_sha"] == candidate_sha
 
 
 def test_github_merge_reconciles_local_base_before_next_spec(tmp_path):
