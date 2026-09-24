@@ -110,6 +110,15 @@ merge receipt or transactional SPEC completion. This verifies recovery through
 the merge guard only; the candidate still needs a deliberate rebase/review
 cycle against the current target before delivery can complete.
 
+The current recovery implementation also verifies that the embedded review
+worker snapshot matches the separately persisted worker receipt. Rehydration
+preserves `approval_mode` and `skill_observation`, which older persisted reviews
+include. Regression tests reject a changed embedded worker. Replaying the same
+public `start` and launch key on 2026-09-24 passed receipt reconciliation and
+again stopped at `target_ref_changed`; no worker turn or SPEC completion was
+added. The run remains blocked pending a deliberate candidate rebase and fresh
+review.
+
 GitHub issue #256 remains OPEN and its acceptance checklist remains unchecked.
 The existing live report `SRAC-20260923-6dfe49ef27ba-native-relations.json`
 proves native parent and blocked-by write/readback for its three run-marked
@@ -170,3 +179,21 @@ under the configured severity gate. This is live single-SPEC evidence, not
 evidence for kill/restart at every answer/wake boundary, installed-wheel L3, or
 the remaining project-level L4/L5 gates. L0 diff check passed; exact installed
 artifact proof remains due after source changes are finalized.
+
+## Exact-wheel replay at `135bf93` (2026-09-24)
+
+The current pushed source was built as a wheel and installed into a clean
+Windows Python 3.13.5 virtual environment with `PYTHONPATH` cleared and the
+declared `openai-codex==0.155.1` dependency installed. Import resolved from
+`site-packages`; package inspection passed with 32 members and no forbidden
+members. Wheel SHA-256:
+`93f14755cb7a03db8dd1a7c272fb353a259a09fed1b43f44cc30fa7a24da2d26`.
+
+Two installed-wheel public-CLI fault-matrix replays each passed all 10 cases
+with identical digest
+`66a26b57ae37f4974a38d67f3e37512c41a241b1b6f7dae862464ec2eecabfb7`.
+The durable receipt is
+`SRAC-20260924-facd52576608-installed-wheel.json`. These deterministic L3
+replays do not establish live Codex process restart, Windows native parent
+exit, GitHub merge queue, full three-SPEC GitHub delivery, source-thread
+takeover, or Windows control DB/log recovery; each remains `not_verified`.

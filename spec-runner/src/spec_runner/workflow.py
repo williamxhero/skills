@@ -1807,6 +1807,8 @@ def _reconcile_approved_review(*, control_root: Path, config: RunnerConfig,
         item_count=int(review_document.get("item_count", 0)),
         started_at=int(review_document.get("started_at", 0)),
         completed_at=int(review_document.get("completed_at", 0)),
+        approval_mode=str(review_document.get("approval_mode") or "deny_all"),
+        skill_observation=review_document.get("skill_observation") if isinstance(review_document.get("skill_observation"), dict) else None,
     )
     workspace_info = prepare_workspace(
         repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
