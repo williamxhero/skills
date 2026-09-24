@@ -188,6 +188,34 @@ class ProductBoundaryTests(unittest.TestCase):
 
             self.assertEqual(changed, [])
 
+    def test_workspace_adoption_keeps_persisted_base_when_target_ref_moves(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Spec Runner Test"], cwd=repo, check=True)
+            (repo / "README.md").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+            workspace_root = Path(temp) / "workspaces"
+            run_id = "12345678-1234-1234-1234-123456789012"
+            original = prepare_workspace(
+                repository=repo, workspace_root=workspace_root, run_id=run_id,
+                spec_key="SR-01", base_ref="refs/heads/main",
+            )
+            (repo / "README.md").write_text("advanced\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "advance target"], cwd=repo, check=True)
+
+            adopted = prepare_workspace(
+                repository=repo, workspace_root=workspace_root, run_id=run_id,
+                spec_key="SR-01", base_ref="refs/heads/main",
+            )
+
+            self.assertEqual(adopted["base_sha"], original["base_sha"])
+            self.assertEqual(git_sha(Path(str(adopted["workspace"]))), original["base_sha"])
+
     def test_workspace_and_guarded_local_merge_preserve_main_checkout(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp) / "repo"

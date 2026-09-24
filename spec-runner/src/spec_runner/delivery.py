@@ -208,8 +208,19 @@ def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, sp
     manifest = workspace_root / f"{safe_key}-{run_id[:8]}.manifest.json"
     if manifest.exists():
         previous = json.loads(manifest.read_text(encoding="utf-8"))
-        if previous.get("run_id") != run_id or previous.get("base_sha") != base_sha or Path(str(previous.get("workspace", ""))).resolve() != workspace:
+        if previous.get("run_id") != run_id or Path(str(previous.get("workspace", ""))).resolve() != workspace:
             raise RunnerError("workspace_adoption_conflict", "existing workspace manifest belongs to another candidate")
+        persisted_base = previous.get("base_sha")
+        if not isinstance(persisted_base, str) or not persisted_base:
+            raise RunnerError("workspace_adoption_conflict", "existing workspace manifest has no candidate base")
+        if persisted_base != base_sha:
+            try:
+                git_sha(repository, persisted_base)
+            except RunnerError as exc:
+                raise RunnerError("workspace_adoption_conflict", "existing workspace candidate base is unavailable") from exc
+            # A recovery process must keep the base recorded when the target
+            # ref moved after this candidate was created.
+            base_sha = persisted_base
         if workspace.is_dir() and git_sha(workspace) :
             return {**previous, "manifest": os.fspath(manifest)}
     if workspace.exists():
