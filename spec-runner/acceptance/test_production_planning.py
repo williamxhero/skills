@@ -305,12 +305,15 @@ def test_planning_persists_real_callback_identity_and_publishes_local_parent(con
         {"key": "T1", "title": 'Title: "quoted"', "body": "Implement R1", "acceptance": ["R1"], "blocked_by": []}]}])
     planned = workflow._execute_codex_planning(control_root=root, config=config, brief="Requirement", brief_digest="brief", run=run, store=store)
     plan = json.loads((root / "artifacts" / run.run_id / "spec-plan.json").read_text())
+    plan["specs"][0]["blocked_by"] = ["S0"]
     ticketed = workflow._execute_codex_tickets(control_root=root, config=config, brief_digest="brief", run=planned, store=store, spec_plan=plan)
     assert ticketed.state == "tickets_ready"
     assert [call["phase"] for call in calls] == ["to-spec", "to-tickets"]
     assert "specs" in calls[0]["schema"]["properties"]
     assert "tickets" in calls[1]["schema"]["properties"]
     assert "must not equal the parent spec_key" in calls[1]["trusted"]["legacy_prompt"]
+    assert "metadata belongs to the production queue" in calls[1]["trusted"]["legacy_prompt"]
+    assert '"blocked_by": []' in calls[1]["trusted"]["legacy_prompt"]
     records = {item.key: item for item in read_local(root / "tracker").records}
     assert records["T1"].parent == "S1"
     workers = store.workers_for_run(run.run_id)

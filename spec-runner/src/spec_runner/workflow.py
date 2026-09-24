@@ -572,6 +572,11 @@ def _execute_codex_tickets(
         raise RunnerError("invalid_spec_plan", "cannot create tickets without a SPEC")
     spec = specs[0]
     spec_key = str(spec.get("key", ""))
+    # SPEC-level dependencies are consumed by the production queue before this
+    # stage starts. TicketPlan.blocked_by is a separate namespace for
+    # dependencies between tickets within the current SPEC.
+    ticket_spec = dict(spec)
+    ticket_spec["blocked_by"] = []
     base_sha = git_sha(config.repository_path, config.target_ref)
     step_name = "codex_ticket_planning"
     operation_id = f"tickets:{run.run_id}:{spec_key}"
@@ -594,7 +599,9 @@ def _execute_codex_tickets(
         "Produce a TicketPlan for exactly this SPEC. Do not publish issues, create branches, or modify files. "
         "Return needs_input/questions when a real requirement fact is missing; otherwise return planned with concrete "
         "tickets, dependency keys, and acceptance IDs. Ticket keys must be unique and must not equal the parent "
-        "spec_key; use a child key such as <spec_key>.1.\n\n" + json.dumps(spec, ensure_ascii=False, sort_keys=True)
+        "spec_key; use a child key such as <spec_key>.1. The SPEC is already dependency-ready; its blocked_by "
+        "metadata belongs to the production queue and must not be copied into ticket blocked_by. Only reference "
+        "ticket keys from this TicketPlan in ticket blocked_by.\n\n" + json.dumps(ticket_spec, ensure_ascii=False, sort_keys=True)
     )
     answers = store.answers_for_run(run.run_id)
     if answers:
