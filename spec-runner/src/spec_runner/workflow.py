@@ -2106,19 +2106,25 @@ def _reconcile_approved_review(*, control_root: Path, config: RunnerConfig,
     review_path = artifact_directory / f"review-{spec_key}-{candidate_short}.json"
     review_worker_path = artifact_directory / f"review-worker-{spec_key}-{candidate_short}.json"
     ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
-    candidate_path = artifact_directory / f"candidate-{spec_key}.json"
     for path, message in (
         (review_path, "approved review has no persisted validated receipt"),
         (review_worker_path, "approved review has no persisted worker receipt"),
         (ticket_path, "approved review has no matching TicketPlan"),
-        (candidate_path, "approved review has no matching candidate receipt"),
     ):
         if not path.is_file():
             raise RunnerError("recovery_blocked", message)
     validated_review = load_json(review_path)
     if validated_review.get("approved") is not True or validated_review.get("candidate_sha") is None:
         raise RunnerError("recovery_blocked", "persisted review is not an approved candidate frontier")
-    candidate_receipt = load_json(candidate_path)
+    candidate_receipt = None
+    for candidate_path in sorted(artifact_directory.glob("candidate-*.json")):
+        document = load_json(candidate_path)
+        if str(document.get("candidate_sha") or "").startswith(candidate_short):
+            if candidate_receipt is not None:
+                raise RunnerError("recovery_blocked", "approved review matches multiple candidate receipts")
+            candidate_receipt = document
+    if candidate_receipt is None:
+        raise RunnerError("recovery_blocked", "approved review has no matching candidate receipt")
     candidate_sha = str(candidate_receipt.get("candidate_sha") or "")
     if (
         not candidate_sha
