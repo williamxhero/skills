@@ -144,6 +144,11 @@ def inventory_from_thread_observation(
     else:
         normalized_scope = []
         outside = []
+    thread_status = observation.get("thread_status")
+    active_flags = observation.get("active_flags")
+    source_active = thread_status in {"active", "inProgress", "running"}
+    if isinstance(active_flags, list) and active_flags:
+        source_active = True
     facts = {
         "requirements_material": observation.get("business_items", []),
         "source_observation": observation,
@@ -164,7 +169,7 @@ def inventory_from_thread_observation(
         "source_threads": [{
             "id": thread_id,
             "ownership": "unknown",
-            "active": True,
+            "active": source_active,
             "stop_confirmed": False,
             "observation": observation,
             "lineage": observation.get("thread", {}).get("forked_from_id") if isinstance(observation.get("thread"), dict) else None,
@@ -229,8 +234,16 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         if isinstance(observation, dict):
             completeness = observation.get("completeness")
             observation_complete = isinstance(completeness, dict) and completeness.get("state") == "complete"
+        handover_evidence = thread.get("handover_evidence")
+        handover_ready = _valid_handover_evidence(identifier, handover_evidence)
         if not observation_complete:
             unresolved.append({"thread_id": identifier, "reason": "source_history_incomplete"})
+        elif handover_ready:
+            adopted.append({
+                "thread_id": identifier,
+                "state": "released",
+                "handover": handover_evidence,
+            })
         elif ownership != "confirmed":
             unresolved.append({"thread_id": identifier, "reason": "thread_ownership_unconfirmed"})
         else:
@@ -285,6 +298,28 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         "next_state": "waiting_handover" if any(item.get("reason") == "waiting_handover" for item in unresolved) else ("blocked" if unresolved else "adopted_ready"),
         "digest": digest({"repo": os.fspath(repository), "snapshot": {"branch": branch, "head": head, "snapshot_digest": snapshot["snapshot_digest"]}, "threads": source_threads, "artifacts": classifications, "facts": facts, "handover_policy": handover_policy}),
     }
+
+
+def _valid_handover_evidence(thread_id: str, evidence: object) -> bool:
+    """Accept only a complete SDK handover readback, never caller booleans."""
+    if not isinstance(evidence, dict):
+        return False
+    limits = evidence.get("evidence_limits")
+    readback = evidence.get("readback")
+    return (
+        evidence.get("schema_version") == "spec-runner-sdk-thread-interrupt/v1"
+        and evidence.get("accepted") is True
+        and evidence.get("thread_id") == thread_id
+        and evidence.get("source_writer_state") == "stopped"
+        and evidence.get("dispatcher_state") == "quiesced"
+        and isinstance(limits, dict)
+        and limits.get("source_stop_confirmed") is True
+        and limits.get("dispatcher_quiesced") is True
+        and limits.get("ownership_transferred") is True
+        and isinstance(readback, dict)
+        and readback.get("source_thread_id") == thread_id
+        and readback.get("observed_status") in {"completed", "idle", "archived"}
+    )
 
 
 def completion_action(report: dict[str, Any]) -> dict[str, object]:
@@ -466,6 +501,32 @@ def record_takeover_transition(
         result = store.update_takeover_record(
             takeover_key=takeover_key,
             state=state,
+            event_key=event_key,
+            payload=payload,
+        )
+        result["transitions"] = store.takeover_transitions(takeover_key)
+        return result
+    finally:
+        store.close()
+
+
+def refresh_takeover_evidence(
+    *,
+    control_root: Path,
+    takeover_key: str,
+    report: dict[str, Any],
+    frontier: dict[str, Any],
+    event_key: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Replace the observed report/frontier after a durable handover readback."""
+    control_root = control_root.expanduser().resolve()
+    store = Store.open(control_root, create=True)
+    try:
+        result = store.refresh_takeover_evidence(
+            takeover_key=takeover_key,
+            report=report,
+            frontier=frontier,
             event_key=event_key,
             payload=payload,
         )

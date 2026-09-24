@@ -59,3 +59,37 @@ def test_historical_delivery_claim_cannot_authorize_cleanup(tmp_path: Path) -> N
     assert completion_action(report)["state"] == "reverify_delivery"
     with pytest.raises(RunnerError, match="authoritative"):
         perform_cleanup({**report, "historical_facts": {"merged": True, "verification_receipt": {"candidate_sha": "forged"}}})
+
+
+def test_durable_handover_readback_releases_a_complete_source_thread(tmp_path: Path) -> None:
+    repository = _repo(tmp_path)
+    evidence = {
+        "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+        "thread_id": "source-thread",
+        "accepted": True,
+        "source_writer_state": "stopped",
+        "dispatcher_state": "quiesced",
+        "readback": {"source_thread_id": "source-thread", "observed_status": "completed"},
+        "evidence_limits": {
+            "source_stop_confirmed": True,
+            "dispatcher_quiesced": True,
+            "ownership_transferred": True,
+        },
+    }
+    report = inspect_takeover({
+        "schema_version": "spec-runner-takeover-input/v1",
+        "repository_path": str(repository),
+        "source_threads": [{
+            "id": "source-thread",
+            "ownership": "unknown",
+            "active": True,
+            "observation": _observation(),
+            "handover_evidence": evidence,
+        }],
+        "artifacts": [],
+        "facts": {"requirements": ["finish the fixture"]},
+    })
+
+    assert report["next_state"] == "adopted_ready"
+    assert report["unresolved"] == []
+    assert report["adopted_threads"][0]["state"] == "released"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -8,7 +9,9 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PACKAGE_ROOT / "src"
@@ -210,6 +213,65 @@ class SpecRunnerCliTests(unittest.TestCase):
         code, status = self.invoke("status", "--control-root", str(self.control_root))
         self.assertEqual(code, 0)
         self.assertEqual(status["runs"], [])
+
+    def test_thread_takeover_reobserves_after_a_durable_handover(self) -> None:
+        import spec_runner.cli as cli
+
+        class HandoverAdapter:
+            interrupt_calls = 0
+
+            def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                return {
+                    "schema_version": "spec-runner-sdk-thread-inspection/v1",
+                    "thread_id": thread_id,
+                    "thread_status": "active",
+                    "active_flags": ["turn"],
+                    "thread": {"forked_from_id": None},
+                    "business_items": [{"turn_id": "turn-1", "item": {"type": "userMessage", "id": "item-1", "content": [{"type": "text", "text": "finish"}]}}],
+                    "completeness": {"state": "complete", "reasons": []},
+                }
+
+            def interrupt_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                HandoverAdapter.interrupt_calls += 1
+                return {
+                    "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+                    "thread_id": thread_id,
+                    "accepted": True,
+                    "source_writer_state": "stopped",
+                    "dispatcher_state": "quiesced",
+                    "readback": {"source_thread_id": thread_id, "observed_status": "completed"},
+                    "evidence_limits": {
+                        "source_stop_confirmed": True,
+                        "dispatcher_quiesced": True,
+                        "ownership_transferred": True,
+                    },
+                }
+
+        output = io.StringIO()
+        with patch.object(cli, "CodexAdapter", HandoverAdapter), redirect_stdout(output):
+            code = cli.main([
+                "takeover", "apply", "--thread-id", "source-thread", "--repository", str(self.repository),
+                "--scope", ".", "--handover-policy", "interrupt_then_takeover",
+                "--control-root", str(self.control_root), "--takeover-key", "handover-reobserve",
+            ])
+        self.assertEqual(code, 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["action"]["state"], "resume_delivery")
+        self.assertEqual(result["frontier"]["state"], "needs_input")
+        self.assertEqual(result["report"]["next_state"], "adopted_ready")
+        self.assertEqual(result["report"]["adopted_threads"][0]["state"], "released")
+        self.assertTrue(any("handover:reobserved:" in item["event_key"] for item in result["transitions"]))
+
+        second_output = io.StringIO()
+        with patch.object(cli, "CodexAdapter", HandoverAdapter), redirect_stdout(second_output):
+            second_code = cli.main([
+                "takeover", "apply", "--thread-id", "source-thread", "--repository", str(self.repository),
+                "--scope", ".", "--handover-policy", "interrupt_then_takeover",
+                "--control-root", str(self.control_root), "--takeover-key", "handover-reobserve",
+            ])
+        self.assertEqual(second_code, 0)
+        self.assertEqual(HandoverAdapter.interrupt_calls, 1)
+        self.assertNotIn("handover", json.loads(second_output.getvalue()))
 
     def test_thread_takeover_requires_an_explicit_scope_before_sdk_access(self) -> None:
         code, result = self.invoke(

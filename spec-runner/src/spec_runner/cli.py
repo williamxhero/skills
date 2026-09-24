@@ -25,6 +25,7 @@ from .takeover import (
     perform_cleanup,
     plan_frontier,
     record_takeover_transition,
+    refresh_takeover_evidence,
     write_takeover_record,
 )
 from .tracker import publish_local, read_local
@@ -246,6 +247,18 @@ def _emit(payload: dict[str, object]) -> None:
     print(json.dumps({"schema_version": CLI_SCHEMA_VERSION, **payload}, ensure_ascii=False, sort_keys=True))
 
 
+def _source_material_digest(observation: object) -> str | None:
+    """Compare source requirements while ignoring mutable activity status."""
+    if not isinstance(observation, dict):
+        return None
+    return digest({
+        "thread": observation.get("thread"),
+        "business_items": observation.get("business_items"),
+        "completeness": observation.get("completeness"),
+        "turn_count": observation.get("turn_count"),
+    })
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
@@ -389,9 +402,68 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report = inspect_takeover(inventory)
                 frontier = plan_frontier(report)
                 if arguments.takeover_command == "apply":
+                    existing_takeover = None
+                    database = arguments.control_root.expanduser().resolve() / "spec-runner.sqlite3"
+                    if database.is_file():
+                        existing_store = Store.open(arguments.control_root.expanduser().resolve(), create=False)
+                        try:
+                            existing_takeover = existing_store.takeover_record(arguments.takeover_key)
+                        finally:
+                            existing_store.close()
+                    if isinstance(existing_takeover, dict):
+                        stored_report = existing_takeover.get("report")
+                        stored_frontier = existing_takeover.get("frontier")
+                        stored_snapshot = stored_report.get("repository_snapshot") if isinstance(stored_report, dict) else None
+                        stored_handover = stored_report.get("handover") if isinstance(stored_report, dict) else None
+                        stored_facts = stored_report.get("historical_facts") if isinstance(stored_report, dict) else None
+                        fresh_facts = inventory.get("facts")
+                        stored_material = _source_material_digest(
+                            stored_facts.get("source_observation") if isinstance(stored_facts, dict) else None
+                        )
+                        fresh_material = _source_material_digest(
+                            fresh_facts.get("source_observation") if isinstance(fresh_facts, dict) else None
+                        )
+                        fresh_snapshot = report.get("repository_snapshot")
+                        stored_thread_ids = sorted(
+                            str(item.get("thread_id")) for item in stored_report.get("adopted_threads", [])
+                            if isinstance(item, dict) and isinstance(item.get("thread_id"), str)
+                        ) if isinstance(stored_report, dict) and isinstance(stored_report.get("adopted_threads"), list) else []
+                        fresh_thread_ids = sorted(
+                            str(item.get("id")) for item in inventory.get("source_threads", [])
+                            if isinstance(item, dict) and isinstance(item.get("id"), str)
+                        ) if isinstance(inventory.get("source_threads"), list) else []
+                        if (
+                            isinstance(stored_report, dict)
+                            and isinstance(stored_frontier, dict)
+                            and isinstance(stored_snapshot, dict)
+                            and isinstance(fresh_snapshot, dict)
+                            and isinstance(stored_handover, dict)
+                            and stored_handover.get("state") == "released"
+                            and stored_snapshot.get("snapshot_digest") == fresh_snapshot.get("snapshot_digest")
+                            and stored_thread_ids == fresh_thread_ids
+                            and stored_material == fresh_material
+                        ):
+                            report = stored_report
+                            frontier = stored_frontier
                     record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
                     action = completion_action(report)
                     result = {**record, "frontier": frontier, "action": action}
+                    stored_record = record.get("record") if isinstance(record.get("record"), dict) else None
+                    last_transition = stored_record.get("last_transition") if isinstance(stored_record, dict) else None
+                    if (
+                        not record.get("created")
+                        and isinstance(last_transition, dict)
+                        and str(last_transition.get("event_key", "")).startswith(f"{arguments.takeover_key}:handover:reobserved:")
+                        and isinstance(stored_record, dict)
+                        and isinstance(stored_record.get("report"), dict)
+                        and isinstance(stored_record.get("frontier"), dict)
+                    ):
+                        report = stored_record["report"]
+                        frontier = stored_record["frontier"]
+                        action = completion_action(report)
+                        result["report"] = report
+                        result["frontier"] = frontier
+                        result["action"] = action
                     if record.get("created"):
                         observed = record_takeover_transition(
                             control_root=arguments.control_root,
@@ -444,6 +516,47 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         result["record"] = finished["record"]
                         result["transitions"] = finished["transitions"]
+                        if handover.get("accepted") is True:
+                            refreshed_inventory = json.loads(json.dumps(inventory, ensure_ascii=False))
+                            refreshed_threads = refreshed_inventory.get("source_threads", [])
+                            if not isinstance(refreshed_threads, list):
+                                raise RunnerError("takeover_inventory_invalid", "source_threads must remain a list after handover")
+                            refreshed_source = next(
+                                (item for item in refreshed_threads
+                                 if isinstance(item, dict) and item.get("id") == arguments.thread_id),
+                                None,
+                            )
+                            if not isinstance(refreshed_source, dict):
+                                raise RunnerError("takeover_source_missing", "handover readback does not identify the source thread")
+                            refreshed_source["handover_evidence"] = handover
+                            refreshed_source["active"] = False
+                            observation_after = handover.get("observation_after")
+                            if isinstance(observation_after, dict):
+                                refreshed_source["observation"] = observation_after
+                                refreshed_facts = refreshed_inventory.get("facts")
+                                if isinstance(refreshed_facts, dict):
+                                    refreshed_facts["source_observation"] = observation_after
+                            report = inspect_takeover(refreshed_inventory)
+                            frontier = plan_frontier(report)
+                            refreshed = refresh_takeover_evidence(
+                                control_root=arguments.control_root,
+                                takeover_key=arguments.takeover_key,
+                                report=report,
+                                frontier=frontier,
+                                event_key=f"{arguments.takeover_key}:handover:reobserved:{report['digest']}",
+                                payload={
+                                    "thread_id": arguments.thread_id,
+                                    "handover_digest": digest(handover),
+                                    "report_digest": report["digest"],
+                                    "frontier_digest": frontier["digest"],
+                                },
+                            )
+                            result["report"] = report
+                            result["frontier"] = frontier
+                            action = completion_action(report)
+                            result["action"] = action
+                            result["record"] = refreshed["record"]
+                            result["transitions"] = refreshed["transitions"]
                     prior_state = record.get("record", {}).get("state") if isinstance(record.get("record"), dict) else None
                     if action["state"] == "cleanup_pending" and prior_state == "cleaned":
                         result["cleanup"] = {"outcome": "cleaned", "attempted": 0, "results": [], "replayed": True}

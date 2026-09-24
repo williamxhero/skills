@@ -1036,6 +1036,57 @@ class Store:
             )
         return {"created": prior is None, "record": record}
 
+    def refresh_takeover_evidence(
+        self,
+        *,
+        takeover_key: str,
+        report: dict[str, object],
+        frontier: dict[str, object],
+        event_key: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Replace the observed report/frontier under one takeover identity."""
+        report_digest = str(report.get("digest", ""))
+        frontier_digest = str(frontier.get("digest", ""))
+        state = str(frontier.get("state", ""))
+        if not takeover_key or not report_digest or not frontier_digest or not state or not event_key:
+            raise RunnerError("invalid_takeover_refresh", "takeover evidence refresh needs identity, evidence, and event")
+        timestamp = now()
+        transition_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT * FROM takeover_records WHERE takeover_key = ?", (takeover_key,)
+            ).fetchone()
+            if existing is None:
+                raise RunnerError("unknown_takeover", "takeover record does not exist")
+            prior = self.connection.execute(
+                "SELECT takeover_key, state, payload_json FROM takeover_transitions WHERE event_key = ?", (event_key,)
+            ).fetchone()
+            if prior is not None:
+                if prior["takeover_key"] != takeover_key or prior["state"] != state or prior["payload_json"] != transition_payload:
+                    raise RunnerError("takeover_transition_conflict", "takeover evidence event identity was reused with different data")
+            else:
+                self.connection.execute(
+                    "INSERT INTO takeover_transitions(takeover_key, event_key, state, payload_json, observed_at) VALUES (?, ?, ?, ?, ?)",
+                    (takeover_key, event_key, state, transition_payload, timestamp),
+                )
+            record = json.loads(existing["record_json"])
+            if not isinstance(record, dict) or record.get("takeover_key") != takeover_key:
+                raise RunnerError("takeover_record_corrupt", "takeover record identity is invalid")
+            record.update({
+                "report_digest": report_digest,
+                "frontier_digest": frontier_digest,
+                "state": state,
+                "report": report,
+                "frontier": frontier,
+                "last_transition": {"event_key": event_key, "state": state, "payload": payload},
+            })
+            self.connection.execute(
+                "UPDATE takeover_records SET report_digest = ?, frontier_digest = ?, state = ?, record_json = ?, updated_at = ? WHERE takeover_key = ?",
+                (report_digest, frontier_digest, state, json.dumps(record, ensure_ascii=False, sort_keys=True), timestamp, takeover_key),
+            )
+        return {"created": prior is None, "record": record}
+
     def takeover_transitions(self, takeover_key: str) -> list[dict[str, object]]:
         return [
             {**dict(row), "payload": json.loads(row["payload_json"])}
