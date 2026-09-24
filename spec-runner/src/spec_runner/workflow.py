@@ -299,6 +299,65 @@ def _planning_response(*, result: CodexWorkerResult, control_root: Path, config:
     return document
 
 
+def _planning_turn_requires_retry(*, control_root: Path, config: RunnerConfig,
+                                  run: RunRecord, thread_id: str, turn_id: str,
+                                  brief_digest: str) -> bool:
+    """Identify a completed planning turn whose semantic receipt was rejected.
+
+    A process can exit after the SDK turn is durable but before the Runner
+    persists its validated SpecPlan. Retry only when the persisted turn is
+    provably not a valid planned response; a valid-looking response must not be
+    replayed or silently promoted without its normal stage completion path.
+    """
+    artifact = _safe_artifact_directory(control_root, config, run.run_id) / (
+        f"codex_planning-{hashlib.sha256(turn_id.encode('utf-8')).hexdigest()}.json"
+    )
+    try:
+        receipt = load_json(artifact)
+        if (receipt.get("status") != "completed"
+                or receipt.get("error") is not None
+                or receipt.get("thread_id") != thread_id
+                or receipt.get("turn_id") != turn_id):
+            return False
+        document = json.loads(str(receipt.get("final_response") or "null"))
+    except (RunnerError, TypeError, json.JSONDecodeError):
+        return False
+    if not isinstance(document, dict) or document.get("outcome") != "planned":
+        return True
+    candidate = dict(document)
+    candidate["schema_version"] = "spec-runner-spec-plan/v1"
+    candidate["requirement_digest"] = brief_digest
+    try:
+        validate_spec_plan(candidate)
+    except RunnerError:
+        return True
+    return False
+
+
+def _blocked_planning_retry_thread(*, control_root: Path, config: RunnerConfig,
+                                   run: RunRecord, store: Store,
+                                   brief_digest: str) -> str | None:
+    worker_id = f"codex_sdk:{run.run_id}:codex_planning"
+    workers = [
+        worker for worker in store.workers_for_run(run.run_id)
+        if worker.get("worker_id") == worker_id
+        and worker.get("state") in {"running", "failed", "interrupted", "rejected"}
+    ]
+    if not workers:
+        return None
+    worker = workers[-1]
+    thread_id = str(worker.get("external_thread_id") or "")
+    turn_id = str(worker.get("external_turn_id") or "")
+    if not thread_id or not turn_id:
+        return None
+    if not _planning_turn_requires_retry(
+        control_root=control_root, config=config, run=run,
+        thread_id=thread_id, turn_id=turn_id, brief_digest=brief_digest,
+    ):
+        return None
+    return thread_id
+
+
 def _persist_implementation_input_gate(
     *, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store,
     result: CodexWorkerResult, brief_digest: str, operation_id: str,
@@ -447,10 +506,18 @@ def _execute_codex_planning(
         "canonical list of requirement strings, and every spec's covers list must contain only exact strings "
         "copied from that requirements list; do not put acceptance prose or paraphrases in covers. Every "
         "requirement must appear in at least one covers list, including global structural or scope "
-        "requirements; do not treat those requirements as implicitly covered by the shape of the plan.\n\n" + brief
+        "requirements; do not treat those requirements as implicitly covered by the shape of the plan. "
+        "Before returning, compare every covers entry character-for-character with the requirements list; "
+        "a covers entry that describes tests or acceptance behavior is invalid unless that exact sentence is "
+        "also present in requirements.\n\n" + brief
     )
     if handoff:
         prompt += "\n\nValidated Grill handoff:\n" + json.dumps(handoff, ensure_ascii=False, sort_keys=True)
+    if thread_id is not None:
+        prompt += (
+            "\n\nThis is a retry after the previous planning receipt was rejected. "
+            "Rebuild the covers arrays from exact requirement strings and do not copy acceptance prose into them."
+        )
     if answers:
         prompt += "\n\nRunner-recorded business answers (use as facts, do not ask again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
     result = _run_worker(
@@ -1455,20 +1522,51 @@ def _finish_codex_implementation(
         if existing_sha == str(workspace_info["base_sha"]):
             raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
     candidate_sha = git_sha(workspace)
-    candidate_receipt = verify_candidate(
-        workspace=workspace, candidate_sha=candidate_sha,
-        acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks),
-        acceptance=list(config.acceptance_ids), base_sha=str(workspace_info["base_sha"]),
-        allowed_paths=config.acceptance_paths,
-    )
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    try:
+        candidate_receipt = verify_candidate(
+            workspace=workspace, candidate_sha=candidate_sha,
+            acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks),
+            acceptance=list(config.acceptance_ids), base_sha=str(workspace_info["base_sha"]),
+            allowed_paths=config.acceptance_paths,
+        )
+    except RunnerError as exc:
+        if exc.code != "candidate_verification_failed":
+            raise
+        # A first candidate can fail the trusted acceptance gate before any
+        # review receipt exists. Route that durable workspace back through the
+        # bounded repair path so a failed check cannot strand the run at an
+        # implementation worker that is already terminal in the SDK.
+        store.complete_codex_stage(
+            run.run_id, implementation_operation,
+            thread_id=result.thread_id, turn_id=result.turn_id,
+            state="candidate_verification_failed",
+            step_name=implementation_step, worker_id=implementation_worker,
+        )
+        repaired_sha, _ = _repair_candidate(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, ticket_plan=ticket_plan, workspace=workspace,
+            findings=[_candidate_verification_finding(exc)],
+            implementation_thread=result.thread_id, artifact_directory=artifact_directory,
+        )
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:initial-candidate-verification-repaired:{repaired_sha}",
+            event_type="candidate_verification_failure_repaired",
+            payload={"spec_key": spec_key, "failed_candidate_sha": candidate_sha,
+                     "repair_thread_id": result.thread_id, "candidate_sha": repaired_sha},
+        )
+        return _resume_after_repair_candidate(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, spec_key=spec_key,
+        )
     if validated_review is not None and (
         validated_review.get("approved") is not True
         or validated_review.get("candidate_sha") != candidate_sha
     ):
         raise RunnerError("review_candidate_mismatch", "persisted review does not approve the current verified candidate")
     store.complete_codex_stage(run.run_id, implementation_operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=implementation_step, worker_id=implementation_worker)
-    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
-    artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / f"candidate-{spec_key}.json").write_text(json.dumps(candidate_receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     if validated_review is None:
         validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
@@ -3143,6 +3241,72 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
         )
         return {"created": False, **_run_delivery_plan(control_root=control_root, config=config, run=run, store=store)}
     if config.execution_backend != "deterministic_test":
+        if run.state in {"running", "cleanup_pending", "failed"} and run.current_step == "codex_planning":
+            workers = store.workers_for_run(run.run_id)
+            worker_id = f"codex_sdk:{run.run_id}:codex_planning"
+            stage_workers = [
+                worker for worker in workers
+                if worker.get("backend_kind") == "codex_sdk"
+                and worker.get("state") in {"running", "failed", "interrupted", "rejected"}
+                and worker.get("worker_id") == worker_id
+            ]
+            worker = stage_workers[-1] if stage_workers else None
+            thread_id = str(worker.get("external_thread_id") or "") if worker else ""
+            turn_id = str(worker.get("external_turn_id") or "") if worker else ""
+            if worker is None or not thread_id or not turn_id:
+                raise RunnerError("recovery_blocked", "the planning stage has no uniquely identified worker result")
+            try:
+                inspection = CodexAdapter().read_thread(
+                    thread_id=thread_id,
+                    repository_path=config.repository_path,
+                )
+            except RunnerError as exc:
+                raise RunnerError(
+                    "recovery_blocked",
+                    "the persisted planning thread could not be reconciled; inspect it before retry",
+                    details={"inspection_error": exc.code},
+                ) from exc
+            turns = inspection.get("turns") if isinstance(inspection, dict) else None
+            turn_count = inspection.get("turn_count") if isinstance(inspection, dict) else None
+            terminal_completed = (
+                isinstance(inspection, dict)
+                and inspection.get("started_turn") is False
+                and inspection.get("thread_id") == thread_id
+                and inspection.get("thread_status") == "idle"
+                and inspection.get("active_flags") == []
+                and isinstance(turns, list)
+                and isinstance(turn_count, int)
+                and not isinstance(turn_count, bool)
+                and turn_count == len(turns)
+                and bool(turns)
+                and isinstance(turns[-1], dict)
+                and turns[-1].get("turn_id") == turn_id
+                and turns[-1].get("status") == "completed"
+            )
+            if not terminal_completed:
+                if run.state != "failed":
+                    raise RunnerError("recovery_blocked", "the planning turn has no uniquely recoverable terminal result")
+            elif _planning_turn_requires_retry(
+                control_root=control_root, config=config, run=run,
+                thread_id=thread_id, turn_id=turn_id, brief_digest=brief_digest,
+            ):
+                store.append_event(
+                    run_id=run.run_id,
+                    event_key=f"recovery:{run.run_id}:planning-semantic-retry:{turn_id}:{worker['updated_at']}",
+                    event_type="invalid_planning_turn_reconciled",
+                    payload={"step": run.current_step, "thread_id": thread_id, "turn_id": turn_id},
+                )
+                resumed = _resume_codex_stage(
+                    control_root=control_root, config=config, run=run,
+                    brief=brief, brief_digest=brief_digest, store=store,
+                    thread_id=thread_id,
+                )
+                return {"created": False, **resumed}
+            elif run.state != "failed":
+                raise RunnerError(
+                    "recovery_blocked",
+                    "completed planning turn has no persisted validated SpecPlan",
+                )
         if run.state == "failed":
             resumable_steps = {
                 "codex_example",
@@ -4147,6 +4311,18 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
             global_lease = _acquire_global_lease(scope=lease_scope, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
             store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
             heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
+            if existing.state == "blocked" and config.execution_backend == "codex_sdk" and existing.current_step == "codex_planning":
+                retry_thread = _blocked_planning_retry_thread(
+                    control_root=control_root, config=config, run=existing,
+                    store=store, brief_digest=brief_digest,
+                )
+                if retry_thread is not None:
+                    resumed = _resume_codex_stage(
+                        control_root=control_root, config=config, run=existing,
+                        brief=brief, brief_digest=brief_digest, store=store,
+                        thread_id=retry_thread,
+                    )
+                    return {"created": False, **resumed}
             if existing.state == "blocked" and config.execution_backend == "codex_sdk":
                 retry_identity = _blocked_implementation_retry_identity(
                     control_root=control_root, config=config, run=existing, store=store,
