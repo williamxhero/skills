@@ -57,6 +57,46 @@ Remaining for this train: exact-wheel L3 and two replays; six-SPEC tail L4;
 live GitHub source/takeover and Windows control DB/log recovery L5. None is
 discharged by these unit/acceptance tests.
 
+## Recovery and candidate-scope audit (2026-09-24)
+
+The audit resumed the existing production run `40415c4d-634b-4625-9d3f-99e6cd0a3e59`
+for marker `SRAC-20260923-e818da834f41`; it did not create a second run. The
+run's fixture implementation candidate is `32be96c1c08298874a687b39df19cdc75ed529a5`,
+based on `29045fed3f41e0a5a83fe12315dde59d9f866fce`.
+
+The audit found and fixed five recovery defects: candidate-scope Git reads did
+not enable Windows long paths; failed-run closure hid a completed implementation
+worker from safe recovery; workspace adoption rejected the manifest's original
+base after `master` moved; trusted pytest checks created an ignored cache outside
+the fixture allowlist; and completed implementation recovery validated its
+TicketPlan against the moved target instead of the manifest base. The fixes
+were pushed to `origin/master` as `a8e67e2`, `07db777`, `ef5fc04`, `65291e6`,
+and `6d22645`.
+
+L0 `git diff --check` passed. Focused delivery/production checks passed (64
+passed), workflow recovery checks passed (9 passed, 5 deselected), and the
+final source suite passed (159 passed, 1 skipped, 1 deselected; 49.69 seconds).
+The deselection is the environment-specific missing-SDK test, since the SDK is
+installed locally. These are source-level checks, not installed-wheel L3.
+
+The same run recovered the completed SDK turn without replaying it. Trusted
+candidate verification passed all six fixture tests and recorded
+`candidate-SRAC-20260923-e818da834f41.json`; independent review approved the
+same candidate SHA with no findings. Merge then stopped with
+`target_ref_changed`: `master` had advanced beyond the candidate's base while
+the recovery fixes were being committed. The run remains `blocked` at
+`codex_review`; there is no merge receipt, cleanup readback, or transactional
+SPEC completion. No candidate was force-merged and no completion was claimed.
+
+GitHub issue #256 remains OPEN and its acceptance checklist remains unchecked.
+The existing live report `SRAC-20260923-6dfe49ef27ba-native-relations.json`
+proves native parent and blocked-by write/readback for its three run-marked
+test issues only. It does not prove the full SF-03.1 production publication
+recovery acceptance or the project-level three-SPEC GitHub delivery. Exact-wheel
+L3, six-SPEC tail L4, live SDK process restart, Windows detached-parent exit,
+source takeover, Windows control DB/log recovery, and complete three-SPEC
+GitHub delivery remain `not_verified`.
+
 ## Transactional production completion frontier (2026-09-23)
 
 The SQLite Store is now authoritative for per-SPEC completion: plan and
