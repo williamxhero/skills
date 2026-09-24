@@ -1001,7 +1001,12 @@ def _finish_codex_implementation(
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
     write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
-    implementation_artifacts(result, workspace, artifact_root=write_root)
+    # A worker may complete the edit while reporting that its own sandbox
+    # could not run a local check.  That report is not delivery evidence, so
+    # let the Runner's trusted candidate verification decide whether the
+    # candidate is usable.  Blocked, failed, or input-gated outcomes still
+    # fail at the semantic boundary.
+    implementation_artifacts(result, workspace, allow_completed_blockers=True, artifact_root=write_root)
     validate_candidate_write_scope(
         workspace=workspace, base_sha=str(workspace_info["base_sha"]),
         allowed_paths=config.acceptance_paths,

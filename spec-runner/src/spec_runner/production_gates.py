@@ -42,6 +42,7 @@ def worker_document(result: CodexWorkerResult) -> dict:
 
 
 def implementation_artifacts(result: CodexWorkerResult, workspace: Path, *, allow_blocked: bool = False,
+                             allow_completed_blockers: bool = False,
                              artifact_root: Path | None = None) -> dict:
     document = worker_document(result)
     incomplete_but_deliverable = (
@@ -51,7 +52,14 @@ def implementation_artifacts(result: CodexWorkerResult, workspace: Path, *, allo
         and bool(document.get("blockers"))
         and document.get("questions") == []
     )
-    if (not incomplete_but_deliverable
+    completed_with_blockers = (
+        allow_completed_blockers
+        and document.get("outcome") == "completed"
+        and isinstance(document.get("blockers"), list)
+        and bool(document.get("blockers"))
+        and document.get("questions") == []
+    )
+    if (not incomplete_but_deliverable and not completed_with_blockers
             and (document.get("outcome") != "completed" or document.get("blockers") != []
                  or document.get("questions") != [])):
         raise RunnerError("implementation_not_ready", "implementation is incomplete or requires input")

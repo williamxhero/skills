@@ -17,6 +17,7 @@ from spec_runner.errors import RunnerError
 from spec_runner.store import RunRecord, Store, now
 from spec_runner.tracker import read_local
 from spec_runner.plans import validate_spec_plan, validate_ticket_plan
+from spec_runner.production_gates import implementation_artifacts
 
 
 @pytest.fixture
@@ -143,6 +144,29 @@ def test_production_implementation_prompt_keeps_checks_and_other_runners_outside
     assert "Do not run repository-wide test discovery" in captured["prompt"]
     assert "start another Runner" in captured["prompt"]
     assert "Runner will execute the exact trusted acceptance checks" in captured["prompt"]
+
+
+def test_completed_worker_blocker_is_deferred_to_trusted_candidate_gate(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = workspace / "result.py"
+    artifact.write_text("value = 1\n", encoding="utf-8")
+    result = CodexWorkerResult(
+        "implementation-thread", "implementation-turn", "completed", None,
+        json.dumps({
+            "outcome": "completed",
+            "artifacts": ["result.py"],
+            "blockers": ["worker sandbox could not run its focused check"],
+            "questions": [],
+        }),
+        1, 1, 2,
+    )
+    document = implementation_artifacts(
+        result, workspace, allow_completed_blockers=True,
+    )
+    assert document["artifacts"] == ["result.py"]
+    with pytest.raises(RunnerError, match="incomplete or requires input"):
+        implementation_artifacts(result, workspace)
 
 
 def test_planning_persists_real_callback_identity_and_publishes_local_parent(context, monkeypatch):

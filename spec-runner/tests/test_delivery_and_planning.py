@@ -166,6 +166,28 @@ class ProductBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(RunnerError, "requires a trusted write scope"):
                 validate_candidate_write_scope(workspace=repo, base_sha="HEAD", allowed_paths=())
 
+    def test_candidate_scope_ignores_unchanged_long_tracked_paths(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "Spec Runner Test"], check=True)
+            long_path = repo.joinpath(*(["long-path"] * 24), "tracked.py")
+            long_path.parent.mkdir(parents=True)
+            long_path.write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "-c", "core.longpaths=true", "-C", str(repo), "add", "."], check=True)
+            subprocess.run(["git", "-c", "core.longpaths=true", "-C", str(repo), "commit", "-qm", "base"], check=True)
+            base_sha = git_sha(repo)
+
+            changed = validate_candidate_write_scope(
+                workspace=repo,
+                base_sha=base_sha,
+                allowed_paths=("long-path",),
+            )
+
+            self.assertEqual(changed, [])
+
     def test_workspace_and_guarded_local_merge_preserve_main_checkout(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp) / "repo"

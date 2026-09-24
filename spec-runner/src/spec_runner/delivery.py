@@ -260,7 +260,7 @@ def validate_candidate_write_scope(*, workspace: Path, base_sha: str, allowed_pa
     ):
         try:
             result = subprocess.run(
-                ["git", "-C", os.fspath(workspace), *arguments],
+                _git_command(workspace, *arguments),
                 check=True,
                 capture_output=True,
             )
