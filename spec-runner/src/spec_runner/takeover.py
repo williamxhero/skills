@@ -452,8 +452,19 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
                 steps.append({"kind": "reconcile", "target": key, "status": "needs_input", "reason": "SPEC state is unknown or conflicting"})
 
     if not facts.get("requirements"):
+        source_material = facts.get("requirements_material")
+        material_available = isinstance(source_material, list) and bool(source_material)
         categories["backfilled"].append("requirement_scope")
-        steps.append({"kind": "backfill", "target": "requirement_scope", "status": "needs_input", "reason": "original requirement scope is not present in the inventory"})
+        steps.append({
+            "kind": "backfill",
+            "target": "requirement_scope",
+            "status": "planned" if material_available else "needs_input",
+            "reason": (
+                "source business material is available for semantic scope reconstruction"
+                if material_available else
+                "original requirement scope is not present in the inventory"
+            ),
+        })
     if not facts.get("tracker"):
         categories["backfilled"].append("tracker_plan")
         steps.append({"kind": "backfill", "target": "tracker_plan", "status": "planned", "reason": "create the minimum local or GitHub tracker objects after source scope is confirmed"})

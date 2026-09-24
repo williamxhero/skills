@@ -399,6 +399,25 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(frontier["state"], "needs_input")
             self.assertTrue(any(step["target"] == "requirement_scope" for step in frontier["steps"]))
 
+    def test_takeover_frontier_routes_observed_business_material_to_planning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            report = inspect_takeover({
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repo),
+                "source_threads": [],
+                "artifacts": [],
+                "facts": {
+                    "requirements_material": [{"turn_id": "turn-1", "item": {"type": "userMessage", "content": [{"type": "text", "text": "finish the fixture"}]}}],
+                },
+            })
+            frontier = plan_frontier(report)
+            scope_step = next(step for step in frontier["steps"] if step["target"] == "requirement_scope")
+            self.assertEqual(frontier["state"], "planned")
+            self.assertEqual(scope_step["status"], "planned")
+
     def test_takeover_wait_policy_does_not_start_a_competing_writer(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp) / "repo"

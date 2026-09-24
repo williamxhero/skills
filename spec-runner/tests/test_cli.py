@@ -257,7 +257,7 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         result = json.loads(output.getvalue())
         self.assertEqual(result["action"]["state"], "resume_delivery")
-        self.assertEqual(result["frontier"]["state"], "needs_input")
+        self.assertEqual(result["frontier"]["state"], "planned")
         self.assertEqual(result["report"]["next_state"], "adopted_ready")
         self.assertEqual(result["report"]["adopted_threads"][0]["state"], "released")
         self.assertTrue(any("handover:reobserved:" in item["event_key"] for item in result["transitions"]))
