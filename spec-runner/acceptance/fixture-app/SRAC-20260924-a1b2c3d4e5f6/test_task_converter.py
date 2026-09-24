@@ -16,16 +16,37 @@ def test_normalizes_reordered_headers_and_ignores_extra_columns():
             {"id": "task-2", "title": "Second", "status": "open"},
             {"id": "task-1", "title": "First", "status": "done"},
         ],
-        "counts": {},
+        "counts": {"done": 1, "open": 1},
     }
 
 
 def test_preserves_surrounding_whitespace_and_accepts_header_only_input():
     assert convert_csv("id,title,status\n 1 , A title , open \n") == {
         "rows": [{"id": " 1 ", "title": " A title ", "status": " open "}],
-        "counts": {},
+        "counts": {" open ": 1},
     }
     assert convert_csv("id,title,status\n") == {"rows": [], "counts": {}}
+
+
+def test_counts_exact_statuses_in_sorted_order_without_changing_rows():
+    result = convert_csv(
+        "id,title,status\n"
+        "1,First,éxito\n"
+        "2,Second,open\n"
+        "3,Third,Open\n"
+        "4,Fourth,éxito\n"
+    )
+
+    assert list(result) == ["rows", "counts"]
+    assert result["rows"] == [
+        {"id": "1", "title": "First", "status": "éxito"},
+        {"id": "2", "title": "Second", "status": "open"},
+        {"id": "3", "title": "Third", "status": "Open"},
+        {"id": "4", "title": "Fourth", "status": "éxito"},
+    ]
+    counts = result["counts"]
+    assert list(counts) == ["Open", "open", "éxito"]
+    assert counts == {"Open": 1, "open": 1, "éxito": 2}
 
 
 @pytest.mark.parametrize(
