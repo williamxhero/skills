@@ -2128,12 +2128,18 @@ def _reconcile_approved_review(*, control_root: Path, config: RunnerConfig,
     if validated_review.get("approved") is not True or validated_review.get("candidate_sha") is None:
         raise RunnerError("recovery_blocked", "persisted review is not an approved candidate frontier")
     candidate_receipt = None
-    for candidate_path in sorted(artifact_directory.glob("candidate-*.json")):
-        document = load_json(candidate_path)
-        if str(document.get("candidate_sha") or "").startswith(candidate_short):
-            if candidate_receipt is not None:
-                raise RunnerError("recovery_blocked", "approved review matches multiple candidate receipts")
-            candidate_receipt = document
+    canonical_candidate_path = artifact_directory / f"candidate-{spec_key}.json"
+    if canonical_candidate_path.is_file():
+        canonical_candidate = load_json(canonical_candidate_path)
+        if str(canonical_candidate.get("candidate_sha") or "").startswith(candidate_short):
+            candidate_receipt = canonical_candidate
+    if candidate_receipt is None:
+        for candidate_path in sorted(artifact_directory.glob("candidate-*.json")):
+            document = load_json(candidate_path)
+            if str(document.get("candidate_sha") or "").startswith(candidate_short):
+                if candidate_receipt is not None:
+                    raise RunnerError("recovery_blocked", "approved review matches multiple candidate receipts")
+                candidate_receipt = document
     if candidate_receipt is None:
         raise RunnerError("recovery_blocked", "approved review has no matching candidate receipt")
     candidate_sha = str(candidate_receipt.get("candidate_sha") or "")
