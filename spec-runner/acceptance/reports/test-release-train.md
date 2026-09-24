@@ -34,6 +34,29 @@ The transport tests additionally verify BOM-free UTF-8 file upload, temporary
 file cleanup, a 120-second gh timeout, and structured timeout classification.
 No repository initialization, test issue creation, or issue closure occurred.
 
+## PR receipt boundary correction (2026-09-24)
+
+Review of the merged SF-03.1 implementation found two fail-closed gaps in the
+PR delivery adapter. A paginated response containing a non-object entry could
+be silently filtered before the create decision, and definitive authentication,
+permission, not-found, rate-limit, rejection, or local `gh` availability
+errors from PR creation could be reclassified as an unknown outcome. The
+adapter now rejects malformed pages before POST and preserves those definitive
+classes; timeouts, server errors, and lost responses still require marker
+reconciliation before retry.
+
+The focused PR delivery and GitHub contract suites passed 22 tests. The source
+and acceptance suite, excluding the two run fixture directories whose tests
+share a module basename and excluding the environment-specific missing-SDK
+assertion while the SDK is installed, passed 167 tests with one skip. The
+default recursive collection remains invalid for those duplicate fixture module
+names; the missing-SDK test was not treated as a product failure.
+
+This correction improves SF-03.1 failure classification and readback safety. It
+does not discharge the issue's live three-SPEC production publication,
+source-thread takeover, Windows control DB/log recovery, or project-level L4/L5
+gates. GitHub issue #256 remains open.
+
 ## Live production single-SPEC delivery (2026-09-24)
 
 Run marker `SRAC-20260924-f531e1d00a03`; run ID

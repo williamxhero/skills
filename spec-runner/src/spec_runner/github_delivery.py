@@ -11,6 +11,16 @@ from .errors import RunnerError
 from .plans import digest
 
 
+_DEFINITIVE_PR_CREATE_FAILURES = frozenset({
+    "github_auth",
+    "github_forbidden",
+    "github_not_found",
+    "github_rate_limited",
+    "github_rejected",
+    "github_delivery_unavailable",
+})
+
+
 class GitHubDelivery:
     def __init__(self, *, runner: Callable[[list[str]], str] | None = None):
         self.runner = runner or self._gh
@@ -57,7 +67,9 @@ class GitHubDelivery:
             return document
         if not isinstance(document, list) or any(not isinstance(page, list) for page in document):
             raise RunnerError(code, f"{label} pagination response was incomplete")
-        result = [item for page in document for item in page if isinstance(item, dict)]
+        if any(not isinstance(item, dict) for page in document for item in page):
+            raise RunnerError(code, f"{label} pagination contained a non-object item")
+        result = [item for page in document for item in page]
         return result
 
     def _read_pull_request(self, *, repository: str, number: int, head: str,
@@ -148,6 +160,19 @@ class GitHubDelivery:
             adopted_after_reconcile = False
             try:
                 response = json.loads(self.runner(["api", f"repos/{repository}/pulls", "--method", "POST", "-f", f"title=Spec Runner {candidate_sha[:12]}", "-f", f"head={head}", "-f", f"base={base}", "-f", f"body={marker}\n{body}"]))
+            except RunnerError as exc:
+                if exc.code in _DEFINITIVE_PR_CREATE_FAILURES:
+                    raise
+                # A server or transport failure may have followed an accepted
+                # POST. Reconcile by the exact run marker before retrying.
+                try:
+                    retry_listing = self._paged_list(self.runner(list_args), code="github_pr_readback_incomplete", label="pull request readback")
+                except Exception as readback_exc:
+                    raise RunnerError("github_pr_unknown", "PR creation outcome and readback are both unknown") from readback_exc
+                recovered = [item for item in retry_listing if marker in str(item.get("body") or "") and str(item.get("head", {}).get("sha", "")) == candidate_sha]
+                if len(recovered) != 1:
+                    raise RunnerError("github_pr_unknown", "PR creation outcome is not uniquely reconciled") from exc
+                response = recovered[0]
             except Exception as exc:
                 # A lost POST response has an unknown outcome. Re-read the
                 # complete scoped listing and adopt exactly one matching PR;
