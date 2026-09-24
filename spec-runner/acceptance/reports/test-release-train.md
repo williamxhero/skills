@@ -34,6 +34,32 @@ The transport tests additionally verify BOM-free UTF-8 file upload, temporary
 file cleanup, a 120-second gh timeout, and structured timeout classification.
 No repository initialization, test issue creation, or issue closure occurred.
 
+## Live production single-SPEC delivery (2026-09-24)
+
+Run marker `SRAC-20260924-f531e1d00a03`; run ID
+`20e28e7a-17fe-47fa-a2ae-99a1e9d4bb88`. This run exercised the production
+entrypoint with nine persisted business answers, then completed SpecPlan,
+TicketPlan, implementation, candidate verification, independent review, local
+merge, and workspace cleanup.
+
+The candidate was `2af7662b147bad06e4ebab518daf8dbfd86d2e48`, based on
+`22b46c2933eba0936e83f533212383d92b0cf659`. The candidate check ran the six
+fixture tests successfully. Independent review approved the candidate with no
+blocking findings. Local merge produced
+`b88ea9e64bf3a0bbd364b00f08d6063bd0c431b`; cleanup completed with no errors.
+The durable receipt is
+`SRAC-20260924-f531e1d00a03-production.json`.
+
+The review left two open medium findings: the fixture test matrix does not
+cover missing, extra, or reordered headers or preserve an existing output for
+each invalid input; and it does not inject serialization or temporary-file
+preparation/write/flush/fsync failures. These findings remain open and this
+run is not evidence that SF-03.1 or the project-level release gates are
+complete. Exact-wheel L3 for this post-merge candidate, complete three-SPEC
+GitHub delivery, live SDK restart, Windows detached-parent exit, source
+takeover, Windows control DB/log recovery, and the six-SPEC L4 checkpoint
+remain unverified.
+
 ## Production cleanup recovery hardening (2026-09-23)
 
 Impact: `src/spec_runner/workflow.py` production dispatch and recovery; direct

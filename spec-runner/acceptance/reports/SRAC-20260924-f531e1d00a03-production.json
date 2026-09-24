@@ -1,0 +1,72 @@
+{
+  "schema_version": "spec-runner-production-single-spec/v1",
+  "run_marker": "SRAC-20260924-f531e1d00a03",
+  "run_id": "20e28e7a-17fe-47fa-a2ae-99a1e9d4bb88",
+  "repository": "williamxhero/skills",
+  "target_ref": "refs/heads/master",
+  "base_sha": "22b46c2933eba0936e83f533212383d92b0cf659",
+  "candidate_sha": "2af7662b147bad06e4ebab518daf8dbfd86d2e48",
+  "merge_sha": "b88ea9e64bf3a0bbd364b00f08d6063bd0c431b",
+  "outcome": "merged_with_open_findings",
+  "stages": {
+    "business_input": {
+      "outcome": "completed",
+      "persisted_answers": 9
+    },
+    "spec_plan": {
+      "outcome": "planned",
+      "digest": "9ba10b150ba294f42039a4c6470cb5dc211d5a381258dc84d98d9b6f2046f4cf"
+    },
+    "ticket_plan": {
+      "outcome": "planned",
+      "digest": "76c8bb39b8e23e3c3048907f003bc6a8c8a0a72050fd803ba93d391e7c03131f",
+      "ticket_count": 3
+    },
+    "candidate_checks": {
+      "outcome": "verified",
+      "passed": 6,
+      "command": "python -m pytest spec-runner/acceptance/fixture-app/SRAC-20260924-f531e1d00a03 -q"
+    },
+    "review": {
+      "outcome": "approved",
+      "blocking_findings": 0,
+      "open_findings": 2,
+      "review_digest": "8cc2fabe58672e9787c993aee99dc47d4278e04111088e39632792688e7e17aa"
+    },
+    "merge": {
+      "outcome": "merged",
+      "previous_target_sha": "22b46c2933eba0936e83f533212383d92b0cf659",
+      "target_ref": "refs/heads/master"
+    },
+    "cleanup": {
+      "outcome": "cleaned",
+      "errors": {}
+    }
+  },
+  "open_findings": [
+    {
+      "severity": "medium",
+      "status": "open",
+      "description": "Validation tests do not cover missing, extra, or reordered headers, and existing-output preservation is asserted for only one invalid input."
+    },
+    {
+      "severity": "medium",
+      "status": "open",
+      "description": "Output-stage tests inject os.replace failure only; serialization and temporary-file preparation/write/flush/fsync failures are not injected."
+    }
+  ],
+  "unverified_project_gates": [
+    "exact-wheel L3 for this post-merge candidate",
+    "complete three-SPEC GitHub delivery",
+    "live Codex process restart",
+    "Windows detached-parent exit",
+    "source-thread takeover",
+    "Windows control DB and log recovery",
+    "six-SPEC release-train L4 owner regression"
+  ],
+  "evidence": {
+    "candidate_receipt": "spec-runner/acceptance/.runtime/SRAC-20260924-f531e1d00a03/artifacts/20e28e7a-17fe-47fa-a2ae-99a1e9d4bb88/candidate-SRAC-20260924-f531e1d00a03.json",
+    "delivery_receipt": "spec-runner/acceptance/.runtime/SRAC-20260924-f531e1d00a03/artifacts/20e28e7a-17fe-47fa-a2ae-99a1e9d4bb88/delivery-SRAC-20260924-f531e1d00a03.json",
+    "review_receipt": "spec-runner/acceptance/.runtime/SRAC-20260924-f531e1d00a03/artifacts/20e28e7a-17fe-47fa-a2ae-99a1e9d4bb88/review-SRAC-20260924-f531e1d00a03-2af7662b147b.json"
+  }
+}
