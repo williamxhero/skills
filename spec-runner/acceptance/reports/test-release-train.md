@@ -296,7 +296,9 @@ thin-entry unittest `3 passed`; targeted SF-03.1 publication and delivery
 selection `74 passed`; `git diff --check` passed. The two fixture-app test
 directories with a duplicate module basename remain excluded from recursive
 pytest collection, and the unit-test skip is environment-independent. The
-updated GitHub Actions result must still pass on the pushed commit. These are
-CI/test-harness corrections only: issue #256 remains OPEN and its checklist
-unchecked; complete three-SPEC delivery and the outstanding project-level
-L3/L4/L5 gates remain `not_verified`.
+GitHub Actions run `35963939388` passed both `contract (ubuntu-latest)` and
+`contract (windows-latest)` on source commit `c99e1d2284d4c0487e3e43cf40b7341aead6a1e8`,
+including Runner tests, thin-entry tests, wheel build/install, and the
+installed public CLI. These are CI/test-harness corrections only: issue #256
+remains OPEN and its checklist unchecked; complete three-SPEC delivery and
+the outstanding project-level L3/L4/L5 gates remain `not_verified`.
