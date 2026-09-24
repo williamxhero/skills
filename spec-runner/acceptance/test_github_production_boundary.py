@@ -89,6 +89,13 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     (artifact / "github-S1.json").write_text(json.dumps({
         "spec_key": "S1", "state": "waiting_ci", "candidate": candidate, "review": review,
     }), encoding="utf-8")
+    (artifact / "github-S0.json").write_text(json.dumps({
+        "spec_key": "S0", "state": "waiting_ci", "candidate": {"candidate_sha": "b" * 40},
+        "review": review,
+    }), encoding="utf-8")
+    store.complete_production_spec(
+        run_id=run.run_id, spec_key="S0", plan_digest="plan-0", delivery_digest="delivery-0",
+    )
     (artifact / "candidate-S1.json").write_text(json.dumps(candidate), encoding="utf-8")
     (artifact / f"review-S1-{candidate_sha[:12]}.json").write_text(json.dumps({
         **review, "worker": {"thread_id": "review-thread", "turn_id": "review-turn"},
@@ -128,7 +135,7 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     assert len(calls) == 2
     assert calls[1]["push"] is False
     assert store.find_by_run_id(run.run_id).state == "spec_completed"
-    assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S1"]
+    assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S0", "S1"]
 
 
 def test_github_merge_reconciles_local_base_before_next_spec(tmp_path):

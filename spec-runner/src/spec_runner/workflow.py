@@ -957,9 +957,13 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
         if document.get("run_id") == run.run_id:
             manifests.append((path, document))
     waiting = []
+    completed_specs = _production_completed_specs(
+        control_root=control_root, config=config, run_id=run.run_id, store=store,
+    )
     for path in github_files:
         document = load_json(path)
-        if document.get("state") == "waiting_ci":
+        if (document.get("state") == "waiting_ci"
+                and document.get("spec_key") not in completed_specs):
             waiting.append(document)
     if len(waiting) != 1:
         raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run needs one unambiguous SPEC delivery receipt")
