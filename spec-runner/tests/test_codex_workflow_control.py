@@ -65,6 +65,61 @@ class FakeResumableAdapter:
 
 
 class CodexWorkflowControlTests(unittest.TestCase):
+    def test_planning_prompt_carries_durable_takeover_frontier_as_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-takeover-prompt-") as temporary:
+            root = Path(temporary)
+            repository = root / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+            config = RunnerConfig(
+                repository, "HEAD", Path("artifacts"), "codex_sdk", ("planning",),
+                "fake", "high", (Path("artifacts"),), None, None, (), "test", "config",
+            )
+            run_id = "22222222-2222-2222-2222-222222222222"
+            timestamp = now()
+            run = RunRecord(
+                run_id=run_id, launch_key="takeover-prompt", input_digest="brief",
+                config_digest="config", repository_path=str(repository), target_ref="HEAD",
+                artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                current_step="codex_planning", log_path="logs/run.jsonl",
+                created_at=timestamp, updated_at=timestamp,
+            )
+            store = Store.open(root / "control", create=True)
+            try:
+                store.create_run(run, f"start:{run_id}")
+                artifact = root / "control" / "artifacts" / run_id
+                artifact.mkdir(parents=True)
+                (artifact / "takeover-context.json").write_text(json.dumps({
+                    "schema_version": "spec-runner-takeover-context/v1",
+                    "run_id": run_id,
+                    "takeover_key": "takeover-prompt",
+                    "record": {
+                        "takeover_key": "takeover-prompt",
+                        "report": {"digest": "report-digest"},
+                        "frontier": {"state": "planned", "steps": [{"target": "remaining-SF-04"}]},
+                    },
+                }), encoding="utf-8")
+                captured: dict[str, object] = {}
+
+                def capture(**kwargs: object) -> CodexWorkerResult:
+                    captured.update(kwargs)
+                    return CodexWorkerResult("thread", "turn", "completed", None, "{}", 0, 1, 2)
+
+                with patch.object(workflow, "_run_worker", side_effect=capture), patch.object(
+                    workflow, "_planning_response", return_value=run
+                ):
+                    workflow._execute_codex_planning(
+                        control_root=root / "control", config=config, brief="continue", brief_digest="brief",
+                        run=run, store=store,
+                    )
+                prompt = str(captured["prompt"])
+                self.assertIn("takeover-prompt", prompt)
+                self.assertIn("remaining-SF-04", prompt)
+                self.assertIn("evidence only", prompt)
+                self.assertIn("reverify", prompt)
+            finally:
+                store.close()
+
     def test_production_acceptance_upgrade_preserves_existing_run_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -973,6 +973,28 @@ class Store:
             )
         return {"created": True, "record": record}
 
+    def takeover_record(self, takeover_key: str) -> dict[str, object] | None:
+        """Read one takeover record without changing its durable state."""
+        row = self.connection.execute(
+            "SELECT record_json FROM takeover_records WHERE takeover_key = ?",
+            (takeover_key,),
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            record = json.loads(row["record_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RunnerError("takeover_record_corrupt", "takeover record is not valid JSON") from exc
+        if (
+            not isinstance(record, dict)
+            or record.get("schema_version") != "spec-runner-takeover-record/v1"
+            or record.get("takeover_key") != takeover_key
+            or not isinstance(record.get("report"), dict)
+            or not isinstance(record.get("frontier"), dict)
+        ):
+            raise RunnerError("takeover_record_corrupt", "takeover record has an invalid identity or shape")
+        return record
+
     def update_takeover_record(
         self,
         *,

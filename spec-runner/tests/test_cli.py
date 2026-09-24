@@ -12,6 +12,7 @@ from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PACKAGE_ROOT / "src"
+sys.path.insert(0, str(SOURCE_ROOT))
 
 
 def digest_tree(root: Path) -> dict[str, str]:
@@ -155,6 +156,57 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(result["action"]["state"], "reverify_delivery")
         self.assertNotIn("runner", result)
+        code, status = self.invoke("status", "--control-root", str(self.control_root))
+        self.assertEqual(code, 0)
+        self.assertEqual(status["runs"], [])
+
+    def test_resume_takeover_binds_runner_to_takeover_identity_and_replays_same_run(self) -> None:
+        inventory = self.root / "resume-takeover.json"
+        inventory.write_text(json.dumps({
+            "schema_version": "spec-runner-takeover-input/v1",
+            "repository_path": str(self.repository),
+            "source_threads": [],
+            "artifacts": [],
+            "facts": {"requirements": ["continue delivery"], "tracker": True, "partial_code": True},
+        }), encoding="utf-8")
+
+        arguments = (
+            "takeover", "apply", "--file", str(inventory), "--control-root", str(self.control_root),
+            "--takeover-key", "resume-identity", "--brief", str(self.brief), "--config", str(self.config),
+        )
+        code, first = self.invoke(*arguments)
+        self.assertEqual(code, 0, first)
+        self.assertEqual(first["action"]["state"], "resume_delivery")
+        run_id = first["runner"]["run"]["run_id"]
+        context_path = self.control_root / "artifacts" / run_id / "takeover-context.json"
+        self.assertTrue(context_path.is_file())
+        context = json.loads(context_path.read_text(encoding="utf-8"))
+        self.assertEqual(context["schema_version"], "spec-runner-takeover-context/v1")
+        self.assertEqual(context["run_id"], run_id)
+        self.assertEqual(context["takeover_key"], "resume-identity")
+        self.assertEqual(context["record"]["takeover_key"], "resume-identity")
+
+        code, second = self.invoke(*arguments)
+        self.assertEqual(code, 0, second)
+        self.assertFalse(second["created"])
+        self.assertEqual(second["runner"]["run"]["run_id"], run_id)
+        code, status = self.invoke("status", "--control-root", str(self.control_root))
+        self.assertEqual(code, 0)
+        self.assertEqual([item["run_id"] for item in status["runs"]], [run_id])
+
+    def test_start_with_unknown_takeover_record_fails_closed(self) -> None:
+        from spec_runner.workflow import start
+        from spec_runner.errors import RunnerError
+
+        with self.assertRaises(RunnerError) as raised:
+            start(
+                brief_file=self.brief,
+                config_file=self.config,
+                control_root=self.control_root,
+                launch_key="missing-takeover",
+                takeover_key="does-not-exist",
+            )
+        self.assertEqual(raised.exception.code, "takeover_record_missing")
         code, status = self.invoke("status", "--control-root", str(self.control_root))
         self.assertEqual(code, 0)
         self.assertEqual(status["runs"], [])

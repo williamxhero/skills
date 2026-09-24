@@ -160,6 +160,31 @@ def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
     temporary.replace(path)
 
 
+def _takeover_context(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                      expected_takeover_key: str | None = None) -> dict[str, object] | None:
+    """Load the immutable takeover continuation context for one Runner run."""
+    path = _safe_artifact_directory(control_root, config, run.run_id) / "takeover-context.json"
+    if path.is_symlink():
+        raise RunnerError("takeover_context_invalid", "takeover continuation context cannot be a symlink")
+    if not path.is_file():
+        return None
+    context = load_json(path)
+    if context.get("schema_version") != "spec-runner-takeover-context/v1":
+        raise RunnerError("takeover_context_invalid", "takeover continuation context has an unexpected schema")
+    if context.get("run_id") != run.run_id:
+        raise RunnerError("takeover_context_invalid", "takeover continuation context belongs to another run")
+    if not isinstance(context.get("takeover_key"), str) or not context["takeover_key"]:
+        raise RunnerError("takeover_context_invalid", "takeover continuation context has no takeover identity")
+    if expected_takeover_key is not None and context["takeover_key"] != expected_takeover_key:
+        raise RunnerError("takeover_context_invalid", "takeover continuation context belongs to another takeover")
+    record = context.get("record")
+    if not isinstance(record, dict) or not isinstance(record.get("frontier"), dict) or not isinstance(record.get("report"), dict):
+        raise RunnerError("takeover_context_invalid", "takeover continuation context has incomplete evidence")
+    if record.get("takeover_key") != context["takeover_key"]:
+        raise RunnerError("takeover_context_invalid", "takeover continuation context identity does not match its record")
+    return context
+
+
 def _test_fault_pause(*, control_root: Path, run_id: str, point: str) -> None:
     """Pause only when an explicit deterministic fault test asks for it."""
     if os.environ.get("SPEC_RUNNER_FAULT_POINT") != point:
@@ -439,10 +464,20 @@ def _execute_codex_grill(*, control_root: Path, config: RunnerConfig, brief: str
             "options": {"type": "array", "items": {"type": "string"}},
         }, "required": ["id", "question", "options"], "additionalProperties": False}},
     }, "required": ["outcome", "scope", "constraints", "acceptance", "questions"], "additionalProperties": False}
+    grill_prompt = (
+        "Clarify the supplied requirement into scope, constraints and observable acceptance. "
+        "Do not invent missing business facts or permissions. Return needs_input with stable question IDs "
+        "if a necessary fact is missing; otherwise return planned. Do not publish or change files.\n\n" + brief
+    )
+    takeover = _takeover_context(control_root=control_root, config=config, run=run)
+    if takeover is not None:
+        grill_prompt += (
+            "\n\nTakeover continuation context is evidence only. Preserve its authorized scope and remaining frontier; "
+            "do not treat historical claims as completed work:\n" +
+            json.dumps(takeover, ensure_ascii=False, sort_keys=True)
+        )
     result = _run_worker(adapter=CodexAdapter(), phase="grill", config=config,
-        prompt=("Clarify the supplied requirement into scope, constraints and observable acceptance. "
-                "Do not invent missing business facts or permissions. Return needs_input with stable question IDs "
-                "if a necessary fact is missing; otherwise return planned. Do not publish or change files.\n\n" + brief),
+        prompt=grill_prompt,
         trusted={"stage": step, "brief_digest": brief_digest, "answers": store.answers_for_run(run.run_id)},
         repository_path=config.repository_path, model=config.model_name, effort=config.effort,
         thread_id=thread_id, schema=schema,
@@ -520,6 +555,14 @@ def _execute_codex_planning(
         )
     if answers:
         prompt += "\n\nRunner-recorded business answers (use as facts, do not ask again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
+    takeover = _takeover_context(control_root=control_root, config=config, run=run)
+    if takeover is not None:
+        prompt += (
+            "\n\nTakeover continuation context is evidence only; do not promote historical claims to completed work. "
+            "Use its frontier to select the minimum safe next stage, preserve adopted artifacts, and reverify "
+            "claimed completion against current receipts:\n" +
+            json.dumps(takeover, ensure_ascii=False, sort_keys=True)
+        )
     result = _run_worker(
         adapter=CodexAdapter(), phase="to-spec", config=config, prompt=prompt,
         trusted={"brief_digest": brief_digest, "stage": step_name, "repository_scope": os.fspath(config.repository_path)},
@@ -4270,7 +4313,8 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
     return completed
 
 
-def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str, run_id: str | None = None) -> dict[str, object]:
+def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+          run_id: str | None = None, takeover_key: str | None = None) -> dict[str, object]:
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
     brief, brief_digest = read_brief(brief_file)
@@ -4282,6 +4326,10 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         raise RunnerError("invalid_run_id", "run_id must be a UUID") from exc
 
     store = Store.open(control_root, create=True)
+    takeover_record = store.takeover_record(takeover_key) if takeover_key else None
+    if takeover_key and takeover_record is None:
+        store.close()
+        raise RunnerError("takeover_record_missing", "takeover continuation requires an existing durable takeover record")
     owner_token = f"{requested_run_id}:{os.getpid()}:{uuid.uuid4().hex}"
     lease_scope = f"{os.path.normcase(os.fspath(config.repository_path))}@{config.target_ref}"
     stale_after_seconds = 5.0
@@ -4305,6 +4353,15 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     "launch_key_input_conflict",
                     "launch_key already belongs to different normalized input",
                     details={"run_id": existing.run_id},
+                )
+            if takeover_key and _takeover_context(
+                control_root=control_root, config=config, run=existing,
+                expected_takeover_key=takeover_key,
+            ) is None:
+                raise RunnerError(
+                    "takeover_context_missing",
+                    "existing takeover continuation has no durable context artifact",
+                    details={"run_id": existing.run_id, "takeover_key": takeover_key},
                 )
             if existing.state in {"completed", "cancelled", "blocked_writer_busy"}:
                 return {"created": False, **store.public_status(existing.run_id)}
@@ -4441,6 +4498,16 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         )
         operation_id = f"start:{requested_run_id}"
         store.create_run(record, operation_id)
+        if takeover_record is not None:
+            _write_json_atomic(
+                _safe_artifact_directory(control_root, config, requested_run_id) / "takeover-context.json",
+                {
+                    "schema_version": "spec-runner-takeover-context/v1",
+                    "run_id": requested_run_id,
+                    "takeover_key": takeover_key,
+                    "record": takeover_record,
+                },
+            )
         store.register_runtime(
             requested_run_id,
             pid=os.getpid(),

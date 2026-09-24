@@ -495,6 +495,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             config_file=arguments.config,
                             control_root=arguments.control_root,
                             launch_key=launch_key,
+                            takeover_key=arguments.takeover_key,
                         )
                         completed = record_takeover_transition(
                             control_root=arguments.control_root,
