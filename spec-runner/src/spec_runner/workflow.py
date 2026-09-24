@@ -3186,7 +3186,8 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
             candidate_short = review_identity[1]
             for path in candidate_files:
                 document = load_json(path)
-                if path.stem.removeprefix("candidate-") == spec_key and str(document.get("candidate_sha") or "").startswith(candidate_short):
+                candidate_name = path.stem.removeprefix("candidate-")
+                if (candidate_name == spec_key or candidate_name.startswith(f"{spec_key}-")) and str(document.get("candidate_sha") or "").startswith(candidate_short):
                     candidate_receipt = document
                     break
             if candidate_receipt is None:
