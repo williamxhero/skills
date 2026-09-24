@@ -312,6 +312,29 @@ class SpecRunnerCliTests(unittest.TestCase):
         else:
             self.fail("detached deterministic runner did not complete")
 
+    def test_detached_launch_resolves_relative_inputs_before_child_cwd_changes(self) -> None:
+        code, result = self.invoke(
+            "launch",
+            "--brief", "brief.md",
+            "--config", "runner.json",
+            "--control-root", "控制 root",
+            "--launch-key", "detached-relative-001",
+            cwd=self.root,
+        )
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["started"])
+        self.assertGreater(result["pid"], 0)
+        self.assertEqual(result["run"]["runtime"]["pid"], result["pid"])
+        for _ in range(100):
+            status_code, status_result = self.invoke(
+                "status", "--control-root", "控制 root", "--run-id", result["run_id"], cwd=self.root
+            )
+            if status_code == 0 and status_result["run"]["state"] == "completed":
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("detached deterministic runner with relative inputs did not complete")
+
     def test_pause_at_stage_boundary_and_resume_reuses_the_same_run(self) -> None:
         run_id = "12345678-1234-1234-1234-123456789012"
         environment = os.environ.copy()

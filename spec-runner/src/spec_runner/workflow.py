@@ -3879,6 +3879,9 @@ def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
 def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
     """Start a detached Runner and return only after its durable handshake."""
     launch_key = _validate_launch_key(launch_key)
+    # The child runs from control_root, so resolve inputs before spawning it.
+    brief_file = brief_file.expanduser().resolve()
+    config_file = config_file.expanduser().resolve()
     control_root = control_root.expanduser().resolve()
     # Validate all user inputs before creating the child or control files.
     read_brief(brief_file)
