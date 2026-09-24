@@ -76,6 +76,7 @@ def _parser() -> argparse.ArgumentParser:
     launch_parser.add_argument("--config", required=True, type=Path)
     launch_parser.add_argument("--control-root", required=True, type=Path)
     launch_parser.add_argument("--launch-key", required=True)
+    launch_parser.add_argument("--handshake-timeout", type=float, default=10.0)
     tracker_parser = subparsers.add_parser("tracker", help="read or publish a local issue tracker")
     tracker_subparsers = tracker_parser.add_subparsers(dest="tracker_command", required=True)
     tracker_read = tracker_subparsers.add_parser("read")
@@ -313,6 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_file=arguments.config,
                 control_root=arguments.control_root,
                 launch_key=arguments.launch_key,
+                handshake_timeout_seconds=arguments.handshake_timeout,
             )
         elif arguments.command == "tracker":
             if arguments.tracker_command == "read":

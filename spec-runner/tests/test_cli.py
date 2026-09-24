@@ -433,6 +433,19 @@ class SpecRunnerCliTests(unittest.TestCase):
         else:
             self.fail("detached deterministic runner did not complete")
 
+    def test_detached_launch_rejects_an_unbounded_or_nonpositive_handshake_timeout(self) -> None:
+        code, result = self.invoke(
+            "launch",
+            "--brief", str(self.brief),
+            "--config", str(self.config),
+            "--control-root", str(self.control_root),
+            "--launch-key", "detached-invalid-timeout",
+            "--handshake-timeout", "0",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(result["error"]["code"], "launch_timeout_invalid")
+        self.assertFalse(self.control_root.exists())
+
     def test_detached_launch_resolves_relative_inputs_before_child_cwd_changes(self) -> None:
         code, result = self.invoke(
             "launch",

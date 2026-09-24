@@ -4634,9 +4634,52 @@ def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
     return start(brief_file=brief_file, config_file=config_file, control_root=control_root, launch_key=launch_key)
 
 
-def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
+def _launch_claim(*, control_root: Path, run_id: str, child_pid: int) -> dict[str, object] | None:
+    """Read a detached launch claim without creating control state."""
+    try:
+        store = Store.open(control_root, create=False)
+    except RunnerError:
+        return None
+    try:
+        record = store.find_by_run_id(run_id)
+        runtime = store.runtime_for_run(run_id) if record else None
+        if record and runtime and int(runtime["pid"]) == child_pid:
+            return {
+                "started": True,
+                "pid": child_pid,
+                "run_id": run_id,
+                "run": store.public_status(run_id),
+            }
+        return None
+    finally:
+        store.close()
+
+
+def _terminate_unclaimed_child(child: subprocess.Popen[bytes], *, timeout_seconds: float = 2.0) -> bool:
+    """Stop only a child that never claimed a durable Runner identity."""
+    if child.poll() is not None:
+        return True
+    try:
+        child.terminate()
+        child.wait(timeout=timeout_seconds)
+        return True
+    except subprocess.TimeoutExpired:
+        try:
+            child.kill()
+            child.wait(timeout=timeout_seconds)
+            return True
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    except OSError:
+        return False
+
+
+def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+           handshake_timeout_seconds: float = 10.0) -> dict[str, object]:
     """Start a detached Runner and return only after its durable handshake."""
     launch_key = _validate_launch_key(launch_key)
+    if handshake_timeout_seconds <= 0:
+        raise RunnerError("launch_timeout_invalid", "detached launch handshake timeout must be positive")
     # The child runs from control_root, so resolve inputs before spawning it.
     brief_file = brief_file.expanduser().resolve()
     config_file = config_file.expanduser().resolve()
@@ -4678,27 +4721,11 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
             creationflags=creation_flags,
             cwd=os.fspath(control_root),
         )
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + handshake_timeout_seconds
     while time.monotonic() < deadline:
-        try:
-            store = Store.open(control_root, create=False)
-        except RunnerError:
-            store = None
-        try:
-            if store is not None:
-                record = store.find_by_run_id(run_id)
-                runtime = store.runtime_for_run(run_id) if record else None
-                if record and runtime and int(runtime["pid"]) == child.pid:
-                    return {
-                        "started": True,
-                        "pid": child.pid,
-                        "run_id": run_id,
-                        "log_path": os.fspath(stdout_path),
-                        "run": store.public_status(run_id),
-                    }
-        finally:
-            if store is not None:
-                store.close()
+        claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid)
+        if claimed is not None:
+            return {"log_path": os.fspath(stdout_path), **claimed}
         if child.poll() is not None:
             raise RunnerError(
                 "launch_handshake_failed",
@@ -4706,10 +4733,20 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
                 details={"exit_code": child.returncode, "stderr_log": os.fspath(stderr_path)},
             )
         time.sleep(0.05)
+    claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid)
+    if claimed is not None:
+        return {"log_path": os.fspath(stdout_path), **claimed}
+    terminated = _terminate_unclaimed_child(child)
+    if not terminated:
+        raise RunnerError(
+            "launch_cleanup_failed",
+            "detached Runner missed its handshake and could not be stopped safely",
+            details={"pid": child.pid, "stdout_log": os.fspath(stdout_path), "stderr_log": os.fspath(stderr_path)},
+        )
     raise RunnerError(
         "launch_handshake_timeout",
         "detached Runner did not claim the run before the handshake deadline",
-        details={"pid": child.pid, "stdout_log": os.fspath(stdout_path), "stderr_log": os.fspath(stderr_path)},
+        details={"pid": child.pid, "stdout_log": os.fspath(stdout_path), "stderr_log": os.fspath(stderr_path), "terminated": True},
     )
 
 
