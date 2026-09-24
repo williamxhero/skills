@@ -56,6 +56,30 @@ class ConversionTests(unittest.TestCase):
                 with self.assertRaises(task_converter.ValidationError):
                     task_converter.convert_csv(csv_text)
 
+    def test_rejects_each_missing_or_duplicate_required_header(self) -> None:
+        for missing in task_converter.REQUIRED_HEADERS:
+            headers = [name for name in task_converter.REQUIRED_HEADERS if name != missing]
+            with self.subTest(missing=missing):
+                with self.assertRaises(task_converter.ValidationError):
+                    task_converter.convert_csv(",".join(headers) + "\n")
+
+        for duplicate in task_converter.REQUIRED_HEADERS:
+            headers = [*task_converter.REQUIRED_HEADERS, duplicate]
+            with self.subTest(duplicate=duplicate):
+                with self.assertRaises(task_converter.ValidationError):
+                    task_converter.convert_csv(",".join(headers) + "\n")
+
+    def test_rejects_blank_values_for_each_required_field(self) -> None:
+        for index, field in enumerate(task_converter.REQUIRED_HEADERS):
+            for blank in ("", "   "):
+                values = ["1", "task", "open"]
+                values[index] = blank
+                csv_text = ",".join(task_converter.REQUIRED_HEADERS) + "\n"
+                csv_text += ",".join(values) + "\n"
+                with self.subTest(field=field, blank=repr(blank)):
+                    with self.assertRaises(task_converter.ValidationError):
+                        task_converter.convert_csv(csv_text)
+
 
 class DestinationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -195,6 +219,83 @@ class DestinationTests(unittest.TestCase):
         self.assertEqual(len(stderr.getvalue().splitlines()), 1)
         self.assertEqual(self.output.read_bytes(), b"keep exactly")
         self.assertEqual(list(Path.cwd().glob(f".{self.output.name}.*.tmp")), [])
+
+    def test_output_preparation_and_write_failures_through_command_entrypoint(self) -> None:
+        self.source.write_text("id,title,status\n1,task,open\n", encoding="utf-8")
+        failures = ("serialize", "prepare", "open", "write", "flush", "fsync", "replace")
+
+        class FailingWriter:
+            def __init__(self, handle, failure: str) -> None:
+                self.handle = handle
+                self.failure = failure
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.handle.close()
+                return False
+
+            def write(self, content: str) -> int:
+                if self.failure == "write":
+                    raise OSError("write failed")
+                return self.handle.write(content)
+
+            def flush(self) -> None:
+                if self.failure == "flush":
+                    raise OSError("flush failed")
+                self.handle.flush()
+
+            def fileno(self) -> int:
+                return self.handle.fileno()
+
+        for failure in failures:
+            with self.subTest(failure=failure):
+                self.output.write_bytes(b"preserve this output")
+                stderr = io.StringIO()
+                with mock.patch("sys.stderr", stderr):
+                    if failure == "serialize":
+                        patcher = mock.patch.object(
+                            task_converter,
+                            "_serialize",
+                            side_effect=task_converter.ValidationError("serialize failed"),
+                        )
+                    elif failure == "prepare":
+                        patcher = mock.patch.object(
+                            task_converter.tempfile,
+                            "mkstemp",
+                            side_effect=OSError("prepare failed"),
+                        )
+                    elif failure == "open":
+                        patcher = mock.patch.object(
+                            task_converter.os,
+                            "fdopen",
+                            side_effect=OSError("open failed"),
+                        )
+                    elif failure in {"write", "flush"}:
+                        real_fdopen = os.fdopen
+                        patcher = mock.patch.object(
+                            task_converter.os,
+                            "fdopen",
+                            side_effect=lambda descriptor, *args, **kwargs: FailingWriter(
+                                real_fdopen(descriptor, *args, **kwargs), failure
+                            ),
+                        )
+                    elif failure == "fsync":
+                        patcher = mock.patch.object(os, "fsync", side_effect=OSError("fsync failed"))
+                    else:
+                        patcher = mock.patch.object(os, "replace", side_effect=OSError("replace failed"))
+
+                    with patcher:
+                        exit_code = task_converter.main(
+                            ["--input", str(self.source), "--output", str(self.output)]
+                        )
+
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+                self.assertNotIn("Traceback", stderr.getvalue())
+                self.assertEqual(self.output.read_bytes(), b"preserve this output")
+                self.assertEqual(list(Path.cwd().glob(f".{self.output.name}.*.tmp")), [])
 
 
 if __name__ == "__main__":
