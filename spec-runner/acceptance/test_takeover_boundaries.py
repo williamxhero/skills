@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from unittest.mock import patch
 from pathlib import Path
 
 import pytest
@@ -93,3 +94,43 @@ def test_durable_handover_readback_releases_a_complete_source_thread(tmp_path: P
     assert report["next_state"] == "adopted_ready"
     assert report["unresolved"] == []
     assert report["adopted_threads"][0]["state"] == "released"
+
+
+def test_authoritative_cleanup_archives_adopted_source_threads(tmp_path: Path) -> None:
+    repository = _repo(tmp_path)
+    head = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+    report = {
+        "schema_version": "spec-runner-takeover-report/v1",
+        "repository": str(repository),
+        "adopted_threads": [{"thread_id": "source-thread", "state": "released"}],
+        "historical_facts": {
+            "authoritative_delivery": {
+                "candidate_sha": head,
+                "merge_sha": head,
+                "candidate_receipt": {"outcome": "verified", "candidate_sha": head},
+                "review": {"approved": True, "candidate_sha": head},
+                "merge": {"outcome": "merged", "merge_sha": head},
+            },
+            "cleanup_targets": [],
+        },
+    }
+
+    class ArchiveAdapter:
+        archive_calls = 0
+
+        def archive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+            ArchiveAdapter.archive_calls += 1
+            return {"thread_id": thread_id, "archived": True, "pages_read": 1}
+
+    with patch("spec_runner.codex_adapter.CodexAdapter", ArchiveAdapter):
+        result = perform_cleanup(report)
+        replay = perform_cleanup(report, prior_cleanup=result)
+
+    assert result["outcome"] == "cleaned"
+    assert result["thread_results"] == [{
+        "thread_id": "source-thread",
+        "outcome": "archived",
+        "receipt": {"thread_id": "source-thread", "archived": True, "pages_read": 1},
+    }]
+    assert ArchiveAdapter.archive_calls == 1
+    assert replay["thread_results"][0]["replayed"] is True

@@ -341,7 +341,7 @@ def completion_action(report: dict[str, Any]) -> dict[str, object]:
     return {"state": "resume_delivery", "implementation_calls": 0, "merge_calls": 0, "requires": "normal Runner stage loop"}
 
 
-def perform_cleanup(report: dict[str, Any]) -> dict[str, object]:
+def perform_cleanup(report: dict[str, Any], *, prior_cleanup: dict[str, object] | None = None) -> dict[str, object]:
     """Execute cleanup only after current delivery evidence is revalidated.
 
     A historical merge receipt or arbitrary verification object is not a path
@@ -358,9 +358,13 @@ def perform_cleanup(report: dict[str, Any]) -> dict[str, object]:
     targets = facts.get("cleanup_targets", [])
     if not isinstance(targets, list):
         raise RunnerError("invalid_takeover_cleanup", "cleanup_targets must be a list")
-    if not targets:
+    adopted_threads = report.get("adopted_threads", [])
+    if not isinstance(adopted_threads, list):
+        raise RunnerError("invalid_takeover_cleanup", "adopted_threads must be a list")
+    if not targets and not adopted_threads:
         return {"outcome": "pending", "reason": "cleanup_targets_missing", "attempted": 0, "results": []}
     from .delivery import cleanup_managed_workspace
+    from .codex_adapter import CodexAdapter
 
     repository = Path(str(report["repository"])).resolve()
     results: list[dict[str, object]] = []
@@ -372,8 +376,41 @@ def perform_cleanup(report: dict[str, Any]) -> dict[str, object]:
         manifest_value = target.get("manifest")
         manifest = Path(str(manifest_value)).expanduser().resolve() if isinstance(manifest_value, str) and manifest_value.strip() else None
         results.append(cleanup_managed_workspace(repository=repository, workspace_root=workspace_root, workspace=workspace, manifest=manifest))
-    outcome = "cleaned" if all(item.get("outcome") == "cleaned" for item in results) else "pending"
-    return {"outcome": outcome, "attempted": len(results), "results": results}
+    thread_results: list[dict[str, object]] = []
+    prior_thread_values = prior_cleanup.get("thread_results", []) if isinstance(prior_cleanup, dict) else []
+    prior_threads = {
+        str(item.get("thread_id")): item
+        for item in (prior_thread_values if isinstance(prior_thread_values, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("thread_id"), str)
+    }
+    for item in adopted_threads:
+        if not isinstance(item, dict) or not isinstance(item.get("thread_id"), str) or not item["thread_id"].strip():
+            raise RunnerError("invalid_takeover_cleanup", "each adopted thread needs a stable thread_id")
+        previous = prior_threads.get(str(item["thread_id"]))
+        if isinstance(previous, dict) and previous.get("outcome") == "archived" and isinstance(previous.get("receipt"), dict):
+            receipt = previous["receipt"]
+            if receipt.get("thread_id") == item["thread_id"] and receipt.get("archived") is True:
+                thread_results.append({**previous, "replayed": True})
+                continue
+        try:
+            receipt = CodexAdapter().archive_and_readback(
+                thread_id=str(item["thread_id"]), repository_path=repository,
+            )
+            if not isinstance(receipt, dict) or receipt.get("thread_id") != item["thread_id"] or receipt.get("archived") is not True:
+                raise RunnerError("takeover_archive_readback_failed", "source thread archive readback did not match its identity")
+            thread_results.append({"thread_id": item["thread_id"], "outcome": "archived", "receipt": receipt})
+        except RunnerError as exc:
+            thread_results.append({"thread_id": item["thread_id"], "outcome": "pending", "error_code": exc.code})
+    outcome = "cleaned" if (
+        all(item.get("outcome") == "cleaned" for item in results)
+        and all(item.get("outcome") == "archived" for item in thread_results)
+    ) else "pending"
+    return {
+        "outcome": outcome,
+        "attempted": len(results) + len(thread_results),
+        "results": results,
+        "thread_results": thread_results,
+    }
 
 
 def _authoritative_delivery_present(report: dict[str, Any]) -> bool:

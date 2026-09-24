@@ -450,6 +450,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result = {**record, "frontier": frontier, "action": action}
                     stored_record = record.get("record") if isinstance(record.get("record"), dict) else None
                     last_transition = stored_record.get("last_transition") if isinstance(stored_record, dict) else None
+                    prior_cleanup = (
+                        last_transition.get("payload")
+                        if isinstance(last_transition, dict)
+                        and last_transition.get("state") == "cleanup_pending"
+                        and isinstance(last_transition.get("payload"), dict)
+                        else None
+                    )
                     if (
                         not record.get("created")
                         and isinstance(last_transition, dict)
@@ -571,7 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         result["record"] = intent["record"]
                         result["transitions"] = intent["transitions"]
-                        result["cleanup"] = perform_cleanup(report)
+                        result["cleanup"] = perform_cleanup(report, prior_cleanup=prior_cleanup)
                         cleanup_digest = digest(result["cleanup"])
                         cleanup_state = "cleaned" if result["cleanup"]["outcome"] == "cleaned" else "cleanup_pending"
                         finished = record_takeover_transition(
