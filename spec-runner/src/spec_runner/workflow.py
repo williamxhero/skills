@@ -1301,17 +1301,32 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
             raise RunnerError("github_recovery_evidence_invalid", "recovered delivery has no cleanup manifest")
         manifest_path = Path(recovery_manifest)
         manifest = load_json(manifest_path)
+        manifests.append((manifest_path, manifest))
     if result["state"] != "github_completed":
         if result.get("state") == "waiting_ci":
             _write_json_atomic(artifact / f"github-{spec_key}.json", result)
         return result
+    merge = result.get("merge")
+    if not isinstance(merge, dict) or merge.get("merged") is not True:
+        raise RunnerError("github_merge_unconfirmed", "GitHub delivery cannot complete without a confirmed merge receipt")
     _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
                                spec_key=str(result["spec_key"]), delivery=result)
-    cleanup = cleanup_managed_workspace(repository=config.repository_path,
-        workspace_root=control_root / "delivery-workspaces", workspace=Path(str(manifest["workspace"])),
-        manifest=manifest_path)
+    spec_manifests = [
+        (path, document) for path, document in manifests
+        if document.get("spec_key") == spec_key
+    ]
+    cleanups = [
+        cleanup_managed_workspace(repository=config.repository_path,
+            workspace_root=control_root / "delivery-workspaces",
+            workspace=Path(str(document["workspace"])), manifest=path)
+        for path, document in spec_manifests
+    ]
+    cleanup = cleanups[0] if len(cleanups) == 1 else {
+        "outcome": "cleaned" if cleanups and all(item.get("outcome") == "cleaned" for item in cleanups) else "pending",
+        "workspaces": cleanups,
+    }
     result["cleanup"] = cleanup
-    if cleanup.get("outcome") != "cleaned":
+    if cleanup["outcome"] != "cleaned":
         store.mark_cleanup_pending(run.run_id)
         result["state"] = "cleanup_pending"
     else:
@@ -3913,38 +3928,49 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
             continue
         if document.get("run_id") == run.run_id:
             manifests.append(manifest)
-    if len(manifests) != 1:
+    if not manifests:
         raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no owned workspace manifest")
-    manifest = manifests[0]
-    document = load_json(manifest)
-    spec_key = document.get("spec_key")
-    if not isinstance(spec_key, str) or not spec_key:
-        raise RunnerError("production_cleanup_evidence_missing", "workspace manifest has no SPEC identity")
     artifact = _safe_artifact_directory(control_root, config, run.run_id)
-    receipt_path = artifact / f"delivery-{spec_key}.json"
     plan_path = artifact / "spec-plan.json"
-    ticket_path = artifact / f"ticket-plan-{spec_key}.json"
-    if not receipt_path.is_file() or not plan_path.is_file() or not ticket_path.is_file():
+    if not plan_path.is_file():
         raise RunnerError("production_cleanup_evidence_missing", "cleanup retry requires persisted delivery, plan and ticket evidence")
-    receipt, plan, ticket = load_json(receipt_path), load_json(plan_path), load_json(ticket_path)
-    if (receipt.get("spec_key") != spec_key or receipt.get("run_id") != run.run_id
-            or receipt.get("plan_digest") != plan.get("digest")
-            or receipt.get("ticket_plan_digest") != ticket.get("digest")
-            or not isinstance(receipt.get("candidate"), dict)
-            or not isinstance(receipt.get("review"), dict)
-            or receipt.get("review", {}).get("approved") is not True
-            or not isinstance(receipt.get("merge"), dict)
-            or not receipt.get("merge")):
-        raise RunnerError("production_cleanup_evidence_invalid", "persisted delivery evidence does not prove this SPEC was reviewed and merged")
+    plan = load_json(plan_path)
+    manifest_documents = [(manifest, load_json(manifest)) for manifest in manifests]
+    manifest_spec_keys = [document.get("spec_key") for _, document in manifest_documents]
+    if any(not isinstance(spec_key, str) or not spec_key for spec_key in manifest_spec_keys):
+        raise RunnerError("production_cleanup_evidence_missing", "workspace manifest has no SPEC identity")
+    spec_keys = set(manifest_spec_keys)
+    for spec_key in spec_keys:
+        receipt_path = artifact / f"delivery-{spec_key}.json"
+        ticket_path = artifact / f"ticket-plan-{spec_key}.json"
+        if not receipt_path.is_file() or not ticket_path.is_file():
+            raise RunnerError("production_cleanup_evidence_missing", "cleanup retry requires persisted delivery, plan and ticket evidence")
+        receipt, ticket = load_json(receipt_path), load_json(ticket_path)
+        if (receipt.get("spec_key") != spec_key or receipt.get("run_id") != run.run_id
+                or receipt.get("plan_digest") != plan.get("digest")
+                or receipt.get("ticket_plan_digest") != ticket.get("digest")
+                or not isinstance(receipt.get("candidate"), dict)
+                or not isinstance(receipt.get("review"), dict)
+                or receipt.get("review", {}).get("approved") is not True
+                or not isinstance(receipt.get("merge"), dict)
+                or receipt.get("merge", {}).get("merged") is not True):
+            raise RunnerError("production_cleanup_evidence_invalid", "persisted delivery evidence does not prove this SPEC was reviewed and merged")
     results = [cleanup_managed_workspace(
         repository=config.repository_path, workspace_root=root,
-        workspace=Path(str(document["workspace"])), manifest=manifest)]
+        workspace=Path(str(document["workspace"])), manifest=manifest)
+        for manifest, document in manifest_documents]
     if any(item.get("outcome") != "cleaned" for item in results):
         return {"state": "cleanup_pending", "cleanup": results}
-    _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
-        spec_key=spec_key, plan_digest=str(plan["digest"]))
+    for spec_key in sorted(spec_keys):
+        _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
+            spec_key=str(spec_key), plan_digest=str(plan["digest"]))
     store.set_run_state(run.run_id, "spec_completed")
-    return {"state": "spec_completed", "spec_key": spec_key, "cleanup": results}
+    completed = {"state": "spec_completed", "cleanup": results}
+    if len(spec_keys) == 1:
+        completed["spec_key"] = next(iter(spec_keys))
+    else:
+        completed["spec_keys"] = sorted(spec_keys)
+    return completed
 
 
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str, run_id: str | None = None) -> dict[str, object]:

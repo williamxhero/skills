@@ -1,5 +1,26 @@
 # SF integration release train
 
+## Latest production three-SPEC GitHub run (2026-09-24)
+
+Run marker `SRAC-20260924-a1b2c3d4e5f6`; run ID
+`07eef590-ebe1-47b4-94cd-fd10895eb66f`. The production entrypoint completed
+SPEC-1, SPEC-2, and SPEC-3 with durable SQLite completion records, candidate
+verification, independent approval, required Ubuntu and Windows checks, GitHub
+PR merge readback, and cleanup. The durable summary is
+`SRAC-20260924-a1b2c3d4e5f6-production.json`.
+
+The merged PRs are #307 (SPEC-1, merge `d7a2bea8eaa9c1aca791c448b6a44527c9a762f5`),
+#311 (recovered SPEC-2, merge `50865edd45cbde9fc9f807f8e600e83df861a53c`), and
+#316 (SPEC-3, merge `ec63e6c8c6e262449ef3206369117aa9a8491e35`). PR #310 remains
+open as historical evidence of the failed SPEC-2 candidate whose Ubuntu check
+failed; it was not treated as merged or successful.
+
+This run verifies the complete three-SPEC GitHub production delivery path for
+this marker, including failed-candidate recovery. It does not close issue #256
+or discharge the project-level exact-wheel L3, six-SPEC L4, live SDK restart,
+Windows detached-parent exit, source takeover, Windows control DB/log recovery,
+or GitHub merge queue gates. Those remain `not_verified`.
+
 The user-required acceptance root overrides the skill's default scratch path.
 Baseline for this increment: 400775b8571ff43d85d999933d8d31283b61a0de.
 checkpoint_size: 10. Ordered SPECs: SF-01 #247, SF-02 #251, SF-03 #255,

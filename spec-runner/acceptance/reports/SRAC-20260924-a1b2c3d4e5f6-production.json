@@ -1,0 +1,56 @@
+{
+  "schema_version": "spec-runner-production-three-spec-github/v1",
+  "run_marker": "SRAC-20260924-a1b2c3d4e5f6",
+  "run_id": "07eef590-ebe1-47b4-94cd-fd10895eb66f",
+  "repository": "williamxhero/skills",
+  "target_ref": "refs/heads/master",
+  "outcome": "three_specs_completed_with_historical_failed_candidate",
+  "specs": [
+    {
+      "key": "SPEC-1",
+      "candidate_sha": "ca4eff5a3fa0b3eb03ec124915c6e95061af7409",
+      "pull_request": 307,
+      "merge_sha": "d7a2bea8eaa9c1aca791c448b6a44527c9a762f5",
+      "checks": "contract (ubuntu-latest), contract (windows-latest) passed"
+    },
+    {
+      "key": "SPEC-2",
+      "candidate_sha": "2d6068d3c99e4a28618e0966042b89929e3989a4",
+      "pull_request": 311,
+      "merge_sha": "50865edd45cbde9fc9f807f8e600e83df861a53c",
+      "checks": "contract (ubuntu-latest), contract (windows-latest) passed",
+      "recovered_from_pull_request": 310
+    },
+    {
+      "key": "SPEC-3",
+      "candidate_sha": "e0cb9c1eea27d16724f58163bf82d335e4e53d6d",
+      "pull_request": 316,
+      "merge_sha": "ec63e6c8c6e262449ef3206369117aa9a8491e35",
+      "checks": "contract (ubuntu-latest), contract (windows-latest) passed"
+    }
+  ],
+  "historical_failed_candidate": {
+    "spec_key": "SPEC-2",
+    "pull_request": 310,
+    "candidate_sha": "949273753ba90d4dd066d7d318f136a0a5c1764b",
+    "failed_check": "contract (ubuntu-latest)",
+    "replacement_pull_request": 311,
+    "remote_state": "open"
+  },
+  "durable_evidence": {
+    "sqlite_completed_specs": ["SPEC-1", "SPEC-2", "SPEC-3"],
+    "completed_specs_projection": ["SPEC-1", "SPEC-2", "SPEC-3"],
+    "ticket_github_receipts": "native parent and blocked-by relations read back for the run's ticket plans",
+    "pr_receipts": "all three merged replacement/current PRs read back by exact candidate and operation identity"
+  },
+  "unverified_project_gates": [
+    "exact-wheel L3 for the current post-recovery source",
+    "six-SPEC release-train L4 owner regression",
+    "live Codex process restart",
+    "Windows detached-parent exit",
+    "source-thread takeover",
+    "Windows control DB and log recovery",
+    "GitHub merge queue"
+  ],
+  "issue_256_status": "open_acceptance_checklist_not_closed"
+}

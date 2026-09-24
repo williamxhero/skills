@@ -76,7 +76,10 @@ def test_github_merge_requires_explicit_authorization(monkeypatch, github_contex
             review={"approved": True})
 
 
-def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(monkeypatch, github_context):
+@pytest.mark.parametrize("merge_receipt", [{"merged": True}, {"merged": False}])
+def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
+    monkeypatch, github_context, merge_receipt,
+):
     root, config, store, run = github_context
     artifact = root / "artifacts" / run.run_id
     artifact.mkdir(parents=True)
@@ -116,7 +119,7 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     responses = iter([
         {"state": "waiting_ci", "spec_key": "S1", "candidate": candidate, "review": review},
         {"state": "github_completed", "spec_key": "S1", "candidate": candidate,
-         "review": review, "merge": {"merged": True}},
+         "review": review, "merge": merge_receipt},
     ])
 
     def fake_delivery(**kwargs):
@@ -126,16 +129,27 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
         return next(responses)
 
     monkeypatch.setattr(workflow, "_execute_github_delivery", fake_delivery)
-    monkeypatch.setattr(workflow, "cleanup_managed_workspace", lambda **kwargs: {"outcome": "cleaned"})
+    cleanup_calls = []
+    monkeypatch.setattr(workflow, "cleanup_managed_workspace",
+                        lambda **kwargs: cleanup_calls.append(kwargs) or {"outcome": "cleaned"})
     first = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
     assert first["state"] == "waiting_ci"
     assert calls[0]["push"] is False
-    second = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store, finalize_run=False)
-    assert second["state"] == "spec_completed"
+    if merge_receipt["merged"]:
+        second = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store, finalize_run=False)
+        assert second["state"] == "spec_completed"
+    else:
+        with pytest.raises(RunnerError, match="confirmed merge receipt"):
+            workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store, finalize_run=False)
+        assert cleanup_calls == []
     assert len(calls) == 2
     assert calls[1]["push"] is False
-    assert store.find_by_run_id(run.run_id).state == "spec_completed"
-    assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S0", "S1"]
+    if merge_receipt["merged"]:
+        assert store.find_by_run_id(run.run_id).state == "spec_completed"
+        assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S0", "S1"]
+    else:
+        assert store.find_by_run_id(run.run_id).state == "waiting_ci"
+        assert not (artifact / "delivery-S1.json").exists()
 
 
 def test_waiting_ci_resume_recovers_a_definitive_failed_candidate(monkeypatch, github_context):
@@ -169,29 +183,67 @@ def test_waiting_ci_resume_recovers_a_definitive_failed_candidate(monkeypatch, g
         "missing": [], "wrong_sha": [], "pending": [], "failed": ["ci"], "unknown": [],
         "ready": False,
     }
-    monkeypatch.setattr(workflow, "_execute_github_delivery", lambda **kwargs: {
-        "state": "waiting_ci", "spec_key": "S1", "pr": {"number": 7},
-        "checks": failed_checks, "candidate": candidate, "review": review,
-    })
+    calls = []
+
+    def fake_delivery(**kwargs):
+        calls.append(kwargs)
+        if kwargs["candidate_receipt"]["candidate_sha"] == candidate_sha:
+            return {
+                "state": "waiting_ci", "spec_key": "S1", "pr": {"number": 7},
+                "checks": failed_checks, "candidate": candidate, "review": review,
+            }
+        return {
+            "state": "github_completed", "spec_key": "S1", "pr": {"number": 8},
+            "checks": {**failed_checks, "candidate_sha": "b" * 40, "failed": [], "ready": True},
+            "candidate": kwargs["candidate_receipt"], "review": kwargs["review"],
+            "merge": {"merged": True},
+        }
+
+    monkeypatch.setattr(workflow, "_execute_github_delivery", fake_delivery)
     recovery = {}
+    recovery_workspace = workspaces / "recovered"
+    recovery_manifest = workspaces / "recovered.manifest.json"
+    recovered_candidate = {"outcome": "verified", "candidate_sha": "b" * 40}
+    recovered_review = {
+        "approved": True, "candidate_sha": "b" * 40, "blocking": [],
+        "findings": [], "review_digest": "fresh",
+    }
 
     def fake_recovery(**kwargs):
         recovery.update(kwargs)
+        recovery_manifest.write_text(json.dumps({
+            "run_id": run.run_id, "spec_key": "S1", "branch": "spec-runner/S1-recovered",
+            "workspace": str(recovery_workspace),
+        }), encoding="utf-8")
+        (artifact / "candidate-S1.json").write_text(json.dumps(recovered_candidate), encoding="utf-8")
+        (artifact / f"review-S1-{'b' * 12}.json").write_text(json.dumps(recovered_review), encoding="utf-8")
         return {
-            "state": "waiting_ci", "spec_key": "S1", "pr": {"number": 8},
+            "state": "waiting_ci", "spec_key": "S1", "branch": "spec-runner/S1-recovered", "pr": {"number": 8},
             "checks": {**failed_checks, "candidate_sha": "b" * 40, "states": {}, "failed": [], "pending": ["ci"], "ready": False},
-            "candidate": {"outcome": "verified", "candidate_sha": "b" * 40},
-            "review": {"approved": True, "candidate_sha": "b" * 40, "blocking": [], "findings": [], "review_digest": "fresh"},
-            "_workspace_manifest": str(manifest),
+            "candidate": recovered_candidate,
+            "review": recovered_review,
+            "_workspace_manifest": str(recovery_manifest),
         }
 
     monkeypatch.setattr(workflow, "_recover_failed_github_candidate", fake_recovery)
-    result = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
+    cleanup_calls = []
+    monkeypatch.setattr(workflow, "cleanup_managed_workspace", lambda **kwargs: cleanup_calls.append(kwargs) or {"outcome": "cleaned"})
+    first = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
 
-    assert result["state"] == "waiting_ci"
-    assert result["candidate"]["candidate_sha"] == "b" * 40
+    assert first["state"] == "waiting_ci"
+    assert first["candidate"]["candidate_sha"] == "b" * 40
+    assert cleanup_calls == []
     assert recovery["failed_checks"] == failed_checks
     assert recovery["candidate"]["candidate_sha"] == candidate_sha
+
+    second = workflow._resume_waiting_github(
+        control_root=root, config=config, run=run, store=store, finalize_run=False,
+    )
+
+    assert second["state"] == "spec_completed"
+    assert len(calls) == 2
+    assert {Path(call["workspace"]) for call in cleanup_calls} == {root / "workspace", recovery_workspace}
+    assert all(call["manifest"] in {manifest, recovery_manifest} for call in cleanup_calls)
 
 
 def test_github_merge_reconciles_local_base_before_next_spec(tmp_path):
