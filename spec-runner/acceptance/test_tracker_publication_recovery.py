@@ -7,19 +7,31 @@ import pytest
 
 from spec_runner.errors import RunnerError
 from spec_runner.github_tracker import GitHubTracker
+from spec_runner.store import RunRecord, Store, now
 
 
 class Transport:
     def __init__(self):
         self.issues = []
         self.posts = 0
+        self.close_patches = 0
         self.crash = False
+        self.lose_close_response = False
         self.sub_issues = {}
         self.dependencies = {}
         self.relation_posts = 0
         self.lose_relation_response = False
 
     def __call__(self, args):
+        if "PATCH" in args:
+            number = int(args[1].rsplit("/", 1)[1])
+            issue = self.issues[number - 1]
+            issue["state"] = "closed"
+            self.close_patches += 1
+            if self.lose_close_response:
+                self.lose_close_response = False
+                raise ConnectionError("close committed but response was lost")
+            return json.dumps(issue)
         if "POST" in args:
             if "sub_issues" in args[1]:
                 child = next(int(v.split("=", 1)[1]) for v in args if v.startswith("sub_issue_id="))
@@ -42,9 +54,9 @@ class Transport:
             self.posts += 1
             issue = {"number": len(self.issues) + 1,
                      "id": 100 + len(self.issues) + 1,
-                     "repository_url": "https://api.github.com/repos/williamxhero/skills",
-                     "title": next(v[6:] for v in args if v.startswith("title=")),
-                     "body": next(v[5:] for v in args if v.startswith("body="))}
+                      "repository_url": "https://api.github.com/repos/williamxhero/skills",
+                      "title": next(v[6:] for v in args if v.startswith("title=")),
+                      "body": next(v[5:] for v in args if v.startswith("body=")), "state": "open"}
             self.issues.append(issue)
             if self.crash:
                 self.crash = False
@@ -263,3 +275,77 @@ def test_lost_relation_response_reconciles_without_recreating_issues_or_relation
     assert transport.relation_posts == 1
     assert all(value["state"] == "completed" for key, value in operations.items()
                if ":relation:" in key)
+
+
+def test_close_operations_are_durable_idempotent_and_read_back(tmp_path):
+    transport = Transport()
+    published = publish(tmp_path, transport, draft())["receipt"]
+    store = Store.open(tmp_path / "control", create=True)
+    stamp = now()
+    run = RunRecord("close-run", "close-launch", "brief", "digest", str(tmp_path),
+        "refs/heads/master", "artifacts", "codex_sdk", "running", "codex_ticket_planning",
+        "logs/close.jsonl", stamp, stamp)
+    store.create_run(run, "start:close-run")
+
+    def intent(**identity):
+        return store.prepare_external_operation(run_id=run.run_id, **identity)
+
+    def completed(*, operation_id, receipt):
+        store.complete_external_operation(operation_id=operation_id, receipt=receipt)
+
+    tracker = GitHubTracker(runner=transport)
+    try:
+        result = tracker.close_published(repository="williamxhero/skills", draft=draft(),
+            operation_id="SRAC-publication-contract", publication_receipt=published,
+            operation_intent=intent, operation_completed=completed)
+        repeated = tracker.close_published(repository="williamxhero/skills", draft=draft(),
+            operation_id="SRAC-publication-contract", publication_receipt=published,
+            operation_intent=intent, operation_completed=completed)
+        assert result["complete"] and repeated["complete"]
+        assert transport.close_patches == 2
+        for key in ("S1", "T1"):
+            operation = store.external_operation(f"SRAC-publication-contract:close:{key}")
+            assert operation["state"] == "completed"
+            assert operation["receipt"]["state"] == "closed"
+    finally:
+        store.close()
+
+
+def test_lost_close_response_recovers_from_exact_readback_without_repatch(tmp_path):
+    transport = Transport()
+    published = publish(tmp_path, transport, draft())["receipt"]
+    operations = {}
+
+    def intent(**identity):
+        existing = operations.get(identity["operation_id"])
+        if existing:
+            assert {key: existing[key] for key in ("operation_kind", "repository", "input_digest")} == {
+                key: identity[key] for key in ("operation_kind", "repository", "input_digest")}
+            return existing
+        operations[identity["operation_id"]] = {**identity, "state": "intent"}
+        return operations[identity["operation_id"]]
+
+    def completed(*, operation_id, receipt):
+        operations[operation_id].update(state="completed", receipt=receipt)
+
+    transport.lose_close_response = True
+    tracker = GitHubTracker(runner=transport)
+    result = tracker.close_published(repository="williamxhero/skills", draft=draft(),
+        operation_id="SRAC-publication-contract", publication_receipt=published,
+        operation_intent=intent, operation_completed=completed)
+    assert result["complete"]
+    assert transport.close_patches == 2
+    assert all(value["state"] == "completed" for value in operations.values())
+
+
+def test_close_refuses_manually_edited_run_owned_issue(tmp_path):
+    transport = Transport()
+    published = publish(tmp_path, transport, draft())["receipt"]
+    transport.issues[1]["body"] += "\nExternal edit"
+    with pytest.raises(RunnerError) as error:
+        GitHubTracker(runner=transport).close_published(
+            repository="williamxhero/skills", draft=draft(),
+            operation_id="SRAC-publication-contract", publication_receipt=published,
+        )
+    assert error.value.code == "github_close_conflict"
+    assert transport.close_patches == 0

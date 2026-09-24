@@ -21,6 +21,15 @@ or discharge the project-level exact-wheel L3, six-SPEC L4, live SDK restart,
 Windows detached-parent exit, source takeover, Windows control DB/log recovery,
 or GitHub merge queue gates. Those remain `not_verified`.
 
+The nine issues created by this run (#304-#306, #308-#309, and #312-#315) were
+subsequently reconciled with the durable publication receipts and closed through
+the current per-issue close operation. Each issue's repository, run marker,
+title, and body matched before PATCH, and its closed state was read back. Nine
+`github_issue_close` receipts are complete in the run's SQLite control database.
+PR #310 remains open as failed-candidate history and was not included. This
+close reconciliation adds SF-03.1 issue-closure evidence; it does not change the
+SPEC completion receipts or discharge any project-level gate listed above.
+
 The user-required acceptance root overrides the skill's default scratch path.
 Baseline for this increment: 400775b8571ff43d85d999933d8d31283b61a0de.
 checkpoint_size: 10. Ordered SPECs: SF-01 #247, SF-02 #251, SF-03 #255,

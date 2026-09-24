@@ -523,14 +523,7 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
     return source
 
 
-def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict[str, object],
-                         operation_id: str, run_id: str, store: Store) -> dict[str, object]:
-    """Publish the validated plan through the configured tracker boundary.
-
-    GitHub publication uses per-object durable operations. Native relations are
-    written only after each issue has been independently read back, then their
-    own operation receipts are committed after relation readback.
-    """
+def _ticket_plan_github_draft(*, plan: dict[str, object], run_id: str) -> dict[str, object]:
     source = plan
     spec_key = str(source["spec_key"])
     spec_title = str(source.get("spec_title") or spec_key)
@@ -547,7 +540,18 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
                       "parent": spec_key, "blocked_by": blocked,
                       "body": f"spec-runner-run:{run_id}\n{relation}\n\n{ticket['body']}"})
     # The first item is the umbrella SPEC; remaining items are its tickets.
-    draft = {"umbrella": specs[0], "specs": specs[1:]}
+    return {"umbrella": specs[0], "specs": specs[1:]}
+
+
+def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict[str, object],
+                         operation_id: str, run_id: str, store: Store) -> dict[str, object]:
+    """Publish the validated plan through the configured tracker boundary.
+
+    GitHub publication uses per-object durable operations. Native relations are
+    written only after each issue has been independently read back, then their
+    own operation receipts are committed after relation readback.
+    """
+    draft = _ticket_plan_github_draft(plan=plan, run_id=run_id)
     if not config.github_repository or not config.github_receipt_root:
         raise RunnerError("github_config_incomplete", "GitHub tracker publication requires repository and receipt root")
     draft_digest = hashlib.sha256(json.dumps(draft, ensure_ascii=False, sort_keys=True,
@@ -571,6 +575,37 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
     if not isinstance(receipt, dict) or receipt.get("complete") is not True:
         raise RunnerError("github_publish_unconfirmed", "GitHub publication did not return a complete operation receipt")
     return result
+
+
+def _close_published_ticket_plan(*, config: RunnerConfig, plan: dict[str, object],
+                                 run_id: str, store: Store) -> dict[str, object] | None:
+    if config.github_repository is None:
+        return None
+    spec_key = str(plan.get("spec_key") or "")
+    if not spec_key or not config.github_receipt_root:
+        raise RunnerError("github_close_config_incomplete", "closing published tickets requires repository, SPEC identity and receipt root")
+    publication_operation = f"tickets:{run_id}:{spec_key}"
+    publication = store.external_operation(publication_operation)
+    if (not isinstance(publication, dict) or publication.get("state") != "completed"
+            or publication.get("operation_kind") != "github_issue_publication"
+            or publication.get("repository") != config.github_repository
+            or not isinstance(publication.get("receipt"), dict)
+            or publication["receipt"].get("complete") is not True
+            or publication["receipt"].get("repository") != config.github_repository):
+        raise RunnerError("github_close_evidence_missing", "SPEC has no completed GitHub publication receipt")
+
+    def prepare(*, operation_id: str, operation_kind: str, repository: str,
+                input_digest: str) -> dict[str, object]:
+        return store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
+            operation_kind=operation_kind, repository=repository, input_digest=input_digest)
+
+    def complete(*, operation_id: str, receipt: dict[str, object]) -> None:
+        store.complete_external_operation(operation_id=operation_id, receipt=receipt)
+
+    return GitHubTracker().close_published(repository=config.github_repository,
+        draft=_ticket_plan_github_draft(plan=plan, run_id=run_id),
+        operation_id=publication_operation, publication_receipt=publication["receipt"],
+        relation_mode="native", operation_intent=prepare, operation_completed=complete)
 
 
 def _execute_codex_tickets(
@@ -1318,7 +1353,7 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
     cleanups = [
         cleanup_managed_workspace(repository=config.repository_path,
             workspace_root=control_root / "delivery-workspaces",
-            workspace=Path(str(document["workspace"])), manifest=path)
+            workspace=Path(str(document["workspace"])), manifest=path, preserve_manifest=True)
         for path, document in spec_manifests
     ]
     cleanup = cleanups[0] if len(cleanups) == 1 else {
@@ -1330,6 +1365,35 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
         store.mark_cleanup_pending(run.run_id)
         result["state"] = "cleanup_pending"
     else:
+        ticket_path = artifact / f"ticket-plan-{spec_key}.json"
+        if not ticket_path.is_file():
+            raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                                   spec_key=spec_key, delivery=result)
+        try:
+            result["issue_closure"] = _close_published_ticket_plan(
+                config=config, plan=load_json(ticket_path), run_id=run.run_id, store=store,
+            )
+        except RunnerError as exc:
+            result["issue_closure"] = {"state": "pending", "error_code": exc.code}
+            _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                                       spec_key=spec_key, delivery=result)
+            store.mark_cleanup_pending(run.run_id)
+            result["state"] = "cleanup_pending"
+            return result
+        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                                   spec_key=spec_key, delivery=result)
+        finalized_cleanups = [
+            cleanup_managed_workspace(repository=config.repository_path,
+                workspace_root=control_root / "delivery-workspaces",
+                workspace=Path(str(document["workspace"])), manifest=path)
+            for path, document in spec_manifests
+        ]
+        if any(item.get("outcome") != "cleaned" for item in finalized_cleanups):
+            store.mark_cleanup_pending(run.run_id)
+            result["manifest_cleanup"] = finalized_cleanups
+            result["state"] = "cleanup_pending"
+            return result
         if finalize_run:
             store.mark_archived(run.run_id, state="completed")
         else:
@@ -1450,12 +1514,33 @@ def _finish_codex_implementation(
                                    spec_key=spec_key, delivery=github_result)
         cleanup = cleanup_managed_workspace(repository=config.repository_path,
             workspace_root=control_root / "delivery-workspaces", workspace=workspace,
-            manifest=Path(str(workspace_info["manifest"])))
+            manifest=Path(str(workspace_info["manifest"])), preserve_manifest=True)
         if cleanup.get("outcome") != "cleaned":
             store.mark_cleanup_pending(run.run_id)
             github_result["cleanup"] = cleanup
             return {**github_result, "state": "cleanup_pending"}
         github_result["cleanup"] = cleanup
+        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                                   spec_key=spec_key, delivery=github_result)
+        try:
+            github_result["issue_closure"] = _close_published_ticket_plan(
+                config=config, plan=ticket_plan, run_id=run.run_id, store=store,
+            )
+        except RunnerError as exc:
+            github_result["issue_closure"] = {"state": "pending", "error_code": exc.code}
+            _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                                       spec_key=spec_key, delivery=github_result)
+            store.mark_cleanup_pending(run.run_id)
+            return {**github_result, "state": "cleanup_pending"}
+        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+                                   spec_key=spec_key, delivery=github_result)
+        final_cleanup = cleanup_managed_workspace(repository=config.repository_path,
+            workspace_root=control_root / "delivery-workspaces", workspace=workspace,
+            manifest=Path(str(workspace_info["manifest"])))
+        if final_cleanup.get("outcome") != "cleaned":
+            store.mark_cleanup_pending(run.run_id)
+            github_result["manifest_cleanup"] = final_cleanup
+            return {**github_result, "state": "cleanup_pending"}
         if finalize_run:
             store.mark_archived(run.run_id, state="completed")
         else:
@@ -3928,8 +4013,6 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
             continue
         if document.get("run_id") == run.run_id:
             manifests.append(manifest)
-    if not manifests:
-        raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no owned workspace manifest")
     artifact = _safe_artifact_directory(control_root, config, run.run_id)
     plan_path = artifact / "spec-plan.json"
     if not plan_path.is_file():
@@ -3940,6 +4023,14 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
     if any(not isinstance(spec_key, str) or not spec_key for spec_key in manifest_spec_keys):
         raise RunnerError("production_cleanup_evidence_missing", "workspace manifest has no SPEC identity")
     spec_keys = set(manifest_spec_keys)
+    for receipt_path in artifact.glob("delivery-*.json"):
+        receipt = load_json(receipt_path)
+        if receipt.get("run_id") == run.run_id and isinstance(receipt.get("spec_key"), str):
+            spec_keys.add(str(receipt["spec_key"]))
+    if not spec_keys:
+        raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no delivery or workspace evidence")
+    if not manifests and config.github_repository is None:
+        raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no owned workspace manifest")
     for spec_key in spec_keys:
         receipt_path = artifact / f"delivery-{spec_key}.json"
         ticket_path = artifact / f"ticket-plan-{spec_key}.json"
@@ -3955,17 +4046,49 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
                 or not isinstance(receipt.get("merge"), dict)
                 or receipt.get("merge", {}).get("merged") is not True):
             raise RunnerError("production_cleanup_evidence_invalid", "persisted delivery evidence does not prove this SPEC was reviewed and merged")
+        if spec_key not in set(manifest_spec_keys) and config.github_repository is not None:
+            if (not isinstance(receipt.get("cleanup"), dict)
+                    or receipt["cleanup"].get("outcome") != "cleaned"
+                    or not isinstance(receipt.get("issue_closure"), dict)
+                    or receipt["issue_closure"].get("complete") is not True):
+                raise RunnerError("production_cleanup_evidence_invalid", "manifest-free SPEC lacks durable cleanup and issue closure readbacks")
     results = [cleanup_managed_workspace(
         repository=config.repository_path, workspace_root=root,
-        workspace=Path(str(document["workspace"])), manifest=manifest)
+        workspace=Path(str(document["workspace"])), manifest=manifest, preserve_manifest=True)
         for manifest, document in manifest_documents]
     if any(item.get("outcome") != "cleaned" for item in results):
         return {"state": "cleanup_pending", "cleanup": results}
+    closures = []
+    closures_by_spec: dict[str, dict[str, object] | None] = {}
+    for spec_key in sorted(spec_keys):
+        ticket_plan = load_json(artifact / f"ticket-plan-{spec_key}.json")
+        try:
+            closure = _close_published_ticket_plan(
+                config=config, plan=ticket_plan, run_id=run.run_id, store=store,
+            )
+            closures.append(closure)
+            closures_by_spec[spec_key] = closure
+        except RunnerError as exc:
+            return {"state": "cleanup_pending", "cleanup": results,
+                    "issue_closure": {"spec_key": spec_key, "error_code": exc.code}}
+    finalized = [cleanup_managed_workspace(
+        repository=config.repository_path, workspace_root=root,
+        workspace=Path(str(document["workspace"])), manifest=manifest)
+        for manifest, document in manifest_documents]
+    if any(item.get("outcome") != "cleaned" for item in finalized):
+        return {"state": "cleanup_pending", "cleanup": results, "manifest_cleanup": finalized}
+    for spec_key, closure in closures_by_spec.items():
+        delivery_path = artifact / f"delivery-{spec_key}.json"
+        delivery = load_json(delivery_path)
+        delivery["issue_closure"] = closure
+        if spec_key in set(manifest_spec_keys):
+            delivery["cleanup"] = {"outcome": "cleaned", "recovered": True}
+        _write_json_atomic(delivery_path, delivery)
     for spec_key in sorted(spec_keys):
         _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
             spec_key=str(spec_key), plan_digest=str(plan["digest"]))
     store.set_run_state(run.run_id, "spec_completed")
-    completed = {"state": "spec_completed", "cleanup": results}
+    completed = {"state": "spec_completed", "cleanup": results, "issue_closures": closures}
     if len(spec_keys) == 1:
         completed["spec_key"] = next(iter(spec_keys))
     else:

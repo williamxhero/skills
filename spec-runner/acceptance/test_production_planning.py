@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sys
 import tempfile
 from dataclasses import replace
@@ -465,6 +466,7 @@ def test_github_receipt_and_stage_transition_roll_back_together(context):
 
 def test_production_cleanup_pending_retries_cleanup_without_implementation(context, monkeypatch):
     root, config, store, run = context
+    config = replace(config, github_repository="williamxhero/skills", github_receipt_root=root / "receipts")
     artifact = root / "artifacts" / run.run_id
     artifact.mkdir(parents=True)
     (artifact / "ticket-plan-S1.json").write_text(json.dumps({"spec_key": "S1"}), encoding="utf-8")
@@ -488,11 +490,23 @@ def test_production_cleanup_pending_retries_cleanup_without_implementation(conte
     store.set_run_state(run.run_id, "cleanup_pending")
     calls = []
     monkeypatch.setattr(workflow, "cleanup_managed_workspace", lambda **kwargs: calls.append(kwargs) or {"outcome": "cleaned"})
+    monkeypatch.setattr(workflow, "_close_published_ticket_plan",
+                        lambda **kwargs: {"complete": True, "issues": [{"number": 101, "state": "closed"}]})
     current = store.find_by_run_id(run.run_id)
     assert current is not None
     result = workflow._retry_production_cleanup(control_root=root, config=config, run=current, store=store)
     assert result["state"] == "spec_completed"
     assert {call["workspace"] for call in calls} == {workspace, recovery_workspace}
+    assert all(call["preserve_manifest"] is True for call in calls[:2])
+    assert all(call.get("preserve_manifest", False) is False for call in calls[2:])
+    persisted_delivery = json.loads((artifact / "delivery-S1.json").read_text(encoding="utf-8"))
+    assert persisted_delivery["issue_closure"]["complete"] is True
+    durable_digest = hashlib.sha256(json.dumps(persisted_delivery, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    stored_digest = store.connection.execute(
+        "SELECT delivery_digest FROM production_spec_completions WHERE run_id = ? AND spec_key = ?",
+        (run.run_id, "S1"),
+    ).fetchone()[0]
+    assert stored_digest == durable_digest
     assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S1"]
 
 

@@ -43,6 +43,19 @@
     "ticket_github_receipts": "native parent and blocked-by relations read back for the run's ticket plans",
     "pr_receipts": "all three merged replacement/current PRs read back by exact candidate and operation identity"
   },
+  "ticket_issue_closures": {
+    "outcome": "verified",
+    "method": "current GitHubTracker close operation with exact repository, run marker, title and body preflight; PATCH followed by issue readback",
+    "closed_issue_numbers": [304, 305, 306, 308, 309, 312, 313, 314, 315],
+    "github_state_readback": "all nine run-owned issues are closed",
+    "sqlite_completed_close_operations": 9,
+    "per_spec": {
+      "SPEC-1": [304, 305, 306],
+      "SPEC-2": [308, 309],
+      "SPEC-3": [312, 313, 314, 315]
+    },
+    "excluded_open_failed_candidate_pr": 310
+  },
   "unverified_project_gates": [
     "exact-wheel L3 for the current post-recovery source",
     "six-SPEC release-train L4 owner regression",

@@ -100,7 +100,8 @@ def _remove_managed_worktree(*, repository: Path, workspace: Path) -> None:
         )
 
 
-def cleanup_managed_workspace(*, repository: Path, workspace_root: Path, workspace: Path, manifest: Path | None = None) -> dict[str, object]:
+def cleanup_managed_workspace(*, repository: Path, workspace_root: Path, workspace: Path,
+                              manifest: Path | None = None, preserve_manifest: bool = False) -> dict[str, object]:
     """Remove one Runner-owned candidate worktree without touching user files.
 
     A Windows process can keep a worktree file open after the merge is durable.
@@ -178,7 +179,7 @@ def cleanup_managed_workspace(*, repository: Path, workspace_root: Path, workspa
                     "manifest": os.fspath(safe_manifest),
                 }
 
-    if safe_manifest.exists():
+    if safe_manifest.exists() and not preserve_manifest:
         try:
             safe_manifest.unlink()
         except OSError as exc:
@@ -193,6 +194,7 @@ def cleanup_managed_workspace(*, repository: Path, workspace_root: Path, workspa
         "outcome": "cleaned",
         "workspace": os.fspath(safe_workspace),
         "manifest": os.fspath(safe_manifest),
+        "manifest_retained": preserve_manifest,
     }
 
 

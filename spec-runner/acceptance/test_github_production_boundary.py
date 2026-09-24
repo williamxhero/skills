@@ -77,8 +77,9 @@ def test_github_merge_requires_explicit_authorization(monkeypatch, github_contex
 
 
 @pytest.mark.parametrize("merge_receipt", [{"merged": True}, {"merged": False}])
+@pytest.mark.parametrize("close_fails_once", [False, True])
 def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
-    monkeypatch, github_context, merge_receipt,
+    monkeypatch, github_context, merge_receipt, close_fails_once,
 ):
     root, config, store, run = github_context
     artifact = root / "artifacts" / run.run_id
@@ -130,17 +131,44 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
 
     monkeypatch.setattr(workflow, "_execute_github_delivery", fake_delivery)
     cleanup_calls = []
+    sequence = []
     monkeypatch.setattr(workflow, "cleanup_managed_workspace",
-                        lambda **kwargs: cleanup_calls.append(kwargs) or {"outcome": "cleaned"})
+                        lambda **kwargs: (cleanup_calls.append(kwargs), sequence.append("cleanup"), {"outcome": "cleaned"})[-1])
+    close_calls = []
+    def fake_close(**kwargs):
+        close_calls.append("close")
+        sequence.append("close")
+        if close_fails_once and len(close_calls) == 1:
+            raise RunnerError("github_close_unknown", "close response is unresolved")
+        return {"complete": True}
+    monkeypatch.setattr(workflow, "_close_published_ticket_plan", fake_close)
     first = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
     assert first["state"] == "waiting_ci"
     assert calls[0]["push"] is False
     if merge_receipt["merged"]:
         second = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store, finalize_run=False)
-        assert second["state"] == "spec_completed"
+        if close_fails_once:
+            assert second["state"] == "cleanup_pending"
+            assert len(cleanup_calls) == 1
+            assert store.production_completed_specs(run.run_id) == {"S0"}
+            current = store.find_by_run_id(run.run_id)
+            assert current is not None
+            recovered = workflow._retry_production_cleanup(
+                control_root=root, config=config, run=current, store=store,
+            )
+            assert recovered["state"] == "spec_completed"
+            assert close_calls == ["close", "close"]
+            assert len(cleanup_calls) == 3
+            assert sequence == ["cleanup", "close", "cleanup", "close", "cleanup"]
+        else:
+            assert second["state"] == "spec_completed"
+            assert close_calls == ["close"]
+            assert len(cleanup_calls) == 2
+            assert sequence == ["cleanup", "close", "cleanup"]
     else:
         with pytest.raises(RunnerError, match="confirmed merge receipt"):
             workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store, finalize_run=False)
+        assert close_calls == []
         assert cleanup_calls == []
     assert len(calls) == 2
     assert calls[1]["push"] is False
@@ -227,7 +255,11 @@ def test_waiting_ci_resume_recovers_a_definitive_failed_candidate(monkeypatch, g
 
     monkeypatch.setattr(workflow, "_recover_failed_github_candidate", fake_recovery)
     cleanup_calls = []
-    monkeypatch.setattr(workflow, "cleanup_managed_workspace", lambda **kwargs: cleanup_calls.append(kwargs) or {"outcome": "cleaned"})
+    sequence = []
+    monkeypatch.setattr(workflow, "cleanup_managed_workspace",
+                        lambda **kwargs: (cleanup_calls.append(kwargs), sequence.append("cleanup"), {"outcome": "cleaned"})[-1])
+    monkeypatch.setattr(workflow, "_close_published_ticket_plan",
+                        lambda **kwargs: sequence.append("close") or {"complete": True})
     first = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
 
     assert first["state"] == "waiting_ci"
@@ -241,6 +273,7 @@ def test_waiting_ci_resume_recovers_a_definitive_failed_candidate(monkeypatch, g
     )
 
     assert second["state"] == "spec_completed"
+    assert sequence == ["cleanup", "cleanup", "close", "cleanup", "cleanup"]
     assert len(calls) == 2
     assert {Path(call["workspace"]) for call in cleanup_calls} == {root / "workspace", recovery_workspace}
     assert all(call["manifest"] in {manifest, recovery_manifest} for call in cleanup_calls)

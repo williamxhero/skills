@@ -447,3 +447,122 @@ class GitHubTracker:
         receipt["complete"] = True
         save_progress()
         return {"created": created, "receipt": receipt}
+
+    def close_published(self, *, repository: str, draft: dict[str, Any], operation_id: str,
+                        publication_receipt: dict[str, object], relation_mode: str = "body_links",
+                        operation_intent: Callable[..., dict[str, object]] | None = None,
+                        operation_completed: Callable[..., None] | None = None) -> dict[str, object]:
+        """Close exactly the run-owned issues from a completed publication.
+
+        The publication receipt supplies issue numbers, but never substitutes
+        for the external readback.  Every close has its own durable operation
+        so a process exit after PATCH can be recovered without repeating it.
+        """
+        if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+            raise RunnerError("invalid_github_repository", "repository must be owner/name")
+        if relation_mode not in {"body_links", "native"}:
+            raise RunnerError("invalid_relation_mode", "relation_mode must be body_links or native")
+        if (publication_receipt.get("complete") is not True
+                or publication_receipt.get("operation_id") != operation_id
+                or publication_receipt.get("repository") != repository):
+            raise RunnerError("github_close_evidence_invalid", "close requires the matching complete publication receipt")
+        specs = draft.get("specs")
+        if not isinstance(specs, list) or not specs:
+            raise RunnerError("invalid_close_draft", "close draft needs at least one SPEC")
+        issue_items = list(specs)
+        umbrella = draft.get("umbrella")
+        if len(specs) > 1 or umbrella is not None:
+            if not isinstance(umbrella, dict) or not umbrella.get("title") or not umbrella.get("body"):
+                raise RunnerError("invalid_close_draft", "multiple SPECs require an explicit umbrella draft")
+            issue_items = [umbrella, *issue_items]
+
+        published = publication_receipt.get("issues")
+        if not isinstance(published, list):
+            raise RunnerError("github_close_evidence_missing", "publication receipt has no issue list")
+        published_by_key: dict[str, dict[str, object]] = {}
+        for value in published:
+            if not isinstance(value, dict) or not isinstance(value.get("key"), str) or value["key"] in published_by_key:
+                raise RunnerError("github_close_evidence_invalid", "publication receipt has duplicate or invalid issue identities")
+            if (not isinstance(value.get("number"), int) or isinstance(value.get("number"), bool)
+                    or int(value["number"]) < 1 or not isinstance(value.get("marker"), str)):
+                raise RunnerError("github_close_evidence_invalid", "publication receipt has an invalid issue identity")
+            published_by_key[str(value["key"])] = value
+        expected_keys = [item.get("key") for item in issue_items if isinstance(item, dict)]
+        if (any(not isinstance(key, str) or not key.strip() for key in expected_keys)
+                or len(expected_keys) != len(set(expected_keys))
+                or set(expected_keys) != set(published_by_key)):
+            raise RunnerError("github_close_evidence_invalid", "publication receipt does not match the close draft")
+
+        prepared: list[tuple[dict[str, Any], str, int, str, dict[str, object], str, str]] = []
+        for item in issue_items:
+            if not isinstance(item, dict) or not all(isinstance(item.get(field), str) and item[field].strip() for field in ("key", "title", "body")):
+                raise RunnerError("invalid_close_draft", "each issue needs key, title, and body")
+            key = str(item["key"])
+            publication = published_by_key[key]
+            number = int(publication["number"])
+            marker = f"<!-- spec-runner-key:{key} operation:{operation_id} -->"
+            if publication.get("marker") != marker:
+                raise RunnerError("github_close_evidence_invalid", "publication marker does not match the close operation")
+            body = str(item["body"])
+            if item.get("parent") and relation_mode == "body_links":
+                parent = published_by_key.get(str(item["parent"]))
+                if parent is None:
+                    raise RunnerError("github_close_evidence_invalid", "body-link parent is absent from the publication receipt")
+                body += f"\n\nParent: #{parent['number']}"
+            if relation_mode == "body_links":
+                for dependency in item.get("blocked_by", []):
+                    dependency_receipt = published_by_key.get(str(dependency))
+                    if dependency_receipt is None:
+                        raise RunnerError("github_close_evidence_invalid", "body-link dependency is absent from the publication receipt")
+                    body += f"\nBlocked by: #{dependency_receipt['number']}"
+            rendered_body = f"{marker}\n{body}"
+            expected = {"key": key, "number": number, "marker": marker, "state": "closed"}
+            current = self._issue(repository, number)
+            if (current.get("pull_request") or current.get("title") != item["title"]
+                    or current.get("body") != rendered_body):
+                raise RunnerError("github_close_conflict", "run-owned issue was edited or belongs to another object")
+            item_operation_id = f"{operation_id}:close:{key}"
+            input_digest = _digest({"repository": repository, "issue": expected, "title": item["title"], "body": rendered_body})
+            prepared.append((item, key, number, rendered_body, expected, item_operation_id, input_digest))
+
+        closed: list[dict[str, object]] = []
+        for item, key, number, rendered_body, expected, item_operation_id, input_digest in prepared:
+            current = self._issue(repository, number)
+            if (current.get("pull_request") or current.get("title") != item["title"]
+                    or current.get("body") != rendered_body):
+                raise RunnerError("github_close_conflict", "run-owned issue changed after close preflight")
+            operation_state = operation_intent(
+                operation_id=item_operation_id, operation_kind="github_issue_close",
+                repository=repository, input_digest=input_digest,
+            ) if operation_intent is not None else None
+            if operation_state and operation_state.get("state") == "completed":
+                saved = operation_state.get("receipt")
+                if saved != expected:
+                    raise RunnerError("github_close_evidence_invalid", "completed close operation has a conflicting receipt")
+                if current.get("state") != "closed":
+                    raise RunnerError("github_close_unconfirmed", "completed close operation is not closed on GitHub")
+                closed.append(expected)
+                continue
+            if current.get("state") != "closed":
+                try:
+                    self._runner(["api", f"repos/{repository}/issues/{number}", "--method", "PATCH", "-f", "state=closed"])
+                except RunnerError as exc:
+                    if exc.code in _DEFINITIVE_PUBLICATION_FAILURES:
+                        raise
+                    current = self._issue(repository, number)
+                    if current.get("state") != "closed":
+                        raise RunnerError("github_close_unknown", "issue close outcome is unknown and readback is not closed") from exc
+                except Exception as exc:
+                    current = self._issue(repository, number)
+                    if current.get("state") != "closed":
+                        raise RunnerError("github_close_unknown", "issue close outcome is unknown and readback is not closed") from exc
+                current = self._issue(repository, number)
+            if (current.get("pull_request") or current.get("title") != item["title"]
+                    or current.get("body") != rendered_body):
+                raise RunnerError("github_close_conflict", "issue changed while closing")
+            if current.get("state") != "closed":
+                raise RunnerError("github_close_unconfirmed", "GitHub did not confirm the issue as closed")
+            if operation_completed is not None:
+                operation_completed(operation_id=item_operation_id, receipt=expected)
+            closed.append(expected)
+        return {"operation_id": operation_id, "repository": repository, "issues": closed, "complete": True}
