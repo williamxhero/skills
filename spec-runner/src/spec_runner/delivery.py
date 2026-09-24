@@ -365,7 +365,7 @@ def verify_candidate(*, workspace: Path, candidate_sha: str, acceptance_version:
     return {"schema_version": "spec-runner-candidate-receipt/v1", "candidate_sha": candidate_sha, "acceptance_version": acceptance_version, "checks": results, "test_plan_digest": digest(checks), "write_scope": {"allowed_paths": list(allowed_paths), "changed_paths": scoped_paths}, "environment": {"os_name": os.name, "python": os.sys.version.split()[0]}, "outcome": "verified"}
 
 
-def validate_review(*, result: dict[str, Any], candidate_sha: str, acceptance_version: str, blocking_severity: set[str] = frozenset({"critical", "high"})) -> dict[str, object]:
+def validate_review(*, result: dict[str, Any], candidate_sha: str, acceptance_version: str, blocking_severity: set[str] = frozenset({"critical", "high", "medium", "low"})) -> dict[str, object]:
     if result.get("schema_version") != "spec-runner-review-result/v1" or result.get("candidate_sha") != candidate_sha or result.get("acceptance_version") != acceptance_version:
         raise RunnerError("invalid_review", "review result does not bind the verified candidate and acceptance version")
     findings = result.get("findings")
