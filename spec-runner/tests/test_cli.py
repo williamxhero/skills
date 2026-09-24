@@ -469,6 +469,113 @@ class SpecRunnerCliTests(unittest.TestCase):
         else:
             self.fail("detached deterministic runner with relative inputs did not complete")
 
+    def test_detached_launch_claim_accepts_durable_token_when_wrapper_pid_differs(self) -> None:
+        from spec_runner.store import RunRecord, Store, now
+        from spec_runner.workflow import _launch_claim
+
+        self.control_root.mkdir(parents=True)
+        store = Store.open(self.control_root, create=True)
+        try:
+            timestamp = now()
+            run = RunRecord(
+                run_id="11111111-1111-4111-8111-111111111111",
+                launch_key="wrapper-pid",
+                input_digest="input",
+                config_digest="config",
+                repository_path=str(self.repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="deterministic_test",
+                state="running",
+                current_step="deterministic_example",
+                log_path="logs/wrapper-pid.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            store.create_run(run, "start:wrapper-pid")
+            store.register_runtime(
+                run.run_id,
+                pid=987654,
+                owner_token=f"{run.run_id}:launch:launch-token:nonce",
+                log_path=str(self.control_root / run.log_path),
+            )
+        finally:
+            store.close()
+
+        claim = _launch_claim(
+            control_root=self.control_root,
+            run_id=run.run_id,
+            child_pid=123456,
+            launch_token="launch-token",
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["run_id"], run.run_id)
+
+    def test_detached_launch_claim_resolves_existing_launch_key_identity(self) -> None:
+        from spec_runner.store import RunRecord, Store, now
+        from spec_runner.workflow import _launch_claim
+
+        self.control_root.mkdir(parents=True)
+        store = Store.open(self.control_root, create=True)
+        try:
+            timestamp = now()
+            run = RunRecord(
+                run_id="22222222-2222-4222-8222-222222222222",
+                launch_key="existing-launch",
+                input_digest="input",
+                config_digest="config",
+                repository_path=str(self.repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="deterministic_test",
+                state="running",
+                current_step="deterministic_example",
+                log_path="logs/existing-launch.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            store.create_run(run, "start:existing-launch")
+            store.register_runtime(
+                run.run_id,
+                pid=987654,
+                owner_token=f"{run.run_id}:launch:launch-token:nonce",
+                log_path=str(self.control_root / run.log_path),
+            )
+        finally:
+            store.close()
+
+        claim = _launch_claim(
+            control_root=self.control_root,
+            run_id="33333333-3333-4333-8333-333333333333",
+            child_pid=123456,
+            launch_token="launch-token",
+            launch_key="existing-launch",
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim["run_id"], run.run_id)
+
+    def test_replayed_terminal_run_records_detached_launch_claim(self) -> None:
+        from spec_runner.workflow import start
+
+        first = start(
+            brief_file=self.brief,
+            config_file=self.config,
+            control_root=self.control_root,
+            launch_key="terminal-replay",
+        )
+        run_id = str(first["run"]["run_id"])
+        replay = start(
+            brief_file=self.brief,
+            config_file=self.config,
+            control_root=self.control_root,
+            launch_key="terminal-replay",
+            run_id="33333333-3333-4333-8333-333333333333",
+            launch_token="replay-token",
+        )
+        self.assertFalse(replay["created"])
+        self.assertEqual(replay["run"]["run_id"], run_id)
+        self.assertTrue(str(replay["runtime"]["owner_token"]).startswith(f"{run_id}:launch:replay-token:"))
+
     def test_pause_at_stage_boundary_and_resume_reuses_the_same_run(self) -> None:
         run_id = "12345678-1234-1234-1234-123456789012"
         environment = os.environ.copy()
@@ -508,6 +615,7 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertFalse(resumed["created"])
         self.assertEqual(resumed["run"]["run_id"], run_id)
         self.assertEqual(resumed["run"]["state"], "completed")
+        self.assertNotEqual(resumed["runtime"]["pid"], paused["runtime"]["pid"])
 
     def test_invalid_config_and_artifact_escape_are_structured_errors(self) -> None:
         self.config.write_text("{not json", encoding="utf-8")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -4314,7 +4315,8 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
 
 
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
-          run_id: str | None = None, takeover_key: str | None = None) -> dict[str, object]:
+          run_id: str | None = None, takeover_key: str | None = None,
+          launch_token: str | None = None) -> dict[str, object]:
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
     brief, brief_digest = read_brief(brief_file)
@@ -4330,7 +4332,11 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
     if takeover_key and takeover_record is None:
         store.close()
         raise RunnerError("takeover_record_missing", "takeover continuation requires an existing durable takeover record")
-    owner_token = f"{requested_run_id}:{os.getpid()}:{uuid.uuid4().hex}"
+    owner_token = (
+        f"{requested_run_id}:launch:{launch_token}:{uuid.uuid4().hex}"
+        if launch_token
+        else f"{requested_run_id}:{os.getpid()}:{uuid.uuid4().hex}"
+    )
     lease_scope = f"{os.path.normcase(os.fspath(config.repository_path))}@{config.target_ref}"
     stale_after_seconds = 5.0
     if config.execution_backend == "deterministic_test" and os.environ.get("SPEC_RUNNER_TEST_LEASE_STALE_AFTER_SECONDS"):
@@ -4343,6 +4349,12 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
     global_lease: ScopeLock | None = None
     try:
         existing = store.find_by_launch_key(launch_key)
+        if existing is not None:
+            owner_token = (
+                f"{existing.run_id}:launch:{launch_token}:{uuid.uuid4().hex}"
+                if launch_token
+                else f"{existing.run_id}:{os.getpid()}:{uuid.uuid4().hex}"
+            )
         if existing:
             config_matches_legacy_acceptance_upgrade = _acceptance_upgrade_compatible(existing, config)
             if existing.input_digest != brief_digest or (
@@ -4364,9 +4376,22 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     details={"run_id": existing.run_id, "takeover_key": takeover_key},
                 )
             if existing.state in {"completed", "cancelled", "blocked_writer_busy"}:
+                if launch_token:
+                    store.register_runtime(
+                        existing.run_id,
+                        pid=os.getpid(),
+                        owner_token=owner_token,
+                        log_path=os.fspath(control_root / existing.log_path),
+                    )
                 return {"created": False, **store.public_status(existing.run_id)}
             global_lease = _acquire_global_lease(scope=lease_scope, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
             store.acquire_lease(scope=lease_scope, run_id=existing.run_id, owner_token=owner_token, stale_after_seconds=stale_after_seconds)
+            store.register_runtime(
+                existing.run_id,
+                pid=os.getpid(),
+                owner_token=owner_token,
+                log_path=os.fspath(control_root / existing.log_path),
+            )
             heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
             if existing.state == "blocked" and config.execution_backend == "codex_sdk" and existing.current_step == "codex_planning":
                 retry_thread = _blocked_planning_retry_thread(
@@ -4634,7 +4659,8 @@ def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
     return start(brief_file=brief_file, config_file=config_file, control_root=control_root, launch_key=launch_key)
 
 
-def _launch_claim(*, control_root: Path, run_id: str, child_pid: int) -> dict[str, object] | None:
+def _launch_claim(*, control_root: Path, run_id: str, child_pid: int, launch_token: str | None = None,
+                  launch_key: str | None = None) -> dict[str, object] | None:
     """Read a detached launch claim without creating control state."""
     try:
         store = Store.open(control_root, create=False)
@@ -4642,13 +4668,30 @@ def _launch_claim(*, control_root: Path, run_id: str, child_pid: int) -> dict[st
         return None
     try:
         record = store.find_by_run_id(run_id)
+        if record is None and launch_key:
+            record = store.find_by_launch_key(launch_key)
         runtime = store.runtime_for_run(run_id) if record else None
-        if record and runtime and int(runtime["pid"]) == child_pid:
+        if record is not None:
+            runtime = store.runtime_for_run(record.run_id)
+        token_claim = (
+            isinstance(launch_token, str)
+            and bool(launch_token)
+            and isinstance(runtime, dict)
+            and record is not None
+            and str(runtime.get("owner_token", "")).startswith(f"{record.run_id}:launch:{launch_token}:")
+        )
+        # On Windows a detached interpreter can be started through a launcher
+        # process whose PID is returned by Popen while the interpreter that
+        # owns the Runner lease receives a different PID. The launch token is
+        # passed only to this child and persisted in its runtime owner record,
+        # providing an exact durable identity for that case. A matching PID
+        # remains sufficient for older direct-start behavior.
+        if record and runtime and (int(runtime["pid"]) == child_pid or token_claim):
             return {
                 "started": True,
                 "pid": child_pid,
-                "run_id": run_id,
-                "run": store.public_status(run_id),
+                "run_id": record.run_id,
+                "run": store.public_status(record.run_id),
             }
         return None
     finally:
@@ -4688,6 +4731,7 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
     read_brief(brief_file)
     RunnerConfig.from_file(config_file, control_root)
     run_id = str(uuid.uuid4())
+    launch_token = secrets.token_hex(32)
     log_root = control_root / "launcher-logs"
     log_root.mkdir(parents=True, exist_ok=True)
     stdout_path = log_root / f"{run_id}.stdout.log"
@@ -4707,6 +4751,8 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
         launch_key,
         "--run-id",
         run_id,
+        "--launch-token",
+        launch_token,
     ]
     creation_flags = 0
     if os.name == "nt":
@@ -4723,7 +4769,8 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
         )
     deadline = time.monotonic() + handshake_timeout_seconds
     while time.monotonic() < deadline:
-        claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid)
+        claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid,
+                                launch_token=launch_token, launch_key=launch_key)
         if claimed is not None:
             return {"log_path": os.fspath(stdout_path), **claimed}
         if child.poll() is not None:
@@ -4733,7 +4780,8 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
                 details={"exit_code": child.returncode, "stderr_log": os.fspath(stderr_path)},
             )
         time.sleep(0.05)
-    claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid)
+    claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid,
+                            launch_token=launch_token, launch_key=launch_key)
     if claimed is not None:
         return {"log_path": os.fspath(stdout_path), **claimed}
     terminated = _terminate_unclaimed_child(child)

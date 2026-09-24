@@ -46,6 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--control-root", required=True, type=Path)
     start_parser.add_argument("--launch-key", required=True)
     start_parser.add_argument("--run-id")
+    start_parser.add_argument("--launch-token")
     drive_parser = subparsers.add_parser("drive", help="resume the durable execution loop after an external process exit")
     drive_parser.add_argument("--brief", required=True, type=Path)
     drive_parser.add_argument("--config", required=True, type=Path)
@@ -271,6 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 control_root=arguments.control_root,
                 launch_key=arguments.launch_key,
                 run_id=getattr(arguments, "run_id", None),
+                launch_token=getattr(arguments, "launch_token", None),
             )
         elif arguments.command == "status":
             result = status(control_root=arguments.control_root, run_id=arguments.run_id)
