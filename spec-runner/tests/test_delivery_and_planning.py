@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -15,7 +16,7 @@ from spec_runner.delivery import _run_check, cleanup_managed_workspace, git_sha,
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
-from spec_runner.takeover import completion_action, inspect_takeover, inventory_from_thread_observation, perform_cleanup, plan_frontier, record_takeover_transition, write_takeover_record
+from spec_runner.takeover import _working_tree_snapshot, completion_action, inspect_takeover, inventory_from_thread_observation, perform_cleanup, plan_frontier, record_takeover_transition, write_takeover_record
 from spec_runner.legacy import legacy_takeover_inventory, read_legacy_database
 from spec_runner.multi_spec import run_local_delivery
 
@@ -537,6 +538,66 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(snapshot["changed"], ["fixture/partial.py"])
             self.assertEqual(snapshot["redacted_path_count"], 1)
             self.assertEqual(inventory["artifacts"], [{"path": "fixture/partial.py"}])
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows path alias semantics")
+    def test_working_tree_snapshot_accepts_short_and_long_windows_repository_aliases(self):
+        repository = Path(r"C:\Users\RUNNER~1\work\repo")
+        candidate = repository / "fixture.txt"
+        original_resolve = Path.resolve
+
+        def resolve(path, *args, **kwargs):
+            if path == candidate:
+                return Path(r"C:\Users\runneradmin\work\repo\fixture.txt")
+            return original_resolve(path, *args, **kwargs)
+
+        def git_bytes(_repository, *args):
+            if args[:2] == ("ls-files", "--others"):
+                return b"fixture.txt\0"
+            return b""
+
+        original_realpath = os.path.realpath
+
+        def realpath(path, **kwargs):
+            value = os.fspath(path)
+            if value.lower().startswith(r"c:\users\runner~1\work\repo"):
+                return value.replace("RUNNER~1", "runneradmin")
+            return original_realpath(path, **kwargs)
+
+        with patch("spec_runner.takeover._git_bytes", side_effect=git_bytes), patch("spec_runner.takeover._file_digest", return_value=("sha", 3, "file")), patch.object(Path, "resolve", resolve), patch("spec_runner.takeover.os.path.realpath", side_effect=realpath):
+            snapshot = _working_tree_snapshot(repository)
+
+        self.assertEqual(snapshot["untracked"], [{"path": "fixture.txt", "sha256": "sha", "size": 3, "kind": "file"}])
+
+    @unittest.skipUnless(os.name == "nt", "requires Windows path alias semantics")
+    def test_takeover_artifact_check_accepts_short_and_long_windows_repository_aliases(self):
+        repository = Path(r"C:\Users\RUNNER~1\work\repo")
+        candidate = repository / "fixture.txt"
+        original_resolve = Path.resolve
+
+        def resolve(path, *args, **kwargs):
+            if path == candidate:
+                return Path(r"C:\Users\runneradmin\work\repo\fixture.txt")
+            return original_resolve(path, *args, **kwargs)
+
+        original_realpath = os.path.realpath
+
+        def realpath(path, **kwargs):
+            value = os.fspath(path)
+            if value.lower().startswith(r"c:\users\runner~1\work\repo"):
+                return value.replace("RUNNER~1", "runneradmin")
+            return original_realpath(path, **kwargs)
+
+        snapshot = {"status_entries": [], "redacted_path_count": 0, "changed": [], "snapshot_digest": "snapshot"}
+        with patch("spec_runner.takeover._git", return_value="head"), patch("spec_runner.takeover._working_tree_snapshot", return_value=snapshot), patch.object(Path, "resolve", resolve), patch("spec_runner.takeover.os.path.realpath", side_effect=realpath):
+            report = inspect_takeover({
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repository),
+                "source_threads": [],
+                "artifacts": [{"path": "fixture.txt"}],
+                "facts": {},
+            })
+
+        self.assertEqual(report["artifacts"], [{"path": "fixture.txt", "exists": False, "state": "missing_evidence"}])
 
     def test_thread_observation_with_incomplete_history_cannot_become_ready(self):
         with tempfile.TemporaryDirectory() as temp:

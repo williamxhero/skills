@@ -53,6 +53,16 @@ def _sensitive_path(relative: str) -> bool:
     )
 
 
+def _path_is_within(path: Path, repository: Path) -> bool:
+    """Compare filesystem paths after resolving aliases and symlinks."""
+    repository_path = os.path.normcase(os.path.realpath(os.fspath(repository)))
+    candidate_path = os.path.normcase(os.path.realpath(os.fspath(path)))
+    try:
+        return os.path.commonpath((repository_path, candidate_path)) == repository_path
+    except ValueError:
+        return False
+
+
 def _status_entries(repository: Path) -> tuple[list[dict[str, object]], int]:
     entries = _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z").split(b"\0")
     projected: list[dict[str, object]] = []
@@ -100,10 +110,8 @@ def _working_tree_snapshot(repository: Path) -> dict[str, object]:
         if _sensitive_path(relative):
             continue
         candidate = (repository / relative).resolve()
-        try:
-            candidate.relative_to(repository)
-        except ValueError as exc:
-            raise RunnerError("takeover_path_escape", "untracked path escapes repository") from exc
+        if not _path_is_within(candidate, repository):
+            raise RunnerError("takeover_path_escape", "untracked path escapes repository")
         file_sha, size, kind = _file_digest(repository / relative)
         untracked.append({"path": relative, "sha256": file_sha, "size": size, "kind": kind})
     staged_diff = _git_bytes(repository, "diff", "--cached", "--binary")
@@ -263,7 +271,7 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         if not isinstance(path, str):
             raise RunnerError("invalid_takeover_inventory", "artifact path is required")
         candidate = (repository / path).resolve()
-        if repository not in (candidate, *candidate.parents):
+        if not _path_is_within(candidate, repository):
             raise RunnerError("takeover_path_escape", "takeover artifact escapes repository")
         classifications.append({"path": path, "exists": candidate.exists(), "state": "adopted" if candidate.exists() else "missing_evidence"})
     facts = inventory.get("facts", {})
