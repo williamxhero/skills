@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    sys.stdout.write(output)
+    sys.stdout.buffer.write(output.encode("utf-8"))
     return 0
 
 

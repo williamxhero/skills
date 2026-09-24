@@ -1,8 +1,15 @@
+import contextlib
+import io
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import task_csv_to_json
 
 
 SCRIPT = Path(__file__).with_name("task_csv_to_json.py")
@@ -35,6 +42,25 @@ class TaskCsvToJsonTests(unittest.TestCase):
 
         empty = self.run_command("header_only.csv")
         self.assertEqual((empty.returncode, empty.stdout, empty.stderr), (0, b"[]", b""))
+
+    def test_non_ascii_output_is_utf8_with_non_utf8_stdout_encoding(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            input_path = Path(temporary_directory) / "unicode.csv"
+            input_path.write_text("id,title,status\n1,雪,pending\n", encoding="utf-8")
+            environment = os.environ.copy()
+            environment["PYTHONIOENCODING"] = "cp1252"
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), str(input_path)],
+                capture_output=True,
+                env=environment,
+            )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(
+            result.stdout,
+            '[{"id":"1","title":"雪","status":"pending"}]'.encode("utf-8"),
+        )
+        self.assertEqual(result.stderr, b"")
 
     def test_failures_are_exit_two_with_no_stdout(self):
         invalid_fixtures = [
@@ -70,6 +96,20 @@ class TaskCsvToJsonTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 2)
         self.assertEqual(missing.stdout, b"")
         self.assertTrue(missing.stderr)
+
+    def test_permission_denied_fails_without_stdout(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch.object(Path, "open", side_effect=PermissionError("access denied")),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            exit_code = task_csv_to_json.main(["unreadable.csv"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("cannot read input file", stderr.getvalue())
 
 
 if __name__ == "__main__":
