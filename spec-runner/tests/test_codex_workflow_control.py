@@ -445,6 +445,123 @@ class CodexWorkflowControlTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_recovery_reuses_approved_review_without_replaying_workers(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-approved-review-") as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+            (repository / "README.md").write_text("baseline\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "README.md"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "baseline"],
+                check=True,
+            )
+            base_sha = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+            config = RunnerConfig(
+                repository, "HEAD", Path("artifacts"), "codex_sdk", ("production",),
+                "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
+            )
+            run_id = "14141414-1414-1414-1414-141414141414"
+            timestamp = now()
+            run = RunRecord(
+                run_id=run_id, launch_key="approved-review", input_digest="brief",
+                config_digest="config", repository_path=str(repository), target_ref="HEAD",
+                artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                current_step="codex_review", log_path="logs/run.jsonl",
+                created_at=timestamp, updated_at=timestamp,
+            )
+            store = Store.open(root / "control", create=True)
+            try:
+                store.create_run(run, f"start:{run_id}")
+                workspace_info = workflow.prepare_workspace(
+                    repository=repository, workspace_root=root / "control" / "delivery-workspaces",
+                    run_id=run_id, spec_key="SPEC-95", base_ref="HEAD",
+                )
+                workspace = Path(str(workspace_info["workspace"]))
+                (workspace / "implemented.txt").write_text("candidate\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(workspace), "add", "implemented.txt"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(workspace), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "candidate"],
+                    check=True,
+                )
+                candidate_sha = workflow.git_sha(workspace)
+                ticket_plan = workflow.validate_ticket_plan({
+                    "schema_version": "spec-runner-ticket-plan/v1", "spec_key": "SPEC-95",
+                    "base_sha": base_sha,
+                    "tickets": [{"key": "SPEC-95.1", "body": "Implement the fixture.", "blocked_by": [], "acceptance": ["A1"]}],
+                }, expected_spec_key="SPEC-95", expected_base_sha=base_sha)
+                implementation_operation = f"implementation:{run_id}:SPEC-95"
+                implementation_worker = f"codex_sdk:{run_id}:codex_implementation:SPEC-95"
+                store.begin_stage(run_id, step_name="codex_implementation", operation_id=implementation_operation,
+                                  backend_kind="codex_sdk", worker_id=implementation_worker)
+                store.record_codex_turn_started(run_id, implementation_operation, thread_id="implementation-thread",
+                                                turn_id="implementation-turn", step_name="codex_implementation",
+                                                worker_id=implementation_worker)
+                store.complete_codex_stage(run_id, implementation_operation, thread_id="implementation-thread",
+                                           turn_id="implementation-turn", state="verified_candidate",
+                                           step_name="codex_implementation", worker_id=implementation_worker)
+                review_operation = f"review:{run_id}:SPEC-95:{candidate_sha}"
+                review_worker = f"codex_sdk:{run_id}:codex_review:SPEC-95:{candidate_sha[:12]}"
+                store.begin_stage(run_id, step_name="codex_review", operation_id=review_operation,
+                                  backend_kind="codex_sdk", worker_id=review_worker)
+                store.record_codex_turn_started(run_id, review_operation, thread_id="review-thread",
+                                                turn_id="review-turn", step_name="codex_review",
+                                                worker_id=review_worker)
+                store.complete_codex_stage(run_id, review_operation, thread_id="review-thread",
+                                           turn_id="review-turn", state="reviewed", step_name="codex_review",
+                                           worker_id=review_worker)
+                store.set_run_state(run_id, "blocked")
+                artifact = root / "control" / "artifacts" / run_id
+                artifact.mkdir(parents=True)
+                (artifact / "ticket-plan-SPEC-95.json").write_text(json.dumps(ticket_plan), encoding="utf-8")
+                (artifact / "candidate-SPEC-95.json").write_text(json.dumps({
+                    "candidate_sha": candidate_sha, "acceptance_version": ticket_plan["digest"],
+                    "outcome": "verified",
+                }), encoding="utf-8")
+                implementation_document = {
+                    "thread_id": "implementation-thread", "turn_id": "implementation-turn",
+                    "status": "completed", "error": None,
+                    "final_response": json.dumps({"outcome": "completed", "artifacts": ["implemented.txt"], "blockers": [], "questions": []}),
+                    "item_count": 1, "started_at": 1, "completed_at": 2,
+                }
+                (artifact / "implementation-SPEC-95.json").write_text(json.dumps(implementation_document), encoding="utf-8")
+                review_result = CodexWorkerResult(
+                    thread_id="review-thread", turn_id="review-turn", status="completed", error=None,
+                    final_response=json.dumps({
+                        "schema_version": "spec-runner-review-result/v1", "candidate_sha": candidate_sha,
+                        "acceptance_version": ticket_plan["digest"], "findings": [],
+                    }), item_count=1, started_at=1, completed_at=2,
+                )
+                validated_review = workflow.independent_review(
+                    review_result, implementation_thread="implementation-thread", candidate_sha=candidate_sha,
+                    acceptance_version=str(ticket_plan["digest"]),
+                )
+                (artifact / f"review-SPEC-95-{candidate_sha[:12]}.json").write_text(
+                    json.dumps({**validated_review, "worker": review_result.public()}), encoding="utf-8",
+                )
+                (artifact / f"review-worker-SPEC-95-{candidate_sha[:12]}.json").write_text(
+                    json.dumps(review_result.public()), encoding="utf-8",
+                )
+
+                with (
+                    patch.object(workflow, "_execute_independent_review", side_effect=AssertionError("review replayed")),
+                    patch.object(workflow, "_repair_candidate", side_effect=AssertionError("implementation replayed")),
+                    patch.object(workflow, "_finish_codex_implementation", side_effect=RunnerError("target_ref_changed", "target moved")) as finish,
+                ):
+                    with self.assertRaisesRegex(RunnerError, "target moved"):
+                        workflow._recover_after_process_exit(
+                            control_root=root / "control", config=config,
+                            run=store.find_by_run_id(run_id), brief="brief", brief_digest="brief", store=store,
+                        )
+
+                finish.assert_called_once()
+                self.assertEqual(finish.call_args.kwargs["validated_review"]["review_digest"], validated_review["review_digest"])
+                self.assertEqual(finish.call_args.kwargs["validated_review"]["candidate_sha"], candidate_sha)
+                self.assertEqual(finish.call_args.kwargs["result"].turn_id, "implementation-turn")
+            finally:
+                store.close()
+
     def test_recovery_retries_only_a_confirmed_terminal_failed_turn_at_its_stage(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-failed-recovery-") as temp:
             root = Path(temp)
@@ -801,6 +918,19 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     patch.object(workflow, "_persist_delivery_evidence"),
                     patch.object(workflow, "cleanup_managed_workspace", return_value={"outcome": "cleaned"}),
                 ):
+                    with self.assertRaisesRegex(RunnerError, "persisted review does not approve"):
+                        workflow._finish_codex_implementation(
+                            control_root=root / "control",
+                            config=config,
+                            brief_digest="brief",
+                            run=run,
+                            store=store,
+                            ticket_plan=ticket_plan,
+                            workspace_info=workspace_info,
+                            result=result,
+                            finalize_run=False,
+                            validated_review={"approved": True, "candidate_sha": "different-candidate"},
+                        )
                     finished = workflow._finish_codex_implementation(
                         control_root=root / "control",
                         config=config,

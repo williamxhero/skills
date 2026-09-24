@@ -88,6 +88,28 @@ the recovery fixes were being committed. The run remains `blocked` at
 `codex_review`; there is no merge receipt, cleanup readback, or transactional
 SPEC completion. No candidate was force-merged and no completion was claimed.
 
+## Approved-review recovery follow-up (2026-09-24)
+
+The blocked run exposed a recovery branch that treated every persisted
+`reviewed` worker as a repair frontier, including an approved review whose
+candidate was waiting at the merge boundary. Recovery now revalidates the
+review worker identity and receipt, candidate receipt, TicketPlan, and
+implementation result before reusing that candidate. The finish path also
+checks that the approved review still names the verified candidate and reuses
+the persisted implementation archive readback instead of repeating the SDK
+archive operation.
+
+Regression coverage proves recovery reaches the guarded finish path without
+calling review or repair again, and that a mismatched review candidate is
+rejected. The complete source/acceptance suite passed 166 tests with one skip;
+the installed-SDK environment-specific missing-SDK test was deselected.
+Replaying the same public `start` command and launch key against the existing
+run returned `target_ref_changed` at local merge. The run remains blocked;
+its implementation and review worker identities are unchanged, and it has no
+merge receipt or transactional SPEC completion. This verifies recovery through
+the merge guard only; the candidate still needs a deliberate rebase/review
+cycle against the current target before delivery can complete.
+
 GitHub issue #256 remains OPEN and its acceptance checklist remains unchecked.
 The existing live report `SRAC-20260923-6dfe49ef27ba-native-relations.json`
 proves native parent and blocked-by write/readback for its three run-marked
