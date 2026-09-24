@@ -1271,9 +1271,11 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
         key: review.get(key)
         for key in ("approved", "blocking", "candidate_sha", "findings", "review_digest")
     }
+    legacy_review_receipt = isinstance(github_review, dict) and github_review == review
     if (review.get("approved") is not True or review.get("candidate_sha") != candidate_sha
             or not isinstance(review.get("review_digest"), str) or not review["review_digest"].strip()
-            or not isinstance(github_review, dict) or github_review != review_projection):
+            or not isinstance(github_review, dict)
+            or (github_review != review_projection and not legacy_review_receipt)):
         raise RunnerError("github_waiting_evidence_invalid", "waiting GitHub receipt does not match its validated independent review")
     github_branch = github.get("branch")
     matching_manifests = [
