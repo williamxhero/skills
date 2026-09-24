@@ -982,9 +982,8 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
                         self_thread = thread_id
                         self_path = repository_path
-                        if self_thread != "implementation-thread" or self_path != Path(
-                            str(root / "control" / "delivery-workspaces" / "SPEC-95-66666666")
-                        ):
+                        expected_path = (root / "control" / "delivery-workspaces" / "SPEC-95-66666666").resolve()
+                        if self_thread != "implementation-thread" or self_path.resolve() != expected_path:
                             raise AssertionError("recovery inspected the wrong SDK thread or workspace")
                         return {
                             "schema_version": "spec-runner-sdk-thread-inspection/v1",

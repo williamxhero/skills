@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install build tooling
-        run: python -m pip install --upgrade build
+        run: python -m pip install --upgrade build pytest
       - name: Run Runner tests
         run: python -m unittest discover -s spec-runner/tests -q
       - name: Run thin-entry tests

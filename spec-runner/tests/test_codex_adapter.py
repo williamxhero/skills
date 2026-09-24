@@ -5,6 +5,7 @@ import unittest
 import threading
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -190,8 +191,9 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(holder["codex"].resume_kwargs["approval_mode"], "deny_all")
 
     def test_missing_published_sdk_is_a_structured_error(self) -> None:
-        with self.assertRaises(RunnerError) as context:
-            CodexAdapter().run(prompt="x", repository_path=Path("C:/repo"), model="m", effort="low")
+        with patch.dict(sys.modules, {"openai_codex": None}):
+            with self.assertRaises(RunnerError) as context:
+                CodexAdapter().run(prompt="x", repository_path=Path("C:/repo"), model="m", effort="low")
         self.assertEqual(context.exception.code, "sdk_unavailable")
 
     def test_control_request_interrupts_active_published_turn(self) -> None:

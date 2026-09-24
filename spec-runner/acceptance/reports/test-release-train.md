@@ -279,3 +279,24 @@ process restart, Windows native parent exit, GitHub merge queue, complete
 three-SPEC GitHub delivery, source-thread takeover, or Windows control DB/log
 recovery; each remains `not_verified`. GitHub issue #256 remains OPEN with its
 acceptance checklist unchecked.
+
+## CI recovery check corrections (2026-09-24)
+
+GitHub Actions run `35961463445` failed on Ubuntu and Windows. Both jobs lacked
+`pytest`, although a Runner boundary test launches `python -m pytest`; the
+workflow now installs `pytest` alongside `build`. Windows also exposed a test
+that compared an unresolved temporary path with the resolved managed
+worktree path; the assertion now resolves both paths. The missing-SDK adapter
+test now explicitly hides `openai_codex` from imports, so its expected
+`sdk_unavailable` result is independent of the developer environment.
+
+Local verification after these corrections: Runner unittest `92 tests, 1
+skipped`; source and acceptance pytest selection `172 passed, 1 skipped`;
+thin-entry unittest `3 passed`; targeted SF-03.1 publication and delivery
+selection `74 passed`; `git diff --check` passed. The two fixture-app test
+directories with a duplicate module basename remain excluded from recursive
+pytest collection, and the unit-test skip is environment-independent. The
+updated GitHub Actions result must still pass on the pushed commit. These are
+CI/test-harness corrections only: issue #256 remains OPEN and its checklist
+unchecked; complete three-SPEC delivery and the outstanding project-level
+L3/L4/L5 gates remain `not_verified`.
