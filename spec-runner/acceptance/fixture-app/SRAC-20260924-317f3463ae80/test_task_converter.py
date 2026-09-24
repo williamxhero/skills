@@ -136,6 +136,7 @@ class DestinationTests(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
+            cwd=Path(task_converter.__file__).parent,
         )
 
         self.assertEqual(completed.returncode, 2)
@@ -163,6 +164,7 @@ class DestinationTests(unittest.TestCase):
             check=False,
             capture_output=True,
             text=True,
+            cwd=Path(task_converter.__file__).parent,
         )
 
         self.assertEqual(completed.returncode, 0)
