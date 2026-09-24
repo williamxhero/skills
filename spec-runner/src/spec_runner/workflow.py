@@ -2150,12 +2150,10 @@ def _reconcile_approved_review(*, control_root: Path, config: RunnerConfig,
         approval_mode=str(review_document.get("approval_mode") or "deny_all"),
         skill_observation=review_document.get("skill_observation") if isinstance(review_document.get("skill_observation"), dict) else None,
     )
-    workspace_info = prepare_workspace(
-        repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
-        run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+    workspace_info = _candidate_workspace_info(
+        control_root=control_root, config=config, run=run, spec_key=spec_key,
+        candidate_sha=candidate_sha,
     )
-    if Path(str(workspace_info["workspace"])).resolve() != workspace:
-        raise RunnerError("recovery_blocked", "approved review workspace adoption changed the persisted workspace identity")
     ticket_plan = validate_ticket_plan(
         load_json(ticket_path), expected_spec_key=spec_key,
         expected_base_sha=str(workspace_info["base_sha"]),
@@ -2254,7 +2252,11 @@ def _reconcile_rejected_review(*, control_root: Path, config: RunnerConfig,
     if not ticket_path.is_file():
         raise RunnerError("recovery_blocked", "rejected review has no matching TicketPlan")
     ticket_plan = load_json(ticket_path)
-    workspace = _implementation_workspace_path(control_root=control_root, config=config, run=run, spec_key=spec_key)
+    workspace_info = _candidate_workspace_info(
+        control_root=control_root, config=config, run=run, spec_key=spec_key,
+        candidate_sha=str(matching_candidate["candidate_sha"]),
+    )
+    workspace = Path(str(workspace_info["workspace"]))
     old_thread = str(worker.get("external_thread_id") or "")
     if not old_thread or not str(worker.get("external_turn_id") or ""):
         raise RunnerError("recovery_blocked", "rejected review lacks formal thread/turn identity")
@@ -2302,13 +2304,6 @@ def _reconcile_rejected_review(*, control_root: Path, config: RunnerConfig,
         item_count=int(implementation_document["item_count"]),
         started_at=int(implementation_document["started_at"]),
         completed_at=int(implementation_document["completed_at"]),
-    )
-    workspace_info = prepare_workspace(
-        repository=config.repository_path,
-        workspace_root=control_root / "delivery-workspaces",
-        run_id=run.run_id,
-        spec_key=spec_key,
-        base_ref=config.target_ref,
     )
     return _finish_codex_implementation(
         control_root=control_root,
@@ -2559,6 +2554,35 @@ def _implementation_workspace_path(*, control_root: Path, config: RunnerConfig,
     if Path(str(document.get("repository", ""))).resolve() != config.repository_path.resolve():
         raise RunnerError("recovery_blocked", "implementation workspace manifest repository does not match the configured repository")
     return workspace
+
+
+def _candidate_workspace_info(*, control_root: Path, config: RunnerConfig,
+                              run: RunRecord, spec_key: str,
+                              candidate_sha: str) -> dict[str, object]:
+    """Read the unique clean managed manifest for an exact candidate SHA."""
+    workspace_root = (control_root / "delivery-workspaces").resolve()
+    matches: list[dict[str, object]] = []
+    for manifest_path in sorted(workspace_root.glob("*.manifest.json")):
+        try:
+            document = load_json(manifest_path)
+        except RunnerError:
+            continue
+        if (document.get("run_id") != run.run_id
+                or document.get("spec_key") != spec_key
+                or Path(str(document.get("repository", ""))).resolve() != config.repository_path.resolve()):
+            continue
+        workspace = Path(str(document.get("workspace", ""))).resolve()
+        if workspace_root not in workspace.parents or not workspace.is_dir():
+            continue
+        try:
+            if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
+                continue
+        except RunnerError:
+            continue
+        matches.append({**document, "manifest": os.fspath(manifest_path), "workspace": os.fspath(workspace)})
+    if len(matches) != 1:
+        raise RunnerError("recovery_blocked", "candidate has no unique clean managed workspace manifest")
+    return matches[0]
 
 
 def _reconcile_completed_implementation_turn(*, control_root: Path, config: RunnerConfig,
