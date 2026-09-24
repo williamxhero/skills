@@ -1449,6 +1449,8 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 self.assertNotEqual(candidate_sha, base_sha)
                 self.assertEqual(receipt["passed"], True)
                 verify.assert_called_once()
+                canonical = json.loads((artifact_directory / "candidate-SPEC-95.json").read_text(encoding="utf-8"))
+                self.assertEqual(canonical, receipt)
                 self.assertEqual(subprocess.check_output(["git", "-C", str(workspace), "rev-list", "--count", "HEAD"], text=True).strip(), "2")
             finally:
                 store.close()

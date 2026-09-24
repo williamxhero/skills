@@ -988,6 +988,10 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
         acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks),
         acceptance=list(config.acceptance_ids), base_sha=base_sha, allowed_paths=config.acceptance_paths)
     store.complete_codex_stage(run.run_id, operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=step, worker_id=worker)
+    # A repaired candidate replaces the previous candidate for the SPEC. Keep
+    # the canonical receipt aligned with the verified workspace so GitHub
+    # recovery cannot resume against a stale candidate.
+    _write_json_atomic(artifact_directory / f"candidate-{spec_key}.json", candidate_receipt)
     (artifact_directory / f"repair-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps({"candidate": candidate_receipt, "worker": result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return candidate_sha, candidate_receipt
 
