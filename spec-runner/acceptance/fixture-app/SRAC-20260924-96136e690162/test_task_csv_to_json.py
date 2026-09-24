@@ -1,13 +1,15 @@
+import io
 import json
-import os
 import subprocess
 import sys
+import tempfile
 import uuid
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
-from task_csv_to_json import ConversionError, atomic_write
+from task_csv_to_json import main
 
 
 COMMAND = Path(__file__).with_name("task_csv_to_json.py")
@@ -16,10 +18,8 @@ COMMAND = Path(__file__).with_name("task_csv_to_json.py")
 class TaskCsvToJsonTests(unittest.TestCase):
     def run_command(self, input_bytes: bytes, output: Path | None = None):
         input_path = self.directory / f"{self.prefix}-tasks.csv"
-        self.paths.append(input_path)
         input_path.write_bytes(input_bytes)
         output_path = output or self.directory / f"{self.prefix}-tasks.json"
-        self.paths.append(output_path)
         result = subprocess.run(
             [sys.executable, str(COMMAND), str(input_path), str(output_path)],
             capture_output=True,
@@ -27,15 +27,12 @@ class TaskCsvToJsonTests(unittest.TestCase):
         return result, output_path
 
     def setUp(self):
-        self.directory = Path.cwd()
+        self.tempdir = tempfile.TemporaryDirectory(prefix="task-csv-to-json-")
+        self.directory = Path(self.tempdir.name)
         self.prefix = f".test-{uuid.uuid4().hex}"
-        self.paths: list[Path] = []
 
     def tearDown(self):
-        for path in self.paths:
-            path.unlink(missing_ok=True)
-        for path in self.directory.glob(f"{self.prefix}*"):
-            path.unlink(missing_ok=True)
+        self.tempdir.cleanup()
 
     def test_success_has_canonical_bytes_and_preserves_order(self):
         result, output = self.run_command(
@@ -76,7 +73,6 @@ class TaskCsvToJsonTests(unittest.TestCase):
                 self.assertFalse(output.exists())
 
         existing = self.directory / f"{self.prefix}-existing.json"
-        self.paths.append(existing)
         original = b'{"tasks":[{"id":"old","title":"Old","status":"done"}]}\n'
         existing.write_bytes(original)
         result, _ = self.run_command(b"id,title,status\n1,,todo\n", existing)
@@ -104,13 +100,17 @@ class TaskCsvToJsonTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), first_bytes)
 
     def test_replacement_failure_preserves_destination(self):
+        input_path = self.directory / f"{self.prefix}-tasks.csv"
+        input_path.write_bytes(b"id,title,status\n1,One,todo\n")
         output = self.directory / f"{self.prefix}-existing.json"
-        self.paths.append(output)
         original = b"old\n"
         output.write_bytes(original)
         with mock.patch("task_csv_to_json.os.replace", side_effect=OSError("simulated failure")):
-            with self.assertRaises(ConversionError):
-                atomic_write(output, b"new\n")
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                returncode = main([str(input_path), str(output)])
+        self.assertNotEqual(returncode, 0)
+        self.assertIn("error:", stderr.getvalue())
         self.assertEqual(output.read_bytes(), original)
         self.assertEqual(list(self.directory.glob(".*.tmp")), [])
 
