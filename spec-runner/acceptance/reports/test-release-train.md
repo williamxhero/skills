@@ -156,7 +156,17 @@ answer-only calls retain their prior behavior.
 Impact: `store.py` answer/control transaction and `cli.py` answer route.
 Selection `acceptance/test_production_planning.py`, `tests/test_cli.py`, and
 `tests/test_store.py`: 40 passed in 9.36 seconds; full suite 120 passed, 1
-skipped in 23.41 seconds. This verifies transactional protocol and same-stage
-resume path under the acceptance fake adapter, not yet the user's real
-business-answer SDK turn required by #254. L0 diff check passed; exact installed
-artifact proof is due after source changes are finalized.
+skipped in 23.41 seconds. This verifies the transactional protocol and
+same-stage resume path under the acceptance fake adapter. A later live
+single-SPEC run (`SRAC-20260924-96136e690162`, run
+`ceecb69c-6ccb-46c2-a633-93db1a6f8dfc`) also exercised real business answers:
+the Grill worker entered `needs_input` twice, accepted seven persisted answers,
+and resumed three turns on the same thread before planning continued. The run
+completed implementation, independent review, six fixture tests, local merge
+(`df94c892845e33a9f32467603d4a1789d89c9705`), workspace cleanup, and archive
+readbacks. The review was approved with two open medium findings about test
+isolation and replacement-failure coverage; those findings were non-blocking
+under the configured severity gate. This is live single-SPEC evidence, not
+evidence for kill/restart at every answer/wake boundary, installed-wheel L3, or
+the remaining project-level L4/L5 gates. L0 diff check passed; exact installed
+artifact proof remains due after source changes are finalized.

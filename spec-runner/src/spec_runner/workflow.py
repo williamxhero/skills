@@ -1841,6 +1841,8 @@ def _reconcile_approved_review(*, control_root: Path, config: RunnerConfig,
         raise RunnerError("recovery_blocked", "persisted approved review failed revalidation", details={"code": exc.code}) from exc
     if any(validated_review.get(key) != value for key, value in expected_review.items()):
         raise RunnerError("recovery_blocked", "persisted approved review receipt changed")
+    if validated_review.get("worker") != review_result.public():
+        raise RunnerError("recovery_blocked", "approved review worker receipt changed")
     implementation_path = artifact_directory / f"implementation-{spec_key}.json"
     if not implementation_path.is_file():
         raise RunnerError("recovery_blocked", "approved review has no persisted implementation result")

@@ -549,6 +549,19 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     patch.object(workflow, "_repair_candidate", side_effect=AssertionError("implementation replayed")),
                     patch.object(workflow, "_finish_codex_implementation", side_effect=RunnerError("target_ref_changed", "target moved")) as finish,
                 ):
+                    tampered_review = {**validated_review, "worker": {**review_result.public(), "thread_id": "other-thread"}}
+                    (artifact / f"review-SPEC-95-{candidate_sha[:12]}.json").write_text(
+                        json.dumps(tampered_review), encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(RunnerError, "approved review worker receipt changed"):
+                        workflow._recover_after_process_exit(
+                            control_root=root / "control", config=config,
+                            run=store.find_by_run_id(run_id), brief="brief", brief_digest="brief", store=store,
+                        )
+                    finish.assert_not_called()
+                    (artifact / f"review-SPEC-95-{candidate_sha[:12]}.json").write_text(
+                        json.dumps({**validated_review, "worker": review_result.public()}), encoding="utf-8",
+                    )
                     with self.assertRaisesRegex(RunnerError, "target moved"):
                         workflow._recover_after_process_exit(
                             control_root=root / "control", config=config,
