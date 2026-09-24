@@ -1395,6 +1395,17 @@ def _finish_codex_implementation(
         (event for event in store.events_for_run(run.run_id) if event.get("event_key") == archive_event_key),
         None,
     )
+    if archive_event is None:
+        archive_event = next(
+            (
+                event for event in store.events_for_run(run.run_id)
+                if event.get("event_type") == "cleanup_readback"
+                and isinstance(event.get("payload"), dict)
+                and event["payload"].get("thread_id") == result.thread_id
+                and event["payload"].get("archived") is True
+            ),
+            None,
+        )
     if archive_event is not None:
         archive = archive_event.get("payload")
         if not isinstance(archive, dict) or archive.get("thread_id") != result.thread_id or archive.get("archived") is not True:
