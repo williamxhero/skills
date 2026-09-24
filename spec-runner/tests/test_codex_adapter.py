@@ -33,7 +33,8 @@ class FakeThread:
 
     def read(self, *, include_turns: bool = False) -> object:
         status = types.SimpleNamespace(root=types.SimpleNamespace(type=types.SimpleNamespace(value="idle"), active_flags=[]))
-        turn = types.SimpleNamespace(id="turn-read-1", status=types.SimpleNamespace(value="completed"), started_at=1, completed_at=2)
+        item = types.SimpleNamespace(type="userMessage", id="item-read-1", content=[types.SimpleNamespace(text="original requirement")])
+        turn = types.SimpleNamespace(id="turn-read-1", status=types.SimpleNamespace(value="completed"), started_at=1, completed_at=2, duration_ms=3, error=None, items_view="full", items=[item])
         source = types.SimpleNamespace(id=self.id, status=status, turns=[turn] if include_turns else [])
         return types.SimpleNamespace(thread=source)
 
@@ -174,21 +175,36 @@ class CodexAdapterTests(unittest.TestCase):
 
         def factory(config: object) -> FakeCodex:
             holder["codex"] = FakeCodex(config)
+            holder["codex"].thread.id = "thread-existing"
             return holder["codex"]
 
         sdk = types.SimpleNamespace(
             CodexConfig=lambda **kwargs: kwargs,
             Codex=object,
-            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
-            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
         )
         inspected = CodexAdapter(codex_factory=factory, sdk_module=sdk).read_thread(
             thread_id="thread-existing", repository_path=Path("C:/repo")
         )
         self.assertFalse(inspected["started_turn"])
+        self.assertEqual(inspected["read_via"], "thread_resume_then_thread_read_without_overrides")
+        self.assertEqual(inspected["thread_resume_overrides"], {})
         self.assertEqual(inspected["thread_status"], "idle")
         self.assertEqual(inspected["turns"][0]["turn_id"], "turn-read-1")
-        self.assertEqual(holder["codex"].resume_kwargs["approval_mode"], "deny_all")
+        self.assertEqual(inspected["turns"][0]["items"][0]["type"], "userMessage")
+        self.assertEqual(inspected["completeness"]["state"], "complete")
+        self.assertFalse(inspected["evidence_limits"]["source_stop_confirmed"])
+        self.assertFalse(inspected["evidence_limits"]["ownership_transferred"])
+        self.assertEqual(holder["codex"].resume_kwargs, {})
+
+    def test_thread_read_fails_closed_on_identity_mismatch(self) -> None:
+        def factory(config: object) -> FakeCodex:
+            return FakeCodex(config)
+
+        sdk = types.SimpleNamespace(CodexConfig=lambda **kwargs: kwargs, Codex=object)
+        with self.assertRaisesRegex(RunnerError, "different thread"):
+            CodexAdapter(codex_factory=factory, sdk_module=sdk).read_thread(
+                thread_id="requested-thread", repository_path=Path("C:/repo")
+            )
 
     def test_missing_published_sdk_is_a_structured_error(self) -> None:
         with patch.dict(sys.modules, {"openai_codex": None}):

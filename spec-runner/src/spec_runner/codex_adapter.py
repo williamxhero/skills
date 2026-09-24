@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
@@ -422,50 +423,80 @@ class CodexAdapter:
             sdk_module = self._sdk_module
         Codex = sdk_module.Codex
         CodexConfig = sdk_module.CodexConfig
-        Sandbox = sdk_module.Sandbox
-        approval_modes = getattr(sdk_module, "ApprovalMode", None)
-        approval_mode = getattr(approval_modes, APPROVAL_MODE, None)
-        if approval_mode is None:
-            raise RunnerError(
-                "sdk_approval_policy_unsupported",
-                f"openai-codex=={SDK_VERSION} does not expose the required {APPROVAL_MODE} approval policy",
-            )
         factory = self._codex_factory or (lambda config: Codex(config))
         try:
-            with factory(CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)) as codex:
-                thread = codex.thread_resume(
-                    thread_id,
-                    cwd=str(repository_path),
-                    sandbox=Sandbox.workspace_write,
-                    approval_mode=approval_mode,
-                )
+            # ``thread_resume`` is currently the SDK's handle acquisition
+            # boundary.  It accepts optional thread configuration overrides,
+            # but inspection must not change the source thread's cwd,
+            # permissions, model, or approval policy.  Keep the client
+            # process configuration independent of the source thread too.
+            with factory(CodexConfig(client_version=SDK_VERSION)) as codex:
+                thread = codex.thread_resume(thread_id)
                 response = thread.read(include_turns=True)
                 source = getattr(response, "thread", None)
                 if source is None:
                     raise RunnerError("sdk_thread_read_invalid", "Codex SDK returned no thread in read response")
+                observed_thread_id = str(getattr(source, "id", thread_id))
+                if observed_thread_id != thread_id:
+                    raise RunnerError(
+                        "sdk_thread_identity_mismatch",
+                        "Codex SDK returned a different thread than the requested source",
+                        details={"requested_thread_id": thread_id, "observed_thread_id": observed_thread_id},
+                    )
                 status = getattr(source, "status", None)
                 status_root = getattr(status, "root", status)
-                flags = getattr(status_root, "active_flags", []) or []
+                thread_status = _enum_value(getattr(status_root, "type", "unknown"))
+                active_flags = _jsonable(getattr(status_root, "active_flags", []), _key="active_flags")
                 turns = getattr(source, "turns", []) or []
+                projected_turns: list[dict[str, object]] = []
+                completeness = "complete"
+                completeness_reasons: list[str] = []
+                for turn in turns:
+                    items = getattr(turn, "items", None)
+                    items_view = _enum_value(getattr(turn, "items_view", None))
+                    if not hasattr(turn, "items"):
+                        completeness = "unknown"
+                        completeness_reasons.append("turn_items_field_missing")
+                    elif items_view not in {None, "full"}:
+                        completeness = "partial"
+                        completeness_reasons.append(f"turn_items_{items_view}")
+                    projected_turn: dict[str, object] = {
+                        "turn_id": str(getattr(turn, "id", "")),
+                        "status": _enum_value(getattr(turn, "status", "unknown")),
+                        "started_at": getattr(turn, "started_at", None),
+                        "completed_at": getattr(turn, "completed_at", None),
+                        "duration_ms": getattr(turn, "duration_ms", None),
+                        "error": _jsonable(getattr(turn, "error", None)),
+                        "items_view": items_view or "unknown",
+                        "items": _jsonable(items or []),
+                    }
+                    projected_turns.append(projected_turn)
+                if not hasattr(source, "turns"):
+                    completeness = "unknown"
+                    completeness_reasons.append("thread_turns_field_missing")
                 return {
                     "schema_version": "spec-runner-sdk-thread-inspection/v1",
-                    "thread_id": str(getattr(source, "id", thread_id)),
+                    "thread_id": observed_thread_id,
                     "repository_path": str(repository_path),
-                    "read_via": "thread_resume_then_thread_read",
+                    "read_via": "thread_resume_then_thread_read_without_overrides",
                     "started_turn": False,
-                    "approval_mode": APPROVAL_MODE,
-                    "thread_status": str(getattr(getattr(status_root, "type", None), "value", getattr(status_root, "type", "unknown"))),
-                    "active_flags": [str(getattr(flag, "value", flag)) for flag in flags],
-                    "turns": [
-                        {
-                            "turn_id": str(getattr(turn, "id", "")),
-                            "status": str(getattr(getattr(turn, "status", None), "value", getattr(turn, "status", "unknown"))),
-                            "started_at": getattr(turn, "started_at", None),
-                            "completed_at": getattr(turn, "completed_at", None),
-                        }
-                        for turn in turns
-                    ],
+                    "thread_resume_overrides": {},
+                    "codex_config_overrides": {"client_version": SDK_VERSION},
+                    "thread_status": thread_status,
+                    "active_flags": active_flags,
+                    "thread": _thread_metadata(source),
+                    "turns": projected_turns,
                     "turn_count": len(turns),
+                    "completeness": {
+                        "state": completeness,
+                        "include_turns_requested": True,
+                        "reasons": sorted(set(completeness_reasons)),
+                    },
+                    "evidence_limits": {
+                        "source_stop_confirmed": False,
+                        "ownership_transferred": False,
+                        "read_only_observation": True,
+                    },
                 }
         except RunnerError:
             raise
@@ -475,3 +506,51 @@ class CodexAdapter:
                 "Codex SDK failed while reading the explicitly supplied thread",
                 details={"exception_type": type(exc).__name__},
             ) from exc
+
+
+def _enum_value(value: Any) -> object:
+    """Return JSON-safe enum values while keeping fake SDKs usable."""
+    if isinstance(value, Enum):
+        return value.value
+    value_attr = getattr(value, "value", None)
+    return value_attr if value_attr is not None else value
+
+
+def _jsonable(value: Any, *, _key: str | None = None) -> object:
+    """Project SDK models into bounded JSON without leaking credential fields."""
+    if _key and any(token in _key.lower() for token in ("token", "secret", "password", "api_key", "authorization")):
+        return "[redacted]"
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item, _key=str(key)) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _jsonable(model_dump(mode="json", by_alias=True))
+        except TypeError:
+            return _jsonable(model_dump())
+    attributes = getattr(value, "__dict__", None)
+    if isinstance(attributes, dict):
+        return {str(key): _jsonable(item, _key=str(key)) for key, item in attributes.items() if not str(key).startswith("_")}
+    return str(value)
+
+
+def _thread_metadata(source: Any) -> dict[str, object]:
+    fields = (
+        "id", "name", "preview", "cwd", "created_at", "updated_at", "recency_at",
+        "model", "model_provider", "reasoning_effort", "source", "originator",
+        "session_id", "project_id", "forked_from_id", "parent_thread_id", "history_mode",
+        "git_info", "path", "ephemeral",
+    )
+    metadata = {field: _jsonable(getattr(source, field), _key=field) for field in fields if hasattr(source, field)}
+    status = getattr(source, "status", None)
+    if status is not None:
+        status_root = getattr(status, "root", status)
+        metadata["status"] = _jsonable(getattr(status_root, "type", status_root), _key="status")
+        metadata["active_flags"] = _jsonable(getattr(status_root, "active_flags", []), _key="active_flags")
+    return metadata
