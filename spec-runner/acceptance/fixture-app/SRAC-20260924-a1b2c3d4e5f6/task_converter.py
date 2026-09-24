@@ -86,7 +86,16 @@ def convert_csv(csv_text: str) -> dict[str, object]:
         seen_ids.add(task_id)
         rows.append(normalized)
 
-    return {"rows": rows, "counts": {}}
+    status_frequencies: dict[str, int] = {}
+    for row in rows:
+        status = row["status"]
+        status_frequencies[status] = status_frequencies.get(status, 0) + 1
+    counts = {
+        status: status_frequencies[status]
+        for status in sorted(status_frequencies)
+    }
+
+    return {"rows": rows, "counts": counts}
 
 
 # These aliases keep the core seam discoverable without creating alternate
