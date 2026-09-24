@@ -82,12 +82,17 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     artifact.mkdir(parents=True)
     candidate_sha = "a" * 40
     candidate = {"outcome": "verified", "candidate_sha": candidate_sha}
-    review = {"approved": True, "candidate_sha": candidate_sha, "review_digest": "review-digest"}
+    review = {
+        "approved": True, "blocking": [], "candidate_sha": candidate_sha,
+        "findings": [], "review_digest": "review-digest",
+    }
     (artifact / "github-S1.json").write_text(json.dumps({
         "spec_key": "S1", "state": "waiting_ci", "candidate": candidate, "review": review,
     }), encoding="utf-8")
     (artifact / "candidate-S1.json").write_text(json.dumps(candidate), encoding="utf-8")
-    (artifact / f"review-S1-{candidate_sha[:12]}.json").write_text(json.dumps(review), encoding="utf-8")
+    (artifact / f"review-S1-{candidate_sha[:12]}.json").write_text(json.dumps({
+        **review, "worker": {"thread_id": "review-thread", "turn_id": "review-turn"},
+    }), encoding="utf-8")
     (artifact / f"review-worker-S1-{candidate_sha[:12]}.json").write_text(json.dumps({
         "status": "completed", "final_response": "raw worker receipt without validated approval",
     }), encoding="utf-8")

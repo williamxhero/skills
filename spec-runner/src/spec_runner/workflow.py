@@ -975,9 +975,13 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
         raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run has no validated review for its candidate")
     review = load_json(review_path)
     github_review = github.get("review")
+    review_projection = {
+        key: review.get(key)
+        for key in ("approved", "blocking", "candidate_sha", "findings", "review_digest")
+    }
     if (review.get("approved") is not True or review.get("candidate_sha") != candidate_sha
             or not isinstance(review.get("review_digest"), str) or not review["review_digest"].strip()
-            or not isinstance(github_review, dict) or github_review != review):
+            or not isinstance(github_review, dict) or github_review != review_projection):
         raise RunnerError("github_waiting_evidence_invalid", "waiting GitHub receipt does not match its validated independent review")
     matching_manifests = [item for item in manifests if item[1].get("spec_key") == spec_key]
     if len(matching_manifests) != 1:
@@ -985,7 +989,7 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
     manifest_path, manifest = matching_manifests[0]
     result = _execute_github_delivery(control_root=control_root, config=config, run=run,
         spec_key=spec_key, candidate_sha=candidate_sha, branch=str(manifest["branch"]),
-        candidate_receipt=candidate, review=review, push=False)
+        candidate_receipt=candidate, review=review_projection, push=False)
     if result["state"] != "github_completed":
         return result
     _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
