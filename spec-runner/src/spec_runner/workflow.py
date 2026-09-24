@@ -2112,10 +2112,6 @@ def _reconcile_completed_implementation_turn(*, control_root: Path, config: Runn
     ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
     if not ticket_path.is_file():
         raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
-    ticket_plan = validate_ticket_plan(
-        load_json(ticket_path), expected_spec_key=spec_key,
-        expected_base_sha=git_sha(config.repository_path, config.target_ref),
-    )
     workspace = _implementation_workspace_path(control_root=control_root, config=config, run=run, spec_key=spec_key)
     workspace_info = prepare_workspace(
         repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
@@ -2123,6 +2119,10 @@ def _reconcile_completed_implementation_turn(*, control_root: Path, config: Runn
     )
     if Path(str(workspace_info["workspace"])).resolve() != workspace:
         raise RunnerError("recovery_blocked", "implementation workspace adoption changed the persisted workspace identity")
+    ticket_plan = validate_ticket_plan(
+        load_json(ticket_path), expected_spec_key=spec_key,
+        expected_base_sha=str(workspace_info["base_sha"]),
+    )
     input_gate = _persist_implementation_input_gate(
         control_root=control_root, config=config, run=run, store=store, result=result,
         brief_digest=brief_digest, operation_id=f"implementation:{run.run_id}:{spec_key}",
