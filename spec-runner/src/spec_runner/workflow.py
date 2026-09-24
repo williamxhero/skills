@@ -2722,20 +2722,27 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 and bool(turns)
                 and isinstance(turns[-1], dict)
                 and turns[-1].get("turn_id") == turn_id
-                and turn_status == "failed"
+                and turn_status in ({"failed", "interrupted"}
+                                    if run.current_step == "codex_implementation"
+                                    else {"failed"})
             )
             if not reconciled:
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            reconciled_status = str(turn_status)
             store.append_event(
                 run_id=run.run_id,
                 event_key=f"recovery:{run.run_id}:failed-turn-retry:{turn_id}:{worker['updated_at']}",
-                event_type="failed_sdk_turn_reconciled",
+                event_type=("interrupted_sdk_turn_reconciled"
+                            if reconciled_status == "interrupted"
+                            else "failed_sdk_turn_reconciled"),
                 payload={
                     "step": run.current_step,
+                    **({"spec_key": _implementation_spec_key(run=run, worker=worker)}
+                       if run.current_step == "codex_implementation" else {}),
                     "thread_id": thread_id,
                     "turn_id": turn_id,
                     "thread_status": "idle",
-                    "turn_status": "failed",
+                    "turn_status": reconciled_status,
                 },
             )
             return {
@@ -2749,10 +2756,14 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     store=store,
                     thread_id=thread_id,
                     spec_key=(
-                        str(worker["worker_id"])[len(f"{worker_prefix}:codex_ticket_planning:"):]
-                        if run.current_step == "codex_ticket_planning"
-                        and str(worker["worker_id"]).startswith(f"{worker_prefix}:codex_ticket_planning:")
-                        else None
+                        _implementation_spec_key(run=run, worker=worker)
+                        if run.current_step == "codex_implementation"
+                        else (
+                            str(worker["worker_id"])[len(f"{worker_prefix}:codex_ticket_planning:"):]
+                            if run.current_step == "codex_ticket_planning"
+                            and str(worker["worker_id"]).startswith(f"{worker_prefix}:codex_ticket_planning:")
+                            else None
+                        )
                     ),
                 ),
             }
@@ -2807,6 +2818,11 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     details={"inspection_error": exc.code},
                 ) from exc
             turns = inspection.get("turns") if isinstance(inspection, dict) else None
+            turn_count = inspection.get("turn_count") if isinstance(inspection, dict) else None
+            turn_status = (
+                turns[-1].get("status") if isinstance(turns, list) and turns
+                and isinstance(turns[-1], dict) else None
+            )
             terminal = (
                 isinstance(inspection, dict)
                 and inspection.get("thread_id") == thread_id
@@ -2814,11 +2830,13 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 and inspection.get("active_flags") == []
                 and inspection.get("started_turn") is False
                 and isinstance(turns, list)
-                and len(turns) == inspection.get("turn_count")
+                and isinstance(turn_count, int)
+                and not isinstance(turn_count, bool)
+                and len(turns) == turn_count
                 and bool(turns)
                 and isinstance(turns[-1], dict)
                 and turns[-1].get("turn_id") == turn_id
-                and turns[-1].get("status") == "completed"
+                and turn_status in {"completed", "failed", "interrupted"}
             )
             if not terminal:
                 raise RunnerError("recovery_blocked", "review turn has no uniquely recoverable terminal result")
@@ -2840,6 +2858,47 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                         break
             if candidate_receipt is None:
                 raise RunnerError("recovery_blocked", "review stage has no matching candidate receipt")
+            if turn_status in {"failed", "interrupted"}:
+                operation_id = f"review:{run.run_id}:{spec_key}:{candidate_receipt['candidate_sha']}"
+                if worker.get("state") != "rejected":
+                    store.reject_codex_stage(
+                        run.run_id,
+                        operation_id,
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        step_name="codex_review",
+                        worker_id=str(worker["worker_id"]),
+                        code=("sdk_turn_interrupted" if turn_status == "interrupted" else "sdk_turn_failed"),
+                    )
+                    worker = next(
+                        item for item in store.workers_for_run(run.run_id)
+                        if item.get("worker_id") == worker.get("worker_id")
+                    )
+                store.append_event(
+                    run_id=run.run_id,
+                    event_key=f"recovery:{run.run_id}:review-turn-reconciled:{turn_id}:{worker['updated_at']}",
+                    event_type=("interrupted_review_turn_reconciled"
+                                if turn_status == "interrupted"
+                                else "failed_review_turn_reconciled"),
+                    payload={
+                        "step": "codex_review",
+                        "spec_key": spec_key,
+                        "candidate_sha": str(candidate_receipt["candidate_sha"]),
+                        "thread_id": thread_id,
+                        "turn_id": turn_id,
+                        "thread_status": "idle",
+                        "turn_status": turn_status,
+                    },
+                )
+                recovered = _reconcile_rejected_review(
+                    control_root=control_root,
+                    config=config,
+                    run=run,
+                    store=store,
+                    worker=worker,
+                    brief_digest=brief_digest,
+                )
+                return {"created": False, **recovered}
             review_path = artifact_directory / f"review-worker-{spec_key}-{candidate_short}.json"
             if not review_path.is_file():
                 raise RunnerError("recovery_blocked", "review stage has no persisted worker receipt")
@@ -2985,7 +3044,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
             stage_workers = [
                 worker for worker in workers
                 if worker.get("backend_kind") == "codex_sdk"
-                and worker.get("state") == "running"
+                and worker.get("state") in {"running", "failed", "interrupted"}
                 and str(worker.get("worker_id") or "").startswith(worker_prefix)
             ]
             worker = stage_workers[-1] if stage_workers else None
@@ -3109,6 +3168,58 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 and turns[-1].get("turn_id") == turn_id
                 and turns[-1].get("status") == "completed"
             )
+            interrupted = (
+                isinstance(inspection, dict)
+                and inspection.get("started_turn") is False
+                and inspection.get("thread_id") == thread_id
+                and inspection.get("thread_status") == "idle"
+                and inspection.get("active_flags") == []
+                and isinstance(turns, list)
+                and isinstance(turn_count, int)
+                and not isinstance(turn_count, bool)
+                and turn_count == len(turns)
+                and bool(turns)
+                and isinstance(turns[-1], dict)
+                and turns[-1].get("turn_id") == turn_id
+                and turns[-1].get("status") == "interrupted"
+            )
+            failed = (
+                isinstance(inspection, dict)
+                and inspection.get("started_turn") is False
+                and inspection.get("thread_id") == thread_id
+                and inspection.get("thread_status") == "idle"
+                and inspection.get("active_flags") == []
+                and isinstance(turns, list)
+                and isinstance(turn_count, int)
+                and not isinstance(turn_count, bool)
+                and turn_count == len(turns)
+                and bool(turns)
+                and isinstance(turns[-1], dict)
+                and turns[-1].get("turn_id") == turn_id
+                and turns[-1].get("status") == "failed"
+            )
+            if interrupted or failed:
+                turn_status = "interrupted" if interrupted else "failed"
+                store.append_event(
+                    run_id=run.run_id,
+                    event_key=f"recovery:{run.run_id}:implementation-turn-retry:{turn_id}:{worker['updated_at']}",
+                    event_type=("interrupted_sdk_turn_reconciled"
+                                if interrupted else "failed_sdk_turn_reconciled"),
+                    payload={
+                        "step": run.current_step,
+                        "spec_key": spec_key,
+                        "thread_id": thread_id,
+                        "turn_id": turn_id,
+                        "thread_status": "idle",
+                        "turn_status": turn_status,
+                    },
+                )
+                resumed = _resume_codex_stage(
+                    control_root=control_root, config=config, run=run,
+                    brief=brief, brief_digest=brief_digest, store=store,
+                    thread_id=thread_id, spec_key=spec_key,
+                )
+                return {"created": False, **resumed}
             if not completed:
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
             recovered = _reconcile_completed_implementation_turn(
@@ -3245,8 +3356,6 @@ def _blocked_implementation_retry_identity(*, control_root: Path, config: Runner
                     retry_required = True
                     break
         if not retry_required:
-            return None
-        if _git_checked(workspace, "status", "--porcelain") == "":
             return None
         inspection = CodexAdapter().read_thread(thread_id=thread_id, repository_path=workspace)
         turns = inspection.get("turns") if isinstance(inspection, dict) else None

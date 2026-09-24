@@ -202,7 +202,7 @@ def test_blocked_run_can_reconcile_completed_failed_implementation_worker(contex
     monkeypatch.setattr(store, "workers_for_run", lambda run_id: [worker])
     monkeypatch.setattr(workflow, "_safe_artifact_directory", lambda *args, **kwargs: artifact)
     monkeypatch.setattr(workflow, "_implementation_workspace_path", lambda *args, **kwargs: workspace)
-    monkeypatch.setattr(workflow, "_git_checked", lambda *args, **kwargs: " M task.py")
+    monkeypatch.setattr(workflow, "_git_checked", lambda *args, **kwargs: "")
 
     class CompletedThread:
         def read_thread(self, **kwargs):
@@ -220,6 +220,83 @@ def test_blocked_run_can_reconcile_completed_failed_implementation_worker(contex
     assert workflow._blocked_implementation_retry_identity(
         control_root=root, config=config, run=run, store=store,
     ) == (thread_id, spec_key)
+
+
+@pytest.mark.parametrize(
+    ("run_state", "worker_state"),
+    [("blocked", "running"), ("failed", "failed")],
+)
+def test_interrupted_implementation_resumes_same_thread_without_adopting_partial_work(
+    context, monkeypatch, run_state, worker_state,
+):
+    root, config, store, original_run = context
+    run = replace(original_run, state=run_state, current_step="codex_implementation")
+    spec_key = "S1"
+    thread_id = "interrupted-implementation-thread"
+    turn_id = "interrupted-implementation-turn"
+    worker = {
+        "backend_kind": "codex_sdk",
+        "state": worker_state,
+        "worker_id": f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}",
+        "external_thread_id": thread_id,
+        "external_turn_id": turn_id,
+        "updated_at": "worker-receipt-time",
+    }
+    workspace = root / "partial-workspace"
+    workspace.mkdir()
+    partial_file = workspace / "partial.py"
+    partial_file.write_text("partial = True\n", encoding="utf-8")
+    resumed_calls = []
+    monkeypatch.setattr(store, "workers_for_run", lambda run_id: [worker])
+    monkeypatch.setattr(workflow, "_implementation_workspace_path", lambda **kwargs: workspace)
+
+    class InterruptedThread:
+        def read_thread(self, *, thread_id, repository_path):
+            assert thread_id == "interrupted-implementation-thread"
+            assert repository_path == workspace
+            return {
+                "thread_id": thread_id,
+                "thread_status": "idle",
+                "started_turn": False,
+                "active_flags": [],
+                "turn_count": 1,
+                "turns": [{"turn_id": turn_id, "status": "interrupted"}],
+            }
+
+    monkeypatch.setattr(workflow, "CodexAdapter", InterruptedThread)
+
+    def resume_stage(**kwargs):
+        resumed_calls.append(kwargs)
+        return {"state": "running", "thread_id": kwargs["thread_id"]}
+
+    monkeypatch.setattr(workflow, "_resume_codex_stage", resume_stage)
+    monkeypatch.setattr(
+        workflow, "_reconcile_completed_implementation_turn",
+        lambda **kwargs: pytest.fail("interrupted work must not enter completed-turn adoption"),
+    )
+
+    result = workflow._recover_after_process_exit(
+        control_root=root, config=config, run=run, brief="brief", brief_digest="digest", store=store,
+    )
+
+    assert result == {"created": False, "state": "running", "thread_id": thread_id}
+    assert len(resumed_calls) == 1
+    assert resumed_calls[0]["thread_id"] == thread_id
+    assert resumed_calls[0]["spec_key"] == spec_key
+    assert partial_file.read_text(encoding="utf-8") == "partial = True\n"
+    reconciliation = [
+        event for event in store.events_for_run(run.run_id)
+        if event["event_type"] == "interrupted_sdk_turn_reconciled"
+    ]
+    assert len(reconciliation) == 1
+    assert reconciliation[0]["payload"] == {
+        "step": "codex_implementation",
+        "spec_key": spec_key,
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "thread_status": "idle",
+        "turn_status": "interrupted",
+    }
 
 
 def test_planning_persists_real_callback_identity_and_publishes_local_parent(context, monkeypatch):
