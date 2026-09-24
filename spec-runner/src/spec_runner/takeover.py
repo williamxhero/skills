@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,153 @@ def _git(path: Path, *args: str) -> str:
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("takeover_repository_invalid", "takeover repository is not a readable Git worktree") from exc
     return result.stdout.strip()
+
+
+def _git_bytes(path: Path, *args: str) -> bytes:
+    try:
+        result = subprocess.run(["git", "-C", os.fspath(path), *args], check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RunnerError("takeover_repository_invalid", "takeover repository is not a readable Git worktree") from exc
+    return result.stdout
+
+
+def _file_digest(path: Path) -> tuple[str, int, str]:
+    if path.is_symlink():
+        content = os.readlink(path).encode("utf-8", errors="surrogateescape")
+        return hashlib.sha256(content).hexdigest(), len(content), "symlink"
+    if not path.is_file():
+        return hashlib.sha256(b"").hexdigest(), 0, "other"
+    hasher = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+            size += len(chunk)
+    return hasher.hexdigest(), size, "file"
+
+
+def _sensitive_path(relative: str) -> bool:
+    parts = [part.lower() for part in relative.replace("\\", "/").split("/")]
+    name = parts[-1]
+    return (
+        name in {".env", ".env.local", ".env.production", "credentials", "credentials.json", "secrets.json"}
+        or any(token in name for token in ("secret", "password", "credential", "access_token", "api_key"))
+        or name.endswith((".pem", ".key", ".p12", ".pfx"))
+    )
+
+
+def _status_paths(repository: Path) -> list[str]:
+    result: list[str] = []
+    for entry in _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z").split(b"\0"):
+        if len(entry) < 4:
+            continue
+        value = entry[3:].decode("utf-8", errors="surrogateescape")
+        if " -> " in value:
+            value = value.rsplit(" -> ", 1)[-1]
+        if value and not _sensitive_path(value):
+            result.append(value)
+    return sorted(set(result))
+
+
+def _working_tree_snapshot(repository: Path, *, status: str) -> dict[str, object]:
+    """Capture identifiers and digests without copying user files or secrets."""
+    index_entries = []
+    for raw in _git_bytes(repository, "ls-files", "-s", "-z").split(b"\0"):
+        if not raw:
+            continue
+        metadata, path_bytes = raw.split(b"\t", 1)
+        fields = metadata.decode("ascii", errors="replace").split()
+        if len(fields) < 3:
+            continue
+        relative = path_bytes.decode("utf-8", errors="surrogateescape")
+        if _sensitive_path(relative):
+            continue
+        index_entries.append({"mode": fields[0], "blob_sha": fields[1], "stage": fields[2], "path": relative})
+    untracked = []
+    for path_bytes in _git_bytes(repository, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
+        if not path_bytes:
+            continue
+        relative = path_bytes.decode("utf-8", errors="surrogateescape")
+        candidate = (repository / relative).resolve()
+        try:
+            candidate.relative_to(repository)
+        except ValueError as exc:
+            raise RunnerError("takeover_path_escape", "untracked path escapes repository") from exc
+        file_sha, size, kind = _file_digest(repository / relative)
+        if _sensitive_path(relative):
+            continue
+        untracked.append({"path": relative, "sha256": file_sha, "size": size, "kind": kind})
+    staged_diff = _git_bytes(repository, "diff", "--cached", "--binary")
+    unstaged_diff = _git_bytes(repository, "diff", "--binary")
+    return {
+        "captured_at": datetime.now(UTC).isoformat(),
+        "consistency": "observed_without_source_stop_proof",
+        "porcelain": status,
+        "index": index_entries,
+        "untracked": untracked,
+        "changed": _status_paths(repository),
+        "redacted_path_count": len(
+            [
+                entry
+                for entry in _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z").split(b"\0")
+                if len(entry) >= 4 and _sensitive_path(entry[3:].decode("utf-8", errors="surrogateescape"))
+            ]
+        ),
+        "staged_diff_sha256": hashlib.sha256(staged_diff).hexdigest(),
+        "unstaged_diff_sha256": hashlib.sha256(unstaged_diff).hexdigest(),
+        "snapshot_digest": digest({"status": status, "index": index_entries, "untracked": untracked, "staged": hashlib.sha256(staged_diff).hexdigest(), "unstaged": hashlib.sha256(unstaged_diff).hexdigest()}),
+    }
+
+
+def inventory_from_thread_observation(
+    *,
+    observation: dict[str, object],
+    repository: Path,
+    handover_policy: str = "require_stop_confirmation",
+    scope: list[str] | None = None,
+) -> dict[str, object]:
+    """Build the smallest takeover input from an actual SDK observation."""
+    thread_id = observation.get("thread_id")
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise RunnerError("invalid_thread_observation", "source observation has no stable thread id")
+    completeness = observation.get("completeness")
+    if not isinstance(completeness, dict):
+        raise RunnerError("invalid_thread_observation", "source observation has no completeness record")
+    changed_paths = []
+    snapshot = _working_tree_snapshot(repository, status=_git(repository, "status", "--porcelain=v1", "--untracked-files=all"))
+    changed_paths = [str(path) for path in snapshot.get("changed", []) if isinstance(path, str)]
+    if scope is not None:
+        normalized_scope = [item.replace("\\", "/").strip("/") for item in scope if item.strip()]
+        outside = sorted(path for path in changed_paths if not any(path == root or path.startswith(root + "/") for root in normalized_scope))
+    else:
+        normalized_scope = []
+        outside = []
+    facts = {
+        "requirements_material": observation.get("business_items", []),
+        "source_observation": observation,
+        "working_tree": snapshot,
+        "partial_code": bool(changed_paths),
+        "scope": normalized_scope,
+        "scope_outside_paths": outside,
+        "source_history_complete": completeness.get("state") == "complete",
+    }
+    if outside:
+        facts["scope_error"] = "working tree contains paths outside the authorized scope"
+    return {
+        "schema_version": "spec-runner-takeover-input/v1",
+        "repository_path": os.fspath(repository.resolve()),
+        "handover_policy": handover_policy,
+        "source_threads": [{
+            "id": thread_id,
+            "ownership": "unknown",
+            "active": True,
+            "stop_confirmed": False,
+            "observation": observation,
+            "lineage": observation.get("thread", {}).get("forked_from_id") if isinstance(observation.get("thread"), dict) else None,
+        }],
+        "artifacts": [{"path": path} for path in sorted(set(changed_paths))],
+        "facts": facts,
+    }
 
 
 def load_inventory(path: Path) -> dict[str, Any]:
@@ -67,16 +216,35 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
             raise RunnerError("invalid_takeover_inventory", "source thread requires a stable id")
         ownership = thread.get("ownership")
         active = bool(thread.get("active", False))
-        stop_confirmed = bool(thread.get("stop_confirmed", False))
+        observation = thread.get("observation")
+        if isinstance(observation, dict) and observation.get("thread_status") == "active":
+            active = True
+        handover_evidence = thread.get("handover_evidence")
+        stop_proven = (
+            isinstance(handover_evidence, dict)
+            and handover_evidence.get("source_thread_id") == identifier
+            and handover_evidence.get("source_writer_state") == "stopped"
+            and handover_evidence.get("dispatcher_state") == "quiesced"
+            and isinstance(handover_evidence.get("readback"), dict)
+            and handover_evidence["readback"].get("source_thread_id") == identifier
+            and isinstance(handover_evidence.get("operation_id"), str)
+            and bool(handover_evidence.get("operation_id"))
+        )
         if ownership not in {"confirmed", "unknown", "preserve"}:
             raise RunnerError("invalid_takeover_inventory", "thread ownership must be confirmed, unknown, or preserve")
-        if ownership != "confirmed":
+        observation_complete = True
+        if isinstance(observation, dict):
+            completeness = observation.get("completeness")
+            observation_complete = isinstance(completeness, dict) and completeness.get("state") == "complete"
+        if not observation_complete:
+            unresolved.append({"thread_id": identifier, "reason": "source_history_incomplete"})
+        elif ownership != "confirmed":
             unresolved.append({"thread_id": identifier, "reason": "thread_ownership_unconfirmed"})
-        elif active and not stop_confirmed:
+        elif not stop_proven:
             unresolved.append(
                 {
                     "thread_id": identifier,
-                    "reason": "waiting_handover" if handover_policy == "wait_then_takeover" else "active_writer_not_stopped",
+                    "reason": "waiting_handover" if handover_policy == "wait_then_takeover" else "source_stop_unproven",
                     "policy": handover_policy,
                 }
             )
@@ -97,6 +265,8 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
     facts = inventory.get("facts", {})
     if not isinstance(facts, dict):
         raise RunnerError("invalid_takeover_inventory", "facts must be an object")
+    if facts.get("scope_error"):
+        unresolved.append({"reason": "scope_outside_authorization", "detail": str(facts["scope_error"])})
     # Historical claims are intentionally not converted into current verification.
     return {
         "schema_version": "spec-runner-takeover-report/v1",
@@ -247,5 +417,29 @@ def write_takeover_record(*, control_root: Path, takeover_key: str, report: dict
     store = Store.open(control_root, create=True)
     try:
         return store.record_takeover(takeover_key=takeover_key, report=report, frontier=frontier)
+    finally:
+        store.close()
+
+
+def record_takeover_transition(
+    *,
+    control_root: Path,
+    takeover_key: str,
+    state: str,
+    event_key: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Persist one resumable takeover state transition under the same key."""
+    control_root = control_root.expanduser().resolve()
+    store = Store.open(control_root, create=True)
+    try:
+        result = store.update_takeover_record(
+            takeover_key=takeover_key,
+            state=state,
+            event_key=event_key,
+            payload=payload,
+        )
+        result["transitions"] = store.takeover_transitions(takeover_key)
+        return result
     finally:
         store.close()

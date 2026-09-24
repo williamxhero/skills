@@ -159,6 +159,13 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(status["runs"], [])
 
+    def test_thread_takeover_requires_an_explicit_scope_before_sdk_access(self) -> None:
+        code, result = self.invoke(
+            "takeover", "inspect", "--thread-id", "source-thread", "--repository", str(self.repository)
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(result["error"]["code"], "takeover_scope_required")
+
     def test_release_build_writes_a_valid_report_from_evidence_files(self) -> None:
         subject = self.root / "release-subject.json"
         subject.write_text(json.dumps({

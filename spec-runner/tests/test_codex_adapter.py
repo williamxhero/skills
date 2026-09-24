@@ -206,6 +206,70 @@ class CodexAdapterTests(unittest.TestCase):
                 thread_id="requested-thread", repository_path=Path("C:/repo")
             )
 
+    def test_thread_read_omits_reasoning_and_opaque_tool_payloads(self) -> None:
+        class OpaqueThread(FakeThread):
+            def read(self, *, include_turns: bool = False) -> object:
+                status = types.SimpleNamespace(root=types.SimpleNamespace(type=types.SimpleNamespace(value="idle"), active_flags=[]))
+                items = [
+                    types.SimpleNamespace(type="reasoning", id="reason-1", content=["hidden"]),
+                    types.SimpleNamespace(type="mcpToolCall", id="mcp-1", server="fixture", tool="read", arguments={"token": "secret"}, status="completed"),
+                ]
+                turn = types.SimpleNamespace(id="turn-opaque", status=types.SimpleNamespace(value="completed"), items_view="full", items=items)
+                source = types.SimpleNamespace(id=self.id, status=status, turns=[turn] if include_turns else [])
+                return types.SimpleNamespace(thread=source)
+
+        holder: dict[str, FakeCodex] = {}
+
+        def factory(config: object) -> FakeCodex:
+            codex = FakeCodex(config)
+            codex.thread = OpaqueThread()
+            codex.thread.id = "thread-opaque"
+            holder["codex"] = codex
+            return codex
+
+        sdk = types.SimpleNamespace(CodexConfig=lambda **kwargs: kwargs, Codex=object)
+        inspected = CodexAdapter(codex_factory=factory, sdk_module=sdk).read_thread(
+            thread_id="thread-opaque", repository_path=Path("C:/repo")
+        )
+        self.assertEqual(inspected["completeness"]["state"], "partial")
+        self.assertEqual(inspected["omitted_item_count"], 1)
+        self.assertTrue(inspected["turns"][0]["items"][0]["omitted"])
+        self.assertNotIn("arguments", inspected["turns"][0]["items"][1])
+
+    def test_interrupt_thread_targets_observed_turn_and_requires_readback(self) -> None:
+        state = {"status": "inProgress"}
+        interrupt_calls: list[tuple[str, str]] = []
+
+        class SourceThread(FakeThread):
+            def read(self, *, include_turns: bool = False) -> object:
+                status = types.SimpleNamespace(root=types.SimpleNamespace(type=types.SimpleNamespace(value="active"), active_flags=[]))
+                turn = types.SimpleNamespace(id="turn-active", status=types.SimpleNamespace(value=state["status"]), items_view="full", items=[])
+                source = types.SimpleNamespace(id=self.id, status=status, turns=[turn] if include_turns else [])
+                return types.SimpleNamespace(thread=source)
+
+        class Client:
+            def turn_interrupt(self, thread_id: str, turn_id: str) -> object:
+                interrupt_calls.append((thread_id, turn_id))
+                state["status"] = "interrupted"
+                return types.SimpleNamespace(ok=True, secret="hidden")
+
+        class InterruptCodex(FakeCodex):
+            def __init__(self, config: object):
+                super().__init__(config)
+                self.thread = SourceThread()
+                self.thread.id = "thread-active"
+                self._client = Client()
+
+        sdk = types.SimpleNamespace(CodexConfig=lambda **kwargs: kwargs, Codex=object)
+        result = CodexAdapter(codex_factory=lambda config: InterruptCodex(config), sdk_module=sdk).interrupt_thread(
+            thread_id="thread-active", repository_path=Path("C:/repo")
+        )
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["turn_id"], "turn-active")
+        self.assertEqual(interrupt_calls, [("thread-active", "turn-active")])
+        self.assertFalse(result["evidence_limits"]["dispatcher_quiesced"])
+        self.assertEqual(result["interrupt_response"]["secret"], "[redacted]")
+
     def test_missing_published_sdk_is_a_structured_error(self) -> None:
         with patch.dict(sys.modules, {"openai_codex": None}):
             with self.assertRaises(RunnerError) as context:

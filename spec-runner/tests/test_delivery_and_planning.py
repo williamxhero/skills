@@ -15,7 +15,7 @@ from spec_runner.delivery import _run_check, cleanup_managed_workspace, git_sha,
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
-from spec_runner.takeover import completion_action, inspect_takeover, perform_cleanup, plan_frontier, write_takeover_record
+from spec_runner.takeover import completion_action, inspect_takeover, inventory_from_thread_observation, perform_cleanup, plan_frontier, record_takeover_transition, write_takeover_record
 from spec_runner.legacy import legacy_takeover_inventory, read_legacy_database
 from spec_runner.multi_spec import run_local_delivery
 
@@ -370,6 +370,24 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertTrue(record["created"])
             self.assertTrue((Path(temp) / "control" / "spec-runner.sqlite3").is_file())
             self.assertFalse(write_takeover_record(control_root=Path(temp) / "control", takeover_key="takeover-1", report=report, frontier=frontier)["created"])
+            transition = record_takeover_transition(
+                control_root=Path(temp) / "control",
+                takeover_key="takeover-1",
+                state="observed",
+                event_key="takeover-1:observed",
+                payload={"frontier_digest": frontier["digest"]},
+            )
+            self.assertEqual(transition["record"]["state"], "observed")
+            self.assertEqual(len(transition["transitions"]), 1)
+            replay = record_takeover_transition(
+                control_root=Path(temp) / "control",
+                takeover_key="takeover-1",
+                state="observed",
+                event_key="takeover-1:observed",
+                payload={"frontier_digest": frontier["digest"]},
+            )
+            self.assertFalse(replay["created"])
+            self.assertEqual(len(replay["transitions"]), 1)
 
     def test_takeover_frontier_keeps_missing_scope_as_needs_input(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -405,6 +423,43 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(blocked["next_state"], "blocked")
             self.assertEqual(completion_action(blocked)["state"], "blocked")
 
+    def test_takeover_does_not_trust_stop_confirmed_input_without_handover_readback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            report = inspect_takeover({
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repo),
+                "source_threads": [{"id": "source-1", "ownership": "confirmed", "active": False, "stop_confirmed": True}],
+                "artifacts": [],
+                "facts": {"requirements": ["R1"]},
+            })
+            self.assertEqual(report["next_state"], "blocked")
+            self.assertEqual(report["unresolved"][0]["reason"], "source_stop_unproven")
+
+    def test_takeover_accepts_only_matching_durable_handover_readback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            evidence = {
+                "operation_id": "handover:source-1:1",
+                "source_thread_id": "source-1",
+                "source_writer_state": "stopped",
+                "dispatcher_state": "quiesced",
+                "readback": {"source_thread_id": "source-1", "observed_status": "completed"},
+            }
+            report = inspect_takeover({
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repo),
+                "source_threads": [{"id": "source-1", "ownership": "confirmed", "active": False, "stop_confirmed": False, "handover_evidence": evidence}],
+                "artifacts": [],
+                "facts": {"requirements": ["R1"]},
+            })
+            self.assertEqual(report["next_state"], "adopted_ready")
+            self.assertEqual(report["adopted_threads"][0]["thread_id"], "source-1")
+
     def test_takeover_frontier_preserves_mixed_spec_progress(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp) / "repo"
@@ -430,6 +485,56 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(frontier["categories"]["reverified"], ["SR-02"])
             self.assertEqual(frontier["categories"]["new_work"], ["SR-03"])
             self.assertEqual([step["target"] for step in frontier["steps"]], ["SR-01", "SR-02", "SR-03"])
+
+    def test_thread_observation_builds_scoped_inventory_and_safe_git_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "tracked.txt"], check=True)
+            subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "base"], check=True)
+            (repo / "fixture").mkdir()
+            (repo / "fixture" / "partial.py").write_text("partial\n", encoding="utf-8")
+            (repo / ".env").write_text("TOKEN=do-not-copy\n", encoding="utf-8")
+            observation = {
+                "schema_version": "spec-runner-sdk-thread-inspection/v1",
+                "thread_id": "source-thread",
+                "thread": {"forked_from_id": None},
+                "business_items": [{"turn_id": "turn-1", "item": {"type": "userMessage", "id": "item-1", "content": [{"type": "text", "text": "finish the fixture"}]}}],
+                "completeness": {"state": "complete", "reasons": []},
+            }
+            inventory = inventory_from_thread_observation(
+                observation=observation,
+                repository=repo,
+                handover_policy="wait_then_takeover",
+                scope=["fixture"],
+            )
+            self.assertEqual(inventory["source_threads"][0]["id"], "source-thread")
+            self.assertEqual(inventory["source_threads"][0]["ownership"], "unknown")
+            self.assertEqual(inventory["facts"]["scope_outside_paths"], [])
+            snapshot = inventory["facts"]["working_tree"]
+            self.assertEqual(snapshot["changed"], ["fixture/partial.py"])
+            self.assertEqual(snapshot["redacted_path_count"], 1)
+            self.assertEqual(inventory["artifacts"], [{"path": "fixture/partial.py"}])
+
+    def test_thread_observation_with_incomplete_history_cannot_become_ready(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            observation = {
+                "schema_version": "spec-runner-sdk-thread-inspection/v1",
+                "thread_id": "source-thread",
+                "thread": {},
+                "business_items": [],
+                "completeness": {"state": "partial", "reasons": ["non_business_items_omitted"]},
+            }
+            inventory = inventory_from_thread_observation(observation=observation, repository=repo)
+            report = inspect_takeover(inventory)
+            self.assertEqual(report["next_state"], "blocked")
+            self.assertEqual(report["unresolved"][0]["reason"], "source_history_incomplete")
 
     def test_cleanup_only_takeover_executes_explicit_owned_targets(self):
         report = {"repository": str(Path.cwd()), "historical_facts": {"merged": True,

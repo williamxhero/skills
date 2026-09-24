@@ -3,6 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from dataclasses import dataclass, replace
 from pathlib import Path
+import re
 import threading
 from typing import Any, Callable
 
@@ -449,6 +450,8 @@ class CodexAdapter:
                 active_flags = _jsonable(getattr(status_root, "active_flags", []), _key="active_flags")
                 turns = getattr(source, "turns", []) or []
                 projected_turns: list[dict[str, object]] = []
+                business_items: list[dict[str, object]] = []
+                omitted_item_count = 0
                 completeness = "complete"
                 completeness_reasons: list[str] = []
                 for turn in turns:
@@ -468,12 +471,26 @@ class CodexAdapter:
                         "duration_ms": getattr(turn, "duration_ms", None),
                         "error": _jsonable(getattr(turn, "error", None)),
                         "items_view": items_view or "unknown",
-                        "items": _jsonable(items or []),
+                        "items": [],
                     }
+                    for item in items or []:
+                        projected = _project_item(item)
+                        if projected.get("omitted"):
+                            omitted_item_count += 1
+                        else:
+                            business_items.append({"turn_id": projected_turn["turn_id"], "item": projected})
+                        projected_turn["items"].append(projected)
                     projected_turns.append(projected_turn)
                 if not hasattr(source, "turns"):
                     completeness = "unknown"
                     completeness_reasons.append("thread_turns_field_missing")
+                if omitted_item_count:
+                    completeness = "partial"
+                    completeness_reasons.append("non_business_items_omitted")
+                history_mode = _enum_value(getattr(source, "history_mode", None))
+                if history_mode in {"paginated", "compressed"}:
+                    completeness = "partial"
+                    completeness_reasons.append(f"history_mode_{history_mode}")
                 return {
                     "schema_version": "spec-runner-sdk-thread-inspection/v1",
                     "thread_id": observed_thread_id,
@@ -486,6 +503,8 @@ class CodexAdapter:
                     "active_flags": active_flags,
                     "thread": _thread_metadata(source),
                     "turns": projected_turns,
+                    "business_items": business_items,
+                    "omitted_item_count": omitted_item_count,
                     "turn_count": len(turns),
                     "completeness": {
                         "state": completeness,
@@ -506,6 +525,83 @@ class CodexAdapter:
                 "Codex SDK failed while reading the explicitly supplied thread",
                 details={"exception_type": type(exc).__name__},
             ) from exc
+
+    def interrupt_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+        """Interrupt an actually running source turn, then read it back.
+
+        SDK 0.155.1 does not expose a public method that creates a
+        ``TurnHandle`` for an arbitrary existing turn.  The adapter therefore
+        uses the SDK client's explicit ``turn_interrupt`` transport only when
+        the installed client exposes it, after identifying an in-progress turn
+        through a read.  A thread/turn interrupt is not treated as proof that
+        an external scheduler has stopped assigning work.
+        """
+        before = self.read_thread(thread_id=thread_id, repository_path=repository_path)
+        running = [
+            turn for turn in before.get("turns", [])
+            if isinstance(turn, dict) and turn.get("status") in {"inProgress", "running"}
+        ]
+        if not running:
+            return {
+                "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+                "thread_id": thread_id,
+                "accepted": False,
+                "reason": "no_active_turn",
+                "observation_before": before,
+                "evidence_limits": {"dispatcher_quiesced": False, "ownership_transferred": False},
+            }
+        turn_id = running[-1].get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise RunnerError("sdk_interrupt_identity_missing", "active source turn has no stable turn identifier")
+        if self._sdk_module is None:
+            try:
+                import openai_codex as sdk_module
+            except ImportError as exc:
+                raise RunnerError("sdk_unavailable", f"openai-codex=={SDK_VERSION} is not installed") from exc
+        else:
+            sdk_module = self._sdk_module
+        Codex = sdk_module.Codex
+        CodexConfig = sdk_module.CodexConfig
+        factory = self._codex_factory or (lambda config: Codex(config))
+        try:
+            with factory(CodexConfig(client_version=SDK_VERSION)) as codex:
+                client = getattr(codex, "_client", None)
+                interrupt = getattr(client, "turn_interrupt", None)
+                if not callable(interrupt):
+                    raise RunnerError(
+                        "sdk_interrupt_unsupported",
+                        "installed Codex SDK does not expose an interrupt operation for an existing turn",
+                    )
+                response = interrupt(thread_id, turn_id)
+        except RunnerError:
+            raise
+        except Exception as exc:
+            raise RunnerError(
+                "sdk_interrupt_failed",
+                "Codex SDK failed while interrupting the explicitly supplied source turn",
+                details={"exception_type": type(exc).__name__, "thread_id": thread_id, "turn_id": turn_id},
+            ) from exc
+        after = self.read_thread(thread_id=thread_id, repository_path=repository_path)
+        remaining = [
+            turn for turn in after.get("turns", [])
+            if isinstance(turn, dict) and turn.get("turn_id") == turn_id and turn.get("status") in {"inProgress", "running"}
+        ]
+        if remaining:
+            raise RunnerError(
+                "sdk_interrupt_readback_failed",
+                "source turn interrupt was accepted but the turn is still active on readback",
+                details={"thread_id": thread_id, "turn_id": turn_id},
+            )
+        return {
+            "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "accepted": True,
+            "interrupt_response": _jsonable(response),
+            "observation_before": before,
+            "observation_after": after,
+            "evidence_limits": {"dispatcher_quiesced": False, "ownership_transferred": False},
+        }
 
 
 def _enum_value(value: Any) -> object:
@@ -540,12 +636,76 @@ def _jsonable(value: Any, *, _key: str | None = None) -> object:
     return str(value)
 
 
+_SECRET_TEXT = re.compile(
+    r"(?i)(api[_-]?key|authorization|bearer|password|secret|token)\s*[:=]\s*([^\s,;]+)"
+)
+
+
+def _safe_text(value: Any, *, limit: int = 12000) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    text = _SECRET_TEXT.sub(lambda match: f"{match.group(1)}=[redacted]", text)
+    if len(text) > limit:
+        return text[:limit] + "...[truncated]"
+    return text
+
+
+def _project_item(item: Any) -> dict[str, object]:
+    """Keep visible business material and omit hidden or opaque rollout data."""
+    source = getattr(item, "root", item)
+    kind = _enum_value(getattr(source, "type", None))
+    item_id = str(getattr(source, "id", ""))
+    common: dict[str, object] = {"type": kind or "unknown", "id": item_id}
+    if kind == "userMessage":
+        common["content"] = _jsonable(getattr(source, "content", []))
+    elif kind == "agentMessage":
+        common.update({
+            "text": _safe_text(getattr(source, "text", "")),
+            "phase": _enum_value(getattr(source, "phase", None)),
+            "questions": _jsonable(getattr(source, "questions", None)),
+        })
+    elif kind == "plan":
+        common["text"] = _safe_text(getattr(source, "text", ""))
+    elif kind == "commandExecution":
+        common.update({
+            "command": _safe_text(getattr(source, "command", "")),
+            "cwd": _safe_text(getattr(source, "cwd", "")),
+            "status": _enum_value(getattr(source, "status", None)),
+            "exit_code": getattr(source, "exit_code", None),
+            "duration_ms": getattr(source, "duration_ms", None),
+            "aggregated_output": _safe_text(getattr(source, "aggregated_output", None)),
+        })
+    elif kind == "fileChange":
+        changes = []
+        for change in getattr(source, "changes", []) or []:
+            change_source = getattr(change, "root", change)
+            changes.append({
+                "path": _safe_text(getattr(change_source, "path", None) or getattr(change_source, "target", None)),
+                "kind": _enum_value(getattr(change_source, "kind", None) or getattr(change_source, "type", None)),
+            })
+        common.update({"status": _enum_value(getattr(source, "status", None)), "changes": changes})
+    elif kind == "mcpToolCall":
+        common.update({
+            "server": _safe_text(getattr(source, "server", None)),
+            "tool": _safe_text(getattr(source, "tool", None)),
+            "status": _enum_value(getattr(source, "status", None)),
+            "read_only_hint": getattr(source, "read_only_hint", None),
+            "duration_ms": getattr(source, "duration_ms", None),
+        })
+    elif kind == "webSearch":
+        common["query"] = _safe_text(getattr(source, "query", None))
+    else:
+        return {"type": kind or "unknown", "id": item_id, "omitted": True, "reason": "non_business_item"}
+    return common
+
+
 def _thread_metadata(source: Any) -> dict[str, object]:
     fields = (
         "id", "name", "preview", "cwd", "created_at", "updated_at", "recency_at",
         "model", "model_provider", "reasoning_effort", "source", "originator",
         "session_id", "project_id", "forked_from_id", "parent_thread_id", "history_mode",
-        "git_info", "path", "ephemeral",
+        "git_info", "path", "ephemeral", "history_mode",
     )
     metadata = {field: _jsonable(getattr(source, field), _key=field) for field in fields if hasattr(source, field)}
     status = getattr(source, "status", None)

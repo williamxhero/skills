@@ -205,6 +205,14 @@ class Store:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS takeover_transitions (
+                    transition_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    takeover_key TEXT NOT NULL,
+                    event_key TEXT NOT NULL UNIQUE,
+                    state TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS run_answers (
                     run_id TEXT NOT NULL REFERENCES runs(run_id),
                     question_id TEXT NOT NULL,
@@ -964,3 +972,52 @@ class Store:
                 (takeover_key, report_digest, frontier_digest, state, json.dumps(record, ensure_ascii=False, sort_keys=True), timestamp, timestamp),
             )
         return {"created": True, "record": record}
+
+    def update_takeover_record(
+        self,
+        *,
+        takeover_key: str,
+        state: str,
+        event_key: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        """Advance one takeover identity and append an idempotent transition."""
+        if not takeover_key or not state or not event_key:
+            raise RunnerError("invalid_takeover_transition", "takeover key, state, and event key are required")
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT * FROM takeover_records WHERE takeover_key = ?", (takeover_key,)
+            ).fetchone()
+            if existing is None:
+                raise RunnerError("unknown_takeover", "takeover record does not exist")
+            transition_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            prior = self.connection.execute(
+                "SELECT takeover_key, state, payload_json FROM takeover_transitions WHERE event_key = ?", (event_key,)
+            ).fetchone()
+            if prior is not None:
+                if prior["takeover_key"] != takeover_key:
+                    raise RunnerError("takeover_transition_conflict", "transition identity belongs to another takeover")
+                if prior["state"] != state or prior["payload_json"] != transition_payload:
+                    raise RunnerError("takeover_transition_conflict", "transition identity was reused with different state")
+            else:
+                self.connection.execute(
+                    "INSERT INTO takeover_transitions(takeover_key, event_key, state, payload_json, observed_at) VALUES (?, ?, ?, ?, ?)",
+                    (takeover_key, event_key, state, transition_payload, timestamp),
+                )
+            record = json.loads(existing["record_json"])
+            record["state"] = state
+            record["last_transition"] = {"event_key": event_key, "state": state, "payload": payload}
+            self.connection.execute(
+                "UPDATE takeover_records SET state = ?, record_json = ?, updated_at = ? WHERE takeover_key = ?",
+                (state, json.dumps(record, ensure_ascii=False, sort_keys=True), timestamp, takeover_key),
+            )
+        return {"created": prior is None, "record": record}
+
+    def takeover_transitions(self, takeover_key: str) -> list[dict[str, object]]:
+        return [
+            {**dict(row), "payload": json.loads(row["payload_json"])}
+            for row in self.connection.execute(
+                "SELECT * FROM takeover_transitions WHERE takeover_key = ? ORDER BY transition_id", (takeover_key,)
+            )
+        ]

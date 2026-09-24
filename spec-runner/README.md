@@ -120,6 +120,8 @@ spec-runner merge local --repository C:\work\repo --workspace-root C:\work\runne
 spec-runner takeover inspect --file .\takeover.json
 spec-runner takeover sdk-read --thread-id <thread_id> --repository C:\work\repo
 spec-runner takeover apply --file .\takeover.json --control-root .\.spec-runner --takeover-key <stable-key>
+spec-runner takeover inspect --thread-id <thread_id> --repository C:\work\repo --scope fixture-app\run-1
+spec-runner takeover apply --thread-id <thread_id> --repository C:\work\repo --scope fixture-app\run-1 --handover-policy interrupt_then_takeover --control-root .\.spec-runner --takeover-key <stable-key>
 spec-runner legacy inspect --db .\old-control.sqlite3 --repository C:\work\repo
 spec-runner diagnose package --wheel .\dist\spec_runner-0.1.0-py3-none-any.whl
 spec-runner diagnose release-build --subject .\release-subject.json --evidence .\deterministic-evidence.json --evidence .\local-git-evidence.json --output .\release-report.json
@@ -146,10 +148,15 @@ verification, and requirements remain unknown and are handled by the normal
 takeover planner.
 
 `takeover sdk-read` is an explicit read-only source-thread probe. It records
-thread status, active flags, and returned turn identities without starting,
-steering, interrupting, or archiving a turn. It does not prove ownership
-transfer or that another host has stopped writing; those facts remain part of
-the handover evidence required by `takeover apply`.
+thread metadata, visible business items, safe Git/index/untracked digests, and
+history completeness without starting, steering, interrupting, or archiving a
+turn. Reasoning, encrypted, opaque, and credential-bearing payloads are
+omitted. `takeover inspect/apply --thread-id` can build this input directly
+from a source ID and an authorized `--scope`; it does not require a hand-written
+inventory or a pre-existing Runner database. A read or an SDK turn interrupt
+does not prove that an external scheduler has stopped writing. The apply path
+therefore remains blocked until matching handover readback proves both source
+writer stop and dispatcher quiescence.
 
 `diagnose package` checks the actual wheel contents for the CLI, dependency
 lock, metadata, and forbidden runtime data. `diagnose release-build` constructs

@@ -16,8 +16,17 @@ from .diagnostics import build_release_report, inspect_wheel, load_json as diagn
 from .matt import load_lock, render_prompt, resolve_grill, resolve_local_skill
 from .multi_spec import run_local_delivery
 from .legacy import legacy_takeover_inventory, read_legacy_database
-from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
-from .takeover import completion_action, inspect_takeover, load_inventory, perform_cleanup, plan_frontier, write_takeover_record
+from .plans import digest, intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
+from .takeover import (
+    completion_action,
+    inspect_takeover,
+    inventory_from_thread_observation,
+    load_inventory,
+    perform_cleanup,
+    plan_frontier,
+    record_takeover_transition,
+    write_takeover_record,
+)
 from .tracker import publish_local, read_local
 from .store import Store
 from .workflow import control, doctor, launch, resume, start, status
@@ -174,12 +183,22 @@ def _parser() -> argparse.ArgumentParser:
     takeover_parser = subparsers.add_parser("takeover", help="inventory and safely adopt an arbitrary-stage delivery")
     takeover_sub = takeover_parser.add_subparsers(dest="takeover_command", required=True)
     takeover_inspect = takeover_sub.add_parser("inspect")
-    takeover_inspect.add_argument("--file", required=True, type=Path)
+    inspect_source = takeover_inspect.add_mutually_exclusive_group(required=True)
+    inspect_source.add_argument("--file", type=Path)
+    inspect_source.add_argument("--thread-id")
+    takeover_inspect.add_argument("--repository", type=Path)
+    takeover_inspect.add_argument("--scope", action="append", default=[])
+    takeover_inspect.add_argument("--handover-policy", choices=["require_stop_confirmation", "wait_then_takeover", "interrupt_then_takeover"], default="require_stop_confirmation")
     takeover_sdk_read = takeover_sub.add_parser("sdk-read", help="read one explicitly supplied SDK thread without starting a turn")
     takeover_sdk_read.add_argument("--thread-id", required=True)
     takeover_sdk_read.add_argument("--repository", required=True, type=Path)
     takeover_apply = takeover_sub.add_parser("apply")
-    takeover_apply.add_argument("--file", required=True, type=Path)
+    apply_source = takeover_apply.add_mutually_exclusive_group(required=True)
+    apply_source.add_argument("--file", type=Path)
+    apply_source.add_argument("--thread-id")
+    takeover_apply.add_argument("--repository", type=Path)
+    takeover_apply.add_argument("--scope", action="append", default=[])
+    takeover_apply.add_argument("--handover-policy", choices=["require_stop_confirmation", "wait_then_takeover", "interrupt_then_takeover"], default="require_stop_confirmation")
     takeover_apply.add_argument("--control-root", required=True, type=Path)
     takeover_apply.add_argument("--takeover-key", required=True)
     takeover_apply.add_argument("--brief", type=Path)
@@ -350,27 +369,128 @@ def main(argv: Sequence[str] | None = None) -> int:
             if arguments.takeover_command == "sdk-read":
                 result = CodexAdapter().read_thread(thread_id=arguments.thread_id, repository_path=arguments.repository.resolve())
             else:
-                report = inspect_takeover(load_inventory(arguments.file))
+                if arguments.file is not None:
+                    inventory = load_inventory(arguments.file)
+                else:
+                    if arguments.repository is None:
+                        raise RunnerError("takeover_repository_required", "--repository is required with --thread-id")
+                    if not arguments.scope:
+                        raise RunnerError("takeover_scope_required", "at least one --scope is required with --thread-id")
+                    observation = CodexAdapter().read_thread(
+                        thread_id=arguments.thread_id,
+                        repository_path=arguments.repository.resolve(),
+                    )
+                    inventory = inventory_from_thread_observation(
+                        observation=observation,
+                        repository=arguments.repository.resolve(),
+                        handover_policy=arguments.handover_policy,
+                        scope=list(arguments.scope),
+                    )
+                report = inspect_takeover(inventory)
                 frontier = plan_frontier(report)
                 if arguments.takeover_command == "apply":
                     record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
                     action = completion_action(report)
                     result = {**record, "frontier": frontier, "action": action}
-                    if action["state"] == "cleanup_pending":
+                    if record.get("created"):
+                        observed = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state="observed",
+                            event_key=f"{arguments.takeover_key}:observed:{report['digest']}",
+                            payload={"report_digest": report["digest"], "frontier_digest": frontier["digest"]},
+                        )
+                        result["record"] = observed["record"]
+                        result["transitions"] = observed["transitions"]
+                    if (
+                        action["state"] in {"blocked", "waiting_handover"}
+                        and arguments.thread_id
+                        and arguments.handover_policy == "interrupt_then_takeover"
+                    ):
+                        intent = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state="handover_interrupt_intent",
+                            event_key=f"{arguments.takeover_key}:handover:interrupt:intent",
+                            payload={"thread_id": arguments.thread_id},
+                        )
+                        result["record"] = intent["record"]
+                        result["transitions"] = intent["transitions"]
+                        handover = CodexAdapter().interrupt_thread(
+                            thread_id=arguments.thread_id,
+                            repository_path=arguments.repository.resolve(),
+                        )
+                        result["handover"] = handover
+                        finished = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state="handover_interrupt_observed",
+                            event_key=f"{arguments.takeover_key}:handover:interrupt:{digest(handover)}",
+                            payload=handover,
+                        )
+                        result["record"] = finished["record"]
+                        result["transitions"] = finished["transitions"]
+                    prior_state = record.get("record", {}).get("state") if isinstance(record.get("record"), dict) else None
+                    if action["state"] == "cleanup_pending" and prior_state == "cleaned":
+                        result["cleanup"] = {"outcome": "cleaned", "attempted": 0, "results": [], "replayed": True}
+                        result["action"] = {**action, "state": "cleaned"}
+                    elif action["state"] == "cleanup_pending":
+                        intent = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state="cleanup_intent",
+                            event_key=f"{arguments.takeover_key}:cleanup:intent",
+                            payload={"targets": report.get("historical_facts", {}).get("cleanup_targets", [])},
+                        )
+                        result["record"] = intent["record"]
+                        result["transitions"] = intent["transitions"]
                         result["cleanup"] = perform_cleanup(report)
-                        if result["cleanup"]["outcome"] == "cleaned":
+                        cleanup_digest = digest(result["cleanup"])
+                        cleanup_state = "cleaned" if result["cleanup"]["outcome"] == "cleaned" else "cleanup_pending"
+                        finished = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state=cleanup_state,
+                            event_key=f"{arguments.takeover_key}:cleanup:result:{cleanup_digest}",
+                            payload=result["cleanup"],
+                        )
+                        result["record"] = finished["record"]
+                        result["transitions"] = finished["transitions"]
+                        if cleanup_state == "cleaned":
                             result["action"] = {**action, "state": "cleaned"}
                     # A cleanup-only takeover has no remaining implementation
                     # authority. Persist the adoption record but do not create a
                     # generic worker run merely to make status look active.
-                    if action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:
+                    existing_transition = record.get("record", {}).get("last_transition") if isinstance(record.get("record"), dict) else None
+                    existing_runner = existing_transition.get("payload", {}).get("runner") if isinstance(existing_transition, dict) and isinstance(existing_transition.get("payload"), dict) else None
+                    if action["state"] == "resume_delivery" and frontier["state"] == "planned" and isinstance(existing_runner, dict) and prior_state in {"execution_started", "completed"}:
+                        result["runner"] = existing_runner
+                    elif action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:
                         launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
+                        intent = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state="execution_intent",
+                            event_key=f"{arguments.takeover_key}:execution:intent",
+                            payload={"launch_key": launch_key, "frontier_digest": frontier["digest"]},
+                        )
+                        result["record"] = intent["record"]
+                        result["transitions"] = intent["transitions"]
                         result["runner"] = start(
                             brief_file=arguments.brief,
                             config_file=arguments.config,
                             control_root=arguments.control_root,
                             launch_key=launch_key,
                         )
+                        completed = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state="execution_started",
+                            event_key=f"{arguments.takeover_key}:execution:result:{digest(result['runner'])}",
+                            payload={"launch_key": launch_key, "runner": result["runner"]},
+                        )
+                        result["record"] = completed["record"]
+                        result["transitions"] = completed["transitions"]
                     elif action["state"] == "resume_delivery" and (arguments.brief or arguments.config):
                         raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
                 else:
