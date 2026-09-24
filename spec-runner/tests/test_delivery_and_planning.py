@@ -11,7 +11,7 @@ from pathlib import Path
 
 from spec_runner.errors import RunnerError
 
-from spec_runner.delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_candidate_write_scope, verify_candidate
+from spec_runner.delivery import _run_check, cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_candidate_write_scope, verify_candidate
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
@@ -165,6 +165,20 @@ class ProductBoundaryTests(unittest.TestCase):
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             with self.assertRaisesRegex(RunnerError, "requires a trusted write scope"):
                 validate_candidate_write_scope(workspace=repo, base_sha="HEAD", allowed_paths=())
+
+    def test_pytest_candidate_check_disables_runner_cache_artifact(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            (workspace / "test_pass.py").write_text("def test_pass():\n    assert True\n", encoding="utf-8")
+
+            result = _run_check(
+                workspace,
+                ["python", "-m", "pytest", "test_pass.py", "-q"],
+                120,
+            )
+
+            self.assertTrue(result["passed"])
+            self.assertFalse((workspace / ".pytest_cache").exists())
 
     def test_candidate_scope_ignores_unchanged_long_tracked_paths(self):
         with tempfile.TemporaryDirectory() as temp:

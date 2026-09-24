@@ -245,8 +245,17 @@ def _run_check(workspace: Path, command: list[str], timeout: int) -> dict[str, o
     if not command or any(not isinstance(part, str) or not part for part in command):
         raise RunnerError("invalid_test_contract", "test commands must be non-empty argument arrays")
     started = time.monotonic()
+    check_environment = None
+    if len(command) >= 3 and command[1:3] == ["-m", "pytest"]:
+        # Pytest's default cache is a Runner check artifact, not candidate
+        # output.  Keep the post-check scope scan meaningful without allowing
+        # the trusted check to create ignored files outside the worker scope.
+        check_environment = os.environ.copy()
+        check_environment["PYTEST_ADDOPTS"] = (
+            f'{check_environment.get("PYTEST_ADDOPTS", "").strip()} -p no:cacheprovider'
+        ).strip()
     try:
-        process = subprocess.run(command, cwd=workspace, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, shell=False)
+        process = subprocess.run(command, cwd=workspace, env=check_environment, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, shell=False)
         timed_out = False
         code = process.returncode
         stdout, stderr = process.stdout, process.stderr
