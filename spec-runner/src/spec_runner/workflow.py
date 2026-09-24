@@ -2162,7 +2162,6 @@ def _reconcile_approved_review(*, control_root: Path, config: RunnerConfig,
     )
     ticket_plan = validate_ticket_plan(
         load_json(ticket_path), expected_spec_key=spec_key,
-        expected_base_sha=str(workspace_info["base_sha"]),
     )
     if candidate_receipt.get("acceptance_version") != ticket_plan["digest"]:
         raise RunnerError("recovery_blocked", "approved candidate receipt is bound to a different TicketPlan")
