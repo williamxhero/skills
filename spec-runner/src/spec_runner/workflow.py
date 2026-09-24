@@ -941,8 +941,6 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
                            store: Store, finalize_run: bool = True) -> dict[str, object]:
     artifact = _safe_artifact_directory(control_root, config, run.run_id)
     github_files = sorted(artifact.glob("github-*.json"))
-    candidate_files = sorted(artifact.glob("candidate-*.json"))
-    review_files = sorted(artifact.glob("review-*.json"))
     manifests = []
     for path in (control_root / "delivery-workspaces").glob("*.manifest.json"):
         try:
@@ -951,15 +949,42 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
             continue
         if document.get("run_id") == run.run_id:
             manifests.append((path, document))
-    if not github_files or not candidate_files or not review_files or not manifests:
-        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run lacks durable candidate, review or workspace evidence")
-    github = load_json(github_files[0])
-    candidate = load_json(candidate_files[-1])
-    review = load_json(review_files[-1])
-    manifest_path, manifest = manifests[0]
+    waiting = []
+    for path in github_files:
+        document = load_json(path)
+        if document.get("state") == "waiting_ci":
+            waiting.append(document)
+    if len(waiting) != 1:
+        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run needs one unambiguous SPEC delivery receipt")
+    github = waiting[0]
+    spec_key = github.get("spec_key")
+    if not isinstance(spec_key, str) or not spec_key:
+        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub receipt has no SPEC identity")
+    candidate_path = artifact / f"candidate-{spec_key}.json"
+    if not candidate_path.is_file():
+        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run has no candidate receipt for its SPEC")
+    candidate = load_json(candidate_path)
+    candidate_sha = candidate.get("candidate_sha")
+    github_candidate = github.get("candidate")
+    if (candidate.get("outcome") != "verified" or not isinstance(candidate_sha, str)
+            or len(candidate_sha) != 40 or not isinstance(github_candidate, dict)
+            or github_candidate.get("candidate_sha") != candidate_sha):
+        raise RunnerError("github_waiting_evidence_invalid", "waiting GitHub receipt does not match its verified candidate")
+    review_path = artifact / f"review-{spec_key}-{candidate_sha[:12]}.json"
+    if not review_path.is_file():
+        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run has no validated review for its candidate")
+    review = load_json(review_path)
+    github_review = github.get("review")
+    if (review.get("approved") is not True or review.get("candidate_sha") != candidate_sha
+            or not isinstance(review.get("review_digest"), str) or not review["review_digest"].strip()
+            or not isinstance(github_review, dict) or github_review != review):
+        raise RunnerError("github_waiting_evidence_invalid", "waiting GitHub receipt does not match its validated independent review")
+    matching_manifests = [item for item in manifests if item[1].get("spec_key") == spec_key]
+    if len(matching_manifests) != 1:
+        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run needs one workspace manifest for its SPEC")
+    manifest_path, manifest = matching_manifests[0]
     result = _execute_github_delivery(control_root=control_root, config=config, run=run,
-        spec_key=str(github.get("spec_key") or manifest.get("spec_key")),
-        candidate_sha=str(candidate.get("candidate_sha")), branch=str(manifest["branch"]),
+        spec_key=spec_key, candidate_sha=candidate_sha, branch=str(manifest["branch"]),
         candidate_receipt=candidate, review=review, push=False)
     if result["state"] != "github_completed":
         return result

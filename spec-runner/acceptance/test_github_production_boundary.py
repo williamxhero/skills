@@ -80,9 +80,17 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
     root, config, store, run = github_context
     artifact = root / "artifacts" / run.run_id
     artifact.mkdir(parents=True)
-    (artifact / "github-S1.json").write_text(json.dumps({"spec_key": "S1", "state": "waiting_ci"}), encoding="utf-8")
-    (artifact / "candidate-S1.json").write_text(json.dumps({"candidate_sha": "abc1234"}), encoding="utf-8")
-    (artifact / "review-S1.json").write_text(json.dumps({"approved": True}), encoding="utf-8")
+    candidate_sha = "a" * 40
+    candidate = {"outcome": "verified", "candidate_sha": candidate_sha}
+    review = {"approved": True, "candidate_sha": candidate_sha, "review_digest": "review-digest"}
+    (artifact / "github-S1.json").write_text(json.dumps({
+        "spec_key": "S1", "state": "waiting_ci", "candidate": candidate, "review": review,
+    }), encoding="utf-8")
+    (artifact / "candidate-S1.json").write_text(json.dumps(candidate), encoding="utf-8")
+    (artifact / f"review-S1-{candidate_sha[:12]}.json").write_text(json.dumps(review), encoding="utf-8")
+    (artifact / f"review-worker-S1-{candidate_sha[:12]}.json").write_text(json.dumps({
+        "status": "completed", "final_response": "raw worker receipt without validated approval",
+    }), encoding="utf-8")
     (artifact / "spec-plan.json").write_text(json.dumps({"digest": "plan-1", "specs": [{"key": "S1"}]}), encoding="utf-8")
     (artifact / "ticket-plan-S1.json").write_text(json.dumps({"digest": "ticket-1", "spec_key": "S1"}), encoding="utf-8")
     workspaces = root / "delivery-workspaces"
@@ -101,6 +109,8 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(m
 
     def fake_delivery(**kwargs):
         calls.append(kwargs)
+        assert kwargs["candidate_receipt"] == candidate
+        assert kwargs["review"] == review
         return next(responses)
 
     monkeypatch.setattr(workflow, "_execute_github_delivery", fake_delivery)
