@@ -56,6 +56,7 @@ def read_and_convert(input_path: Path) -> bytes:
 
         records: list[dict[str, str]] = []
         seen_ids: set[str] = set()
+        logical_row = 1  # Header is record 1; physical line count is separate.
         while True:
             try:
                 row = next(reader)
@@ -65,22 +66,22 @@ def read_and_convert(input_path: Path) -> bytes:
                 line = max(reader.line_num, 1)
                 fail(f"input-format: row {line}: malformed CSV", 2)
 
-            line = max(reader.line_num, 1)
+            logical_row += 1
             if not row:
-                fail(f"validation: row {line}: blank row", 2)
+                fail(f"validation: row {logical_row}: blank row", 2)
             if len(row) != 3:
-                fail(f"input-format: row {line}: expected 3 columns", 2)
+                fail(f"input-format: row {logical_row}: expected 3 columns", 2)
 
             values = [value.strip() for value in row]
             for column, value in zip(EXPECTED_HEADER, values):
                 if not value:
-                    fail(f"validation: row {line}, column {column}: blank field", 2)
+                    fail(f"validation: row {logical_row}, column {column}: blank field", 2)
 
             task_id, title, status = values
             if task_id in seen_ids:
-                fail(f"validation: row {line}, column id: duplicate id", 2)
+                fail(f"validation: row {logical_row}, column id: duplicate id", 2)
             if status not in VALID_STATUSES:
-                fail(f"validation: row {line}, column status: invalid status", 2)
+                fail(f"validation: row {logical_row}, column status: invalid status", 2)
 
             seen_ids.add(task_id)
             records.append({"id": task_id, "title": title, "status": status})
