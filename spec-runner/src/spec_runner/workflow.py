@@ -3922,30 +3922,31 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
         )
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
+        try:
+            store = Store.open(control_root, create=False)
+        except RunnerError:
+            store = None
+        try:
+            if store is not None:
+                record = store.find_by_run_id(run_id)
+                runtime = store.runtime_for_run(run_id) if record else None
+                if record and runtime and int(runtime["pid"]) == child.pid:
+                    return {
+                        "started": True,
+                        "pid": child.pid,
+                        "run_id": run_id,
+                        "log_path": os.fspath(stdout_path),
+                        "run": store.public_status(run_id),
+                    }
+        finally:
+            if store is not None:
+                store.close()
         if child.poll() is not None:
             raise RunnerError(
                 "launch_handshake_failed",
                 "detached Runner exited before claiming the run",
                 details={"exit_code": child.returncode, "stderr_log": os.fspath(stderr_path)},
             )
-        try:
-            store = Store.open(control_root, create=False)
-        except RunnerError:
-            time.sleep(0.05)
-            continue
-        try:
-            record = store.find_by_run_id(run_id)
-            runtime = store.runtime_for_run(run_id) if record else None
-            if record and runtime and int(runtime["pid"]) == child.pid:
-                return {
-                    "started": True,
-                    "pid": child.pid,
-                    "run_id": run_id,
-                    "log_path": os.fspath(stdout_path),
-                    "run": store.public_status(run_id),
-                }
-        finally:
-            store.close()
         time.sleep(0.05)
     raise RunnerError(
         "launch_handshake_timeout",
