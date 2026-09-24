@@ -169,6 +169,59 @@ def test_completed_worker_blocker_is_deferred_to_trusted_candidate_gate(tmp_path
         implementation_artifacts(result, workspace)
 
 
+def test_blocked_run_can_reconcile_completed_failed_implementation_worker(context, monkeypatch):
+    root, config, store, run = context
+    run = replace(run, state="blocked", current_step="codex_implementation")
+    spec_key = "S1"
+    thread_id = "implementation-thread"
+    turn_id = "implementation-turn"
+    worker = {
+        "backend_kind": "codex_sdk",
+        "state": "failed",
+        "worker_id": f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}",
+        "external_thread_id": thread_id,
+        "external_turn_id": turn_id,
+    }
+    workspace = root / "workspace"
+    workspace.mkdir()
+    (workspace / "task.py").write_text("value = 1\n", encoding="utf-8")
+    artifact = root / "artifacts" / run.run_id
+    artifact.mkdir(parents=True)
+    (artifact / f"implementation-{spec_key}.json").write_text(json.dumps({
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "status": "completed",
+        "error": None,
+        "final_response": json.dumps({
+            "outcome": "completed",
+            "artifacts": ["task.py"],
+            "blockers": ["worker sandbox could not run its focused check"],
+            "questions": [],
+        }),
+    }), encoding="utf-8")
+    monkeypatch.setattr(store, "workers_for_run", lambda run_id: [worker])
+    monkeypatch.setattr(workflow, "_safe_artifact_directory", lambda *args, **kwargs: artifact)
+    monkeypatch.setattr(workflow, "_implementation_workspace_path", lambda *args, **kwargs: workspace)
+    monkeypatch.setattr(workflow, "_git_checked", lambda *args, **kwargs: " M task.py")
+
+    class CompletedThread:
+        def read_thread(self, **kwargs):
+            return {
+                "thread_id": thread_id,
+                "thread_status": "idle",
+                "started_turn": False,
+                "active_flags": [],
+                "turn_count": 1,
+                "turns": [{"turn_id": turn_id, "status": "completed"}],
+            }
+
+    monkeypatch.setattr(workflow, "CodexAdapter", CompletedThread)
+
+    assert workflow._blocked_implementation_retry_identity(
+        control_root=root, config=config, run=run, store=store,
+    ) == (thread_id, spec_key)
+
+
 def test_planning_persists_real_callback_identity_and_publishes_local_parent(context, monkeypatch):
     root, config, store, run = context
     calls = adapter(monkeypatch, [spec_document(), {"outcome": "planned", "questions": [], "tickets": [

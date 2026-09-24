@@ -3024,7 +3024,7 @@ def _blocked_implementation_retry_identity(*, control_root: Path, config: Runner
     candidates = [
         worker for worker in workers
         if worker.get("backend_kind") == "codex_sdk"
-        and worker.get("state") == "running"
+        and worker.get("state") in {"running", "failed"}
         and str(worker.get("worker_id") or "").startswith(prefix)
     ]
     worker = candidates[-1] if candidates else None
