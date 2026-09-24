@@ -5,14 +5,12 @@ import json
 import hashlib
 import os
 import subprocess
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .errors import RunnerError
 from .plans import digest
 from .store import Store
-from .delivery import cleanup_managed_workspace
 
 
 def _git(path: Path, *args: str) -> str:
@@ -48,29 +46,40 @@ def _file_digest(path: Path) -> tuple[str, int, str]:
 
 def _sensitive_path(relative: str) -> bool:
     parts = [part.lower() for part in relative.replace("\\", "/").split("/")]
-    name = parts[-1]
     return (
-        name in {".env", ".env.local", ".env.production", "credentials", "credentials.json", "secrets.json"}
-        or any(token in name for token in ("secret", "password", "credential", "access_token", "api_key"))
-        or name.endswith((".pem", ".key", ".p12", ".pfx"))
+        any(part in {".env", ".env.local", ".env.production", "credentials", "credentials.json", "secrets.json"} for part in parts)
+        or any(token in part for part in parts for token in ("secret", "password", "credential", "access_token", "api_key"))
+        or any(part.endswith((".pem", ".key", ".p12", ".pfx")) for part in parts)
     )
 
 
-def _status_paths(repository: Path) -> list[str]:
-    result: list[str] = []
-    for entry in _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z").split(b"\0"):
+def _status_entries(repository: Path) -> tuple[list[dict[str, object]], int]:
+    entries = _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z").split(b"\0")
+    projected: list[dict[str, object]] = []
+    redacted = 0
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
         if len(entry) < 4:
             continue
-        value = entry[3:].decode("utf-8", errors="surrogateescape")
-        if " -> " in value:
-            value = value.rsplit(" -> ", 1)[-1]
-        if value and not _sensitive_path(value):
-            result.append(value)
-    return sorted(set(result))
+        status = entry[:2].decode("ascii", errors="replace")
+        path = entry[3:].decode("utf-8", errors="surrogateescape")
+        original_path = None
+        if "R" in status or "C" in status:
+            if index < len(entries):
+                original_path = entries[index].decode("utf-8", errors="surrogateescape")
+                index += 1
+        if _sensitive_path(path) or (original_path is not None and _sensitive_path(original_path)):
+            redacted += 1
+            continue
+        projected.append({"path": path, "index_status": status[0], "worktree_status": status[1], "original_path": original_path})
+    return projected, redacted
 
 
-def _working_tree_snapshot(repository: Path, *, status: str) -> dict[str, object]:
+def _working_tree_snapshot(repository: Path) -> dict[str, object]:
     """Capture identifiers and digests without copying user files or secrets."""
+    status_entries, redacted_path_count = _status_entries(repository)
     index_entries = []
     for raw in _git_bytes(repository, "ls-files", "-s", "-z").split(b"\0"):
         if not raw:
@@ -88,34 +97,27 @@ def _working_tree_snapshot(repository: Path, *, status: str) -> dict[str, object
         if not path_bytes:
             continue
         relative = path_bytes.decode("utf-8", errors="surrogateescape")
+        if _sensitive_path(relative):
+            continue
         candidate = (repository / relative).resolve()
         try:
             candidate.relative_to(repository)
         except ValueError as exc:
             raise RunnerError("takeover_path_escape", "untracked path escapes repository") from exc
         file_sha, size, kind = _file_digest(repository / relative)
-        if _sensitive_path(relative):
-            continue
         untracked.append({"path": relative, "sha256": file_sha, "size": size, "kind": kind})
     staged_diff = _git_bytes(repository, "diff", "--cached", "--binary")
     unstaged_diff = _git_bytes(repository, "diff", "--binary")
     return {
-        "captured_at": datetime.now(UTC).isoformat(),
         "consistency": "observed_without_source_stop_proof",
-        "porcelain": status,
         "index": index_entries,
         "untracked": untracked,
-        "changed": _status_paths(repository),
-        "redacted_path_count": len(
-            [
-                entry
-                for entry in _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z").split(b"\0")
-                if len(entry) >= 4 and _sensitive_path(entry[3:].decode("utf-8", errors="surrogateescape"))
-            ]
-        ),
+        "changed": [str(entry["path"]) for entry in status_entries],
+        "status_entries": status_entries,
+        "redacted_path_count": redacted_path_count,
         "staged_diff_sha256": hashlib.sha256(staged_diff).hexdigest(),
         "unstaged_diff_sha256": hashlib.sha256(unstaged_diff).hexdigest(),
-        "snapshot_digest": digest({"status": status, "index": index_entries, "untracked": untracked, "staged": hashlib.sha256(staged_diff).hexdigest(), "unstaged": hashlib.sha256(unstaged_diff).hexdigest()}),
+        "snapshot_digest": digest({"status_entries": status_entries, "redacted_path_count": redacted_path_count, "index": index_entries, "untracked": untracked, "staged": hashlib.sha256(staged_diff).hexdigest(), "unstaged": hashlib.sha256(unstaged_diff).hexdigest()}),
     }
 
 
@@ -134,7 +136,7 @@ def inventory_from_thread_observation(
     if not isinstance(completeness, dict):
         raise RunnerError("invalid_thread_observation", "source observation has no completeness record")
     changed_paths = []
-    snapshot = _working_tree_snapshot(repository, status=_git(repository, "status", "--porcelain=v1", "--untracked-files=all"))
+    snapshot = _working_tree_snapshot(repository)
     changed_paths = [str(path) for path in snapshot.get("changed", []) if isinstance(path, str)]
     if scope is not None:
         normalized_scope = [item.replace("\\", "/").strip("/") for item in scope if item.strip()]
@@ -153,6 +155,8 @@ def inventory_from_thread_observation(
     }
     if outside:
         facts["scope_error"] = "working tree contains paths outside the authorized scope"
+    elif normalized_scope and snapshot.get("redacted_path_count"):
+        facts["scope_error"] = "redacted working-tree paths prevent proving the complete authorized scope"
     return {
         "schema_version": "spec-runner-takeover-input/v1",
         "repository_path": os.fspath(repository.resolve()),
@@ -195,13 +199,13 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         except RunnerError:
             raise
         head = "unborn"
-    status = _git(repository, "status", "--porcelain=v1")
+    snapshot = _working_tree_snapshot(repository)
     branch = _git(repository, "branch", "--show-current")
     try:
         latest_commit = _git(repository, "log", "-1", "--format=%H%x00%s")
     except RunnerError:
         latest_commit = ""
-    status_lines = status.splitlines() if status else []
+    dirty = bool(snapshot["status_entries"] or snapshot["redacted_path_count"])
     source_threads = inventory.get("source_threads", [])
     if not isinstance(source_threads, list) or any(not isinstance(thread, dict) for thread in source_threads):
         raise RunnerError("invalid_takeover_inventory", "source_threads must be a list of objects")
@@ -219,17 +223,6 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
         observation = thread.get("observation")
         if isinstance(observation, dict) and observation.get("thread_status") == "active":
             active = True
-        handover_evidence = thread.get("handover_evidence")
-        stop_proven = (
-            isinstance(handover_evidence, dict)
-            and handover_evidence.get("source_thread_id") == identifier
-            and handover_evidence.get("source_writer_state") == "stopped"
-            and handover_evidence.get("dispatcher_state") == "quiesced"
-            and isinstance(handover_evidence.get("readback"), dict)
-            and handover_evidence["readback"].get("source_thread_id") == identifier
-            and isinstance(handover_evidence.get("operation_id"), str)
-            and bool(handover_evidence.get("operation_id"))
-        )
         if ownership not in {"confirmed", "unknown", "preserve"}:
             raise RunnerError("invalid_takeover_inventory", "thread ownership must be confirmed, unknown, or preserve")
         observation_complete = True
@@ -240,7 +233,7 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
             unresolved.append({"thread_id": identifier, "reason": "source_history_incomplete"})
         elif ownership != "confirmed":
             unresolved.append({"thread_id": identifier, "reason": "thread_ownership_unconfirmed"})
-        elif not stop_proven:
+        else:
             unresolved.append(
                 {
                     "thread_id": identifier,
@@ -248,8 +241,6 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
                     "policy": handover_policy,
                 }
             )
-        else:
-            adopted.append({"thread_id": identifier, "lineage": thread.get("lineage"), "action": "continue_or_archive"})
     artifacts = inventory.get("artifacts", [])
     if not isinstance(artifacts, list) or any(not isinstance(item, dict) for item in artifacts):
         raise RunnerError("invalid_takeover_inventory", "artifacts must be a list of objects")
@@ -276,12 +267,12 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
             "branch": branch or None,
             "head_sha": head,
             "latest_commit": latest_commit or None,
-            "dirty": bool(status),
-            "porcelain": status,
-            "staged": [line for line in status_lines if len(line) >= 2 and line[0] != " " and line[0] != "?"],
-            "untracked": [line[3:] for line in status_lines if line.startswith("?? ")],
+            "dirty": dirty,
+            "changed_paths": snapshot["changed"],
+            "redacted_path_count": snapshot["redacted_path_count"],
+            "snapshot_digest": snapshot["snapshot_digest"],
         },
-        "working_tree": {"dirty": bool(status), "porcelain": status},
+        "working_tree": {"dirty": dirty, "snapshot_digest": snapshot["snapshot_digest"]},
         "adopted_threads": adopted,
         "unresolved": unresolved,
         "artifacts": classifications,
@@ -292,7 +283,7 @@ def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
             "active_threads": [str(thread.get("id")) for thread in source_threads if bool(thread.get("active", False))],
         },
         "next_state": "waiting_handover" if any(item.get("reason") == "waiting_handover" for item in unresolved) else ("blocked" if unresolved else "adopted_ready"),
-        "digest": digest({"repo": os.fspath(repository), "snapshot": {"branch": branch, "head": head, "status": status}, "threads": source_threads, "artifacts": classifications, "facts": facts, "handover_policy": handover_policy}),
+        "digest": digest({"repo": os.fspath(repository), "snapshot": {"branch": branch, "head": head, "snapshot_digest": snapshot["snapshot_digest"]}, "threads": source_threads, "artifacts": classifications, "facts": facts, "handover_policy": handover_policy}),
     }
 
 
@@ -303,26 +294,39 @@ def completion_action(report: dict[str, Any]) -> dict[str, object]:
     if report.get("next_state") == "blocked":
         return {"state": "blocked", "reason": "takeover ownership or active-writer evidence is incomplete"}
     facts = report.get("historical_facts", {})
-    if isinstance(facts, dict) and facts.get("merged") and facts.get("verification_receipt"):
+    if _authoritative_delivery_present(report):
         return {"state": "cleanup_pending", "implementation_calls": 0, "merge_calls": 0}
+    if isinstance(facts, dict) and (facts.get("merged") or facts.get("verification_receipt")):
+        return {
+            "state": "reverify_delivery",
+            "implementation_calls": 0,
+            "merge_calls": 0,
+            "requires": "authoritative repository, tracker, and acceptance readback",
+        }
     return {"state": "resume_delivery", "implementation_calls": 0, "merge_calls": 0, "requires": "normal Runner stage loop"}
 
 
 def perform_cleanup(report: dict[str, Any]) -> dict[str, object]:
-    """Execute only explicitly recorded Runner-owned cleanup targets.
+    """Execute cleanup only after current delivery evidence is revalidated.
 
-    A historical merge receipt alone is not a path authorization.  Cleanup is
-    attempted only when the source inventory records the workspace root and
-    manifest, and the delivery helper independently verifies ownership.
+    A historical merge receipt or arbitrary verification object is not a path
+    authorization. Cleanup is attempted only when candidate, review, merge,
+    and repository readbacks bind to the current repository, and the delivery
+    helper independently verifies workspace ownership.
     """
     facts = report.get("historical_facts", {})
-    if not isinstance(facts, dict) or not facts.get("merged") or not facts.get("verification_receipt"):
-        raise RunnerError("takeover_cleanup_not_authorized", "cleanup requires verified historical delivery evidence")
+    if not _authoritative_delivery_present(report) or not isinstance(facts, dict):
+        raise RunnerError(
+            "takeover_cleanup_not_authorized",
+            "cleanup requires authoritative delivery, ownership, and cleanup readbacks; caller supplied historical facts are insufficient",
+        )
     targets = facts.get("cleanup_targets", [])
     if not isinstance(targets, list):
         raise RunnerError("invalid_takeover_cleanup", "cleanup_targets must be a list")
     if not targets:
         return {"outcome": "pending", "reason": "cleanup_targets_missing", "attempted": 0, "results": []}
+    from .delivery import cleanup_managed_workspace
+
     repository = Path(str(report["repository"])).resolve()
     results: list[dict[str, object]] = []
     for target in targets:
@@ -335,6 +339,39 @@ def perform_cleanup(report: dict[str, Any]) -> dict[str, object]:
         results.append(cleanup_managed_workspace(repository=repository, workspace_root=workspace_root, workspace=workspace, manifest=manifest))
     outcome = "cleaned" if all(item.get("outcome") == "cleaned" for item in results) else "pending"
     return {"outcome": outcome, "attempted": len(results), "results": results}
+
+
+def _authoritative_delivery_present(report: dict[str, Any]) -> bool:
+    """Require current Git readback before treating a delivery as cleanupable."""
+    facts = report.get("historical_facts", {})
+    if not isinstance(facts, dict):
+        return False
+    delivery = facts.get("authoritative_delivery")
+    if not isinstance(delivery, dict):
+        return False
+    candidate_sha = delivery.get("candidate_sha")
+    merge_sha = delivery.get("merge_sha")
+    candidate = delivery.get("candidate_receipt")
+    review = delivery.get("review")
+    merge = delivery.get("merge")
+    if (
+        not isinstance(candidate_sha, str) or len(candidate_sha) != 40
+        or not isinstance(merge_sha, str) or len(merge_sha) != 40
+        or not isinstance(candidate, dict) or candidate.get("outcome") != "verified" or candidate.get("candidate_sha") != candidate_sha
+        or not isinstance(review, dict) or review.get("approved") is not True or review.get("candidate_sha") != candidate_sha
+        or not isinstance(merge, dict) or merge.get("outcome") != "merged" or merge.get("merge_sha") != merge_sha
+    ):
+        return False
+    repository = Path(str(report.get("repository", ""))).resolve()
+    try:
+        if _git(repository, "rev-parse", candidate_sha) != candidate_sha:
+            return False
+        if _git(repository, "rev-parse", merge_sha) != merge_sha:
+            return False
+        subprocess.run(["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", merge_sha, "HEAD"], check=True, capture_output=True)
+    except (RunnerError, OSError, subprocess.CalledProcessError):
+        return False
+    return True
 
 
 def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
@@ -362,13 +399,10 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
         for spec in specs:
             key = str(spec["key"])
             state = str(spec.get("state", "unknown"))
-            if state in {"completed", "merged", "delivered"} and spec.get("verified"):
-                categories["adopted"].append(key)
-                if spec.get("cleanup_pending"):
-                    categories["cleanup"].append(key)
-                    steps.append({"kind": "cleanup", "target": key, "status": "planned", "implementation_calls": 0, "merge_calls": 0})
-                else:
-                    steps.append({"kind": "adopt", "target": key, "status": "adopted", "reason": "verified delivery evidence is present"})
+            if state in {"completed", "merged", "delivered"}:
+                categories["reverified"].append(key)
+                categories["remaining"].append(key)
+                steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "caller supplied completion claims require authoritative delivery readback"})
             elif state in {"partial", "implementing", "candidate", "merged_without_evidence"}:
                 categories["adopted"].append(key)
                 categories["reverified"].append(key)
@@ -382,8 +416,7 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
                 categories["remaining"].append(key)
                 steps.append({"kind": "reconcile", "target": key, "status": "needs_input", "reason": "SPEC state is unknown or conflicting"})
 
-    has_verified_delivery = bool(facts.get("merged") and facts.get("verification_receipt"))
-    if not facts.get("requirements") and not has_verified_delivery:
+    if not facts.get("requirements"):
         categories["backfilled"].append("requirement_scope")
         steps.append({"kind": "backfill", "target": "requirement_scope", "status": "needs_input", "reason": "original requirement scope is not present in the inventory"})
     if not facts.get("tracker"):
@@ -396,12 +429,9 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
             {"kind": "adopt", "target": "working_tree", "status": "adopted", "reason": "preserve existing source, index, and untracked files"},
             {"kind": "reverify", "target": "candidate", "status": "planned", "reason": "existing code is evidence of files, not a passed acceptance receipt"},
         ])
-    if facts.get("merged") and facts.get("verification_receipt"):
-        categories["cleanup"].extend(["threads", "workspace"])
-        steps.append({"kind": "cleanup", "target": "threads_and_workspace", "status": "planned", "implementation_calls": 0, "merge_calls": 0})
-    elif facts.get("merged"):
+    if facts.get("merged") or facts.get("verification_receipt"):
         categories["reverified"].append("merged_candidate")
-        steps.append({"kind": "reverify", "target": "merged_candidate", "status": "planned", "reason": "merge exists but delivery evidence is missing"})
+        steps.append({"kind": "reverify", "target": "merged_candidate", "status": "planned", "reason": "caller supplied delivery claims require authoritative repository and acceptance readback"})
     elif specs is None:
         categories["new_work"].append("remaining_acceptance")
         steps.append({"kind": "resume", "target": "remaining_acceptance", "status": "planned", "reason": "continue the normal Runner delivery loop after backfill and reverify"})

@@ -484,8 +484,10 @@ class CodexAdapter:
                 if not hasattr(source, "turns"):
                     completeness = "unknown"
                     completeness_reasons.append("thread_turns_field_missing")
+                # Omitted reasoning, encrypted, and opaque tool payloads are
+                # deliberate redactions. They do not make the visible business
+                # history incomplete; only an SDK omission or pagination does.
                 if omitted_item_count:
-                    completeness = "partial"
                     completeness_reasons.append("non_business_items_omitted")
                 history_mode = _enum_value(getattr(source, "history_mode", None))
                 if history_mode in {"paginated", "compressed"}:
@@ -508,6 +510,7 @@ class CodexAdapter:
                     "turn_count": len(turns),
                     "completeness": {
                         "state": completeness,
+                        "business_material_state": completeness,
                         "include_turns_requested": True,
                         "reasons": sorted(set(completeness_reasons)),
                     },
@@ -530,11 +533,11 @@ class CodexAdapter:
         """Interrupt an actually running source turn, then read it back.
 
         SDK 0.155.1 does not expose a public method that creates a
-        ``TurnHandle`` for an arbitrary existing turn.  The adapter therefore
-        uses the SDK client's explicit ``turn_interrupt`` transport only when
-        the installed client exposes it, after identifying an in-progress turn
-        through a read.  A thread/turn interrupt is not treated as proof that
-        an external scheduler has stopped assigning work.
+        ``TurnHandle`` for an arbitrary existing turn.  After identifying an
+        in-progress turn through a read, this method reports that capability
+        boundary without using private SDK members. A thread/turn interrupt is
+        not treated as proof that an external scheduler has stopped assigning
+        work.
         """
         before = self.read_thread(thread_id=thread_id, repository_path=repository_path)
         running = [
@@ -565,14 +568,15 @@ class CodexAdapter:
         factory = self._codex_factory or (lambda config: Codex(config))
         try:
             with factory(CodexConfig(client_version=SDK_VERSION)) as codex:
-                client = getattr(codex, "_client", None)
-                interrupt = getattr(client, "turn_interrupt", None)
-                if not callable(interrupt):
-                    raise RunnerError(
-                        "sdk_interrupt_unsupported",
-                        "installed Codex SDK does not expose an interrupt operation for an existing turn",
-                    )
-                response = interrupt(thread_id, turn_id)
+                # The supported SDK only exposes interrupt on a TurnHandle
+                # returned by the same process that started the turn. It has
+                # no public way to obtain such a handle for an arbitrary
+                # historical turn ID, so never reach into the private client.
+                raise RunnerError(
+                    "sdk_interrupt_unsupported",
+                    "installed Codex SDK cannot interrupt an arbitrary existing turn through its public API",
+                    details={"thread_id": thread_id, "turn_id": turn_id},
+                )
         except RunnerError:
             raise
         except Exception as exc:

@@ -231,12 +231,13 @@ class CodexAdapterTests(unittest.TestCase):
         inspected = CodexAdapter(codex_factory=factory, sdk_module=sdk).read_thread(
             thread_id="thread-opaque", repository_path=Path("C:/repo")
         )
-        self.assertEqual(inspected["completeness"]["state"], "partial")
+        self.assertEqual(inspected["completeness"]["state"], "complete")
+        self.assertEqual(inspected["completeness"]["business_material_state"], "complete")
         self.assertEqual(inspected["omitted_item_count"], 1)
         self.assertTrue(inspected["turns"][0]["items"][0]["omitted"])
         self.assertNotIn("arguments", inspected["turns"][0]["items"][1])
 
-    def test_interrupt_thread_targets_observed_turn_and_requires_readback(self) -> None:
+    def test_interrupt_thread_fails_closed_without_public_arbitrary_turn_handle(self) -> None:
         state = {"status": "inProgress"}
         interrupt_calls: list[tuple[str, str]] = []
 
@@ -261,14 +262,11 @@ class CodexAdapterTests(unittest.TestCase):
                 self._client = Client()
 
         sdk = types.SimpleNamespace(CodexConfig=lambda **kwargs: kwargs, Codex=object)
-        result = CodexAdapter(codex_factory=lambda config: InterruptCodex(config), sdk_module=sdk).interrupt_thread(
-            thread_id="thread-active", repository_path=Path("C:/repo")
-        )
-        self.assertTrue(result["accepted"])
-        self.assertEqual(result["turn_id"], "turn-active")
-        self.assertEqual(interrupt_calls, [("thread-active", "turn-active")])
-        self.assertFalse(result["evidence_limits"]["dispatcher_quiesced"])
-        self.assertEqual(result["interrupt_response"]["secret"], "[redacted]")
+        with self.assertRaisesRegex(RunnerError, "public API"):
+            CodexAdapter(codex_factory=lambda config: InterruptCodex(config), sdk_module=sdk).interrupt_thread(
+                thread_id="thread-active", repository_path=Path("C:/repo")
+            )
+        self.assertEqual(interrupt_calls, [])
 
     def test_missing_published_sdk_is_a_structured_error(self) -> None:
         with patch.dict(sys.modules, {"openai_codex": None}):

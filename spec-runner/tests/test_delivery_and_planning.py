@@ -363,9 +363,9 @@ class ProductBoundaryTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
             report = inspect_takeover({"schema_version": "spec-runner-takeover-input/v1", "repository_path": str(repo), "source_threads": [], "artifacts": [], "facts": {"merged": True, "verification_receipt": {"candidate_sha": "abc"}}})
-            self.assertEqual(completion_action(report)["state"], "cleanup_pending")
+            self.assertEqual(completion_action(report)["state"], "reverify_delivery")
             frontier = plan_frontier(report)
-            self.assertEqual(frontier["state"], "planned")
+            self.assertEqual(frontier["state"], "needs_input")
             record = write_takeover_record(control_root=Path(temp) / "control", takeover_key="takeover-1", report=report, frontier=frontier)
             self.assertTrue(record["created"])
             self.assertTrue((Path(temp) / "control" / "spec-runner.sqlite3").is_file())
@@ -457,8 +457,8 @@ class ProductBoundaryTests(unittest.TestCase):
                 "artifacts": [],
                 "facts": {"requirements": ["R1"]},
             })
-            self.assertEqual(report["next_state"], "adopted_ready")
-            self.assertEqual(report["adopted_threads"][0]["thread_id"], "source-1")
+            self.assertEqual(report["next_state"], "blocked")
+            self.assertEqual(report["unresolved"][0]["reason"], "source_stop_unproven")
 
     def test_takeover_frontier_preserves_mixed_spec_progress(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -481,8 +481,8 @@ class ProductBoundaryTests(unittest.TestCase):
                 },
             })
             frontier = plan_frontier(report)
-            self.assertEqual(frontier["categories"]["adopted"], ["SR-01", "SR-02"])
-            self.assertEqual(frontier["categories"]["reverified"], ["SR-02"])
+            self.assertEqual(frontier["categories"]["adopted"], ["SR-02"])
+            self.assertEqual(frontier["categories"]["reverified"], ["SR-01", "SR-02"])
             self.assertEqual(frontier["categories"]["new_work"], ["SR-03"])
             self.assertEqual([step["target"] for step in frontier["steps"]], ["SR-01", "SR-02", "SR-03"])
 
@@ -536,14 +536,12 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(report["next_state"], "blocked")
             self.assertEqual(report["unresolved"][0]["reason"], "source_history_incomplete")
 
-    def test_cleanup_only_takeover_executes_explicit_owned_targets(self):
+    def test_cleanup_only_takeover_rejects_unverified_historical_targets(self):
         report = {"repository": str(Path.cwd()), "historical_facts": {"merged": True,
             "verification_receipt": {"candidate_sha": "known"},
             "cleanup_targets": [{"workspace_root": "C:/runtime/workspaces", "workspace": "C:/runtime/workspaces/run", "manifest": "C:/runtime/workspaces/run.manifest.json"}]}}
-        with patch("spec_runner.takeover.cleanup_managed_workspace", return_value={"outcome": "cleaned"}) as cleanup:
-            result = perform_cleanup(report)
-        self.assertEqual(result["outcome"], "cleaned")
-        cleanup.assert_called_once()
+        with self.assertRaisesRegex(RunnerError, "authoritative"):
+            perform_cleanup(report)
 
     def test_release_and_fault_reports_reject_unverified_shape(self):
         fault = validate_fault_matrix({"schema_version": "spec-runner-fault-matrix/v1", "scenarios": [{"id": "s1", "entrypoint": "public_cli", "expected": {"state": "blocked"}, "evidence_kind": "deterministic"}]})

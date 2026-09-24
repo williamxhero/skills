@@ -402,6 +402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         result["record"] = observed["record"]
                         result["transitions"] = observed["transitions"]
+                    prior_takeover_state = record.get("record", {}).get("state") if isinstance(record.get("record"), dict) else None
                     if (
                         action["state"] in {"blocked", "waiting_handover"}
                         and arguments.thread_id
@@ -416,10 +417,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         result["record"] = intent["record"]
                         result["transitions"] = intent["transitions"]
-                        handover = CodexAdapter().interrupt_thread(
-                            thread_id=arguments.thread_id,
-                            repository_path=arguments.repository.resolve(),
-                        )
+                        if prior_takeover_state == "handover_interrupt_intent":
+                            # The prior process may have sent the request and
+                            # died before recording its outcome. Preserve the
+                            # uncertainty and require a fresh source readback;
+                            # repeating an interrupt could race a live writer.
+                            handover = {
+                                "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+                                "thread_id": arguments.thread_id,
+                                "accepted": None,
+                                "reason": "interrupt_outcome_unknown",
+                                "evidence_limits": {"dispatcher_quiesced": False, "ownership_transferred": False},
+                            }
+                        else:
+                            handover = CodexAdapter().interrupt_thread(
+                                thread_id=arguments.thread_id,
+                                repository_path=arguments.repository.resolve(),
+                            )
                         result["handover"] = handover
                         finished = record_takeover_transition(
                             control_root=arguments.control_root,

@@ -153,7 +153,7 @@ class SpecRunnerCliTests(unittest.TestCase):
             "--takeover-key", "cleanup-only", "--brief", str(self.brief), "--config", str(self.config),
         )
         self.assertEqual(code, 0)
-        self.assertEqual(result["action"]["state"], "cleanup_pending")
+        self.assertEqual(result["action"]["state"], "reverify_delivery")
         self.assertNotIn("runner", result)
         code, status = self.invoke("status", "--control-root", str(self.control_root))
         self.assertEqual(code, 0)

@@ -154,8 +154,10 @@ turn. Reasoning, encrypted, opaque, and credential-bearing payloads are
 omitted. `takeover inspect/apply --thread-id` can build this input directly
 from a source ID and an authorized `--scope`; it does not require a hand-written
 inventory or a pre-existing Runner database. A read or an SDK turn interrupt
-does not prove that an external scheduler has stopped writing. The apply path
-therefore remains blocked until matching handover readback proves both source
+does not prove that an external scheduler has stopped writing. The pinned SDK
+has no public operation for interrupting an arbitrary historical turn, so
+`interrupt_then_takeover` fails closed at that capability boundary. The apply
+path remains blocked until a supported handover readback proves both source
 writer stop and dispatcher quiescence.
 
 `diagnose package` checks the actual wheel contents for the CLI, dependency
