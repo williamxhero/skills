@@ -171,21 +171,30 @@ def write_result(result: dict[str, Any], output_path: str | os.PathLike[str]) ->
 
     destination = Path(output_path)
     parent = destination.parent
-    if not parent.exists():
-        raise ValidationError("output directory does not exist")
-    if not parent.is_dir():
-        raise ValidationError("output parent is not a directory")
-    if destination.is_dir():
-        raise ValidationError("output path is a directory")
+    try:
+        if not parent.exists():
+            raise ValidationError("output directory does not exist")
+        if not parent.is_dir():
+            raise ValidationError("output parent is not a directory")
+        if destination.is_dir():
+            raise ValidationError("output path is a directory")
+    except ValidationError:
+        raise
+    except OSError as exc:
+        raise ValidationError("could not access output path") from exc
 
     content = _serialize(result)
     temporary_path: Path | None = None
     try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=parent,
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-        )
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+            )
+        except Exception as exc:
+            raise ValidationError("could not prepare or replace output") from exc
+
         temporary_path = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as output:
@@ -193,17 +202,23 @@ def write_result(result: dict[str, Any], output_path: str | os.PathLike[str]) ->
                 output.flush()
                 os.fsync(output.fileno())
         except BaseException:
+            # fdopen may fail before ownership transfers to the file object.
+            # Closing here is harmless after a context-manager failure and
+            # prevents a descriptor leak on that earlier failure path.
             try:
                 os.close(descriptor)
             except OSError:
                 pass
             raise
 
-        os.replace(temporary_path, destination)
+        try:
+            os.replace(temporary_path, destination)
+        except Exception as exc:
+            raise ValidationError("could not prepare or replace output") from exc
         temporary_path = None
     except ValidationError:
         raise
-    except OSError as exc:
+    except Exception as exc:
         raise ValidationError("could not prepare or replace output") from exc
     finally:
         if temporary_path is not None:
