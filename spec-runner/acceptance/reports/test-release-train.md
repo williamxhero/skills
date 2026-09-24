@@ -1,5 +1,22 @@
 # SF integration release train
 
+## PR receipt identity hardening (2026-09-24)
+
+Review of the PR delivery adapter found that a provider readback could omit the
+PR number or base repository identity and still be accepted: the number fell
+back to the request path, and the repository check was optional. The adapter
+now requires the returned number, structured head/base refs, and an exact
+`base.repo.full_name` match before adopting or refreshing a receipt. Missing or
+conflicting identity fails closed.
+
+The focused PR delivery and GitHub contract selection passed 24 tests; the
+tracker and production boundary selection passed 29 tests. The complete source
+and acceptance selection passed 192 tests with one skip in 61.94 seconds, and
+`git diff --check` passed. This is source-level L0-L2 evidence; it does not
+replace exact-wheel L3 for the final source or discharge the outstanding live
+SDK restart, Windows detached-parent/control DB recovery, source takeover,
+six-SPEC L4, or GitHub merge queue gates. Issue #256 remains open.
+
 ## Latest production three-SPEC GitHub run (2026-09-24)
 
 Run marker `SRAC-20260924-a1b2c3d4e5f6`; run ID

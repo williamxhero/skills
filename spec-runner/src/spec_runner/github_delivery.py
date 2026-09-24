@@ -86,15 +86,22 @@ class GitHubDelivery:
             raise RunnerError("github_pr_readback_incomplete", "pull request readback failed") from exc
         if not isinstance(value, dict):
             raise RunnerError("github_pr_readback_incomplete", "pull request readback was not an object")
-        number_value = value.get("number", number)
+        number_value = value.get("number")
         if not isinstance(number_value, int) or isinstance(number_value, bool) or number_value != number:
             raise RunnerError("github_pr_identity_mismatch", "pull request readback has the wrong number")
-        repository_url = str(value.get("base", {}).get("repo", {}).get("full_name") or "")
-        if repository_url and repository_url != repository:
+        head_value = value.get("head")
+        base_value = value.get("base")
+        if not isinstance(head_value, dict) or not isinstance(base_value, dict):
+            raise RunnerError("github_pr_readback_incomplete", "pull request readback has incomplete ref identity")
+        base_repo = base_value.get("repo")
+        repository_url = base_repo.get("full_name") if isinstance(base_repo, dict) else None
+        if not isinstance(repository_url, str) or not repository_url.strip():
+            raise RunnerError("github_identity_mismatch", "pull request readback has no repository identity")
+        if repository_url != repository:
             raise RunnerError("github_identity_mismatch", "pull request belongs to another repository")
-        if (str(value.get("head", {}).get("sha", "")) != candidate_sha
-                or str(value.get("head", {}).get("ref", "")) != head
-                or str(value.get("base", {}).get("ref", "")) != base
+        if (str(head_value.get("sha", "")) != candidate_sha
+                or str(head_value.get("ref", "")) != head
+                or str(base_value.get("ref", "")) != base
                 or marker not in str(value.get("body") or "")):
             raise RunnerError("github_pr_receipt_stale", "pull request no longer matches its operation")
         return value

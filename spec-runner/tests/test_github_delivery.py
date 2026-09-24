@@ -14,7 +14,7 @@ class GitHubDeliveryTests(unittest.TestCase):
         calls: list[list[str]] = []
         readback = json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12",
                                "head": {"sha": "abc1234", "ref": "branch"},
-                               "base": {"ref": "main"},
+                               "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->",
                                "state": "open", "merged": False})
         responses = ["[]", json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12"}), readback, readback]
@@ -44,10 +44,10 @@ class GitHubDeliveryTests(unittest.TestCase):
                 return json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12"})
             if calls == 3:
                 return json.dumps({"number": 12, "head": {"sha": "abc1234", "ref": "branch"},
-                                   "base": {"ref": "main"},
+                                   "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                    "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->"})
             return json.dumps({"number": 12, "head": {"sha": "new-sha", "ref": "branch"},
-                               "base": {"ref": "main"},
+                               "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->"})
 
         with tempfile.TemporaryDirectory() as temp:
@@ -57,6 +57,17 @@ class GitHubDeliveryTests(unittest.TestCase):
                 adapter.create_or_adopt_pr(repository="owner/repo", head="branch", base="main", candidate_sha="abc1234", body="evidence", operation_id="op-1", receipt_root=Path(temp))
             self.assertEqual(context.exception.code, "github_pr_receipt_stale")
             self.assertEqual(calls, 4)
+
+    def test_pr_readback_requires_complete_repository_identity(self):
+        readback = json.dumps({"number": 12, "head": {"sha": "abc1234", "ref": "branch"},
+                               "base": {"ref": "main"},
+                               "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->"})
+        with self.assertRaises(RunnerError) as context:
+            GitHubDelivery(runner=lambda args: readback)._read_pull_request(
+                repository="owner/repo", number=12, head="branch", base="main",
+                candidate_sha="abc1234", marker="<!-- spec-runner-pr:op-1 candidate:abc1234 -->",
+            )
+        self.assertEqual(context.exception.code, "github_identity_mismatch")
 
     def test_checks_bind_success_to_candidate_sha_and_merge_requires_authorization(self):
         calls: list[list[str]] = []
@@ -95,8 +106,8 @@ class GitHubDeliveryTests(unittest.TestCase):
                 return json.dumps({"sha": "abc", "state": "success", "statuses": []})
             if args[-1] == "repos/owner/repo/pulls/12":
                 if len([call for call in calls if call[-1] == args[-1]]) == 1:
-                    return json.dumps({"head": {"sha": "abc"}, "base": {"ref": "main"}, "merged_at": None})
-                return json.dumps({"head": {"sha": "abc"}, "base": {"ref": "main"},
+                    return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}}, "merged_at": None})
+                return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                    "merged_at": "2026-09-22T00:00:00Z", "merge_commit_sha": "merge123"})
             return json.dumps({"merged": True, "sha": "merge123"})
 
@@ -116,7 +127,7 @@ class GitHubDeliveryTests(unittest.TestCase):
             if "status" in args[-1]:
                 return json.dumps({"sha": "abc", "state": "success", "statuses": []})
             if args[-1] == "repos/owner/repo/pulls/12":
-                return json.dumps({"head": {"sha": "abc"}, "base": {"ref": "main"}, "merged_at": None})
+                return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}}, "merged_at": None})
             return json.dumps({"merged": False, "message": "not mergeable"})
 
         with self.assertRaisesRegex(RunnerError, "not confirmed"):
@@ -152,7 +163,7 @@ class GitHubDeliveryTests(unittest.TestCase):
                 return json.dumps({"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}]})
             if "status" in args[-1]:
                 return json.dumps({"sha": "abc", "state": "success", "statuses": []})
-            return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main"},
+            return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                "merged": True, "merged_at": "2026-09-23T00:00:00Z",
                                "merge_commit_sha": "merge123"})
 
