@@ -35,6 +35,7 @@ class ConversionTests(unittest.TestCase):
                 "counts": {" open ": 1, "Open": 2},
             },
         )
+        self.assertEqual(list(result["counts"]), sorted(result["counts"]))
 
     def test_accepts_header_only_and_rejects_invalid_inputs(self) -> None:
         self.assertEqual(
@@ -165,6 +166,7 @@ class DestinationTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 2)
         self.assertEqual(len(completed.stderr.splitlines()), 1)
+        self.assertTrue(completed.stderr.startswith("error: "))
         self.assertNotIn("Traceback", completed.stderr)
         self.assertEqual(completed.stdout, "")
         self.assertEqual(self.output.read_bytes(), b"keep exactly")
@@ -210,13 +212,17 @@ class DestinationTests(unittest.TestCase):
         self.output.write_bytes(b"keep exactly")
 
         with mock.patch.object(os, "replace", side_effect=OSError("replace failed")):
-            with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr, mock.patch(
+                "sys.stdout", new_callable=io.StringIO
+            ) as stdout:
                 exit_code = task_converter.main(
                     ["--input", str(self.source), "--output", str(self.output)]
                 )
 
         self.assertEqual(exit_code, 2)
         self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+        self.assertTrue(stderr.getvalue().startswith("error: "))
+        self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(self.output.read_bytes(), b"keep exactly")
         self.assertEqual(list(Path.cwd().glob(f".{self.output.name}.*.tmp")), [])
 
@@ -253,7 +259,8 @@ class DestinationTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 self.output.write_bytes(b"preserve this output")
                 stderr = io.StringIO()
-                with mock.patch("sys.stderr", stderr):
+                stdout = io.StringIO()
+                with mock.patch("sys.stderr", stderr), mock.patch("sys.stdout", stdout):
                     if failure == "serialize":
                         patcher = mock.patch.object(
                             task_converter,
@@ -293,7 +300,9 @@ class DestinationTests(unittest.TestCase):
 
                 self.assertEqual(exit_code, 2)
                 self.assertEqual(len(stderr.getvalue().splitlines()), 1)
+                self.assertTrue(stderr.getvalue().startswith("error: "))
                 self.assertNotIn("Traceback", stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
                 self.assertEqual(self.output.read_bytes(), b"preserve this output")
                 self.assertEqual(list(Path.cwd().glob(f".{self.output.name}.*.tmp")), [])
 
