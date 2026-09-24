@@ -45,12 +45,18 @@ adapter now rejects malformed pages before POST and preserves those definitive
 classes; timeouts, server errors, and lost responses still require marker
 reconciliation before retry.
 
-The focused PR delivery and GitHub contract suites passed 22 tests. The source
+The focused PR delivery and GitHub contract suites passed 23 tests. The source
 and acceptance suite, excluding the two run fixture directories whose tests
 share a module basename and excluding the environment-specific missing-SDK
 assertion while the SDK is installed, passed 167 tests with one skip. The
 default recursive collection remains invalid for those duplicate fixture module
 names; the missing-SDK test was not treated as a product failure.
+
+A follow-up regression also verifies that the real `_gh` transport maps an HTTP
+422 validation response to the definitive `github_rejected` class. PR creation
+therefore does not treat a provider rejection as an unknown external outcome or
+perform an unnecessary marker reconciliation query. The broader tracker/delivery
+recovery selection passes 41 tests.
 
 This correction improves SF-03.1 failure classification and readback safety. It
 does not discharge the issue's live three-SPEC production publication,

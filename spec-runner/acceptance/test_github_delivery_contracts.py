@@ -117,3 +117,11 @@ def test_gh_http_failures_preserve_recovery_class():
         with pytest.raises(Exception) as error:
             GitHubDelivery._gh(["api", "repos/owner/repo"])
     assert error.value.code == "github_rate_limited"
+
+
+def test_gh_http_422_is_a_definitive_rejection():
+    with patch("spec_runner.github_delivery.subprocess.run",
+               side_effect=subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 422 validation failed")):
+        with pytest.raises(Exception) as error:
+            GitHubDelivery._gh(["api", "repos/owner/repo/pulls", "--method", "POST"])
+    assert error.value.code == "github_rejected"

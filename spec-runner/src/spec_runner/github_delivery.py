@@ -45,6 +45,8 @@ class GitHubDelivery:
                 code = "github_forbidden" if status == 403 else "github_not_found"
             elif status in {429} or "rate limit" in lowered:
                 code = "github_rate_limited"
+            elif status == 422:
+                code = "github_rejected"
             elif status is not None and status >= 500:
                 code = "github_server_error"
             else:
