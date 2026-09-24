@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,54 @@ from spec_runner.codex_adapter import CodexWorkerResult
 from spec_runner.config import RunnerConfig
 from spec_runner.errors import RunnerError
 from spec_runner.store import RunRecord, Store, now
+
+
+def test_recovery_rechecks_committed_repair_with_environment_blocker(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subprocess.run(["git", "init", "-q", str(workspace)], check=True)
+    scope = workspace / "scope"
+    scope.mkdir()
+    artifact = scope / "result.py"
+    artifact.write_text("result = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(workspace), "add", "--all"], check=True)
+    commit = ["git", "-C", str(workspace), "-c", "user.name=Spec Runner",
+              "-c", "user.email=spec-runner@localhost", "commit", "-qm"]
+    subprocess.run([*commit, "base"], check=True)
+    base_sha = workflow.git_sha(workspace)
+    artifact.write_text("result = 2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(workspace), "add", "--all"], check=True)
+    subprocess.run([*commit, "repair"], check=True)
+    repaired_sha = workflow.git_sha(workspace)
+
+    config = RunnerConfig(workspace, "HEAD", Path("artifacts"), "codex_sdk", ("production",),
+        "fake", "high", (Path("artifacts"),), None, None, (), "production", "config",
+        acceptance_paths=("scope",))
+    result = CodexWorkerResult("owner", "repair-turn", "completed", None, json.dumps({
+        "outcome": "completed", "artifacts": ["result.py"],
+        "blockers": ["worker sandbox could not run tests"], "questions": [],
+    }), 1, 1, 2)
+    verified = []
+
+    def verify(**kwargs):
+        verified.append(kwargs["candidate_sha"])
+        return {"outcome": "verified", "candidate_sha": kwargs["candidate_sha"]}
+
+    monkeypatch.setattr(workflow, "verify_candidate", verify)
+    completed = []
+    store = SimpleNamespace(complete_codex_stage=lambda *args, **kwargs: completed.append((args, kwargs)))
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    candidate, receipt = workflow._finish_repair_candidate_result(
+        control_root=tmp_path, config=config, run=SimpleNamespace(run_id="repair-run"),
+        store=store, ticket_plan={"spec_key": "S1", "digest": "v1", "base_sha": base_sha},
+        workspace=workspace, result=result, operation="repair-op", worker="repair-worker",
+        artifact_directory=artifacts, adopt_existing=True, allow_blocked=True,
+    )
+    assert candidate == repaired_sha
+    assert verified == [repaired_sha]
+    assert receipt["outcome"] == "verified"
+    assert len(completed) == 1
 
 
 @pytest.mark.parametrize("case,expected", [

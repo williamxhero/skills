@@ -831,7 +831,17 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
     if not base_sha:
         base_sha = git_sha(config.repository_path, config.target_ref)
     try:
-        implementation_artifacts(result, workspace, artifact_root=write_root)
+        # A recovered repair may already have committed its candidate before
+        # the Runner process exited.  In that case the workspace is clean, so
+        # validate the completed-with-blockers receipt directly when adopting
+        # the existing commit.  Fresh repairs still pass through the guarded
+        # path below, which requires observable workspace progress.
+        implementation_artifacts(
+            result,
+            workspace,
+            allow_blocked=allow_blocked and adopt_existing,
+            artifact_root=write_root,
+        )
         workspace_status = _git_checked(workspace, "status", "--porcelain")
     except RunnerError as exc:
         # A blocked worker is admissible only when it actually produced a
