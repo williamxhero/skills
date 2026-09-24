@@ -201,7 +201,7 @@ def test_waiting_ci_resume_recovers_a_definitive_failed_candidate(monkeypatch, g
     workspaces.mkdir()
     manifest = workspaces / "run.manifest.json"
     manifest.write_text(json.dumps({"run_id": run.run_id, "spec_key": "S1", "branch": "spec-runner/S1", "workspace": str(root / "workspace")}), encoding="utf-8")
-    store.set_run_state(run.run_id, "waiting_ci")
+    store.set_run_state(run.run_id, "reviewed")
     run = store.find_by_run_id(run.run_id)
     assert run is not None
     failed_checks = {
@@ -264,6 +264,7 @@ def test_waiting_ci_resume_recovers_a_definitive_failed_candidate(monkeypatch, g
 
     assert first["state"] == "waiting_ci"
     assert first["candidate"]["candidate_sha"] == "b" * 40
+    assert store.find_by_run_id(run.run_id).state == "waiting_ci"
     assert cleanup_calls == []
     assert recovery["failed_checks"] == failed_checks
     assert recovery["candidate"]["candidate_sha"] == candidate_sha

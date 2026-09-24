@@ -1461,6 +1461,7 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
     if result["state"] != "github_completed":
         if result.get("state") == "waiting_ci":
             _write_json_atomic(artifact / f"github-{spec_key}.json", result)
+            store.set_run_state(run.run_id, "waiting_ci")
         return result
     merge = result.get("merge")
     if not isinstance(merge, dict) or merge.get("merged") is not True:
