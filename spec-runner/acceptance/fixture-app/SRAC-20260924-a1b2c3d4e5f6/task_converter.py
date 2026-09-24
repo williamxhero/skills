@@ -25,6 +25,13 @@ class ValidationError(ValueError):
     """A concise, user-facing failure in the CSV conversion contract."""
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """Argument parser that reports usage errors through the CLI contract."""
+
+    def error(self, message: str) -> None:
+        raise ValidationError(message)
+
+
 def _parse_rows(csv_text: str) -> list[list[str]]:
     """Parse CSV text using strict RFC-style quoting checks."""
 
@@ -142,8 +149,9 @@ def write_result(result: dict[str, object], output_path: str | os.PathLike[str])
             os.fsync(temporary.fileno())
         os.replace(temporary_name, destination)
         temporary_name = None
-    except OSError as exc:
-        raise ValidationError(f"cannot write output: {exc.strerror or exc}") from None
+    except Exception as exc:
+        detail = getattr(exc, "strerror", None) or str(exc) or exc.__class__.__name__
+        raise ValidationError(f"cannot write output: {detail}") from None
     finally:
         if temporary_name is not None:
             try:
@@ -153,7 +161,7 @@ def write_result(result: dict[str, object], output_path: str | os.PathLike[str])
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Normalize task CSV data")
+    parser = _ArgumentParser(description="Normalize task CSV data")
     parser.add_argument("--input", required=True, help="UTF-8 CSV input path")
     parser.add_argument("--output", required=True, help="JSON output path")
     return parser
@@ -162,12 +170,16 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the file conversion CLI, returning a process exit code."""
 
-    args = _build_parser().parse_args(argv)
     try:
+        args = _build_parser().parse_args(argv)
         result = convert_file(args.input)
         write_result(result, args.output)
     except ValidationError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        detail = getattr(exc, "strerror", None) or str(exc) or exc.__class__.__name__
+        print(f"error: {detail}", file=sys.stderr)
         return 2
     return 0
 

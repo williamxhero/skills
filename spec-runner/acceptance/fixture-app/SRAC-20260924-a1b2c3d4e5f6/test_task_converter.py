@@ -1,5 +1,6 @@
 import pytest
 
+import task_converter
 from task_converter import ValidationError, convert_csv
 
 
@@ -63,3 +64,12 @@ def test_counts_exact_statuses_in_sorted_order_without_changing_rows():
 def test_rejects_invalid_input(csv_text, message):
     with pytest.raises(ValidationError, match=message):
         convert_csv(csv_text)
+
+
+def test_cli_usage_error_is_one_concise_diagnostic(capsys):
+    assert task_converter.main([]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("error: ")
+    assert captured.err.count("\n") == 1
