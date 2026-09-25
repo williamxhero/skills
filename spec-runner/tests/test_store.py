@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 import hashlib
@@ -12,6 +13,25 @@ from spec_runner.store import Store
 
 
 class StoreLeaseTests(unittest.TestCase):
+    def test_control_db_busy_write_is_reported_as_recoverable_runner_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "control"
+            store = Store.open(root, create=True)
+            lock = sqlite3.connect(root / "spec-runner.sqlite3", timeout=0.01, isolation_level=None)
+            try:
+                lock.execute("BEGIN EXCLUSIVE")
+                with self.assertRaises(RunnerError) as raised:
+                    with store.transaction():
+                        store.connection.execute(
+                            "INSERT OR REPLACE INTO metadata(key, value) VALUES('lock-probe', 'unexpected')"
+                        )
+                self.assertEqual(raised.exception.code, "control_database_busy")
+                self.assertEqual(raised.exception.details["database_error"], "database is locked")
+            finally:
+                lock.execute("ROLLBACK")
+                lock.close()
+                store.close()
+
     def test_live_writer_cannot_be_displaced(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             first = Store.open(Path(temp) / "control", create=True)
