@@ -561,3 +561,25 @@ Recovery diagnostics now report cleanup debt only for an explicit `cleanup_pendi
 The focused recovery-policy selection passed `20 passed`. The explicit source and acceptance selection passed `258 passed, 1 skipped` in 81.48 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q`. `git diff --check` passed.
 
 This is an incremental RCV-01.4 accuracy correction; real SDK recovery and project-level L3-L5 gates remain `not_verified`.
+
+## SF-05.1 Git reconciliation timeout boundary (2026-09-25)
+
+The Runner's workflow Git reconciliation helpers now apply a bounded 120-second
+command timeout to status, fetch, merge, push, and continuation workspace Git
+reads. A timeout is converted to the structured `implementation_git_timeout`
+error with the attempted arguments and timeout value, so a hung Git process
+cannot leave the implementation phase indefinitely active. The acceptance
+regression patches a real `subprocess.run` timeout and verifies both the error
+code and the 120-second bound.
+
+The focused timeout selection passed `3 passed`. The explicit source and
+acceptance selection passed `259 passed, 1 skipped` in 79.48 seconds using
+`pytest tests acceptance --ignore=acceptance/fixture-app -q`; `git diff --check`
+and compile checks remain required before release packaging.
+
+This is a bounded default increment for #264. The timeout is not yet a
+RunnerConfig setting, and `canonical_repository` plus some delivery/takeover
+Git helpers still lack the same structured configurable boundary. Live SDK
+long-turn behavior, heartbeat/control-DB failure, duplicate detached-writer
+prevention, and the complete SF-05.1/project L3-L5 gates remain
+`not_verified`; #264 stays open.

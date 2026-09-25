@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+from unittest.mock import patch
+
 import sys
 from pathlib import Path
 
@@ -7,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spec_runner.errors import RunnerError
+from spec_runner import workflow
 from spec_runner.multi_spec import _run_command
 
 
@@ -21,3 +25,13 @@ def test_invalid_implementation_timeout_is_rejected(tmp_path: Path):
     with pytest.raises(RunnerError) as error:
         _run_command([sys.executable, "-c", "pass"], cwd=tmp_path, timeout_seconds=0)
     assert error.value.code == "delivery_timeout_invalid"
+
+
+def test_git_reconciliation_timeout_is_structured_and_bounded(tmp_path):
+    with patch("spec_runner.workflow.subprocess.run", side_effect=subprocess.TimeoutExpired(["git"], 120)) as run:
+        with pytest.raises(RunnerError) as error:
+            workflow._git_checked(tmp_path, "status", "--porcelain")
+
+    assert error.value.code == "implementation_git_timeout"
+    assert error.value.details["timeout_seconds"] == 120
+    assert run.call_args.kwargs["timeout"] == 120
