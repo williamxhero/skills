@@ -4452,7 +4452,8 @@ def _run_production_queue_impl(*, control_root: Path, config: RunnerConfig, brie
                 control_root=control_root, config=config, brief_digest=brief_digest, run=run,
                 store=store, spec_plan={**spec_plan, "specs": [spec]})
         if ticketed.state != "tickets_ready":
-            return store.public_status(run.run_id)
+            current = store.find_by_run_id(run.run_id) or run
+            return {"state": current.state, **store.public_status(run.run_id)}
         ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob(f"ticket-plan-{spec_key}.json"))
         if not ticket_files:
             raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
@@ -4482,7 +4483,7 @@ def _run_production_queue_impl(*, control_root: Path, config: RunnerConfig, brie
             raise RunnerError("run_missing", "production queue run disappeared during continuation")
         run = current
     store.mark_archived(run.run_id, state="completed")
-    return store.public_status(run.run_id)
+    return {"state": "completed", **store.public_status(run.run_id)}
 
 
 def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: RunRecord,
@@ -4629,6 +4630,62 @@ def _migration_for_run(store: Store, run_id: str) -> dict[str, object] | None:
     return migrations[0] if len(migrations) == 1 else None
 
 
+def _migration_source_archive_retry_pending(*, store: Store, run_id: str) -> bool:
+    migration = _migration_for_run(store, run_id)
+    if migration is None:
+        return False
+    return store.migration_milestone(
+        str(migration["migration_key"]), "source_archive_pending"
+    ) is not None
+
+
+def _verified_migration_progress(*, store: Store, run: RunRecord, stage: str,
+                                 verification: dict[str, object]) -> dict[str, object]:
+    """Require durable evidence before recording migration business progress.
+
+    Production delivery does not use the generic stage verification table; its
+    proof is the transactional production SPEC completion receipt. The example
+    and non-production paths must carry a verified stage receipt bound to this
+    run.
+    """
+    if stage == "production_delivery":
+        completed = sorted(store.production_completed_specs(run.run_id))
+        if not completed:
+            raise RunnerError(
+                "thread_migration_progress_unverified",
+                "production migration has no durable completed SPEC receipt",
+            )
+        run_status = verification.get("run") if isinstance(verification, dict) else None
+        state = run_status.get("state") if isinstance(run_status, dict) else None
+        if state not in {"spec_completed", "completed"}:
+            raise RunnerError(
+                "thread_migration_progress_unverified",
+                "production migration status is not a completed SPEC state",
+            )
+        return {"completed_specs": completed, "run_state": state}
+
+    receipts = verification.get("verification") if isinstance(verification, dict) else None
+    if not isinstance(receipts, list):
+        raise RunnerError(
+            "thread_migration_progress_unverified",
+            "migration progress requires a durable verification receipt",
+        )
+    matching = [
+        item for item in receipts
+        if isinstance(item, dict)
+        and item.get("run_id") == run.run_id
+        and item.get("outcome") == "verified"
+    ]
+    if not matching:
+        raise RunnerError(
+            "thread_migration_progress_unverified",
+            "migration progress has no verified receipt bound to this run",
+        )
+    receipt = matching[-1]
+    return {"receipt_id": f"verification:{run.run_id}:{receipt.get('stage')}",
+            "stage": receipt.get("stage"), "outcome": receipt.get("outcome")}
+
+
 def _finalize_migration_business_progress(*, config: RunnerConfig, store: Store,
                                           run: RunRecord, stage: str,
                                           resume_state: str,
@@ -4643,16 +4700,22 @@ def _finalize_migration_business_progress(*, config: RunnerConfig, store: Store,
     if migration is None:
         return None
     migration_key = str(migration["migration_key"])
-    progress = {
-        "run_id": run.run_id,
-        "stage": stage,
-        "resume_state": resume_state,
-        "successor_thread_id": migration.get("successor_thread_id"),
-        "verification_digest": digest(verification),
-    }
-    store.record_migration_milestone(
-        migration_key=migration_key, milestone="business_progress_verified", receipt=progress,
-    )
+    existing_progress = store.migration_milestone(migration_key, "business_progress_verified")
+    if existing_progress is None:
+        evidence = _verified_migration_progress(
+            store=store, run=run, stage=stage, verification=verification,
+        )
+        progress = {
+            "run_id": run.run_id,
+            "stage": stage,
+            "resume_state": resume_state,
+            "successor_thread_id": migration.get("successor_thread_id"),
+            "verification_digest": digest(evidence),
+            "evidence": evidence,
+        }
+        store.record_migration_milestone(
+            migration_key=migration_key, milestone="business_progress_verified", receipt=progress,
+        )
     if store.migration_milestone(migration_key, "source_archived") is not None:
         return None
     try:
@@ -4906,8 +4969,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
                     store=store, spec_plan=load_json(plan_path))}
             if existing.state == "cleanup_pending":
-                migration = _migration_for_run(store, existing.run_id)
-                if migration is not None:
+                if _migration_source_archive_retry_pending(store=store, run_id=existing.run_id):
                     migration_cleanup = _retry_migration_source_archive(config=config, store=store, run=existing)
                     if migration_cleanup.get("migration_cleanup") is not None:
                         if migration_cleanup.get("state") == "ready_for_next":
