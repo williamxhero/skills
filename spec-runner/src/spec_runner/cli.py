@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from pathlib import Path
 from typing import Sequence
 
@@ -605,12 +606,43 @@ def main(argv: Sequence[str] | None = None) -> int:
                         result["runner"] = existing_runner
                     elif action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:
                         launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
+                        prior_payload = (
+                            existing_transition.get("payload")
+                            if isinstance(existing_transition, dict)
+                            and existing_transition.get("state") == "execution_intent"
+                            and isinstance(existing_transition.get("payload"), dict)
+                            else None
+                        )
+                        if isinstance(prior_payload, dict):
+                            execution_payload = prior_payload
+                        else:
+                            adopted = report.get("adopted_threads", [])
+                            if not adopted and not report.get("unresolved") and not report.get("historical_facts", {}).get("source_observation"):
+                                # Deterministic/local takeover fixtures can resume
+                                # without an SDK source thread. They do not need a
+                                # clean-thread migration receipt.
+                                execution_payload = {
+                                    "launch_key": launch_key, "frontier_digest": frontier["digest"],
+                                }
+                            else:
+                                if not isinstance(adopted, list) or len(adopted) != 1 or not isinstance(adopted[0], dict):
+                                    raise RunnerError("thread_migration_source_ambiguous", "clean migration requires exactly one adopted source thread")
+                                source_thread_id = str(adopted[0].get("thread_id") or "")
+                                handover = adopted[0].get("handover")
+                                if not source_thread_id or not isinstance(handover, dict):
+                                    raise RunnerError("thread_migration_handover_missing", "clean migration requires persisted source handover evidence")
+                                execution_payload = {
+                                    "launch_key": launch_key, "run_id": str(uuid.uuid4()),
+                                    "migration_key": f"{arguments.takeover_key}:thread-migration",
+                                    "source_thread_id": source_thread_id, "handover": handover,
+                                    "owner_generation": 0, "frontier_digest": frontier["digest"],
+                                }
                         intent = record_takeover_transition(
                             control_root=arguments.control_root,
                             takeover_key=arguments.takeover_key,
                             state="execution_intent",
                             event_key=f"{arguments.takeover_key}:execution:intent",
-                            payload={"launch_key": launch_key, "frontier_digest": frontier["digest"]},
+                            payload=execution_payload,
                         )
                         result["record"] = intent["record"]
                         result["transitions"] = intent["transitions"]
@@ -619,7 +651,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                             config_file=arguments.config,
                             control_root=arguments.control_root,
                             launch_key=launch_key,
+                            run_id=str(execution_payload.get("run_id") or uuid.uuid4()),
                             takeover_key=arguments.takeover_key,
+                            migration=({
+                                "migration_key": str(execution_payload["migration_key"]),
+                                "source_thread_id": str(execution_payload["source_thread_id"]),
+                                "handover": execution_payload["handover"],
+                                "owner_generation": int(execution_payload.get("owner_generation", 0)),
+                            } if "migration_key" in execution_payload else None),
                         )
                         completed = record_takeover_transition(
                             control_root=arguments.control_root,

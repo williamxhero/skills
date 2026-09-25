@@ -4580,9 +4580,96 @@ def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: 
     return completed
 
 
+def _prepare_clean_migration(*, store: Store, config: RunnerConfig, run: RunRecord,
+                             migration: dict[str, object], stage: str, input_revision: str) -> str | None:
+    """Create one clean successor after durable source handover.
+
+    The successor identity is recorded before the first SDK turn. Replays use
+    the stored identity and never create a second successor for the same key.
+    """
+    migration_key = str(migration.get("migration_key") or "")
+    source_thread_id = str(migration.get("source_thread_id") or "")
+    handover = migration.get("handover")
+    if not migration_key or not source_thread_id or not isinstance(handover, dict):
+        raise RunnerError("thread_migration_invalid", "clean migration requires migration key, source thread and handover")
+    handover_digest = hashlib.sha256(json.dumps(handover, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+    persisted = store.prepare_thread_migration(
+        migration_key=migration_key, run_id=run.run_id, stage=stage, source_thread_id=source_thread_id,
+        handover_digest=handover_digest, input_revision=input_revision, owner_generation=int(migration.get("owner_generation", 0)),
+    )
+    if persisted.get("state") == "uncertain":
+        raise RunnerError("thread_successor_uncertain", "successor creation is uncertain; reconcile the recorded migration before retry")
+    if not isinstance(persisted.get("handover"), dict):
+        persisted = store.record_migration_handover(migration_key=migration_key, handover=handover)
+    successor_id = str(persisted.get("successor_thread_id") or "")
+    if not successor_id:
+        try:
+            created = CodexAdapter().start_clean_thread(
+                repository_path=config.repository_path, model=config.model_name,
+            )
+        except RunnerError as exc:
+            # A transport error after the provider may have accepted creation
+            # is deliberately non-retryable until external identity is read back.
+            store.record_migration_uncertainty(migration_key=migration_key, details={"code": exc.code, "stage": stage})
+            raise RunnerError("thread_successor_uncertain", "clean successor creation has no uniquely confirmed identity") from exc
+        successor_id = str(created.get("thread_id") or "")
+        if not successor_id:
+            store.record_migration_uncertainty(migration_key=migration_key, details={"reason": "identity_missing", "stage": stage})
+            raise RunnerError("thread_successor_uncertain", "clean successor creation returned no identity")
+        persisted = store.record_migration_successor(migration_key=migration_key, successor_thread_id=successor_id, successor=created)
+    worker_id = f"codex_sdk:{run.run_id}:{stage}"
+    transferred = store.complete_migration_owner_transfer(
+        migration_key=migration_key, expected_generation=int(persisted.get("owner_generation", 0)), owner_worker_id=worker_id,
+    )
+    return str(transferred.get("successor_thread_id") or successor_id)
+
+
+def _continue_initial_clean_migration(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                                     brief: str, brief_digest: str, store: Store,
+                                     successor_thread_id: str) -> dict[str, object]:
+    """Send the first business turn only after a recorded successor is owned."""
+    if run.current_step == "codex_planning":
+        finished = _execute_codex_planning(
+            control_root=control_root, config=config, brief=brief, brief_digest=brief_digest,
+            run=run, store=store, thread_id=successor_thread_id,
+        )
+        if finished.state in {"needs_input", "paused", "cancelled"}:
+            return store.public_status(finished.run_id)
+        plan_path = _safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
+        if finished.state == "planned" and config.workflow_mode == "production":
+            return _run_production_queue(
+                control_root=control_root, config=config, brief_digest=brief_digest,
+                run=finished, store=store, spec_plan=load_json(plan_path),
+            )
+        if finished.state == "planned":
+            ticketed = _execute_codex_tickets(
+                control_root=control_root, config=config, brief_digest=brief_digest,
+                run=finished, store=store, spec_plan=load_json(plan_path),
+            )
+            return store.public_status(ticketed.run_id)
+        return store.public_status(finished.run_id)
+    if run.current_step == "codex_example":
+        finished = _execute_codex_example(
+            control_root=control_root, config=config, brief=brief, brief_digest=brief_digest,
+            run=run, store=store, thread_id=successor_thread_id,
+        )
+        if finished.state == "needs_input":
+            return store.public_status(finished.run_id)
+        if finished.state == "paused":
+            return store.public_status(finished.run_id)
+        _verify_and_archive(control_root=control_root, config=config, run=finished, store=store, final_state="ready_for_next")
+        current = store.find_by_run_id(finished.run_id) or finished
+        store.append_event(
+            run_id=finished.run_id, event_key=f"migration:{finished.run_id}:next-stage",
+            event_type="next_stage_started", payload={"from_step": "codex_example", "to_step": "codex_second"},
+        )
+        return _advance_second_stage(control_root=control_root, config=config, run=current, brief_digest=brief_digest, store=store)
+    raise RunnerError("thread_migration_stage_invalid", "clean migration can only resume an initial Codex stage")
+
+
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
           run_id: str | None = None, takeover_key: str | None = None,
-          launch_token: str | None = None) -> dict[str, object]:
+          launch_token: str | None = None, migration: dict[str, object] | None = None) -> dict[str, object]:
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
     brief, brief_digest = read_brief(brief_file)
@@ -4745,6 +4832,27 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     resumed = _resume_codex_stage(control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store)
                     return {"created": False, **resumed}
                 return {"created": False, **store.public_status(existing.run_id)}
+            if migration is not None and config.execution_backend == "codex_sdk" and existing.state in {"starting", "failed"}:
+                persisted_migration = store.thread_migration(str(migration.get("migration_key") or ""))
+                if persisted_migration is not None and persisted_migration.get("state") == "uncertain":
+                    raise RunnerError("thread_successor_uncertain", "successor creation is uncertain; reconcile the recorded migration before retry")
+                workers = store.workers_for_run(existing.run_id)
+                current_worker = workers[-1] if workers else {}
+                if not current_worker.get("external_turn_id"):
+                    successor = (str(persisted_migration.get("successor_thread_id") or "") if persisted_migration else "")
+                    if not successor:
+                        successor = _prepare_clean_migration(
+                            store=store, config=config, run=existing, migration=migration,
+                            stage=existing.current_step, input_revision=brief_digest,
+                        ) or ""
+                    if not successor:
+                        raise RunnerError("thread_successor_missing", "owner transfer has no successor identity")
+                    resumed = _continue_initial_clean_migration(
+                        control_root=control_root, config=config, run=existing, brief=brief,
+                        brief_digest=brief_digest, store=store, successor_thread_id=successor,
+                    )
+                    return {"created": False, **resumed}
+
             if existing.state == "paused" and not store.control_for_run(existing.run_id):
                 if config.execution_backend == "codex_sdk":
                     resumed = _resume_codex_stage(
@@ -4826,7 +4934,15 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
         heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
         store.write_log(control_root, requested_run_id, {"event": "run_started", "backend_kind": config.execution_backend})
         _test_fault_pause(control_root=control_root, run_id=requested_run_id, point="after_first_intent")
+        successor_thread_id: str | None = None
         try:
+            if migration is not None:
+                if config.execution_backend != "codex_sdk":
+                    raise RunnerError("thread_migration_backend_invalid", "clean thread migration requires the Codex SDK backend")
+                successor_thread_id = _prepare_clean_migration(
+                    store=store, config=config, run=record, migration=migration,
+                    stage=stage_name, input_revision=brief_digest,
+                )
             if config.delivery_plan is not None:
                 return {"created": True, **_run_delivery_plan(control_root=control_root, config=config, run=record, store=store)}
             if config.execution_backend == "deterministic_test":
@@ -4835,11 +4951,13 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 )
             elif config.workflow_mode == "production":
                 finished = _execute_codex_planning(
-                    control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store
+                    control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store,
+                    thread_id=successor_thread_id,
                 )
             else:
                 finished = _execute_codex_example(
-                    control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store
+                    control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store,
+                    thread_id=successor_thread_id,
                 )
         except RunnerError as exc:
             decision = _record_recovery_failure(run=record, store=store, operation_id=operation_id, error=exc)

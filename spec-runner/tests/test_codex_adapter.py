@@ -120,6 +120,28 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(holder["codex"].thread.run_kwargs["effort"], "high")
         self.assertEqual(result.approval_mode, "deny_all")
 
+    def test_clean_thread_creation_does_not_resume_fork_or_start_a_turn(self) -> None:
+        holder: dict[str, FakeCodex] = {}
+
+        def factory(config: object) -> FakeCodex:
+            holder["codex"] = FakeCodex(config)
+            return holder["codex"]
+
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
+        )
+        result = CodexAdapter(codex_factory=factory, sdk_module=sdk).start_clean_thread(
+            repository_path=Path("C:/repo"), model="gpt-test"
+        )
+        self.assertEqual(result["thread_id"], "thread-123")
+        self.assertFalse(result["turn_started"])
+        self.assertFalse(result["forked"])
+        self.assertIsNone(result["source_thread_id"])
+        self.assertFalse(hasattr(holder["codex"], "resume_thread_id"))
+
     def test_published_turn_boundary_reports_identity_before_result(self) -> None:
         holder: dict[str, FakeCodex] = {}
 
