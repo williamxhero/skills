@@ -368,3 +368,27 @@ including Runner tests, thin-entry tests, wheel build/install, and the
 installed public CLI. These are CI/test-harness corrections only: issue #256
 remains OPEN and its checklist unchecked; complete three-SPEC delivery and
 the outstanding project-level L3/L4/L5 gates remain `not_verified`.
+
+## RCV-01.3 Runner recovery runtime wiring (2026-09-25)
+
+This increment wires the existing structured fault observations and pure recovery
+policy into the Runner boundary. Failed SDK receipts retain their structured
+`fault_observation`; Runner failures now persist one stable episode per
+run/operation/stage/generation, observations, deterministic decisions, counters,
+and retry or service-wait deadlines. Accepted turns whose outcome is unknown are
+recorded as `observe` and are never replayed automatically. Capacity failures are
+bounded and escalate to `service_wait`; relaunches read the durable recovery
+state instead of bypassing it. Public status includes the recovery evidence via
+the existing Store projection.
+
+Focused recovery and adapter/store checks passed: 55 passed, 1 skipped.
+The explicit repository suite passed: 232 passed, 1 skipped. The new acceptance
+coverage is `acceptance/test_runner_recovery_runtime.py`; it verifies capacity
+budget persistence and service-wait escalation, accepted unknown execution
+outcomes, and status readback of observations and decisions.
+
+This is source and offline acceptance evidence for RCV-01.3. It does not prove
+real provider capacity/Fast/404 incidents, live SDK same-thread continuation,
+Windows detached-parent recovery, or the project-level L3-L5 release gates.
+Those remain unverified until the corresponding live or installed-artifact
+receipts exist.

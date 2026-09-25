@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .errors import RunnerError
 from .matt import render_prompt, resolve_local_skill
-from .recovery import observation_from_error
+from .recovery import observation_from_error, observation_from_worker_result
 
 SDK_VERSION = "0.155.1"
 APPROVAL_MODE = "deny_all"
@@ -285,6 +285,18 @@ class CodexAdapter:
                 requested_effort=effort,
                 sdk_version=SDK_VERSION,
             ).public()
+        elif str(getattr(result_status, "value", result_status)) == "failed":
+            observed = observation_from_worker_result(
+                operation_kind="codex_turn",
+                result={
+                    "status": "failed",
+                    "thread_id": result_thread_id,
+                    "turn_id": result_turn_id,
+                },
+                requested_model=model,
+                requested_effort=effort,
+            )
+            fault_observation = observed.public() if observed is not None else None
         return CodexWorkerResult(
             thread_id=result_thread_id,
             turn_id=result_turn_id,
