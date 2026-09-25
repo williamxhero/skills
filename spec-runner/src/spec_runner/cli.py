@@ -31,7 +31,7 @@ from .takeover import (
 )
 from .tracker import publish_local, read_local
 from .store import Store
-from .workflow import control, doctor, launch, resume, start, status
+from .workflow import control, doctor, drive, launch, resume, start, status
 from .codex_adapter import CodexAdapter
 
 CLI_SCHEMA_VERSION = "spec-runner-cli/v1"
@@ -53,6 +53,8 @@ def _parser() -> argparse.ArgumentParser:
     drive_parser.add_argument("--config", required=True, type=Path)
     drive_parser.add_argument("--control-root", required=True, type=Path)
     drive_parser.add_argument("--launch-key", required=True)
+    drive_parser.add_argument("--run-id")
+    drive_parser.add_argument("--launch-token")
     status_parser = subparsers.add_parser("status", help="read persisted status without changing it")
     status_parser.add_argument("--control-root", required=True, type=Path)
     status_parser.add_argument("--run-id")
@@ -266,7 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
     try:
-        if arguments.command in {"start", "drive"}:
+        if arguments.command == "start":
             result = start(
                 brief_file=arguments.brief,
                 config_file=arguments.config,
@@ -274,6 +276,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 launch_key=arguments.launch_key,
                 run_id=getattr(arguments, "run_id", None),
                 launch_token=getattr(arguments, "launch_token", None),
+            )
+        elif arguments.command == "drive":
+            result = drive(
+                brief_file=arguments.brief,
+                config_file=arguments.config,
+                control_root=arguments.control_root,
+                launch_key=arguments.launch_key,
+                run_id=arguments.run_id,
+                launch_token=arguments.launch_token,
             )
         elif arguments.command == "status":
             result = status(control_root=arguments.control_root, run_id=arguments.run_id)

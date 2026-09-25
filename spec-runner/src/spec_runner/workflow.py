@@ -436,7 +436,7 @@ def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bo
     if not isinstance(decision, dict):
         return False
     action = str(decision.get("action") or "")
-    if run.state != action or action == RecoveryAction.OBSERVE.value:
+    if run.state not in {action, "paused"} or action == RecoveryAction.OBSERVE.value:
         return False
     if action in {
         RecoveryAction.WAIT_RETRY.value,
@@ -449,12 +449,20 @@ def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bo
         RecoveryAction.USE_APPROVED_ROUTE.value,
         RecoveryAction.RECONNECT_RUNTIME.value,
     }:
+        if run.state == "paused":
+            control = store.control_for_run(run.run_id)
+            if control and control.get("requested_state") in {"pause_requested", "cancel_requested"}:
+                return True
+            store.set_run_state(run.run_id, action)
         deadline = episode.get("wait_deadline") if action == RecoveryAction.SERVICE_WAIT.value else episode.get("retry_deadline")
         if deadline:
             try:
-                if datetime.fromisoformat(str(deadline)) > datetime.now(timezone.utc):
+                parsed_deadline = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+                if parsed_deadline.tzinfo is None:
+                    parsed_deadline = parsed_deadline.replace(tzinfo=timezone.utc)
+                if parsed_deadline > datetime.now(timezone.utc):
                     return True
-            except ValueError:
+            except (TypeError, ValueError):
                 return True
             store.fail_run(run.run_id, f"start:{run.run_id}", state="failed")
             store.append_event(
@@ -466,6 +474,92 @@ def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bo
             return False
         return True
     return False
+
+
+def _recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
+    recovery = store.recovery_for_run(run_id).get("episodes", [])
+    if not isinstance(recovery, list) or not recovery:
+        return None
+    episode = recovery[-1]
+    decisions = episode.get("decisions") if isinstance(episode, dict) else None
+    decision = decisions[-1].get("decision") if isinstance(decisions, list) and decisions else None
+    if not isinstance(decision, dict):
+        return None
+    action = str(decision.get("action") or "")
+    if action not in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
+        return None
+    key = "wait_deadline" if action == RecoveryAction.SERVICE_WAIT.value else "retry_deadline"
+    deadline = episode.get(key)
+    if not isinstance(deadline, str) or not deadline:
+        raise RunnerError("recovery_deadline_missing", "persisted recovery wait has no deadline", details={"run_id": run_id, "action": action})
+    try:
+        parsed = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RunnerError("recovery_deadline_invalid", "persisted recovery wait deadline is invalid", details={"run_id": run_id, "action": action}) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return action, parsed.astimezone(timezone.utc).isoformat()
+
+
+def drive(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+          run_id: str | None = None, launch_token: str | None = None) -> dict[str, object]:
+    """Run the workflow, waiting for durable retry deadlines and controls."""
+    launch_key = _validate_launch_key(launch_key)
+    control_root = control_root.expanduser().resolve()
+    active_run_id = run_id
+    woken_deadlines: set[tuple[str, str]] = set()
+    while True:
+        result = start(
+            brief_file=brief_file, config_file=config_file, control_root=control_root,
+            launch_key=launch_key, run_id=active_run_id, launch_token=launch_token,
+        )
+        run_payload = result.get("run")
+        if not isinstance(run_payload, dict) or not isinstance(run_payload.get("run_id"), str):
+            raise RunnerError("run_status_missing", "Runner start returned no durable run identity")
+        active_run_id = str(run_payload["run_id"])
+
+        while True:
+            store = Store.open(control_root, create=False)
+            try:
+                current = store.find_by_run_id(active_run_id)
+                if current is None:
+                    raise RunnerError("unknown_run", "recovery wait run disappeared from the control database")
+                wait_record = _recovery_wait_record(store=store, run_id=active_run_id)
+                if wait_record is None:
+                    if current.state in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
+                        raise RunnerError("recovery_record_missing", "waiting run has no persisted recovery decision")
+                    return {**result, **store.public_status(active_run_id)}
+                action, deadline = wait_record
+                control = store.control_for_run(active_run_id)
+                if control and control.get("requested_state") in {"pause_requested", "cancel_requested"}:
+                    requested = str(control["requested_state"])
+                    stopped_state = "paused" if requested == "pause_requested" else "cancelled"
+                    store.set_run_state(active_run_id, stopped_state)
+                    store.append_event(
+                        run_id=active_run_id,
+                        event_key=f"control:{active_run_id}:{control['generation']}:applied",
+                        event_type="control_applied",
+                        payload={"requested_state": requested, "generation": control["generation"], "during": "recovery_wait"},
+                    )
+                    return {**result, **store.public_status(active_run_id)}
+                wake_key = (action, deadline)
+                remaining = (datetime.fromisoformat(deadline) - datetime.now(timezone.utc)).total_seconds()
+                if remaining <= 0:
+                    if wake_key in woken_deadlines:
+                        return {**result, **store.public_status(active_run_id)}
+                    woken_deadlines.add(wake_key)
+                    store.append_event(
+                        run_id=active_run_id,
+                        event_key=f"recovery:{active_run_id}:timer-woke:{action}:{deadline}",
+                        event_type="recovery_timer_woke",
+                        payload={"action": action, "deadline": deadline},
+                    )
+                    break
+                wait_seconds = min(remaining, 0.25)
+            finally:
+                store.close()
+            time.sleep(wait_seconds)
+
 
 def _record_codex_turn_started(
     store: Store,
@@ -5072,7 +5166,10 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
                 )
             except RunnerError as exc:
-                _record_recovery_failure(run=existing, store=store, operation_id=f"start:{existing.run_id}", error=exc)
+                decision = _record_recovery_failure(run=existing, store=store, operation_id=f"start:{existing.run_id}", error=exc)
+                if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
+                    store.fail_run(existing.run_id, f"start:{existing.run_id}", state=decision.action.value)
+                    return {"created": False, **store.public_status(existing.run_id)}
                 store.set_run_state(existing.run_id, "blocked")
                 store.append_event(
                     run_id=existing.run_id,
@@ -5166,6 +5263,8 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 RecoveryAction.WAIT_FOR_CONFIG,
             } else "failed"
             store.fail_run(record.run_id, operation_id, state=state)
+            if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
+                return {"created": True, **store.public_status(record.run_id)}
             raise
         if finished.state in {"paused", "cancelled"}:
             if finished.state == "cancelled":
@@ -5255,7 +5354,7 @@ def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
         store.clear_control(existing.run_id)
     finally:
         store.close()
-    return start(brief_file=brief_file, config_file=config_file, control_root=control_root, launch_key=launch_key)
+    return drive(brief_file=brief_file, config_file=config_file, control_root=control_root, launch_key=launch_key)
 
 
 def _launch_claim(*, control_root: Path, run_id: str, child_pid: int, launch_token: str | None = None,
@@ -5339,7 +5438,7 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
         sys.executable,
         "-m",
         "spec_runner.cli",
-        "start",
+        "drive",
         "--brief",
         os.fspath(brief_file),
         "--config",

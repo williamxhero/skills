@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -146,6 +149,105 @@ def test_wait_retry_is_durable_and_does_not_issue_a_worker_early(tmp_path: Path)
         assert store.public_status(run.run_id)["run"]["state"] == "wait_retry"
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("failure_count, expected_action", [(1, "wait_retry"), (2, "service_wait")])
+def test_drive_wakes_once_after_persisted_retry_deadline(tmp_path: Path, monkeypatch, failure_count: int, expected_action: str) -> None:
+    root = tmp_path / "control"
+    store = Store.open(root, create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    for _ in range(failure_count):
+        workflow._record_recovery_failure(
+            run=run, store=store, operation_id="start:" + run.run_id, error=_capacity_error()
+        )
+    episode = store.recovery_for_run(run.run_id)["episodes"][0]
+    deadline = (datetime.now(timezone.utc) + timedelta(seconds=0.04)).isoformat()
+    store.upsert_recovery_episode(
+        episode_id=episode["episode_id"], run_id=run.run_id,
+        operation_kind=episode["operation_kind"], stage=episode["stage"],
+        generation=episode["generation"], state="wait_retry",
+        counters={key: episode[key] for key in (
+            "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
+            "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
+        )},
+        retry_deadline=deadline if expected_action == "wait_retry" else None,
+        wait_deadline=deadline if expected_action == "service_wait" else None,
+    )
+    decision = dict(episode["decisions"][-1]["decision"])
+    decision["next_check_at"] = deadline
+    store.record_recovery_decision(
+        decision_id=episode["episode_id"] + ":timer-test",
+        episode_id=episode["episode_id"], decision=decision,
+    )
+    store.fail_run(run.run_id, "start:" + run.run_id, state=expected_action)
+    store.close()
+
+    calls = []
+
+    def start_once(**kwargs):
+        calls.append(kwargs["run_id"])
+        current_store = Store.open(root, create=False)
+        try:
+            if len(calls) == 2:
+                current_store.set_run_state(run.run_id, "completed")
+            return {"created": False, **current_store.public_status(run.run_id)}
+        finally:
+            current_store.close()
+
+    monkeypatch.setattr(workflow, "start", start_once)
+    result = workflow.drive(
+        brief_file=tmp_path / "brief.md", config_file=tmp_path / "config.json",
+        control_root=root, launch_key=run.launch_key, run_id=run.run_id,
+    )
+
+    assert calls == [run.run_id, run.run_id]
+    assert result["run"]["state"] == "completed"
+    assert sum(event["event_type"] == "recovery_timer_woke" for event in result["events"]) == 1
+
+
+def test_drive_wait_observes_pause_and_cancel_without_starting_another_check(tmp_path: Path, monkeypatch) -> None:
+    for requested_state, expected_state in (("pause_requested", "paused"), ("cancel_requested", "cancelled")):
+        root = tmp_path / expected_state
+        store = Store.open(root, create=True)
+        run = _run(tmp_path)
+        store.create_run(run, "start:" + run.run_id)
+        workflow._record_recovery_failure(
+            run=run, store=store, operation_id="start:" + run.run_id, error=_capacity_error()
+        )
+        store.fail_run(run.run_id, "start:" + run.run_id, state="wait_retry")
+        store.close()
+        calls = []
+
+        def start_waiting(**kwargs):
+            calls.append(kwargs["run_id"])
+            current_store = Store.open(root, create=False)
+            try:
+                return {"created": False, **current_store.public_status(run.run_id)}
+            finally:
+                current_store.close()
+
+        def request_control(_seconds):
+            control_store = Store.open(root, create=False)
+            try:
+                control_store.request_control(run.run_id, requested_state)
+            finally:
+                control_store.close()
+
+        monkeypatch.setattr(workflow, "start", start_waiting)
+        monkeypatch.setattr(workflow.time, "sleep", request_control)
+        result = workflow.drive(
+            brief_file=tmp_path / "brief.md", config_file=tmp_path / "config.json",
+            control_root=root, launch_key=run.launch_key, run_id=run.run_id,
+        )
+
+        assert calls == [run.run_id]
+        assert result["run"]["state"] == expected_state
+        assert any(
+            event["event_type"] == "control_applied"
+            and event["payload"].get("during") == "recovery_wait"
+            for event in result["events"]
+        )
 
 
 def test_failed_worker_result_keeps_structured_fault_family() -> None:
