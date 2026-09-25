@@ -583,3 +583,11 @@ Git helpers still lack the same structured configurable boundary. Live SDK
 long-turn behavior, heartbeat/control-DB failure, duplicate detached-writer
 prevention, and the complete SF-05.1/project L3-L5 gates remain
 `not_verified`; #264 stays open.
+
+## RCV-01.1 SDK failed-turn observation boundary (2026-09-25)
+
+The Codex adapter now preserves typed `TurnError.codexErrorInfo` from a failed SDK result, including the public error code and nested upstream HTTP status when present. It maps the SDK enum form as well, keeps text-only SDK errors on an explicit fallback path, classifies the typed stream variants, and stores only the redacted public message in the worker receipt. The regression uses the installed `openai-codex==0.155.1` models and does not claim a live provider incident.
+
+Candidate source revision: `b918f435f0077ecad9eb79d68555b9b57f161562`.
+
+The focused adapter/recovery/SDK contract selection passed `38 passed, 1 skipped`. The explicit source and acceptance selection passed `263 passed, 1 skipped` in 83.20 seconds using `PYTHONPATH=spec-runner/src pytest tests acceptance --ignore=acceptance/fixture-app -q`; `git diff --check` passed before commit. This increment covers only the failed SDK result boundary. The four live provider entry paths, injected recovery against a real provider, and project-level L3-L5 gates remain `not_verified`; #293 and its parent remain open.
