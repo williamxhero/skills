@@ -600,3 +600,28 @@ The focused adapter/recovery/SDK contract selection passed `38 passed, 1 skipped
 Candidate source revision: `6b088572089016c01a657369d0be0307466084f5`.
 
 The focused policy/store/adapter selection passed `39 passed, 1 skipped`. The explicit source and acceptance selection passed `264 passed, 1 skipped` in 87.46 seconds using `PYTHONPATH=spec-runner/src pytest tests acceptance --ignore=acceptance/fixture-app -q`; `git diff --check` passed before commit. This increment covers policy input validation and evidence versioning only. Atomic budget reservation, route circuit coordination, real timer wake-up, provider capacity behavior, and project-level L3-L5 gates remain `not_verified`; #294 and its parent remain open.
+
+## RCV-01.3 durable recovery wait driver (2026-09-25)
+
+The public `drive` path now owns the persisted `wait_retry` and `service_wait`
+timer loop. It re-reads the durable recovery deadline and control row through
+short-lived Store connections, polls at a bounded interval, applies pause or
+cancel without creating another worker, and records one idempotent
+`recovery_timer_woke` event before re-entering the existing launch-key recovery
+path. Detached launch and `resume` now use this driver, while direct `start`
+continues to perform one bounded workflow attempt. Missing or malformed
+deadlines fail closed with a structured Runner error.
+
+Candidate source revision: `79999222bc92a0b732e7f420bb0959852ed513e1`.
+
+The focused Runner recovery-runtime selection passed `7 passed`; the CLI
+selection passed `21 passed`. The explicit source and acceptance selection
+passed `267 passed, 1 skipped` in 76.22 seconds using
+`PYTHONPATH=spec-runner/src pytest tests acceptance --ignore=acceptance/fixture-app -q`;
+`compileall` and `git diff --check` passed before commit.
+
+This is deterministic timer and durable-control evidence for RCV-01.3. It does
+not prove real SDK provider fault injection, live same-thread business
+continuation, Fast/404 provider configuration changes, Windows detached-parent
+recovery beyond the existing control-DB probe, or project-level L3-L5 gates.
+Those remain `not_verified`; #295 and its parent remain open.
