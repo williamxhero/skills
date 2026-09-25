@@ -223,18 +223,22 @@ def observation_from_worker_result(*, operation_kind: str, result: Mapping[str, 
     error = result.get("error")
     if not error and status not in {"failed", "interrupted", "cancelled"}:
         return None
+    structured = result.get("fault_observation")
+    error_payload: Mapping[str, Any] = structured if isinstance(structured, Mapping) else {
+        "message": error or status,
+        "source": "worker_result",
+        "structured": False,
+        "thread_id": result.get("thread_id"),
+        "turn_id": result.get("turn_id"),
+        "request_admission": "accepted" if result.get("turn_id") else "unknown",
+        "execution_outcome": "failed" if status in {"failed", "interrupted", "cancelled"} else "unknown",
+        "evidence": ["worker_result", "turn_identity" if result.get("turn_id") else "turn_identity_missing"],
+    }
     observation = observation_from_error(
         operation_kind=operation_kind,
-        error={
-            "message": error or status,
-            "source": "worker_result",
-            "structured": bool(result.get("fault_observation")),
-            "thread_id": result.get("thread_id"),
-            "turn_id": result.get("turn_id"),
-            "request_admission": "accepted" if result.get("turn_id") else "unknown",
-            "execution_outcome": "failed" if status in {"failed", "interrupted", "cancelled"} else "unknown",
-            "evidence": ["worker_result", "turn_identity" if result.get("turn_id") else "turn_identity_missing"],
-        },
+        error=error_payload,
+        thread_id=str(result.get("thread_id")) if result.get("thread_id") else None,
+        turn_id=str(result.get("turn_id")) if result.get("turn_id") else None,
         run_id=run_id, stage=stage, attempt=attempt,
         requested_model=requested_model, requested_effort=requested_effort,
     )

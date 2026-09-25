@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 from .config import RunnerConfig, read_brief
@@ -27,6 +28,14 @@ from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, i
 from .github_delivery import GitHubDelivery
 from .store import _process_alive
 from .continuation import ContinuationBundle, write_bundle_atomic
+from .recovery import (
+    FaultFamily,
+    RecoveryAction,
+    RecoveryDecision,
+    RecoverySnapshot,
+    decide_recovery,
+    observation_from_error,
+)
 
 
 def _implementation_write_root(*, workspace: Path, config: RunnerConfig, create: bool) -> Path:
@@ -263,6 +272,130 @@ def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stag
     }
 
 
+def _recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
+    identity = f"{run_id}:{operation_kind}:{stage}:{generation}"
+    return "episode-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
+                             error: RunnerError) -> RecoveryDecision:
+    """Persist the observed fault and execute its deterministic state transition."""
+    operation_kind = "codex_turn" if run.backend_kind == "codex_sdk" else run.backend_kind
+    episode_id = _recovery_episode_identity(
+        run_id=run.run_id, operation_kind=operation_kind, stage=run.current_step,
+    )
+    existing = store.recovery_episode(episode_id) or {}
+    fault = error.details.get("fault_observation") if isinstance(error.details, dict) else None
+    observation = observation_from_error(
+        operation_kind=operation_kind,
+        error=fault if isinstance(fault, dict) else error,
+        run_id=run.run_id,
+        stage=run.current_step,
+        thread_id=(str(fault.get("thread_id")) if isinstance(fault, dict) and fault.get("thread_id") else (str(error.details.get("thread_id")) if error.details.get("thread_id") else None)),
+        turn_id=(str(fault.get("turn_id")) if isinstance(fault, dict) and fault.get("turn_id") else (str(error.details.get("turn_id")) if error.details.get("turn_id") else None)),
+        last_verified_progress=None,
+    )
+    counters = {
+        key: int(existing.get(key) or 0)
+        for key in (
+            "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
+            "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
+        )
+    }
+    if observation.family == FaultFamily.CAPACITY.value:
+        counters["capacity_attempts"] += 1
+    elif observation.family in {
+        FaultFamily.FAST_NOT_CONFIGURED.value,
+        FaultFamily.STREAM_DISCONNECTED.value,
+        FaultFamily.UNKNOWN.value,
+    }:
+        counters["same_thread_attempts"] += 1
+    workers = store.workers_for_run(run.run_id)
+    worker = workers[-1] if workers else {}
+    snapshot = RecoverySnapshot(
+        run_id=run.run_id,
+        operation_kind=operation_kind,
+        stage=run.current_step,
+        active_execution=worker.get("state") == "running" and observation.execution_outcome == "unknown",
+        request_admission=observation.request_admission,
+        execution_outcome=observation.execution_outcome,
+        same_thread_attempts=counters["same_thread_attempts"],
+        capacity_attempts=counters["capacity_attempts"],
+        route_probe_attempts=counters["route_probe_attempts"],
+        clean_probe_attempts=counters["clean_probe_attempts"],
+        migration_attempts=counters["migration_attempts"],
+        no_progress_attempts=counters["no_progress_attempts"],
+        thread_id=observation.thread_id or (str(worker.get("external_thread_id")) if worker.get("external_thread_id") else None),
+        turn_id=observation.turn_id or (str(worker.get("external_turn_id")) if worker.get("external_turn_id") else None),
+    )
+    decision = decide_recovery(snapshot, [observation], now=datetime.now(timezone.utc))
+    state = decision.action.value
+    store.upsert_recovery_episode(
+        episode_id=episode_id, run_id=run.run_id, operation_kind=operation_kind,
+        stage=run.current_step, generation=0, state=state, counters=counters,
+        retry_deadline=decision.next_check_at if decision.action == RecoveryAction.WAIT_RETRY else None,
+        wait_deadline=decision.next_check_at if decision.action == RecoveryAction.SERVICE_WAIT else None,
+        last_verified_progress=observation.last_verified_progress,
+    )
+    observation_id = f"{episode_id}:observation:{observation.fingerprint}:{observation.turn_id or 'no-turn'}"
+    store.record_recovery_observation(
+        observation_id=observation_id, episode_id=episode_id,
+        observation=observation.public(),
+    )
+    decision_id = f"{episode_id}:decision:{decision.action.value}:{observation.fingerprint}:{counters['same_thread_attempts']}:{counters['capacity_attempts']}"
+    store.record_recovery_decision(
+        decision_id=decision_id, episode_id=episode_id, decision=decision.public(),
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{operation_id}:{decision_id}",
+        event_type="recovery_decision_recorded",
+        payload={"operation_id": operation_id, "episode_id": episode_id, "decision": decision.public()},
+    )
+    return decision
+
+def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
+    """Prevent a relaunch from bypassing a persisted recovery wait or block."""
+    recovery = store.recovery_for_run(run.run_id).get("episodes", [])
+    if not recovery:
+        return False
+    episode = recovery[-1]
+    decisions = episode.get("decisions") if isinstance(episode, dict) else None
+    decision = decisions[-1].get("decision") if isinstance(decisions, list) and decisions else None
+    if not isinstance(decision, dict):
+        return False
+    action = str(decision.get("action") or "")
+    if run.state != action or action == RecoveryAction.OBSERVE.value:
+        return False
+    if action in {
+        RecoveryAction.WAIT_RETRY.value,
+        RecoveryAction.SERVICE_WAIT.value,
+        RecoveryAction.WAIT_FOR_CONFIG.value,
+        RecoveryAction.BLOCKED.value,
+        RecoveryAction.NEEDS_INPUT.value,
+        RecoveryAction.PROBE_CLEAN_CONTEXT.value,
+        RecoveryAction.REQUEST_CLEAN_MIGRATION.value,
+        RecoveryAction.USE_APPROVED_ROUTE.value,
+        RecoveryAction.RECONNECT_RUNTIME.value,
+    }:
+        deadline = episode.get("wait_deadline") if action == RecoveryAction.SERVICE_WAIT.value else episode.get("retry_deadline")
+        if deadline:
+            try:
+                if datetime.fromisoformat(str(deadline)) > datetime.now(timezone.utc):
+                    return True
+            except ValueError:
+                return True
+            store.fail_run(run.run_id, f"start:{run.run_id}", state="failed")
+            store.append_event(
+                run_id=run.run_id,
+                event_key=f"recovery:{run.run_id}:wait-expired:{action}",
+                event_type="recovery_wait_expired",
+                payload={"action": action, "deadline": deadline},
+            )
+            return False
+        return True
+    return False
+
 def _record_codex_turn_started(
     store: Store,
     *,
@@ -295,7 +428,11 @@ def _planning_response(*, result: CodexWorkerResult, control_root: Path, config:
         (directory / f"{step_name}-{turn_key}.json").write_text(
             json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if result.status != "completed" or result.error:
-        raise RunnerError("planning_worker_failed", "planning requires a successful terminal SDK turn")
+        raise RunnerError(
+            "planning_worker_failed",
+            "planning requires a successful terminal SDK turn",
+            details={"fault_observation": result.fault_observation, "thread_id": result.thread_id, "turn_id": result.turn_id},
+        )
     try:
         document = json.loads(result.final_response or "null")
     except json.JSONDecodeError as exc:
@@ -1872,6 +2009,12 @@ def _execute_codex_example(
         run.run_id,
         {"event": "codex_turn_completed", "thread_id": result.thread_id, "turn_id": result.turn_id, "status": result.status},
     )
+    if result.status == "failed" or result.error:
+        raise RunnerError(
+            "codex_worker_failed",
+            "Codex worker returned a failed terminal result",
+            details={"fault_observation": result.fault_observation, "thread_id": result.thread_id, "turn_id": result.turn_id},
+        )
     interrupted = result.status == "interrupted"
     control = store.control_for_run(run.run_id) if interrupted else None
     if interrupted and (
@@ -1944,6 +2087,12 @@ def _execute_second_codex(
         run.run_id,
         {"event": "codex_second_turn_completed", "thread_id": result.thread_id, "turn_id": result.turn_id, "status": result.status},
     )
+    if result.status == "failed" or result.error:
+        raise RunnerError(
+            "codex_worker_failed",
+            "Codex worker returned a failed terminal result",
+            details={"fault_observation": result.fault_observation, "thread_id": result.thread_id, "turn_id": result.turn_id},
+        )
     interrupted = result.status == "interrupted"
     control = store.control_for_run(run.run_id) if interrupted else None
     if interrupted and (
@@ -4194,11 +4343,17 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
             spec_plan=spec_plan,
         )
     except RunnerError as exc:
+        decision = _record_recovery_failure(run=run, store=store, operation_id=f"start:{run.run_id}", error=exc)
         # The initial planning stage is wrapped by start(), but production
         # queue work begins after that boundary. Close the durable run before
         # returning a queue error so a process exit cannot leave it running.
         try:
-            store.fail_run(run.run_id, f"start:{run.run_id}")
+            state = decision.action.value if decision.action in {
+                RecoveryAction.WAIT_RETRY,
+                RecoveryAction.SERVICE_WAIT,
+                RecoveryAction.WAIT_FOR_CONFIG,
+            } else "failed"
+            store.fail_run(run.run_id, f"start:{run.run_id}", state=state)
         except RunnerError as state_error:
             raise state_error from exc
         raise
@@ -4438,6 +4593,9 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 log_path=os.fspath(control_root / existing.log_path),
             )
             heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
+            if _recovery_waits(run=existing, store=store, config=config):
+                return {"created": False, **store.public_status(existing.run_id)}
+            existing = store.find_by_run_id(existing.run_id) or existing
             if existing.state == "blocked" and config.execution_backend == "codex_sdk" and existing.current_step == "codex_planning":
                 retry_thread = _blocked_planning_retry_thread(
                     control_root=control_root, config=config, run=existing,
@@ -4535,6 +4693,7 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
                 )
             except RunnerError as exc:
+                _record_recovery_failure(run=existing, store=store, operation_id=f"start:{existing.run_id}", error=exc)
                 store.set_run_state(existing.run_id, "blocked")
                 store.append_event(
                     run_id=existing.run_id,
@@ -4610,8 +4769,14 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 finished = _execute_codex_example(
                     control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store
                 )
-        except RunnerError:
-            store.fail_run(record.run_id, operation_id)
+        except RunnerError as exc:
+            decision = _record_recovery_failure(run=record, store=store, operation_id=operation_id, error=exc)
+            state = decision.action.value if decision.action in {
+                RecoveryAction.WAIT_RETRY,
+                RecoveryAction.SERVICE_WAIT,
+                RecoveryAction.WAIT_FOR_CONFIG,
+            } else "failed"
+            store.fail_run(record.run_id, operation_id, state=state)
             raise
         if finished.state in {"paused", "cancelled"}:
             if finished.state == "cancelled":

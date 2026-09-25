@@ -29,7 +29,11 @@ IMPLEMENTATION_SCHEMA = {
 
 def worker_document(result: CodexWorkerResult) -> dict:
     if result.status != "completed" or result.error:
-        raise RunnerError("worker_not_successful", "a failed or nonterminal worker cannot authorize delivery")
+        raise RunnerError(
+            "worker_not_successful",
+            "a failed or nonterminal worker cannot authorize delivery",
+            details={"thread_id": result.thread_id, "turn_id": result.turn_id, "fault_observation": result.fault_observation},
+        )
     if not result.thread_id or not result.turn_id:
         raise RunnerError("worker_identity_missing", "semantic worker must have formal thread and turn identities")
     try:
