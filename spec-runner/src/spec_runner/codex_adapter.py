@@ -13,6 +13,7 @@ from .recovery import observation_from_error, observation_from_worker_result
 
 SDK_VERSION = "0.155.1"
 APPROVAL_MODE = "deny_all"
+FaultInjector = Callable[[str, dict[str, object]], None]
 
 
 @dataclass(frozen=True)
@@ -57,9 +58,27 @@ class CodexAdapter:
     JSON-RPC protocol is implemented here.
     """
 
-    def __init__(self, *, codex_factory: Callable[[Any], Any] | None = None, sdk_module: Any | None = None):
+    def __init__(
+        self,
+        *,
+        codex_factory: Callable[[Any], Any] | None = None,
+        sdk_module: Any | None = None,
+        fault_injector: FaultInjector | None = None,
+    ):
         self._codex_factory = codex_factory
         self._sdk_module = sdk_module
+        self._fault_injector = fault_injector
+
+    def _inject(self, point: str, **context: object) -> None:
+        """Expose an explicit test seam at the published SDK boundary.
+
+        Production callers leave this unset. Acceptance harnesses may inject a
+        structured RunnerError after a provider call has crossed a named
+        boundary, which exercises reconciliation without replacing the SDK
+        adapter with a second transport or claiming a live provider incident.
+        """
+        if self._fault_injector is not None:
+            self._fault_injector(point, dict(context))
 
     def run_semantic(
         self,
@@ -141,12 +160,14 @@ class CodexAdapter:
         config = CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)
         try:
             with factory(config) as codex:
+                self._inject("before_thread_start", operation="clean_thread", source_thread_id=None)
                 thread = codex.thread_start(
                     model=model, cwd=str(repository_path), sandbox=sandbox, approval_mode=approval_mode,
                 )
                 thread_id = str(getattr(thread, "id", ""))
                 if not thread_id or thread_id == "None":
                     raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal clean thread identifier")
+                self._inject("after_thread_start", operation="clean_thread", thread_id=thread_id)
                 return {
                     "schema_version": "spec-runner-sdk-clean-thread/v1",
                     "thread_id": thread_id,
@@ -216,6 +237,7 @@ class CodexAdapter:
         try:
             with factory(config) as codex:
                 if thread_id:
+                    self._inject("before_thread_resume", operation="turn", thread_id=thread_id)
                     thread = codex.thread_resume(
                         thread_id,
                         cwd=str(repository_path),
@@ -224,6 +246,7 @@ class CodexAdapter:
                         approval_mode=approval_mode,
                     )
                 else:
+                    self._inject("before_thread_start", operation="turn", source_thread_id=None)
                     thread = codex.thread_start(
                         model=model,
                         cwd=str(repository_path),
@@ -233,6 +256,10 @@ class CodexAdapter:
                 result_thread_id = str(getattr(thread, "id", ""))
                 if not result_thread_id or result_thread_id == "None":
                     raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal thread identifier")
+                self._inject(
+                    "after_thread_resume" if thread_id else "after_thread_start",
+                    operation="turn", thread_id=result_thread_id,
+                )
                 # The published SDK exposes Thread.turn() as the boundary at
                 # which the formal turn identity becomes durable. Persist it
                 # before waiting for model work so status/recovery can inspect
@@ -251,6 +278,10 @@ class CodexAdapter:
                         raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal turn identifier")
                     if on_turn_started is not None:
                         on_turn_started(result_thread_id, result_turn_id)
+                    self._inject(
+                        "after_turn_started", thread_id=result_thread_id, turn_id=result_turn_id,
+                        request_admission="accepted", execution_outcome="unknown",
+                    )
                     result = self._run_turn_with_control(
                         turn,
                         control_state=control_state,
@@ -268,6 +299,11 @@ class CodexAdapter:
                         sandbox=sandbox,
                         **({"output_schema": output_schema} if output_schema is not None else {}),
                     )
+                self._inject(
+                    "after_turn_completed", thread_id=result_thread_id,
+                    turn_id=str(getattr(result, "id", "")),
+                    status=str(getattr(getattr(result, "status", "unknown"), "value", getattr(result, "status", "unknown"))),
+                )
         except RunnerError:
             raise
         except Exception as exc:
@@ -445,10 +481,19 @@ class CodexAdapter:
         seen_cursors: set[str] = set()
         try:
             with factory(CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)) as codex:
+                self._inject("before_thread_archive", operation="archive", thread_id=thread_id)
                 codex.thread_archive(thread_id)
+                self._inject(
+                    "after_thread_archive", operation="archive", thread_id=thread_id,
+                    request_admission="accepted", execution_outcome="unknown",
+                )
                 while True:
                     response = codex.thread_list(archived=True, cursor=cursor, limit=100)
                     pages += 1
+                    self._inject(
+                        "after_archive_page", operation="archive_readback",
+                        thread_id=thread_id, page=pages, cursor=cursor,
+                    )
                     if any(str(getattr(item, "id", "")) == thread_id for item in (getattr(response, "data", []) or [])):
                         return {"thread_id": thread_id, "archived": True, "pages_read": pages}
                     next_cursor = getattr(response, "next_cursor", None)
