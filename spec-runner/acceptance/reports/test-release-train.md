@@ -591,3 +591,12 @@ The Codex adapter now preserves typed `TurnError.codexErrorInfo` from a failed S
 Candidate source revision: `b918f435f0077ecad9eb79d68555b9b57f161562`.
 
 The focused adapter/recovery/SDK contract selection passed `38 passed, 1 skipped`. The explicit source and acceptance selection passed `263 passed, 1 skipped` in 83.20 seconds using `PYTHONPATH=spec-runner/src pytest tests acceptance --ignore=acceptance/fixture-app -q`; `git diff --check` passed before commit. This increment covers only the failed SDK result boundary. The four live provider entry paths, injected recovery against a real provider, and project-level L3-L5 gates remain `not_verified`; #293 and its parent remain open.
+
+
+## RCV-01.2 recovery policy validation (2026-09-25)
+
+`RecoveryPolicy` now rejects negative or boolean retry budgets and non-finite or negative retry/service-wait delays instead of silently clamping malformed configuration into a live policy. Persisted recovery decisions include the fixed `spec-runner-recovery-policy/v1` marker so a readback identifies which policy contract produced the budget. The change remains a pure policy boundary and does not claim a provider incident or automatic service wake-up.
+
+Candidate source revision: `6b088572089016c01a657369d0be0307466084f5`.
+
+The focused policy/store/adapter selection passed `39 passed, 1 skipped`. The explicit source and acceptance selection passed `264 passed, 1 skipped` in 87.46 seconds using `PYTHONPATH=spec-runner/src pytest tests acceptance --ignore=acceptance/fixture-app -q`; `git diff --check` passed before commit. This increment covers policy input validation and evidence versioning only. Atomic budget reservation, route circuit coordination, real timer wake-up, provider capacity behavior, and project-level L3-L5 gates remain `not_verified`; #294 and its parent remain open.
