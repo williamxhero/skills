@@ -1,0 +1,49 @@
+{
+  "archive_readback": {
+    "archived": true,
+    "pages_read": 1,
+    "thread_id": "01a0d7d6-6383-7062-9c3e-6dcc97deb159"
+  },
+  "passed": true,
+  "results": [
+    {
+      "actual": {
+        "question": "ALPHA QUESTION"
+      },
+      "expected": "ALPHA QUESTION",
+      "skill_observation": {
+        "injection": "sdk_skill_input_plus_current_body",
+        "phase": "grill",
+        "prompt_digest": "e95b3a5e0d48f3317121095dc355d618e1b9a141fd90711449c07d7a036e40e7",
+        "read_at_ns": 1790327545717515800,
+        "source": "C:\\Users\\will\\.codex\\worktrees\\rcv-02-4-full-recovery-acceptance\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260925-dc06d0fac3e6\\controlled-skill\\grilling\\SKILL.md",
+        "source_digest": "445646eff592d7d737fc7ae158cebf02bbb33b681b78e856bfcda94a9d99c6bc"
+      },
+      "status": "completed",
+      "thread_id": "01a0d7d6-6383-7062-9c3e-6dcc97deb159",
+      "turn_id": "01a0d7d6-6494-7f72-8de6-e82fe7fbae9c",
+      "version": "A"
+    },
+    {
+      "actual": {
+        "question": "BETA QUESTION"
+      },
+      "expected": "BETA QUESTION",
+      "skill_observation": {
+        "injection": "sdk_skill_input_plus_current_body",
+        "phase": "grill",
+        "prompt_digest": "a9cc8bd5e77bfd8c5b1249b3f51428fcec8b5e2770a32c8e70b407e56df2fe8a",
+        "read_at_ns": 1790327552869858000,
+        "source": "C:\\Users\\will\\.codex\\worktrees\\rcv-02-4-full-recovery-acceptance\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260925-dc06d0fac3e6\\controlled-skill\\grilling\\SKILL.md",
+        "source_digest": "9856dbd4bcbcf38bcbbedf551a8f5f5e9863d00ebb3aca4bef5e1f381daec056"
+      },
+      "status": "completed",
+      "thread_id": "01a0d7d6-6383-7062-9c3e-6dcc97deb159",
+      "turn_id": "01a0d7d6-7cfa-7711-b803-ede6968f980a",
+      "version": "B"
+    }
+  ],
+  "run_marker": "SRAC-20260925-dc06d0fac3e6",
+  "schema_version": "spec-runner-live-skill-update-probe/v1",
+  "source_copy_of": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md"
+}

@@ -1,0 +1,24 @@
+{
+  "run_marker": "SRAC-20260925-dc06d0fac3e6",
+  "schema_version": "spec-runner-live-skill-probe/v1",
+  "sdk_result": {
+    "approval_mode": "deny_all",
+    "completed_at": 1790327477,
+    "error": null,
+    "final_response": "{\"marker\":\"SRAC-20260925-dc06d0fac3e6\",\"question\":\"Should the CSV-to-JSON tool preserve every CSV field as a string, or automatically infer types such as numbers, booleans, and nulls? Recommended: preserve strings by default and make type inference an explicit option, so conversion is lossless and predictable.\"}",
+    "item_count": 3,
+    "sdk_version": "0.155.1",
+    "skill_observation": {
+      "injection": "sdk_skill_input_plus_current_body",
+      "phase": "grill",
+      "prompt_digest": "184fe23ea1c3365bf4c13c2b8e4d1d765a97aa3acacb470ffe3d9b210372d0ad",
+      "read_at_ns": 1790327463372864500,
+      "source": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md",
+      "source_digest": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+    },
+    "started_at": 1790327465,
+    "status": "completed",
+    "thread_id": "01a0d7d5-2517-7d23-8ce4-d5783c066fd5",
+    "turn_id": "01a0d7d5-26b2-7d22-af63-ca6e66186498"
+  }
+}
