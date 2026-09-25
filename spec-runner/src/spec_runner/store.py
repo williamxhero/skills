@@ -305,6 +305,14 @@ class Store:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS migration_milestones (
+                    migration_key TEXT NOT NULL REFERENCES thread_migrations(migration_key),
+                    milestone TEXT NOT NULL,
+                    receipt_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(migration_key, milestone)
+                );
                 """
             )
             verification_sql = self.connection.execute(
@@ -940,6 +948,7 @@ class Store:
             "recovery": self.recovery_for_run(run_id),
             "continuation": self.continuation_receipts_for_run(run_id),
             "thread_migrations": self.thread_migrations_for_run(run_id),
+            "migration_milestones": self.migration_milestones_for_run(run_id),
             "writer_leases": [dict(row) for row in self.connection.execute("SELECT * FROM runner_leases WHERE run_id = ?", (run_id,))],
         }
 
@@ -1352,6 +1361,62 @@ class Store:
         return [self.thread_migration(str(row[0])) for row in self.connection.execute(
             "SELECT migration_key FROM thread_migrations WHERE run_id = ? ORDER BY created_at, migration_key", (run_id,)
         ) if self.thread_migration(str(row[0])) is not None]
+
+    def record_migration_milestone(self, *, migration_key: str, milestone: str,
+                                   receipt: dict[str, object]) -> dict[str, object]:
+        """Persist one idempotent, identity-bound business migration milestone."""
+        if not milestone.strip():
+            raise RunnerError("thread_migration_milestone_invalid", "migration milestone must be non-empty")
+        migration = self.thread_migration(migration_key)
+        if migration is None:
+            raise RunnerError("thread_migration_missing", "migration milestone requires a durable migration")
+        timestamp = now()
+        encoded = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT receipt_json FROM migration_milestones WHERE migration_key = ? AND milestone = ?",
+                (migration_key, milestone),
+            ).fetchone()
+            if existing is not None:
+                if str(existing[0]) != encoded:
+                    raise RunnerError("thread_migration_milestone_conflict", "migration milestone receipt changed")
+            else:
+                self.connection.execute(
+                    "INSERT INTO migration_milestones(migration_key, milestone, receipt_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (migration_key, milestone, encoded, timestamp, timestamp),
+                )
+                self._insert_event(
+                    run_id=str(migration["run_id"]),
+                    event_key=f"migration:{migration_key}:milestone:{milestone}",
+                    event_type=f"thread_migration_{milestone}",
+                    payload={"migration_key": migration_key, "milestone": milestone, "receipt": receipt},
+                )
+        return self.migration_milestone(migration_key, milestone) or {}
+
+    def migration_milestone(self, migration_key: str, milestone: str) -> dict[str, object] | None:
+        row = self.connection.execute(
+            "SELECT * FROM migration_milestones WHERE migration_key = ? AND milestone = ?",
+            (migration_key, milestone),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["receipt"] = json.loads(str(result.pop("receipt_json")))
+        return result
+
+    def migration_milestones_for_run(self, run_id: str) -> list[dict[str, object]]:
+        rows = self.connection.execute(
+            """SELECT m.* FROM migration_milestones m
+               JOIN thread_migrations t ON t.migration_key = m.migration_key
+               WHERE t.run_id = ? ORDER BY m.created_at, m.migration_key, m.milestone""",
+            (run_id,),
+        )
+        result: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            item["receipt"] = json.loads(str(item.pop("receipt_json")))
+            result.append(item)
+        return result
 
     def upsert_operation(self, *, operation_id: str, run_id: str, operation_kind: str, input_digest: str, state: str = "prepared") -> dict[str, object]:
         timestamp = now()
