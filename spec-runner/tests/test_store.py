@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import hashlib
+import json
 from pathlib import Path
 
 from spec_runner.errors import RunnerError
@@ -151,6 +153,96 @@ class StoreLeaseTests(unittest.TestCase):
                 event_types = [event["event_type"] for event in store.events_for_run(run.run_id)]
                 self.assertIn("worker_turn_interrupted", event_types)
                 self.assertNotIn("step_completed", event_types)
+            finally:
+                store.close()
+
+    def test_thread_migration_is_durable_idempotent_and_generation_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                from spec_runner.store import RunRecord, now
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-migration", launch_key="migration", input_digest="input",
+                    config_digest="config", repository_path=temp, target_ref="HEAD",
+                    artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                    current_step="codex_planning", log_path="logs/run-migration.jsonl",
+                    created_at=timestamp, updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-migration")
+                intent = store.prepare_thread_migration(
+                    migration_key="takeover:1:thread-migration", run_id=run.run_id,
+                    stage="codex_planning", source_thread_id="source-thread",
+                    handover_digest=hashlib.sha256(json.dumps({"schema_version": "spec-runner-sdk-thread-interrupt/v1", "thread_id": "source-thread", "accepted": True}, sort_keys=True).encode("utf-8")).hexdigest(), input_revision="brief-v1",
+                )
+                self.assertEqual(intent["state"], "intent")
+                handover = {"schema_version": "spec-runner-sdk-thread-interrupt/v1", "thread_id": "source-thread", "accepted": True}
+                with self.assertRaisesRegex(RunnerError, "handover"):
+                    store.record_migration_successor(migration_key="takeover:1:thread-migration", successor_thread_id="successor-thread")
+                store.record_migration_handover(migration_key="takeover:1:thread-migration", handover=handover)
+                successor = store.record_migration_successor(
+                    migration_key="takeover:1:thread-migration", successor_thread_id="successor-thread",
+                    successor={"thread_id": "successor-thread", "turn_started": False},
+                )
+                self.assertEqual(successor["state"], "successor_registered")
+                transferred = store.complete_migration_owner_transfer(
+                    migration_key="takeover:1:thread-migration", expected_generation=0,
+                    owner_worker_id="codex_sdk:run-migration:codex_planning",
+                )
+                self.assertEqual(transferred["owner_generation"], 1)
+                self.assertEqual(store.record_migration_successor(
+                    migration_key="takeover:1:thread-migration", successor_thread_id="successor-thread"
+                )["state"], "owner_transferred")
+                with self.assertRaisesRegex(RunnerError, "owner"):
+                    store.complete_migration_owner_transfer(
+                        migration_key="takeover:1:thread-migration", expected_generation=0,
+                        owner_worker_id="other-worker",
+                    )
+                stale = store.record_migration_event(
+                    migration_key="takeover:1:thread-migration", generation=0,
+                    event_key="migration:1:old-event", payload={"thread_id": "source-thread"},
+                )
+                self.assertFalse(stale["applied"])
+                current = store.record_migration_event(
+                    migration_key="takeover:1:thread-migration", generation=1,
+                    event_key="migration:1:new-event", payload={"thread_id": "successor-thread"},
+                )
+                self.assertTrue(current["applied"])
+                status = store.public_status(run.run_id)
+                self.assertEqual(status["thread_migrations"][0]["successor_thread_id"], "successor-thread")
+                self.assertIn("thread_migration_stale_event", [event["event_type"] for event in status["events"]])
+            finally:
+                store.close()
+
+    def test_thread_migration_identity_and_uncertain_creation_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                from spec_runner.store import RunRecord, now
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-uncertain", launch_key="uncertain", input_digest="input",
+                    config_digest="config", repository_path=temp, target_ref="HEAD",
+                    artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                    current_step="codex_example", log_path="logs/run-uncertain.jsonl",
+                    created_at=timestamp, updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-uncertain")
+                store.prepare_thread_migration(
+                    migration_key="migration-uncertain", run_id=run.run_id, stage="codex_example",
+                    source_thread_id="source", handover_digest="h1", input_revision="r1",
+                )
+                with self.assertRaisesRegex(RunnerError, "identity"):
+                    store.prepare_thread_migration(
+                        migration_key="migration-uncertain", run_id=run.run_id, stage="codex_example",
+                        source_thread_id="other-source", handover_digest="h1", input_revision="r1",
+                    )
+                uncertain = store.record_migration_uncertainty(
+                    migration_key="migration-uncertain", details={"reason": "provider response lost"}
+                )
+                self.assertEqual(uncertain["state"], "uncertain")
+                with self.assertRaisesRegex(RunnerError, "handover"):
+                    store.record_migration_successor(migration_key="migration-uncertain", successor_thread_id="successor")
             finally:
                 store.close()
 

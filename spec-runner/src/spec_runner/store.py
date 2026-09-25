@@ -288,6 +288,23 @@ class Store:
                     updated_at TEXT NOT NULL,
                     UNIQUE(run_id, spec_key, stage, generation)
                 );
+                CREATE TABLE IF NOT EXISTS thread_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    stage TEXT NOT NULL,
+                    source_thread_id TEXT NOT NULL,
+                    handover_digest TEXT NOT NULL,
+                    input_revision TEXT NOT NULL,
+                    owner_generation INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    successor_thread_id TEXT,
+                    owner_worker_id TEXT,
+                    handover_json TEXT,
+                    successor_json TEXT,
+                    uncertainty_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             verification_sql = self.connection.execute(
@@ -922,6 +939,7 @@ class Store:
             "events": self.events_for_run(run_id),
             "recovery": self.recovery_for_run(run_id),
             "continuation": self.continuation_receipts_for_run(run_id),
+            "thread_migrations": self.thread_migrations_for_run(run_id),
             "writer_leases": [dict(row) for row in self.connection.execute("SELECT * FROM runner_leases WHERE run_id = ?", (run_id,))],
         }
 
@@ -1172,6 +1190,168 @@ class Store:
             item["workspace_identity"] = json.loads(str(item.pop("workspace_identity_json")))
             receipts.append(item)
         return receipts
+
+    def prepare_thread_migration(
+        self, *, migration_key: str, run_id: str, stage: str, source_thread_id: str,
+        handover_digest: str, input_revision: str, owner_generation: int = 0,
+    ) -> dict[str, object]:
+        """Persist one clean-thread migration intent before creating a successor."""
+        values = (run_id, stage, source_thread_id, handover_digest, input_revision, int(owner_generation))
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT * FROM thread_migrations WHERE migration_key = ?", (migration_key,)
+            ).fetchone()
+            if existing is not None:
+                actual = tuple(existing[key] for key in (
+                    "run_id", "stage", "source_thread_id", "handover_digest", "input_revision", "owner_generation"
+                ))
+                if actual != values:
+                    raise RunnerError("thread_migration_identity_conflict", "migration key was reused with different identity")
+            else:
+                self.connection.execute(
+                    """INSERT INTO thread_migrations(
+                       migration_key, run_id, stage, source_thread_id, handover_digest, input_revision,
+                       owner_generation, state, successor_thread_id, owner_worker_id, handover_json,
+                       successor_json, uncertainty_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'intent', NULL, NULL, NULL, NULL, NULL, ?, ?)""",
+                    (migration_key, *values, timestamp, timestamp),
+                )
+                self._insert_event(run_id=run_id, event_key=f"migration:{migration_key}:intent",
+                                   event_type="thread_migration_intent",
+                                   payload={"migration_key": migration_key, "stage": stage,
+                                            "source_thread_id": source_thread_id, "owner_generation": owner_generation})
+        return self.thread_migration(migration_key) or {}
+
+    def record_migration_handover(self, *, migration_key: str, handover: dict[str, object]) -> dict[str, object]:
+        migration = self.thread_migration(migration_key)
+        if migration is None:
+            raise RunnerError("thread_migration_missing", "handover requires a durable migration intent")
+        if migration["state"] not in {"intent", "handover_confirmed"}:
+            if migration["state"] == "successor_registered" or migration["state"] == "owner_transferred":
+                return migration
+            raise RunnerError("thread_migration_state_conflict", "handover cannot advance this migration state")
+        source = str(handover.get("thread_id") or "")
+        handover_digest = hashlib.sha256(json.dumps(handover, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        if source != migration["source_thread_id"] or handover.get("accepted") is not True:
+            raise RunnerError("thread_handover_unconfirmed", "successor creation requires confirmed source handover")
+        if handover_digest != migration["handover_digest"]:
+            raise RunnerError("thread_migration_identity_conflict", "handover evidence does not match the migration intent")
+        timestamp = now()
+        payload = json.dumps(handover, ensure_ascii=False, sort_keys=True)
+        with self.transaction():
+            self.connection.execute(
+                "UPDATE thread_migrations SET state = 'handover_confirmed', handover_json = ?, updated_at = ? WHERE migration_key = ?",
+                (payload, timestamp, migration_key),
+            )
+            self._insert_event(run_id=str(migration["run_id"]), event_key=f"migration:{migration_key}:handover",
+                               event_type="thread_migration_handover_confirmed", payload={"migration_key": migration_key, "handover": handover})
+        return self.thread_migration(migration_key) or {}
+
+    def record_migration_successor(self, *, migration_key: str, successor_thread_id: str,
+                                   successor: dict[str, object] | None = None) -> dict[str, object]:
+        migration = self.thread_migration(migration_key)
+        if migration is None:
+            raise RunnerError("thread_migration_missing", "successor requires a durable migration intent")
+        if migration["state"] == "owner_transferred":
+            if migration.get("successor_thread_id") != successor_thread_id:
+                raise RunnerError("thread_successor_conflict", "migration already has a different successor identity")
+            return migration
+        if migration["state"] not in {"handover_confirmed", "successor_registered"}:
+            raise RunnerError("thread_handover_unconfirmed", "cannot create a successor before source handover readback")
+        if not successor_thread_id.strip() or successor_thread_id == migration["source_thread_id"]:
+            raise RunnerError("thread_successor_identity_invalid", "successor must have a distinct formal thread identity")
+        prior = migration.get("successor_thread_id")
+        if prior and prior != successor_thread_id:
+            raise RunnerError("thread_successor_conflict", "migration already has a different successor identity")
+        payload = json.dumps(successor or {"thread_id": successor_thread_id}, ensure_ascii=False, sort_keys=True)
+        timestamp = now()
+        with self.transaction():
+            self.connection.execute(
+                "UPDATE thread_migrations SET state = 'successor_registered', successor_thread_id = ?, successor_json = ?, updated_at = ? WHERE migration_key = ?",
+                (successor_thread_id, payload, timestamp, migration_key),
+            )
+            self._insert_event(run_id=str(migration["run_id"]), event_key=f"migration:{migration_key}:successor:{successor_thread_id}",
+                               event_type="thread_migration_successor_registered",
+                               payload={"migration_key": migration_key, "successor_thread_id": successor_thread_id})
+        return self.thread_migration(migration_key) or {}
+
+    def record_migration_uncertainty(self, *, migration_key: str, details: dict[str, object]) -> dict[str, object]:
+        migration = self.thread_migration(migration_key)
+        if migration is None:
+            raise RunnerError("thread_migration_missing", "uncertainty requires a durable migration intent")
+        if migration["state"] in {"successor_registered", "owner_transferred"}:
+            return migration
+        if migration["state"] == "uncertain" and migration.get("uncertainty") == details:
+            return migration
+        timestamp = now()
+        payload = json.dumps(details, ensure_ascii=False, sort_keys=True)
+        with self.transaction():
+            self.connection.execute(
+                "UPDATE thread_migrations SET state = 'uncertain', uncertainty_json = ?, updated_at = ? WHERE migration_key = ?",
+                (payload, timestamp, migration_key),
+            )
+            self._insert_event(run_id=str(migration["run_id"]), event_key=f"migration:{migration_key}:uncertain",
+                               event_type="thread_migration_uncertain", payload={"migration_key": migration_key, "details": details})
+        return self.thread_migration(migration_key) or {}
+
+    def complete_migration_owner_transfer(self, *, migration_key: str, expected_generation: int,
+                                          owner_worker_id: str) -> dict[str, object]:
+        migration = self.thread_migration(migration_key)
+        if migration is None:
+            raise RunnerError("thread_migration_missing", "owner transfer requires a durable migration intent")
+        if migration["state"] == "owner_transferred":
+            if migration.get("owner_worker_id") != owner_worker_id:
+                raise RunnerError("thread_owner_conflict", "migration owner was transferred to another worker")
+            return migration
+        if migration["state"] != "successor_registered" or int(migration["owner_generation"]) != int(expected_generation):
+            raise RunnerError("thread_owner_cas_failed", "successor is not ready for this owner generation")
+        timestamp = now()
+        with self.transaction():
+            updated = self.connection.execute(
+                """UPDATE thread_migrations SET state = 'owner_transferred', owner_generation = ?,
+                   owner_worker_id = ?, updated_at = ? WHERE migration_key = ? AND state = 'successor_registered' AND owner_generation = ?""",
+                (int(expected_generation) + 1, owner_worker_id, timestamp, migration_key, int(expected_generation)),
+            ).rowcount
+            if updated != 1:
+                raise RunnerError("thread_owner_cas_failed", "migration owner generation changed concurrently")
+            self._insert_event(run_id=str(migration["run_id"]), event_key=f"migration:{migration_key}:owner:{int(expected_generation)+1}",
+                               event_type="thread_migration_owner_transferred",
+                               payload={"migration_key": migration_key, "owner_worker_id": owner_worker_id,
+                                        "owner_generation": int(expected_generation) + 1})
+        return self.thread_migration(migration_key) or {}
+
+    def record_migration_event(self, *, migration_key: str, generation: int, event_key: str,
+                               payload: dict[str, object]) -> dict[str, object]:
+        """Audit a worker event and reject stale generations from advancing state."""
+        migration = self.thread_migration(migration_key)
+        if migration is None:
+            raise RunnerError("thread_migration_missing", "migration event requires a durable migration")
+        current_generation = int(migration["owner_generation"])
+        applied = int(generation) == current_generation and migration["state"] == "owner_transferred"
+        event = {**payload, "migration_key": migration_key, "generation": int(generation), "applied": applied}
+        with self.transaction():
+            inserted = self._insert_event(
+                run_id=str(migration["run_id"]), event_key=event_key,
+                event_type="thread_migration_event_applied" if applied else "thread_migration_stale_event",
+                payload=event,
+            )
+        return {"migration_key": migration_key, "generation": int(generation), "applied": applied, "recorded": inserted}
+
+    def thread_migration(self, migration_key: str) -> dict[str, object] | None:
+        row = self.connection.execute("SELECT * FROM thread_migrations WHERE migration_key = ?", (migration_key,)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        for key in ("handover_json", "successor_json", "uncertainty_json"):
+            value = result.pop(key)
+            result[key.removesuffix("_json")] = json.loads(value) if value else None
+        return result
+
+    def thread_migrations_for_run(self, run_id: str) -> list[dict[str, object]]:
+        return [self.thread_migration(str(row[0])) for row in self.connection.execute(
+            "SELECT migration_key FROM thread_migrations WHERE run_id = ? ORDER BY created_at, migration_key", (run_id,)
+        ) if self.thread_migration(str(row[0])) is not None]
 
     def upsert_operation(self, *, operation_id: str, run_id: str, operation_kind: str, input_digest: str, state: str = "prepared") -> dict[str, object]:
         timestamp = now()

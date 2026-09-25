@@ -108,6 +108,59 @@ class CodexAdapter:
             "injection": "sdk_skill_input_plus_current_body",
         })
 
+    def start_clean_thread(
+        self, *, repository_path: Path, model: str, read_only: bool = False,
+    ) -> dict[str, object]:
+        """Create and identify a fresh SDK thread without sending a turn.
+
+        Migration code calls this boundary after source handover is durable.
+        It deliberately has no source thread, fork, history, or prompt input.
+        """
+        if self._sdk_module is None:
+            try:
+                import openai_codex as sdk_module
+            except ImportError as exc:
+                raise RunnerError(
+                    "sdk_unavailable",
+                    f"openai-codex=={SDK_VERSION} is not installed; install the package in the isolated environment",
+                ) from exc
+        else:
+            sdk_module = self._sdk_module
+        Codex = sdk_module.Codex
+        CodexConfig = sdk_module.CodexConfig
+        Sandbox = sdk_module.Sandbox
+        sandbox = Sandbox.read_only if read_only else Sandbox.workspace_write
+        approval_modes = getattr(sdk_module, "ApprovalMode", None)
+        approval_mode = getattr(approval_modes, APPROVAL_MODE, None)
+        if approval_mode is None:
+            raise RunnerError(
+                "sdk_approval_policy_unsupported",
+                f"openai-codex=={SDK_VERSION} does not expose the required {APPROVAL_MODE} approval policy",
+            )
+        factory = self._codex_factory or (lambda config: Codex(config))
+        config = CodexConfig(cwd=str(repository_path), client_version=SDK_VERSION)
+        try:
+            with factory(config) as codex:
+                thread = codex.thread_start(
+                    model=model, cwd=str(repository_path), sandbox=sandbox, approval_mode=approval_mode,
+                )
+                thread_id = str(getattr(thread, "id", ""))
+                if not thread_id or thread_id == "None":
+                    raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal clean thread identifier")
+                return {
+                    "schema_version": "spec-runner-sdk-clean-thread/v1",
+                    "thread_id": thread_id,
+                    "turn_started": False,
+                    "source_thread_id": None,
+                    "forked": False,
+                    "history_replayed": False,
+                    "approval_mode": APPROVAL_MODE,
+                }
+        except RunnerError:
+            raise
+        except Exception as exc:
+            raise RunnerError("sdk_thread_start_failed", "Codex SDK clean thread creation failed") from exc
+
     def run(
         self,
         *,

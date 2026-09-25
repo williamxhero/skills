@@ -451,3 +451,27 @@ not prove a real native process crash, live SDK source-thread handoff, Windows
 control DB or log recovery, clean migration under #292, or project-level L3-L5
 gates. Those remain `not_verified`; #297 remains OPEN until its live and
 project acceptance gates are separately evidenced.
+
+## RCV-02.2 clean-thread migration and durable owner handoff (2026-09-25)
+
+The takeover continuation path now persists a `thread_migrations` record before
+creating a successor. The record binds migration key, run, stage, source thread,
+handover digest, input revision, and owner generation. A successor is accepted
+only after confirmed source handover; its formal SDK thread ID is registered
+before the first business turn. Replays reuse the recorded successor, while
+uncertain creation is fail-closed and cannot create a second writer. Owner
+transfer uses a compare-and-set generation, and late old-generation events are
+recorded as audit evidence without advancing the current owner.
+
+The adapter exposes a clean-thread boundary that calls the published
+`thread_start` interface without source thread, fork, prompt, or old response
+history. Unit and acceptance coverage verifies clean identity, handover
+blocking, migration identity conflicts, successor idempotency, uncertain-state
+blocking, owner CAS, and stale-generation auditing. The focused source suite
+passed `42 passed, 1 skipped`; acceptance migration coverage passed `1 passed`.
+
+This is deterministic source and acceptance evidence for RCV-02.2. It does not
+prove a live native SDK migration, OS-level old-writer termination, process
+crash injection at every provider boundary, business recovery under #299, or
+project-level L3-L5 gates. Those remain `not_verified`; #298 remains OPEN until
+its live and downstream acceptance gates are separately evidenced.
