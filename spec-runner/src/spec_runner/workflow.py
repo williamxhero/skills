@@ -18,7 +18,7 @@ from .codex_adapter import CodexAdapter, CodexWorkerResult
 from .errors import RunnerError
 from .store import RunRecord, Store, now
 from .verification import verify_run
-from .plans import load_json, validate_spec_plan, validate_ticket_plan
+from .plans import digest, load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
 from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_candidate_write_scope, validate_review, verify_candidate
 from .tracker import read_local, publish_local
@@ -4624,6 +4624,89 @@ def _prepare_clean_migration(*, store: Store, config: RunnerConfig, run: RunReco
     return str(transferred.get("successor_thread_id") or successor_id)
 
 
+def _migration_for_run(store: Store, run_id: str) -> dict[str, object] | None:
+    migrations = store.thread_migrations_for_run(run_id)
+    return migrations[0] if len(migrations) == 1 else None
+
+
+def _finalize_migration_business_progress(*, config: RunnerConfig, store: Store,
+                                          run: RunRecord, stage: str,
+                                          resume_state: str,
+                                          verification: dict[str, object]) -> dict[str, object] | None:
+    """Record verified progress, then archive the stopped source thread.
+
+    Source archive is an independent cleanup obligation.  A successor may not
+    be replaced or recreated when archive readback fails, so the run is left
+    at cleanup_pending and the same migration is retried later.
+    """
+    migration = _migration_for_run(store, run.run_id)
+    if migration is None:
+        return None
+    migration_key = str(migration["migration_key"])
+    progress = {
+        "run_id": run.run_id,
+        "stage": stage,
+        "resume_state": resume_state,
+        "successor_thread_id": migration.get("successor_thread_id"),
+        "verification_digest": digest(verification),
+    }
+    store.record_migration_milestone(
+        migration_key=migration_key, milestone="business_progress_verified", receipt=progress,
+    )
+    if store.migration_milestone(migration_key, "source_archived") is not None:
+        return None
+    try:
+        archive = CodexAdapter().archive_and_readback(
+            thread_id=str(migration["source_thread_id"]), repository_path=config.repository_path,
+        )
+        if archive.get("thread_id") != migration["source_thread_id"] or archive.get("archived") is not True:
+            raise RunnerError("archive_readback_failed", "source thread archive readback did not match its identity")
+    except RunnerError as exc:
+        if store.migration_milestone(migration_key, "source_archive_pending") is None:
+            store.record_migration_milestone(
+                migration_key=migration_key,
+                milestone="source_archive_pending",
+                receipt={"run_id": run.run_id, "resume_state": resume_state, "error_code": exc.code},
+            )
+        store.set_run_state(run.run_id, "cleanup_pending")
+        return {"state": "cleanup_pending", "migration_cleanup": {"outcome": "pending", "error_code": exc.code}, **store.public_status(run.run_id)}
+    store.record_migration_milestone(
+        migration_key=migration_key,
+        milestone="source_archived",
+        receipt={"run_id": run.run_id, "source_thread_id": migration["source_thread_id"], "archive": archive},
+    )
+    return None
+
+
+def _retry_migration_source_archive(*, config: RunnerConfig, store: Store,
+                                    run: RunRecord) -> dict[str, object]:
+    migration = _migration_for_run(store, run.run_id)
+    if migration is None:
+        return store.public_status(run.run_id)
+    migration_key = str(migration["migration_key"])
+    progress = store.migration_milestone(migration_key, "business_progress_verified")
+    pending = store.migration_milestone(migration_key, "source_archive_pending")
+    if progress is None or pending is None:
+        raise RunnerError("thread_migration_cleanup_invalid", "source archive retry lacks verified progress")
+    if store.migration_milestone(migration_key, "source_archived") is None:
+        try:
+            archive = CodexAdapter().archive_and_readback(
+                thread_id=str(migration["source_thread_id"]), repository_path=config.repository_path,
+            )
+            if archive.get("thread_id") != migration["source_thread_id"] or archive.get("archived") is not True:
+                raise RunnerError("archive_readback_failed", "source thread archive readback did not match its identity")
+        except RunnerError as exc:
+            return {"state": "cleanup_pending", "migration_cleanup": {"outcome": "pending", "error_code": exc.code}, **store.public_status(run.run_id)}
+        store.record_migration_milestone(
+            migration_key=migration_key,
+            milestone="source_archived",
+            receipt={"run_id": run.run_id, "source_thread_id": migration["source_thread_id"], "archive": archive},
+        )
+    resume_state = str(progress["receipt"].get("resume_state") or "ready_for_next")
+    store.set_run_state(run.run_id, resume_state)
+    return {"state": resume_state, "migration_cleanup": {"outcome": "cleaned"}, **store.public_status(run.run_id)}
+
+
 def _continue_initial_clean_migration(*, control_root: Path, config: RunnerConfig, run: RunRecord,
                                      brief: str, brief_digest: str, store: Store,
                                      successor_thread_id: str) -> dict[str, object]:
@@ -4637,10 +4720,17 @@ def _continue_initial_clean_migration(*, control_root: Path, config: RunnerConfi
             return store.public_status(finished.run_id)
         plan_path = _safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
         if finished.state == "planned" and config.workflow_mode == "production":
-            return _run_production_queue(
+            delivery = _run_production_queue(
                 control_root=control_root, config=config, brief_digest=brief_digest,
                 run=finished, store=store, spec_plan=load_json(plan_path),
             )
+            if delivery.get("state") in {"spec_completed", "completed"}:
+                pending = _finalize_migration_business_progress(
+                    config=config, store=store, run=finished, stage="production_delivery",
+                    resume_state=str(delivery["state"]), verification=delivery,
+                )
+                return pending or delivery
+            return delivery
         if finished.state == "planned":
             ticketed = _execute_codex_tickets(
                 control_root=control_root, config=config, brief_digest=brief_digest,
@@ -4657,7 +4747,13 @@ def _continue_initial_clean_migration(*, control_root: Path, config: RunnerConfi
             return store.public_status(finished.run_id)
         if finished.state == "paused":
             return store.public_status(finished.run_id)
-        _verify_and_archive(control_root=control_root, config=config, run=finished, store=store, final_state="ready_for_next")
+        verified = _verify_and_archive(control_root=control_root, config=config, run=finished, store=store, final_state="ready_for_next")
+        pending = _finalize_migration_business_progress(
+            config=config, store=store, run=finished, stage=finished.current_step,
+            resume_state="ready_for_next", verification=verified,
+        )
+        if pending is not None:
+            return pending
         current = store.find_by_run_id(finished.run_id) or finished
         store.append_event(
             run_id=finished.run_id, event_key=f"migration:{finished.run_id}:next-stage",
@@ -4809,7 +4905,27 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                 return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
                     store=store, spec_plan=load_json(plan_path))}
-            if existing.state == "cleanup_pending" and config.workflow_mode == "production":
+            if existing.state == "cleanup_pending":
+                migration = _migration_for_run(store, existing.run_id)
+                if migration is not None:
+                    migration_cleanup = _retry_migration_source_archive(config=config, store=store, run=existing)
+                    if migration_cleanup.get("migration_cleanup") is not None:
+                        if migration_cleanup.get("state") == "ready_for_next":
+                            current = store.find_by_run_id(existing.run_id) or existing
+                            if config.workflow_mode == "production":
+                                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
+                                if plan_path.is_file():
+                                    return {"created": False, **_run_production_queue(
+                                        control_root=control_root, config=config, brief_digest=brief_digest,
+                                        run=current, store=store, spec_plan=load_json(plan_path),
+                                    )}
+                            return {"created": False, **_advance_second_stage(
+                                control_root=control_root, config=config, run=current,
+                                brief_digest=brief_digest, store=store,
+                            )}
+                        return {"created": False, **migration_cleanup}
+                if config.workflow_mode != "production":
+                    return {"created": False, **store.public_status(existing.run_id)}
                 cleanup = _retry_production_cleanup(control_root=control_root, config=config, run=existing, store=store)
                 if cleanup.get("state") == "spec_completed":
                     plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
