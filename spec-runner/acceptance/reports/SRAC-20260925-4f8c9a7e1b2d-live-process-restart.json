@@ -1,0 +1,77 @@
+{
+  "archive_readback": {
+    "archived": true,
+    "pages_read": 1,
+    "thread_id": "01a0d7e2-c8db-7700-aaed-fafbcbfc09dc"
+  },
+  "evidence_kind": "observed_live_sdk_process_restart",
+  "process_phases": {
+    "initial": {
+      "pid": 13556,
+      "result": {
+        "approval_mode": "deny_all",
+        "completed_at": 1790328368,
+        "error": null,
+        "final_response": "{\"phase\":\"initial\",\"status\":\"completed\"}",
+        "item_count": 2,
+        "sdk_version": "0.155.1",
+        "skill_observation": {
+          "injection": "sdk_skill_input_plus_current_body",
+          "phase": "grill",
+          "prompt_digest": "a1dcd282679f8ded112fa4fa6d24494c61b3ea28d9f051e10c021be044ba0e26",
+          "read_at_ns": 1790328357980812800,
+          "source": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md",
+          "source_digest": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+        },
+        "started_at": 1790328359,
+        "status": "completed",
+        "thread_id": "01a0d7e2-c8db-7700-aaed-fafbcbfc09dc",
+        "turn_id": "01a0d7e2-c9d2-7cd2-825d-1a182d59c380"
+      },
+      "status": "completed",
+      "thread_id": "01a0d7e2-c8db-7700-aaed-fafbcbfc09dc",
+      "turn_id": "01a0d7e2-c9d2-7cd2-825d-1a182d59c380"
+    },
+    "resume": {
+      "pid": 41020,
+      "result": {
+        "approval_mode": "deny_all",
+        "completed_at": 1790328379,
+        "error": null,
+        "final_response": "{\"phase\":\"resume\",\"status\":\"completed\"}",
+        "item_count": 3,
+        "sdk_version": "0.155.1",
+        "skill_observation": {
+          "injection": "sdk_skill_input_plus_current_body",
+          "phase": "grill",
+          "prompt_digest": "1cd0f6e8fb6da3ec176fface5c925ecadc5733abedbb0e8e0ce76296c72ec7b2",
+          "read_at_ns": 1790328369099737700,
+          "source": "C:\\Users\\will\\.agents\\skills\\grilling\\SKILL.md",
+          "source_digest": "10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2"
+        },
+        "started_at": 1790328370,
+        "status": "completed",
+        "thread_id": "01a0d7e2-c8db-7700-aaed-fafbcbfc09dc",
+        "turn_id": "01a0d7e2-f4b2-7681-8edb-55101e8f7c00"
+      },
+      "status": "completed",
+      "thread_id": "01a0d7e2-c8db-7700-aaed-fafbcbfc09dc",
+      "turn_id": "01a0d7e2-f4b2-7681-8edb-55101e8f7c00"
+    }
+  },
+  "repository": "williamxhero/skills",
+  "run_marker": "SRAC-20260925-4f8c9a7e1b2d",
+  "schema_version": "spec-runner-live-sdk-process-restart/v1",
+  "sdk_version": "0.155.1",
+  "unverified": [
+    "native Windows detached-parent exit",
+    "hybrid real SDK fault injection",
+    "source-thread takeover",
+    "GitHub merge queue",
+    "complete A-J recovery acceptance"
+  ],
+  "worker_exit_codes": {
+    "initial": 0,
+    "resume": 0
+  }
+}
