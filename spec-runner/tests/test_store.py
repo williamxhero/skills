@@ -180,6 +180,41 @@ class StoreLeaseTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_recovery_episode_budget_and_observations_survive_status_readback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                from spec_runner.store import RunRecord, now
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-recovery", launch_key="recovery", input_digest="input",
+                    config_digest="config", repository_path=temp, target_ref="HEAD",
+                    artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                    current_step="implement", log_path="logs/run-recovery.jsonl",
+                    created_at=timestamp, updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-recovery")
+                episode = store.upsert_recovery_episode(
+                    episode_id="episode-1", run_id=run.run_id, operation_kind="implementation",
+                    stage="implement", generation=2,
+                    counters={"same_thread_attempts": 1, "capacity_attempts": 2},
+                )
+                self.assertEqual(episode["capacity_attempts"], 2)
+                store.record_recovery_observation(
+                    observation_id="observation-1", episode_id="episode-1",
+                    observation={"fingerprint": "fp-1", "family": "capacity"},
+                )
+                store.record_recovery_decision(
+                    decision_id="decision-1", episode_id="episode-1",
+                    decision={"action": "service_wait", "remaining_budget": {"capacity_retries": 0}},
+                )
+                status = store.public_status(run.run_id)
+                self.assertEqual(status["recovery"]["episodes"][0]["generation"], 2)
+                self.assertEqual(status["recovery"]["episodes"][0]["observations"][0]["observation"]["family"], "capacity")
+                self.assertEqual(status["recovery"]["episodes"][0]["decisions"][0]["decision"]["action"], "service_wait")
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()

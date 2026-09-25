@@ -26,6 +26,7 @@ from .scope_lock import ScopeLock
 from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
 from .github_delivery import GitHubDelivery
 from .store import _process_alive
+from .continuation import ContinuationBundle, write_bundle_atomic
 
 
 def _implementation_write_root(*, workspace: Path, config: RunnerConfig, create: bool) -> Path:
@@ -1723,6 +1724,41 @@ def _finish_codex_implementation(
             "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
 
 
+def _persist_implementation_continuation(*, control_root: Path, config: RunnerConfig,
+                                         run: RunRecord, ticket_plan: dict[str, object],
+                                         workspace_info: dict[str, object], stage: str,
+                                         generation: int = 0) -> dict[str, object]:
+    """Save the minimum business context before a worker can become unusable."""
+    workspace = Path(str(workspace_info["workspace"]))
+    bundle = ContinuationBundle(
+        run_id=run.run_id,
+        spec_key=str(ticket_plan.get("spec_key", "")),
+        stage=stage,
+        generation=generation,
+        input_revision=str(ticket_plan.get("digest", run.input_digest)),
+        requirements=list(ticket_plan.get("tickets", [])) if isinstance(ticket_plan.get("tickets"), list) else [],
+        confirmed_decisions=[],
+        tickets=list(ticket_plan.get("tickets", [])) if isinstance(ticket_plan.get("tickets"), list) else [],
+        dependencies=[{"spec_key": item} for item in ticket_plan.get("blocked_by", [])] if isinstance(ticket_plan.get("blocked_by"), list) else [],
+        workspace={
+            "path": os.fspath(workspace),
+            "branch": workspace_info.get("branch"),
+            "base_sha": workspace_info.get("base_sha"),
+            "head": git_sha(workspace) if workspace.exists() else None,
+        },
+        verified_items=[],
+        remaining_items=[{"kind": "implementation"}, {"kind": "candidate_verification"}, {"kind": "independent_review"}],
+        tests=list(config.acceptance_checks),
+        review=[],
+        unconfirmed_operations=[],
+        authorization={"repository": os.fspath(config.repository_path), "write_scope": list(config.acceptance_paths)},
+        last_verified_progress=None,
+        source_refs=[{"kind": "ticket_plan", "digest": ticket_plan.get("digest")}],
+    )
+    path = _safe_artifact_directory(control_root, config, run.run_id) / f"continuation-{bundle.spec_key}.json"
+    return write_bundle_atomic(path, bundle)
+
+
 def _execute_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     ticket_plan: dict[str, object], finalize_run: bool = True, thread_id: str | None = None,
@@ -1747,6 +1783,10 @@ def _execute_codex_implementation(
     implementation_step = "codex_implementation"
     implementation_worker = f"codex_sdk:{run.run_id}:{implementation_step}:{spec_key}"
     store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
+    _persist_implementation_continuation(
+        control_root=control_root, config=config, run=run, ticket_plan=ticket_plan,
+        workspace_info=workspace_info, stage=implementation_step,
+    )
     schema = IMPLEMENTATION_SCHEMA
     implementation_prompt = (
         "Implement this SPEC only in the assigned write-scope directory. Work on the real code and tests there; do not publish, merge, "

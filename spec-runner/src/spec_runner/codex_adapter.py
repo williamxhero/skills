@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from .errors import RunnerError
 from .matt import render_prompt, resolve_local_skill
+from .recovery import observation_from_error
 
 SDK_VERSION = "0.155.1"
 APPROVAL_MODE = "deny_all"
@@ -26,6 +27,7 @@ class CodexWorkerResult:
     completed_at: int | None
     approval_mode: str = APPROVAL_MODE
     skill_observation: dict[str, object] | None = None
+    fault_observation: dict[str, object] | None = None
 
     def public(self) -> dict[str, object]:
         result = {
@@ -42,6 +44,8 @@ class CodexWorkerResult:
         }
         if self.skill_observation is not None:
             result["skill_observation"] = self.skill_observation
+        if self.fault_observation is not None:
+            result["fault_observation"] = self.fault_observation
         return result
 
 
@@ -215,6 +219,7 @@ class CodexAdapter:
             raise
         except Exception as exc:
             message = str(exc).lower()
+            details = getattr(exc, "details", {}) or {}
             if "does not exist or you do not have access" in message:
                 code = "sdk_model_unavailable"
                 description = "the requested model was rejected by the current Codex account or runtime"
@@ -243,6 +248,15 @@ class CodexAdapter:
                     "thread_id": result_thread_id if "result_thread_id" in locals() else None,
                     "turn_id": result_turn_id if "result_turn_id" in locals() else None,
                     "external_result_requires_reconciliation": "result_turn_id" in locals(),
+                    "fault_observation": observation_from_error(
+                        operation_kind="codex_turn",
+                        error=exc,
+                        thread_id=result_thread_id if "result_thread_id" in locals() else None,
+                        turn_id=result_turn_id if "result_turn_id" in locals() else None,
+                        requested_model=model,
+                        requested_effort=effort,
+                        sdk_version=SDK_VERSION,
+                    ).public(),
                 },
             ) from exc
 
@@ -251,16 +265,37 @@ class CodexAdapter:
         if not result_thread_id or result_thread_id == "None" or not result_turn_id or result_turn_id == "None":
             raise RunnerError("sdk_identity_missing", "Codex SDK returned no formal thread or turn identifier")
         result_status = getattr(result, "status", "unknown")
+        result_error = getattr(result, "error", None)
+        fault_observation = None
+        if result_error:
+            fault_observation = observation_from_error(
+                operation_kind="codex_turn",
+                error={
+                    "message": result_error,
+                    "source": "sdk_result",
+                    "structured": False,
+                    "thread_id": result_thread_id,
+                    "turn_id": result_turn_id,
+                    "request_admission": "accepted",
+                    "execution_outcome": "failed",
+                },
+                thread_id=result_thread_id,
+                turn_id=result_turn_id,
+                requested_model=model,
+                requested_effort=effort,
+                sdk_version=SDK_VERSION,
+            ).public()
         return CodexWorkerResult(
             thread_id=result_thread_id,
             turn_id=result_turn_id,
             status=str(getattr(result_status, "value", result_status)),
-            error=str(getattr(result, "error", "")) if getattr(result, "error", None) else None,
+            error=str(result_error) if result_error else None,
             final_response=getattr(result, "final_response", None),
             item_count=len(getattr(result, "items", []) or []),
             started_at=getattr(result, "started_at", None),
             completed_at=getattr(result, "completed_at", None),
             approval_mode=APPROVAL_MODE,
+            fault_observation=fault_observation,
         )
 
     @staticmethod

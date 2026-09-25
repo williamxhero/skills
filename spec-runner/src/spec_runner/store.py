@@ -241,6 +241,37 @@ class Store:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS recovery_episodes (
+                    episode_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    operation_kind TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    same_thread_attempts INTEGER NOT NULL DEFAULT 0,
+                    capacity_attempts INTEGER NOT NULL DEFAULT 0,
+                    route_probe_attempts INTEGER NOT NULL DEFAULT 0,
+                    clean_probe_attempts INTEGER NOT NULL DEFAULT 0,
+                    migration_attempts INTEGER NOT NULL DEFAULT 0,
+                    no_progress_attempts INTEGER NOT NULL DEFAULT 0,
+                    retry_deadline TEXT,
+                    wait_deadline TEXT,
+                    last_verified_progress TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS recovery_observations (
+                    observation_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL REFERENCES recovery_episodes(episode_id),
+                    fingerprint TEXT NOT NULL,
+                    observation_json TEXT NOT NULL,
+                    observed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS recovery_decisions (
+                    decision_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL REFERENCES recovery_episodes(episode_id),
+                    decision_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             verification_sql = self.connection.execute(
@@ -873,6 +904,7 @@ class Store:
             "control": self.control_for_run(run_id),
             "answers": self.answers_for_run(run_id),
             "events": self.events_for_run(run_id),
+            "recovery": self.recovery_for_run(run_id),
             "writer_leases": [dict(row) for row in self.connection.execute("SELECT * FROM runner_leases WHERE run_id = ?", (run_id,))],
         }
 
@@ -935,6 +967,98 @@ class Store:
             {**dict(row), "payload": json.loads(row["payload_json"])}
             for row in self.connection.execute("SELECT * FROM events WHERE run_id = ? ORDER BY event_id", (run_id,))
         ]
+
+    def upsert_recovery_episode(self, *, episode_id: str, run_id: str, operation_kind: str,
+                                stage: str, generation: int, state: str = "open",
+                                counters: dict[str, int] | None = None,
+                                retry_deadline: str | None = None,
+                                wait_deadline: str | None = None,
+                                last_verified_progress: str | None = None) -> dict[str, object]:
+        """Persist recovery budgets so restarts and thread changes cannot reset them."""
+        counters = counters or {}
+        values = {key: int(counters.get(key, 0)) for key in (
+            "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
+            "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
+        )}
+        timestamp = now()
+        with self.transaction():
+            existing = self.connection.execute("SELECT * FROM recovery_episodes WHERE episode_id = ?", (episode_id,)).fetchone()
+            if existing is not None and (existing["run_id"] != run_id or existing["operation_kind"] != operation_kind or existing["stage"] != stage or int(existing["generation"]) != generation):
+                raise RunnerError("recovery_episode_conflict", "recovery episode identity changed")
+            self.connection.execute(
+                """INSERT INTO recovery_episodes(episode_id, run_id, operation_kind, stage, generation, state,
+                   same_thread_attempts, capacity_attempts, route_probe_attempts, clean_probe_attempts,
+                   migration_attempts, no_progress_attempts, retry_deadline, wait_deadline,
+                   last_verified_progress, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(episode_id) DO UPDATE SET state=excluded.state,
+                   same_thread_attempts=excluded.same_thread_attempts, capacity_attempts=excluded.capacity_attempts,
+                   route_probe_attempts=excluded.route_probe_attempts, clean_probe_attempts=excluded.clean_probe_attempts,
+                   migration_attempts=excluded.migration_attempts, no_progress_attempts=excluded.no_progress_attempts,
+                   retry_deadline=excluded.retry_deadline, wait_deadline=excluded.wait_deadline,
+                   last_verified_progress=excluded.last_verified_progress, updated_at=excluded.updated_at""",
+                (episode_id, run_id, operation_kind, stage, generation, state,
+                 values["same_thread_attempts"], values["capacity_attempts"], values["route_probe_attempts"],
+                 values["clean_probe_attempts"], values["migration_attempts"], values["no_progress_attempts"],
+                 retry_deadline, wait_deadline, last_verified_progress, timestamp),
+            )
+            self._insert_event(run_id=run_id, event_key=f"recovery:{episode_id}:episode:{state}:{timestamp}",
+                               event_type="recovery_episode_updated", payload={"episode_id": episode_id, "state": state, **values})
+        return self.recovery_episode(episode_id) or {}
+
+    def recovery_episode(self, episode_id: str) -> dict[str, object] | None:
+        row = self.connection.execute("SELECT * FROM recovery_episodes WHERE episode_id = ?", (episode_id,)).fetchone()
+        return dict(row) if row else None
+
+    def record_recovery_observation(self, *, observation_id: str, episode_id: str,
+                                    observation: dict[str, object]) -> dict[str, object]:
+        fingerprint = str(observation.get("fingerprint") or "")
+        if not fingerprint:
+            raise RunnerError("recovery_observation_invalid", "observation requires a stable fingerprint")
+        with self.transaction():
+            if self.connection.execute("SELECT 1 FROM recovery_episodes WHERE episode_id = ?", (episode_id,)).fetchone() is None:
+                raise RunnerError("recovery_episode_missing", "cannot record observation for an unknown episode")
+            self.connection.execute(
+                "INSERT OR IGNORE INTO recovery_observations(observation_id, episode_id, fingerprint, observation_json, observed_at) VALUES (?, ?, ?, ?, ?)",
+                (observation_id, episode_id, fingerprint, json.dumps(observation, ensure_ascii=False, sort_keys=True), now()),
+            )
+        row = self.connection.execute("SELECT * FROM recovery_observations WHERE observation_id = ?", (observation_id,)).fetchone()
+        assert row is not None
+        result = dict(row)
+        result["observation"] = json.loads(str(result.pop("observation_json")))
+        return result
+
+    def record_recovery_decision(self, *, decision_id: str, episode_id: str,
+                                 decision: dict[str, object]) -> dict[str, object]:
+        with self.transaction():
+            if self.connection.execute("SELECT 1 FROM recovery_episodes WHERE episode_id = ?", (episode_id,)).fetchone() is None:
+                raise RunnerError("recovery_episode_missing", "cannot record decision for an unknown episode")
+            self.connection.execute(
+                "INSERT OR IGNORE INTO recovery_decisions(decision_id, episode_id, decision_json, created_at) VALUES (?, ?, ?, ?)",
+                (decision_id, episode_id, json.dumps(decision, ensure_ascii=False, sort_keys=True), now()),
+            )
+        row = self.connection.execute("SELECT * FROM recovery_decisions WHERE decision_id = ?", (decision_id,)).fetchone()
+        assert row is not None
+        result = dict(row)
+        result["decision"] = json.loads(str(result.pop("decision_json")))
+        return result
+
+    def recovery_for_run(self, run_id: str) -> dict[str, object]:
+        episodes = [dict(row) for row in self.connection.execute("SELECT * FROM recovery_episodes WHERE run_id = ? ORDER BY updated_at", (run_id,))]
+        for episode in episodes:
+            observations = []
+            for row in self.connection.execute("SELECT * FROM recovery_observations WHERE episode_id = ? ORDER BY observed_at", (episode["episode_id"],)):
+                item = dict(row)
+                item["observation"] = json.loads(str(item.pop("observation_json")))
+                observations.append(item)
+            decisions = []
+            for row in self.connection.execute("SELECT * FROM recovery_decisions WHERE episode_id = ? ORDER BY created_at", (episode["episode_id"],)):
+                item = dict(row)
+                item["decision"] = json.loads(str(item.pop("decision_json")))
+                decisions.append(item)
+            episode["observations"] = observations
+            episode["decisions"] = decisions
+        return {"episodes": episodes}
 
     def operation(self, operation_id: str) -> dict[str, object] | None:
         row = self.connection.execute("SELECT * FROM operations WHERE operation_id = ?", (operation_id,)).fetchone()
