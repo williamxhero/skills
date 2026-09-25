@@ -31,16 +31,16 @@ class TaskCsvToJsonTests(unittest.TestCase):
             capture_output=True,
         ), output_path
 
-    def test_success_has_canonical_bytes_and_preserves_order(self):
+    def test_success_accepts_reordered_and_extra_columns_and_preserves_values(self):
         result, output = self.run_command(
-            " id , title , status \n 2 , Café , doing \n1,First task,todo\n".encode()
+            "status,notes,title,id\n doing ,ignored, Café , 2 \nunknown,metadata,First task,1\n".encode()
         )
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertEqual(result.stdout, b"")
         self.assertEqual(result.stderr, b"")
         self.assertEqual(
             output.read_bytes(),
-            b'{"tasks":[{"id":"2","title":"Caf\xc3\xa9","status":"doing"},{"id":"1","title":"First task","status":"todo"}]}\n',
+            b'{"tasks":[{"id":" 2 ","title":" Caf\xc3\xa9 ","status":" doing "},{"id":"1","title":"First task","status":"unknown"}]}\n',
         )
 
     def test_header_only_csv_is_valid(self):
@@ -53,13 +53,12 @@ class TaskCsvToJsonTests(unittest.TestCase):
             b"\xffid,title,status\n",
             b"id,title,status\n1,\"unterminated,todo\n",
             b"id,name,status\n1,One,todo\n",
-            b"id,title,status\n1,One,todo,extra\n",
             b"id,title,status\n\n",
             b"id,title,status\n ,One,todo\n",
             b"id,title,status\n1, ,todo\n",
             b"id,title,status\n1,One,\n",
             b"id,title,status\n1,One,todo\n1,Other,done\n",
-            b"id,title,status\n1,One,TODO\n",
+            b"id,title,status\n1,One,\n",
         ]
         for index, csv_data in enumerate(invalid_inputs):
             with self.subTest(index=index):
@@ -110,6 +109,12 @@ class TaskCsvToJsonTests(unittest.TestCase):
         self.assertIn("error:", stderr.getvalue())
         self.assertEqual(output.read_bytes(), original)
         self.assertEqual(list(self.directory.glob(f".{output.name}.*.tmp")), [])
+
+    def test_malformed_quoting_in_ignored_column_is_rejected(self):
+        output_path = self.directory / f"{self.prefix}-malformed.json"
+        result, output = self.run_command(b"id,title,status,notes\n1,One,todo,bad\"quote\n", output_path)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
