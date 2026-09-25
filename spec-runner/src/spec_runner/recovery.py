@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Mapping
+
+
+RECOVERY_POLICY_VERSION = "spec-runner-recovery-policy/v1"
 
 
 class RecoveryAction(str, Enum):
@@ -273,6 +277,22 @@ class RecoveryPolicy:
     max_no_progress: int = 3
     retry_delay_seconds: float = 5.0
     service_wait_delay_seconds: float = 60.0
+    version: str = RECOVERY_POLICY_VERSION
+
+    def __post_init__(self) -> None:
+        for name in (
+            "same_thread_retries", "capacity_retries", "route_probes",
+            "clean_probes", "migration_requests", "max_no_progress",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        for name in ("retry_delay_seconds", "service_wait_delay_seconds"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be a finite non-negative number")
+        if not self.version or not self.version.strip():
+            raise ValueError("version must be a non-empty string")
 
 
 @dataclass(frozen=True)
@@ -310,8 +330,8 @@ class RecoveryDecision:
     family: str = FaultFamily.UNKNOWN.value
 
     def public(self) -> dict[str, object]:
-        return {"schema_version": "spec-runner-recovery-decision/v1", "action": self.action.value,
-                "reason": self.reason, "evidence": list(self.evidence),
+        return {"schema_version": "spec-runner-recovery-decision/v1", "policy_version": RECOVERY_POLICY_VERSION,
+                "action": self.action.value, "reason": self.reason, "evidence": list(self.evidence),
                 "preconditions": list(self.preconditions), "next_check_at": self.next_check_at,
                 "remaining_budget": dict(self.remaining_budget), "family": self.family}
 

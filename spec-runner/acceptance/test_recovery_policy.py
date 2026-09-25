@@ -204,3 +204,20 @@ def test_recovery_diagnostic_explains_next_condition_and_preserves_unknown_execu
     assert expected_condition in diagnostic["next_recovery_condition"]
     assert diagnostic["budget"]["remaining"]["capacity_retries"] == 0
     assert diagnostic["sdk_retry"]["coverage"] == "unknown"
+
+
+def test_recovery_policy_rejects_invalid_budget_configuration_and_records_version():
+    with pytest.raises(ValueError, match="non-negative integer"):
+        RecoveryPolicy(capacity_retries=-1)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        RecoveryPolicy(capacity_retries=True)
+    with pytest.raises(ValueError, match="finite non-negative number"):
+        RecoveryPolicy(retry_delay_seconds=float("nan"))
+    with pytest.raises(ValueError, match="finite non-negative number"):
+        RecoveryPolicy(service_wait_delay_seconds=float("inf"))
+
+    decision = decide_recovery(
+        RecoverySnapshot(run_id="run-1", operation_kind="implementation", stage="implement"),
+        [FaultObservation(operation_kind="implementation", stage="implement")],
+    )
+    assert decision.public()["policy_version"] == "spec-runner-recovery-policy/v1"
