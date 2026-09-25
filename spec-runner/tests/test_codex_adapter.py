@@ -290,6 +290,100 @@ class CodexAdapterTests(unittest.TestCase):
             )
         self.assertEqual(interrupt_calls, [])
 
+    def test_injected_fault_runs_at_formal_turn_boundary_without_replacing_sdk(self) -> None:
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def inject(point: str, context: dict[str, object]) -> None:
+            events.append((point, context))
+            if point == "after_turn_started":
+                raise RunnerError(
+                    "injected_stream_disconnect",
+                    "injected stream disconnect at the published adapter boundary",
+                    details={
+                        "fault_observation": {
+                            "message": "stream disconnected",
+                            "source": "hybrid_injected_fault",
+                            "structured": True,
+                            "request_admission": "accepted",
+                            "execution_outcome": "unknown",
+                            "thread_id": context["thread_id"],
+                            "turn_id": context["turn_id"],
+                        }
+                    },
+                )
+
+        holder: dict[str, FakeCodex] = {}
+
+        def factory(config: object) -> FakeCodex:
+            codex = FakeCodex(config)
+            codex.thread = FakeThreadWithTurn()
+            holder["codex"] = codex
+            return codex
+
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
+        )
+        with self.assertRaisesRegex(RunnerError, "injected stream disconnect") as raised:
+            CodexAdapter(
+                codex_factory=factory, sdk_module=sdk, fault_injector=inject
+            ).run(
+                prompt="do the bounded task",
+                repository_path=Path("C:/repo"),
+                model="gpt-test",
+                effort="high",
+            )
+        self.assertEqual(events[0][0], "before_thread_start")
+        self.assertEqual(events[1][0], "after_thread_start")
+        self.assertEqual(events[2][0], "after_turn_started")
+        self.assertEqual(events[2][1]["request_admission"], "accepted")
+        self.assertEqual(raised.exception.details["fault_observation"]["turn_id"], "turn-started-123")
+        self.assertIsNotNone(getattr(holder["codex"].thread, "turn_kwargs", None))
+
+    def test_injected_fault_after_sdk_result_proves_response_loss_boundary(self) -> None:
+        events: list[str] = []
+
+        def inject(point: str, context: dict[str, object]) -> None:
+            events.append(point)
+            if point == "after_turn_completed":
+                raise RunnerError(
+                    "injected_response_loss",
+                    "injected response loss after the SDK returned a result",
+                    details={
+                        "fault_observation": {
+                            "message": "stream disconnected after completion",
+                            "source": "hybrid_injected_fault",
+                            "structured": True,
+                            "request_admission": "accepted",
+                            "execution_outcome": "unknown",
+                            "thread_id": context["thread_id"],
+                            "turn_id": context["turn_id"],
+                        }
+                    },
+                )
+
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
+        )
+        with self.assertRaisesRegex(RunnerError, "response loss") as raised:
+            CodexAdapter(
+                codex_factory=lambda config: FakeCodex(config),
+                sdk_module=sdk,
+                fault_injector=inject,
+            ).run(
+                prompt="do the bounded task",
+                repository_path=Path("C:/repo"),
+                model="gpt-test",
+                effort="high",
+            )
+        self.assertIn("after_turn_completed", events)
+        self.assertEqual(raised.exception.details["fault_observation"]["execution_outcome"], "unknown")
+
     def test_missing_published_sdk_is_a_structured_error(self) -> None:
         with patch.dict(sys.modules, {"openai_codex": None}):
             with self.assertRaises(RunnerError) as context:

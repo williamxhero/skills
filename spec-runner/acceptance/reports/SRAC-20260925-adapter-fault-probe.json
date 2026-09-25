@@ -1,0 +1,344 @@
+{
+  "schema_version": "spec-runner-hybrid-fault-probe/v1",
+  "evidence_kind": "deterministic_fixture",
+  "adapter_boundary": "CodexAdapter",
+  "live_provider_incident": false,
+  "cases": [
+    {
+      "id": "encrypted_mismatch",
+      "fault_point": "after_turn_completed",
+      "adapter_events": [
+        {
+          "point": "before_thread_start",
+          "context": {
+            "operation": "turn",
+            "source_thread_id": null
+          }
+        },
+        {
+          "point": "after_thread_start",
+          "context": {
+            "operation": "turn",
+            "thread_id": "thread-hybrid"
+          }
+        },
+        {
+          "point": "after_turn_started",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "request_admission": "accepted",
+            "execution_outcome": "unknown"
+          }
+        },
+        {
+          "point": "after_turn_completed",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "status": "completed"
+          }
+        }
+      ],
+      "thread_id": "thread-hybrid",
+      "turn_id": "turn-hybrid",
+      "request_admission": "accepted",
+      "execution_outcome": "unknown",
+      "family": "encrypted_item_mismatch",
+      "reason": "encrypted_item_mismatch",
+      "decision": {
+        "schema_version": "spec-runner-recovery-decision/v1",
+        "action": "observe",
+        "reason": "execution_outcome_unknown",
+        "evidence": [
+          "active_or_unsettled_execution"
+        ],
+        "preconditions": [
+          "reconcile_before_retry"
+        ],
+        "next_check_at": null,
+        "remaining_budget": {
+          "same_thread_retries": 1,
+          "capacity_retries": 2,
+          "route_probes": 1,
+          "clean_probes": 1,
+          "migration_requests": 1,
+          "no_progress": 3
+        },
+        "family": "unknown"
+      },
+      "evidence_kind": "deterministic_fixture",
+      "live_provider_incident": false
+    },
+    {
+      "id": "capacity",
+      "fault_point": "after_turn_completed",
+      "adapter_events": [
+        {
+          "point": "before_thread_start",
+          "context": {
+            "operation": "turn",
+            "source_thread_id": null
+          }
+        },
+        {
+          "point": "after_thread_start",
+          "context": {
+            "operation": "turn",
+            "thread_id": "thread-hybrid"
+          }
+        },
+        {
+          "point": "after_turn_started",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "request_admission": "accepted",
+            "execution_outcome": "unknown"
+          }
+        },
+        {
+          "point": "after_turn_completed",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "status": "completed"
+          }
+        }
+      ],
+      "thread_id": "thread-hybrid",
+      "turn_id": "turn-hybrid",
+      "request_admission": "rejected",
+      "execution_outcome": "failed",
+      "family": "capacity",
+      "reason": "capacity_or_transient",
+      "decision": {
+        "schema_version": "spec-runner-recovery-decision/v1",
+        "action": "wait_retry",
+        "reason": "fault_family:capacity",
+        "evidence": [
+          "dfd03ca17ea7de01fa9548711333704445fc8ee71d9ec44a4c2a449712ee4491",
+          "capacity_or_transient"
+        ],
+        "preconditions": [
+          "reconcile_external_side_effects",
+          "preserve_stage_budget"
+        ],
+        "next_check_at": "2026-09-25T07:36:04.899485+00:00",
+        "remaining_budget": {
+          "same_thread_retries": 1,
+          "capacity_retries": 1,
+          "route_probes": 1,
+          "clean_probes": 1,
+          "migration_requests": 1,
+          "no_progress": 3
+        },
+        "family": "capacity"
+      },
+      "evidence_kind": "deterministic_fixture",
+      "live_provider_incident": false
+    },
+    {
+      "id": "stream_disconnect",
+      "fault_point": "after_turn_started",
+      "adapter_events": [
+        {
+          "point": "before_thread_start",
+          "context": {
+            "operation": "turn",
+            "source_thread_id": null
+          }
+        },
+        {
+          "point": "after_thread_start",
+          "context": {
+            "operation": "turn",
+            "thread_id": "thread-hybrid"
+          }
+        },
+        {
+          "point": "after_turn_started",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "request_admission": "accepted",
+            "execution_outcome": "unknown"
+          }
+        }
+      ],
+      "thread_id": "thread-hybrid",
+      "turn_id": "turn-hybrid",
+      "request_admission": "accepted",
+      "execution_outcome": "unknown",
+      "family": "stream_disconnected",
+      "reason": "stream_disconnected",
+      "decision": {
+        "schema_version": "spec-runner-recovery-decision/v1",
+        "action": "observe",
+        "reason": "execution_outcome_unknown",
+        "evidence": [
+          "active_or_unsettled_execution"
+        ],
+        "preconditions": [
+          "reconcile_before_retry"
+        ],
+        "next_check_at": null,
+        "remaining_budget": {
+          "same_thread_retries": 0,
+          "capacity_retries": 2,
+          "route_probes": 1,
+          "clean_probes": 1,
+          "migration_requests": 1,
+          "no_progress": 3
+        },
+        "family": "unknown"
+      },
+      "evidence_kind": "deterministic_fixture",
+      "live_provider_incident": false
+    },
+    {
+      "id": "route_not_found",
+      "fault_point": "after_turn_completed",
+      "adapter_events": [
+        {
+          "point": "before_thread_start",
+          "context": {
+            "operation": "turn",
+            "source_thread_id": null
+          }
+        },
+        {
+          "point": "after_thread_start",
+          "context": {
+            "operation": "turn",
+            "thread_id": "thread-hybrid"
+          }
+        },
+        {
+          "point": "after_turn_started",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "request_admission": "accepted",
+            "execution_outcome": "unknown"
+          }
+        },
+        {
+          "point": "after_turn_completed",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "status": "completed"
+          }
+        }
+      ],
+      "thread_id": "thread-hybrid",
+      "turn_id": "turn-hybrid",
+      "request_admission": "rejected",
+      "execution_outcome": "failed",
+      "family": "route_not_found",
+      "reason": "route_not_found",
+      "decision": {
+        "schema_version": "spec-runner-recovery-decision/v1",
+        "action": "use_approved_route",
+        "reason": "fault_family:route_not_found",
+        "evidence": [
+          "5a8462ddee2644fd9d3b7febcc176e9fdc2483aac4698c14238d2e034b59c01c",
+          "route_not_found"
+        ],
+        "preconditions": [
+          "reconcile_external_side_effects",
+          "preserve_stage_budget"
+        ],
+        "next_check_at": null,
+        "remaining_budget": {
+          "same_thread_retries": 1,
+          "capacity_retries": 2,
+          "route_probes": 1,
+          "clean_probes": 1,
+          "migration_requests": 1,
+          "no_progress": 3
+        },
+        "family": "route_not_found"
+      },
+      "evidence_kind": "deterministic_fixture",
+      "live_provider_incident": false
+    },
+    {
+      "id": "authorization",
+      "fault_point": "after_turn_completed",
+      "adapter_events": [
+        {
+          "point": "before_thread_start",
+          "context": {
+            "operation": "turn",
+            "source_thread_id": null
+          }
+        },
+        {
+          "point": "after_thread_start",
+          "context": {
+            "operation": "turn",
+            "thread_id": "thread-hybrid"
+          }
+        },
+        {
+          "point": "after_turn_started",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "request_admission": "accepted",
+            "execution_outcome": "unknown"
+          }
+        },
+        {
+          "point": "after_turn_completed",
+          "context": {
+            "thread_id": "thread-hybrid",
+            "turn_id": "turn-hybrid",
+            "status": "completed"
+          }
+        }
+      ],
+      "thread_id": "thread-hybrid",
+      "turn_id": "turn-hybrid",
+      "request_admission": "rejected",
+      "execution_outcome": "failed",
+      "family": "authorization",
+      "reason": "authorization_rejected",
+      "decision": {
+        "schema_version": "spec-runner-recovery-decision/v1",
+        "action": "wait_for_config",
+        "reason": "fault_family:authorization",
+        "evidence": [
+          "9ba0f2092545e876d97de855827561a64e8538bfc0764df891c0ac34aacdfab1",
+          "authorization_rejected"
+        ],
+        "preconditions": [
+          "reconcile_external_side_effects",
+          "preserve_stage_budget"
+        ],
+        "next_check_at": null,
+        "remaining_budget": {
+          "same_thread_retries": 1,
+          "capacity_retries": 2,
+          "route_probes": 1,
+          "clean_probes": 1,
+          "migration_requests": 1,
+          "no_progress": 3
+        },
+        "family": "authorization"
+      },
+      "evidence_kind": "deterministic_fixture",
+      "live_provider_incident": false
+    }
+  ],
+  "passed": true,
+  "unverified": [
+    "live Codex process restart",
+    "native Windows detached-parent exit",
+    "live GitHub merge queue",
+    "hybrid real SDK fault injection",
+    "real provider incident"
+  ]
+}
