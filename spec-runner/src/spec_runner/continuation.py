@@ -13,6 +13,7 @@ from .errors import RunnerError
 
 
 SCHEMA_VERSION = "spec-runner-continuation-bundle/v1"
+MAX_BUNDLE_BYTES = 256_000
 _FORBIDDEN_KEYS = {"encrypted_content", "reasoning", "opaque_compaction", "response_chain", "credentials", "secrets"}
 
 
@@ -76,6 +77,9 @@ class ContinuationBundle:
             "source_refs": self.source_refs or [],
         }
         body["bundle_digest"] = _digest(body)
+        encoded = json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > MAX_BUNDLE_BYTES:
+            raise RunnerError("continuation_bundle_too_large", "continuation bundle exceeds its bounded context budget")
         return body
 
 
@@ -103,8 +107,9 @@ def build_bundle(document: Mapping[str, Any]) -> ContinuationBundle:
         authorization=values["authorization"], last_verified_progress=_safe(document.get("last_verified_progress"), field="last_verified_progress"),
         source_refs=values["source_refs"],
     )
+    computed = bundle.public()
     supplied = document.get("bundle_digest")
-    if supplied is not None and supplied != bundle.public()["bundle_digest"]:
+    if supplied is not None and supplied != computed["bundle_digest"]:
         raise RunnerError("continuation_digest_mismatch", "continuation bundle digest does not match its contents")
     return bundle
 

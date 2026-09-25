@@ -27,7 +27,7 @@ from .scope_lock import ScopeLock
 from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
 from .github_delivery import GitHubDelivery
 from .store import _process_alive
-from .continuation import ContinuationBundle, write_bundle_atomic
+from .continuation import ContinuationBundle, read_bundle, write_bundle_atomic
 from .recovery import (
     FaultFamily,
     RecoveryAction,
@@ -158,6 +158,47 @@ def _safe_artifact_directory(control_root: Path, config: RunnerConfig, run_id: s
     if root not in (directory, *directory.parents):
         raise RunnerError("artifact_path_escape", "run artifact directory escaped artifact_root")
     return directory
+
+
+def _continuation_workspace_identity(*, workspace: Path, workspace_info: dict[str, object]) -> dict[str, object]:
+    """Capture bounded Git references without copying source or sensitive paths."""
+    status = _git_binary(workspace, "status", "--porcelain=v1", "--untracked-files=all")
+    staged = _git_binary(workspace, "diff", "--cached", "--binary")
+    unstaged = _git_binary(workspace, "diff", "--binary")
+    return {
+        "path": os.fspath(workspace.resolve()),
+        "repository": workspace_info.get("repository"),
+        "branch": workspace_info.get("branch"),
+        "base_sha": workspace_info.get("base_sha"),
+        "head": git_sha(workspace),
+        "working_tree": {
+            "dirty": bool(status),
+            "status_digest": hashlib.sha256(status).hexdigest(),
+            "status_entry_count": len([line for line in status.splitlines() if line]),
+            "index_diff_digest": hashlib.sha256(staged).hexdigest(),
+            "worktree_diff_digest": hashlib.sha256(unstaged).hexdigest(),
+            "binary_state_preserved": True,
+            "source": "git-status-and-binary-diff-digests",
+        },
+    }
+
+
+def _reconcile_continuation_bundles(*, control_root: Path, config: RunnerConfig,
+                                    run: RunRecord, store: Store) -> list[dict[str, object]]:
+    """Adopt only this run's atomically written bundles into the Store."""
+    directory = _safe_artifact_directory(control_root, config, run.run_id)
+    if not directory.exists():
+        return []
+    receipts: list[dict[str, object]] = []
+    for path in sorted(directory.glob("continuation-*.json")):
+        if path.is_symlink() or not path.is_file():
+            raise RunnerError("continuation_path_invalid", "continuation bundle must be a regular file")
+        bundle = read_bundle(path).public()
+        expected_spec = path.name[len("continuation-"):-len(".json")]
+        if bundle["run_id"] != run.run_id or bundle["spec_key"] != expected_spec:
+            raise RunnerError("continuation_receipt_identity_invalid", "continuation bundle path and identity do not match this run")
+        receipts.append(store.record_continuation_bundle(run_id=run.run_id, bundle_path=path, bundle=bundle))
+    return receipts
 
 
 def _write_json_atomic(path: Path, document: dict[str, object]) -> None:
@@ -1891,7 +1932,7 @@ def _finish_codex_implementation(
 
 def _persist_implementation_continuation(*, control_root: Path, config: RunnerConfig,
                                          run: RunRecord, ticket_plan: dict[str, object],
-                                         workspace_info: dict[str, object], stage: str,
+                                         workspace_info: dict[str, object], stage: str, store: Store,
                                          generation: int = 0) -> dict[str, object]:
     """Save the minimum business context before a worker can become unusable."""
     workspace = Path(str(workspace_info["workspace"]))
@@ -1905,12 +1946,7 @@ def _persist_implementation_continuation(*, control_root: Path, config: RunnerCo
         confirmed_decisions=[],
         tickets=list(ticket_plan.get("tickets", [])) if isinstance(ticket_plan.get("tickets"), list) else [],
         dependencies=[{"spec_key": item} for item in ticket_plan.get("blocked_by", [])] if isinstance(ticket_plan.get("blocked_by"), list) else [],
-        workspace={
-            "path": os.fspath(workspace),
-            "branch": workspace_info.get("branch"),
-            "base_sha": workspace_info.get("base_sha"),
-            "head": git_sha(workspace) if workspace.exists() else None,
-        },
+        workspace=_continuation_workspace_identity(workspace=workspace, workspace_info=workspace_info),
         verified_items=[],
         remaining_items=[{"kind": "implementation"}, {"kind": "candidate_verification"}, {"kind": "independent_review"}],
         tests=list(config.acceptance_checks),
@@ -1921,7 +1957,9 @@ def _persist_implementation_continuation(*, control_root: Path, config: RunnerCo
         source_refs=[{"kind": "ticket_plan", "digest": ticket_plan.get("digest")}],
     )
     path = _safe_artifact_directory(control_root, config, run.run_id) / f"continuation-{bundle.spec_key}.json"
-    return write_bundle_atomic(path, bundle)
+    document = write_bundle_atomic(path, bundle)
+    store.record_continuation_bundle(run_id=run.run_id, bundle_path=path, bundle=document)
+    return document
 
 
 def _execute_codex_implementation(
@@ -1950,7 +1988,7 @@ def _execute_codex_implementation(
     store.begin_stage(run.run_id, step_name=implementation_step, operation_id=implementation_operation, backend_kind="codex_sdk", worker_id=implementation_worker)
     _persist_implementation_continuation(
         control_root=control_root, config=config, run=run, ticket_plan=ticket_plan,
-        workspace_info=workspace_info, stage=implementation_step,
+        workspace_info=workspace_info, stage=implementation_step, store=store,
     )
     schema = IMPLEMENTATION_SCHEMA
     implementation_prompt = (
@@ -4603,6 +4641,12 @@ def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key
                     "existing takeover continuation has no durable context artifact",
                     details={"run_id": existing.run_id, "takeover_key": takeover_key},
                 )
+            # Reconcile an atomic bundle that may have outlived the process
+            # before its SQLite receipt transaction committed. This uses the
+            # existing launch-key run and therefore cannot create a second run.
+            _reconcile_continuation_bundles(
+                control_root=control_root, config=config, run=existing, store=store,
+            )
             if existing.state in {"completed", "cancelled", "blocked_writer_busy"}:
                 if launch_token:
                     store.register_runtime(
