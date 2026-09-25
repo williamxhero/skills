@@ -326,12 +326,16 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         run_id=run.run_id, operation_kind=operation_kind, stage=run.current_step,
     )
     existing = store.recovery_episode(episode_id) or {}
+    workers = store.workers_for_run(run.run_id)
+    worker = workers[-1] if workers else {}
     fault = error.details.get("fault_observation") if isinstance(error.details, dict) else None
     observation = observation_from_error(
         operation_kind=operation_kind,
         error=fault if isinstance(fault, dict) else error,
         run_id=run.run_id,
         stage=run.current_step,
+        attempt=int(existing.get("same_thread_attempts") or 0) + int(existing.get("capacity_attempts") or 0) + 1,
+        worker_id=(str(fault.get("worker_id")) if isinstance(fault, dict) and fault.get("worker_id") else (str(worker.get("worker_id")) if worker.get("worker_id") else None)),
         thread_id=(str(fault.get("thread_id")) if isinstance(fault, dict) and fault.get("thread_id") else (str(error.details.get("thread_id")) if error.details.get("thread_id") else None)),
         turn_id=(str(fault.get("turn_id")) if isinstance(fault, dict) and fault.get("turn_id") else (str(error.details.get("turn_id")) if error.details.get("turn_id") else None)),
         last_verified_progress=None,
@@ -351,8 +355,6 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         FaultFamily.UNKNOWN.value,
     }:
         counters["same_thread_attempts"] += 1
-    workers = store.workers_for_run(run.run_id)
-    worker = workers[-1] if workers else {}
     snapshot = RecoverySnapshot(
         run_id=run.run_id,
         operation_kind=operation_kind,

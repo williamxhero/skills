@@ -51,6 +51,10 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
     store = Store.open(root, create=True)
     run = _run(tmp_path)
     store.create_run(run, "start:" + run.run_id)
+    store.begin_stage(
+        run.run_id, step_name="codex_planning", operation_id="planning:" + run.run_id,
+        backend_kind="codex_sdk", worker_id="worker-capacity",
+    )
     try:
         first = workflow._record_recovery_failure(
             run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error()
@@ -64,6 +68,8 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
         episode = status["recovery"]["episodes"][0]
         assert episode["capacity_attempts"] == 2
         assert episode["state"] == "service_wait"
+        assert episode["observations"][0]["observation"]["worker_id"] == "worker-capacity"
+        assert episode["observations"][0]["observation"]["attempt"] == 1
         assert len(episode["observations"]) == 1
         assert episode["decisions"][-1]["decision"]["action"] == "service_wait"
         assert any(event["event_type"] == "recovery_decision_recorded" for event in status["events"])
