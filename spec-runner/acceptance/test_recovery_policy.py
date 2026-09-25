@@ -68,6 +68,21 @@ def test_runtime_version_requires_runtime_observation_not_client_config():
     assert observed.runtime_version == "runtime/3.4"
 
 
+def test_capacity_retry_after_overrides_local_delay():
+    timestamp = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    observation = FaultObservation(
+        operation_kind="implementation", stage="implement",
+        family=FaultFamily.CAPACITY.value, reason="capacity_or_transient",
+        retry_after_seconds=17.5,
+    )
+    decision = decide_recovery(
+        RecoverySnapshot(run_id="run-1", operation_kind="implementation", stage="implement"),
+        [observation], RecoveryPolicy(retry_delay_seconds=5), now=timestamp,
+    )
+    assert decision.action is RecoveryAction.WAIT_RETRY
+    assert decision.next_check_at == "2026-09-25T00:00:17.500000+00:00"
+
+
 def test_decision_is_pure_and_capacity_becomes_service_wait_after_budget():
     timestamp = datetime(2026, 9, 25, tzinfo=timezone.utc)
     observation = FaultObservation(

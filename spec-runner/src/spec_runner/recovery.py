@@ -321,6 +321,17 @@ def _future(now: datetime, seconds: float) -> str:
     return (now.astimezone(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
 
+def _retry_delay(observation: FaultObservation, default: float) -> float:
+    """Prefer a valid provider Retry-After hint over the local fallback."""
+    try:
+        value = float(observation.retry_after_seconds) if observation.retry_after_seconds is not None else None
+    except (TypeError, ValueError):
+        value = None
+    if value is None or value < 0 or value != value or value == float("inf"):
+        return default
+    return value
+
+
 def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservation],
                     policy: RecoveryPolicy = RecoveryPolicy(), *, now: datetime | None = None) -> RecoveryDecision:
     """Return a deterministic, explainable recovery action."""
@@ -363,7 +374,8 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
         action = RecoveryAction.PROBE_CLEAN_CONTEXT if remaining["clean_probes"] else (RecoveryAction.REQUEST_CLEAN_MIGRATION if remaining["migration_requests"] else RecoveryAction.BLOCKED)
     else:
         action = RecoveryAction.RESUME_SAME_THREAD if remaining["same_thread_retries"] and remaining["no_progress"] else RecoveryAction.BLOCKED
-    delay = policy.service_wait_delay_seconds if action == RecoveryAction.SERVICE_WAIT else policy.retry_delay_seconds
+    fallback_delay = policy.service_wait_delay_seconds if action == RecoveryAction.SERVICE_WAIT else policy.retry_delay_seconds
+    delay = _retry_delay(observation, fallback_delay) if family == FaultFamily.CAPACITY.value else fallback_delay
     next_check = _future(current, delay) if action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT} else None
     return RecoveryDecision(action, f"fault_family:{family}", (observation.fingerprint, observation.reason),
                             ("reconcile_external_side_effects", "preserve_stage_budget"), next_check,

@@ -545,3 +545,11 @@ The Runner recovery failure boundary now carries the durable worker ID and a per
 The focused recovery policy and Runner runtime selection passed `22 passed`. The explicit source and acceptance selection passed `256 passed, 1 skipped` in 77.01 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q`. `git diff --check` passed.
 
 This is an incremental RCV-01.1 correction. Live SDK fault injection, provider incidents, and project-level L3-L5 gates remain `not_verified`; the related issues stay open.
+
+## RCV-01.2 Retry-After precedence correction (2026-09-25)
+
+Recovery decisions now honor a valid structured provider `Retry-After` value for capacity waits and retries. Invalid, negative, NaN, or infinite hints fall back to the configured local delay. A deterministic policy case proves a 17.5 second hint produces the corresponding next check instead of the five second default.
+
+The focused recovery-policy selection passed `19 passed`. The explicit source and acceptance selection passed `257 passed, 1 skipped` in 73.00 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q`. `git diff --check` passed.
+
+This is an incremental RCV-01.2 correction. It does not prove a live provider capacity incident, automatic service wake-up, or project-level L3-L5 gates; the recovery issues remain open.
