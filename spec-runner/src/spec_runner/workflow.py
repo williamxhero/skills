@@ -992,20 +992,39 @@ def _execute_codex_tickets(
     )
 
 
-def _git_checked(repository: Path, *args: str) -> str:
+_GIT_COMMAND_TIMEOUT_SECONDS = 120
+
+
+def _git_checked(repository: Path, *args: str, timeout_seconds: float = _GIT_COMMAND_TIMEOUT_SECONDS) -> str:
     try:
-        result = subprocess.run(["git", "-c", "core.longpaths=true", "-C", os.fspath(repository), *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            ["git", "-c", "core.longpaths=true", "-C", os.fspath(repository), *args],
+            check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "implementation_git_timeout",
+            "Runner Git reconciliation exceeded its bounded timeout; reconcile before retry",
+            details={"args": list(args), "timeout_seconds": timeout_seconds},
+        ) from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("implementation_git_failed", "Runner could not reconcile the implementation workspace", details={"args": list(args)}) from exc
     return result.stdout.strip()
 
 
-def _git_binary(repository: Path, *args: str) -> bytes:
+def _git_binary(repository: Path, *args: str, timeout_seconds: float = _GIT_COMMAND_TIMEOUT_SECONDS) -> bytes:
     try:
         result = subprocess.run(
             ["git", "-c", "core.longpaths=true", "-C", os.fspath(repository), *args],
-            check=True, capture_output=True,
+            check=True, capture_output=True, timeout=timeout_seconds,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "implementation_git_timeout",
+            "Runner Git reconciliation exceeded its bounded timeout; reconcile before retry",
+            details={"args": list(args), "timeout_seconds": timeout_seconds},
+        ) from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("implementation_git_failed", "Runner could not reconcile the implementation workspace", details={"args": list(args)}) from exc
     return result.stdout
