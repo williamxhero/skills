@@ -430,7 +430,7 @@ def recovery_diagnostic(*, episode: Mapping[str, Any], observations: list[Mappin
         next_condition = "an operator must resolve the recorded blocker; no worker may be created"
     else:
         next_condition = "the owning Runner handler must verify the preconditions before acting"
-    cleanup_debt = run_state in {"cleanup_pending", "service_wait", "wait_retry", "blocked"}
+    cleanup_debt = run_state == "cleanup_pending" or bool(episode.get("cleanup_debt"))
     return {
         "schema_version": "spec-runner-recovery-diagnostic/v1",
         "incident": {

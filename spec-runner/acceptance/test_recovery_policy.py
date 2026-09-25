@@ -141,6 +141,29 @@ def test_encrypted_mismatch_is_bounded_and_never_infinite_thread_creation():
     assert exhausted.action is RecoveryAction.BLOCKED
 
 
+def test_recovery_diagnostic_does_not_call_waits_or_blocks_cleanup_debt():
+    base = {
+        "run_id": "run-1", "operation_kind": "codex_turn", "stage": "implementation",
+        "generation": 0, "state": "service_wait",
+    }
+    observation = {"observation": {"family": "capacity", "reason": "capacity_or_transient"}}
+    decision = {"decision": {"action": "service_wait", "remaining_budget": {}}}
+
+    waiting = recovery_diagnostic(
+        episode=base, observations=[observation], decisions=[decision], run_state="service_wait",
+    )
+    blocked = recovery_diagnostic(
+        episode={**base, "state": "blocked"}, observations=[observation], decisions=[decision], run_state="blocked",
+    )
+    cleanup = recovery_diagnostic(
+        episode={**base, "state": "cleanup_pending"}, observations=[observation], decisions=[decision], run_state="cleanup_pending",
+    )
+
+    assert waiting["cleanup_debt"]["present"] is False
+    assert blocked["cleanup_debt"]["present"] is False
+    assert cleanup["cleanup_debt"]["present"] is True
+
+
 @pytest.mark.parametrize(
     ("action", "expected_condition"),
     [
