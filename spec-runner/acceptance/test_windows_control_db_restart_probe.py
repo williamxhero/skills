@@ -12,6 +12,8 @@ def _report() -> dict[str, object]:
         "evidence_kind": "observed_windows_control_db_restart",
         "platform": "Windows",
         "lock_acquired_before_runner_termination": True,
+        "lock_write_attempt_error": "control_database_busy",
+        "lock_write_attempt_elapsed_seconds": 5.0,
         "runner_terminated_while_lock_held": True,
         "control_db_exists_after": True,
         "control_db_integrity_after": "ok",

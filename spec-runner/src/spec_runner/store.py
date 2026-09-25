@@ -22,6 +22,16 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _raise_if_control_database_busy(exc: sqlite3.OperationalError) -> None:
+    message = str(exc)
+    if "locked" in message.lower() or "busy" in message.lower():
+        raise RunnerError(
+            "control_database_busy",
+            "Spec Runner control database is temporarily locked",
+            details={"database_error": message},
+        ) from exc
+
+
 def _process_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -91,18 +101,25 @@ class Store:
         connection = sqlite3.connect(database_path)
         connection.row_factory = sqlite3.Row
         store = cls(database_path, connection)
-        if create:
-            store._initialize()
-        else:
-            # A detached child creates the SQLite file before its schema
-            # transaction commits. Treat that short window as not-ready so a
-            # launcher can retry instead of surfacing a raw sqlite error.
-            table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
-            ).fetchone()
-            if table is None:
-                connection.close()
-                raise RunnerError("control_not_ready", "Spec Runner control database schema is not ready")
+        try:
+            if create:
+                store._initialize()
+            else:
+                # A detached child creates the SQLite file before its schema
+                # transaction commits. Treat that short window as not-ready so a
+                # launcher can retry instead of surfacing a raw sqlite error.
+                table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+                ).fetchone()
+                if table is None:
+                    raise RunnerError("control_not_ready", "Spec Runner control database schema is not ready")
+        except sqlite3.OperationalError as exc:
+            connection.close()
+            _raise_if_control_database_busy(exc)
+            raise
+        except Exception:
+            connection.close()
+            raise
         return store
 
     def close(self) -> None:
@@ -330,11 +347,14 @@ class Store:
         try:
             self.connection.execute("BEGIN IMMEDIATE")
             yield
+            self.connection.commit()
+        except sqlite3.OperationalError as exc:
+            self.connection.rollback()
+            _raise_if_control_database_busy(exc)
+            raise
         except Exception:
             self.connection.rollback()
             raise
-        else:
-            self.connection.commit()
 
     def _migrate_verifications_v1(self) -> None:
         """Preserve the one-stage table as audit data before adding stage receipts."""

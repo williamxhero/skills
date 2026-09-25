@@ -90,6 +90,12 @@ def validate_report(report: dict[str, Any]) -> None:
         raise AssertionError("this probe must run on Windows")
     if report.get("lock_acquired_before_runner_termination") is not True:
         raise AssertionError("the real control DB lock must precede Runner termination")
+    if report.get("lock_write_attempt_error") != "control_database_busy":
+        raise AssertionError("the public drive command must report a structured bounded lock error")
+    if not isinstance(report.get("lock_write_attempt_elapsed_seconds"), (int, float)):
+        raise AssertionError("the public lock attempt must record its bounded wait")
+    if report.get("lock_write_attempt_elapsed_seconds", 0) > 10:
+        raise AssertionError("the public lock attempt exceeded its bounded wait")
     if report.get("runner_terminated_while_lock_held") is not True:
         raise AssertionError("the known detached Runner must be terminated while the lock is held")
     if report.get("control_db_exists_after") is not True or report.get("control_db_integrity_after") != "ok":
@@ -178,6 +184,16 @@ def run_probe(output: Path | None = None) -> dict[str, Any]:
             else:
                 raise RuntimeError("SQLite lock holder did not acquire the lock")
             lock_digest_before = _digest(database)
+            lock_attempt_started = time.monotonic()
+            lock_attempt_code, lock_attempt = _invoke(
+                ["drive", "--brief", str(brief), "--config", str(config), "--control-root", str(control), "--launch-key", "windows-control-db-restart"],
+                root,
+                env,
+            )
+            lock_attempt_elapsed = time.monotonic() - lock_attempt_started
+            lock_attempt_error = str(lock_attempt.get("error", {}).get("code") or "")
+            if lock_attempt_code != 2 or lock_attempt_error != "control_database_busy":
+                raise RuntimeError("public drive did not fail closed with a structured control DB lock error")
             _write(control / "faults" / f"{run_id}.after_first_artifact.continue", "continue\n")
             time.sleep(0.75)
             termination_code = _terminate_known_pid(child_pid)
@@ -212,6 +228,8 @@ def run_probe(output: Path | None = None) -> dict[str, Any]:
             "lock_holder_pid": holder.pid,
             "run_id": run_id,
             "lock_acquired_before_runner_termination": holder_ready.is_file(),
+            "lock_write_attempt_error": lock_attempt_error,
+            "lock_write_attempt_elapsed_seconds": round(lock_attempt_elapsed, 3),
             "runner_terminated_while_lock_held": runner_terminated_while_lock_held,
             "termination_exit_code": termination_code,
             "status_before_recovery": before["run"]["state"],

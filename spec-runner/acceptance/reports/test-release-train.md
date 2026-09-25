@@ -503,3 +503,29 @@ This is real native Windows control DB and launcher-log recovery evidence for
 #266 and one RCV-02.4 recovery gate. It does not prove source-thread takeover,
 GitHub merge queue, complete A-J recovery, or the remaining project-level
 L3-L5 gates; those remain `not_verified`, and #266/#300 remain open.
+
+
+## Windows control DB lock fail-closed behavior (2026-09-25)
+
+A native-Windows probe exposed that SQLite `database is locked` errors from
+Store transactions escaped as raw `sqlite3.OperationalError`. The public CLI
+therefore could not return a structured recoverable result while the control
+database was exclusively locked. Store initialization and transaction handling
+now map SQLite busy/locked errors to `control_database_busy`, while preserving
+other SQLite error classes.
+
+The extended Windows probe held the actual control DB with an independent
+`BEGIN EXCLUSIVE` transaction and invoked public `drive`. It returned the
+structured `control_database_busy` error in 7.808 seconds, terminated the
+recorded detached Runner while the lock remained held, then released the lock
+and recovered the same run to `completed`. The database remained present and
+passed `PRAGMA integrity_check`; both launcher logs remained readable. Durable
+receipt: `SRAC-20260925-windows-control-db-restart-locked-write.json`.
+
+Focused Store and probe-contract tests passed (12 passed). The full explicit
+source and acceptance selection passed `255 passed, 1 skipped` in 87.56 seconds
+with `pytest tests acceptance --ignore=acceptance/fixture-app -q`. This verifies
+one Windows control-DB lock boundary. It does not cover independently locked
+launcher log rotation, all cleanup-pending combinations, source-thread
+migration, or complete RCV-02.4 A-J / project L3-L5 gates; #266 and #300 remain
+open.
