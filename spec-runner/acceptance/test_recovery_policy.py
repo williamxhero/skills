@@ -54,6 +54,20 @@ def test_observation_preserves_unknown_admission_and_redacts_secret():
     assert observation.fingerprint
 
 
+def test_runtime_version_requires_runtime_observation_not_client_config():
+    configured = observation_from_error(
+        operation_kind="implementation",
+        error={"message": "temporary failure", "client_version": "configured-client/1.2"},
+    )
+    observed = observation_from_error(
+        operation_kind="implementation",
+        error={"message": "temporary failure", "client_version": "configured-client/1.2", "runtime_version": "runtime/3.4"},
+    )
+
+    assert configured.runtime_version is None
+    assert observed.runtime_version == "runtime/3.4"
+
+
 def test_decision_is_pure_and_capacity_becomes_service_wait_after_budget():
     timestamp = datetime(2026, 9, 25, tzinfo=timezone.utc)
     observation = FaultObservation(

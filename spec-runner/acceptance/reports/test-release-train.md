@@ -529,3 +529,11 @@ one Windows control-DB lock boundary. It does not cover independently locked
 launcher log rotation, all cleanup-pending combinations, source-thread
 migration, or complete RCV-02.4 A-J / project L3-L5 gates; #266 and #300 remain
 open.
+
+## RCV-01.1 runtime-version provenance correction (2026-09-25)
+
+Fault observations previously copied `client_version` into `runtime_version` when the explicit runtime field was absent. That made configured client metadata look like a runtime observation. The parser now populates `runtime_version` only from an explicit `runtime_version` field; a regression case verifies configured `client_version` remains unobserved and an explicit runtime value is retained.
+
+The targeted recovery-policy, Runner recovery-runtime, and Codex-adapter selection passed `36 passed, 1 skipped`. The explicit source and acceptance selection passed `256 passed, 1 skipped` in 73.88 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q` with this checkout on `PYTHONPATH`. `git diff --check` passed.
+
+This corrects evidence provenance in RCV-01.1; it does not complete the ticket or prove live SDK injected-error recovery, provider incidents, or project-level L3-L5 gates. Those remain `not_verified`.

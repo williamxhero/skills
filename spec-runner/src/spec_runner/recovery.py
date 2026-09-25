@@ -202,7 +202,7 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
     observed_model = _text(_field(details, "observed_model", "actual_model", "model"), 120)
     observed_effort = _text(_field(details, "observed_effort", "actual_effort", "effort"), 120)
     observed_service_tier = _text(_field(details, "observed_service_tier", "actual_service_tier", "service_tier"), 120)
-    runtime_version = _text(_field(details, "runtime_version", "client_version"), 120)
+    runtime_version = _text(_field(details, "runtime_version"), 120)
     retry_count_value = _field(details, "sdk_retry_count", "retry_count", "sdk_retries")
     try:
         sdk_retry_count = int(retry_count_value) if retry_count_value is not None else None
