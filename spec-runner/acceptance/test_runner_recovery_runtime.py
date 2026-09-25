@@ -67,6 +67,12 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
         assert len(episode["observations"]) == 1
         assert episode["decisions"][-1]["decision"]["action"] == "service_wait"
         assert any(event["event_type"] == "recovery_decision_recorded" for event in status["events"])
+        assert any(event["event_type"] == "fault_observed" for event in status["events"])
+        diagnostic = episode["diagnostic"]
+        assert diagnostic["incident"]["family"] == "capacity"
+        assert diagnostic["current_action"] == "service_wait"
+        assert diagnostic["budget"]["next_check_at"]
+        assert diagnostic["next_recovery_condition"].startswith("wait until next_check_at")
     finally:
         store.close()
 
@@ -110,6 +116,9 @@ def test_runner_observes_accepted_unknown_result_before_retry(tmp_path: Path) ->
         assert observation["request_admission"] == "accepted"
         assert observation["execution_outcome"] == "unknown"
         assert status["recovery"]["episodes"][0]["decisions"][0]["decision"]["action"] == "observe"
+        diagnostic = status["recovery"]["episodes"][0]["diagnostic"]
+        assert diagnostic["thread"]["unconfirmed_execution"] is True
+        assert diagnostic["next_recovery_condition"].startswith("reconcile the persisted execution")
     finally:
         store.close()
 

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .errors import RunnerError
+from .recovery import recovery_diagnostic
 
 SCHEMA_VERSION = "spec-runner-store/v1"
 
@@ -1058,6 +1059,17 @@ class Store:
                 decisions.append(item)
             episode["observations"] = observations
             episode["decisions"] = decisions
+            owner = self.connection.execute(
+                "SELECT worker_id, backend_kind, external_thread_id, external_turn_id, state, updated_at "
+                "FROM workers WHERE run_id = ? ORDER BY rowid DESC LIMIT 1", (run_id,)
+            ).fetchone()
+            episode["diagnostic"] = recovery_diagnostic(
+                episode=episode,
+                observations=observations,
+                decisions=decisions,
+                execution_owner=dict(owner) if owner else None,
+                run_state=self.find_by_run_id(run_id).state if self.find_by_run_id(run_id) else None,
+            )
         return {"episodes": episodes}
 
     def operation(self, operation_id: str) -> dict[str, object] | None:

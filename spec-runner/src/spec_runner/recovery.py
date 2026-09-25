@@ -132,6 +132,8 @@ class FaultObservation:
     runtime_version: str | None = None
     request_admission: str = "unknown"
     execution_outcome: str = "unknown"
+    sdk_retry_count: int | None = None
+    sdk_retry_coverage: str = "unknown"
     last_verified_progress: str | None = None
     route_scope: str = "unknown"
     fingerprint: str = ""
@@ -197,6 +199,18 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
         http_status = int(status_value) if status_value is not None else None
     except (TypeError, ValueError):
         http_status = None
+    observed_model = _text(_field(details, "observed_model", "actual_model", "model"), 120)
+    observed_effort = _text(_field(details, "observed_effort", "actual_effort", "effort"), 120)
+    observed_service_tier = _text(_field(details, "observed_service_tier", "actual_service_tier", "service_tier"), 120)
+    runtime_version = _text(_field(details, "runtime_version", "client_version"), 120)
+    retry_count_value = _field(details, "sdk_retry_count", "retry_count", "sdk_retries")
+    try:
+        sdk_retry_count = int(retry_count_value) if retry_count_value is not None else None
+    except (TypeError, ValueError):
+        sdk_retry_count = None
+    sdk_retry_coverage = str(_field(details, "sdk_retry_coverage", "retry_coverage") or "unknown")
+    if sdk_retry_coverage not in {"observed", "bounded", "unknown"}:
+        sdk_retry_coverage = "unknown"
     family, reason = classify_fault(code=code, error_type=error_type, message=message, http_status=http_status)
     return FaultObservation(
         operation_kind=operation_kind, run_id=run_id, spec_key=spec_key, stage=stage,
@@ -206,9 +220,13 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
         error_type=_text(error_type, 120), message=_redact(message), request_id=_text(request_id, 120),
         cf_ray=_text(cf_ray, 120), retry_after_seconds=_field(details, "retry_after_seconds", "retryAfterSeconds"),
         requested_model=requested_model, requested_effort=requested_effort,
-        requested_service_tier=requested_service_tier, sdk_version=sdk_version,
+        observed_model=observed_model, observed_effort=observed_effort,
+        requested_service_tier=requested_service_tier, observed_service_tier=observed_service_tier,
+        sdk_version=sdk_version or _text(_field(details, "sdk_version"), 120),
+        runtime_version=runtime_version,
         request_admission=request_admission if request_admission in {"accepted", "rejected", "unknown"} else "unknown",
         execution_outcome=execution_outcome if execution_outcome in {"completed", "failed", "unknown"} else "unknown",
+        sdk_retry_count=sdk_retry_count, sdk_retry_coverage=sdk_retry_coverage,
         last_verified_progress=last_verified_progress, route_scope=_text(_field(details, "route_scope", "routeScope"), 120) or "unknown",
         evidence=evidence or ("error_text_fallback",),
     )
@@ -350,3 +368,100 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
     return RecoveryDecision(action, f"fault_family:{family}", (observation.fingerprint, observation.reason),
                             ("reconcile_external_side_effects", "preserve_stage_budget"), next_check,
                             remaining, family)
+
+
+def recovery_diagnostic(*, episode: Mapping[str, Any], observations: list[Mapping[str, Any]],
+                       decisions: list[Mapping[str, Any]], execution_owner: Mapping[str, Any] | None = None,
+                       run_state: str | None = None) -> dict[str, object]:
+    """Build a read-only explanation of the current recovery frontier."""
+    def body(item: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+        value = item.get(key)
+        return value if isinstance(value, Mapping) else item
+
+    latest_observation = body(observations[-1], "observation") if observations else {}
+    latest_decision = body(decisions[-1], "decision") if decisions else {}
+    action = str(latest_decision.get("action") or episode.get("state") or "unknown")
+    family = str(latest_observation.get("family") or latest_decision.get("family") or "unknown")
+    reason = str(latest_observation.get("reason") or latest_decision.get("reason") or "unknown")
+    route = {
+        "scope": latest_observation.get("route_scope", "unknown"),
+        "requested_model": latest_observation.get("requested_model"),
+        "observed_model": latest_observation.get("observed_model"),
+        "requested_effort": latest_observation.get("requested_effort"),
+        "observed_effort": latest_observation.get("observed_effort"),
+        "requested_service_tier": latest_observation.get("requested_service_tier"),
+        "observed_service_tier": latest_observation.get("observed_service_tier"),
+    }
+    admission = str(latest_observation.get("request_admission", "unknown"))
+    outcome = str(latest_observation.get("execution_outcome", "unknown"))
+    unconfirmed = admission == "accepted" and outcome == "unknown"
+    remaining = latest_decision.get("remaining_budget", {})
+    if not isinstance(remaining, Mapping):
+        remaining = {}
+    counts = {
+        "same_thread": int(episode.get("same_thread_attempts") or 0),
+        "capacity": int(episode.get("capacity_attempts") or 0),
+        "route_probe": int(episode.get("route_probe_attempts") or 0),
+        "clean_probe": int(episode.get("clean_probe_attempts") or 0),
+        "migration": int(episode.get("migration_attempts") or 0),
+        "no_progress": int(episode.get("no_progress_attempts") or 0),
+    }
+    if action in {"observe", "adopt_result"}:
+        next_condition = "reconcile the persisted execution and verify the business result"
+    elif action in {"wait_retry", "service_wait"}:
+        next_condition = "wait until next_check_at, then perform one bounded recovery check"
+    elif action == "wait_for_config":
+        next_condition = "the approved configuration or user control must change before retrying"
+    elif action == "needs_input":
+        next_condition = "the required durable business answer must be supplied"
+    elif action == "blocked":
+        next_condition = "an operator must resolve the recorded blocker; no worker may be created"
+    else:
+        next_condition = "the owning Runner handler must verify the preconditions before acting"
+    cleanup_debt = run_state in {"cleanup_pending", "service_wait", "wait_retry", "blocked"}
+    return {
+        "schema_version": "spec-runner-recovery-diagnostic/v1",
+        "incident": {
+            "fingerprint": latest_observation.get("fingerprint"),
+            "family": family,
+            "reason": reason,
+            "operation_kind": episode.get("operation_kind"),
+            "stage": episode.get("stage"),
+            "generation": episode.get("generation"),
+            "first_observed_at": observations[0].get("observed_at") if observations else None,
+            "last_observed_at": observations[-1].get("observed_at") if observations else None,
+        },
+        "fault_ownership": {
+            "run_id": episode.get("run_id"),
+            "worker_id": latest_observation.get("worker_id"),
+            "source": latest_observation.get("source"),
+            "confidence": latest_observation.get("confidence"),
+            "evidence": list(latest_observation.get("evidence", [])) if isinstance(latest_observation.get("evidence"), list) else [],
+        },
+        "current_action": action,
+        "route": route,
+        "thread": {
+            "thread_id": latest_observation.get("thread_id"),
+            "turn_id": latest_observation.get("turn_id"),
+            "request_admission": admission,
+            "execution_outcome": outcome,
+            "active_execution": unconfirmed,
+            "unconfirmed_execution": unconfirmed,
+        },
+        "execution_owner": dict(execution_owner) if execution_owner else None,
+        "attempts": counts,
+        "sdk_retry": {
+            "count": latest_observation.get("sdk_retry_count"),
+            "coverage": latest_observation.get("sdk_retry_coverage", "unknown"),
+            "meaning": "unknown when the SDK does not expose inner retry telemetry",
+        },
+        "budget": {
+            "remaining": dict(remaining),
+            "retry_deadline": episode.get("retry_deadline"),
+            "wait_deadline": episode.get("wait_deadline"),
+            "next_check_at": latest_decision.get("next_check_at"),
+        },
+        "last_verified_progress": episode.get("last_verified_progress") or latest_observation.get("last_verified_progress"),
+        "next_recovery_condition": next_condition,
+        "cleanup_debt": {"present": cleanup_debt, "run_state": run_state},
+    }

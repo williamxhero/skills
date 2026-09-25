@@ -13,6 +13,7 @@ from spec_runner.recovery import (
     classify_fault,
     decide_recovery,
     observation_from_error,
+    recovery_diagnostic,
 )
 
 
@@ -109,3 +110,45 @@ def test_encrypted_mismatch_is_bounded_and_never_infinite_thread_creation():
     )
     assert first.action is RecoveryAction.PROBE_CLEAN_CONTEXT
     assert exhausted.action is RecoveryAction.BLOCKED
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_condition"),
+    [
+        ("observe", "reconcile the persisted execution"),
+        ("service_wait", "wait until next_check_at"),
+        ("wait_for_config", "approved configuration"),
+        ("blocked", "operator must resolve"),
+    ],
+)
+def test_recovery_diagnostic_explains_next_condition_and_preserves_unknown_execution(action, expected_condition):
+    diagnostic = recovery_diagnostic(
+        episode={
+            "run_id": "run-1", "operation_kind": "codex_turn", "stage": "implementation",
+            "generation": 0, "state": action, "capacity_attempts": 2,
+            "retry_deadline": "2026-09-25T00:00:05+00:00", "wait_deadline": "2026-09-25T00:01:00+00:00",
+        },
+        observations=[{
+            "observed_at": "2026-09-25T00:00:00+00:00",
+            "observation": {
+                "fingerprint": "fp", "family": "capacity", "reason": "capacity_or_transient",
+                "request_admission": "accepted", "execution_outcome": "unknown",
+                "thread_id": "thread-1", "turn_id": "turn-1", "confidence": "structured",
+                "source": "sdk_exception", "evidence": ["sdk_exception"], "route_scope": "model:tier",
+                "sdk_retry_coverage": "unknown",
+            },
+        }],
+        decisions=[{
+            "decision": {
+                "action": action, "next_check_at": "2026-09-25T00:01:00+00:00",
+                "remaining_budget": {"capacity_retries": 0}, "family": "capacity",
+            },
+        }],
+        execution_owner={"worker_id": "worker-1", "state": "running"},
+        run_state=action,
+    )
+    assert diagnostic["schema_version"] == "spec-runner-recovery-diagnostic/v1"
+    assert diagnostic["thread"]["unconfirmed_execution"] is True
+    assert expected_condition in diagnostic["next_recovery_condition"]
+    assert diagnostic["budget"]["remaining"]["capacity_retries"] == 0
+    assert diagnostic["sdk_retry"]["coverage"] == "unknown"

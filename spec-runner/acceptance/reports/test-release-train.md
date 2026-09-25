@@ -392,3 +392,32 @@ real provider capacity/Fast/404 incidents, live SDK same-thread continuation,
 Windows detached-parent recovery, or the project-level L3-L5 release gates.
 Those remain unverified until the corresponding live or installed-artifact
 receipts exist.
+
+## RCV-01.4 Recovery decision diagnostics (2026-09-25)
+
+The recovery status projection now exposes a read-only
+`spec-runner-recovery-diagnostic/v1` for each persisted episode. It explains
+the incident family and evidence source, the operation/stage/generation, the
+current action and next recovery condition, request admission and execution
+outcome, route/model/effort/service-tier comparison, SDK retry observation
+coverage, remaining budgets and deadlines, last verified progress, execution
+owner, and cleanup debt. Unknown SDK retry counts remain `unknown`; an accepted
+turn with an unknown outcome remains explicitly unconfirmed and cannot be
+treated as business progress.
+
+The Runner also records structured `fault_observed`, `reconcile_started`,
+`retry_scheduled`, `retry_started`, `service_wait`, `route_changed`,
+`probe_result`, `migration_requested`, `progress_verified`, and
+`recovery_blocked` events where the corresponding deterministic decision is
+made. The status path is read-only and does not advance the run or reset any
+budget.
+
+The table-driven policy and runtime acceptance selection passed `29 passed`.
+The complete source and acceptance selection passed `234 passed, 1 skipped`
+in 69.18 seconds after excluding the repository's duplicate fixture module
+basenames. `compileall` and `git diff --check` were also run for the candidate.
+
+This is source and deterministic acceptance evidence for RCV-01.4. It does not
+prove a live SDK injected capacity/Fast/404 incident, a real provider incident,
+Windows detached-parent recovery, clean migration under #292, or project-level
+L3-L5 gates. Those remain `not_verified`; #296 and its parent remain open.

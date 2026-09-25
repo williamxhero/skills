@@ -342,6 +342,13 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         observation_id=observation_id, episode_id=episode_id,
         observation=observation.public(),
     )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{operation_id}:observation:{observation_id}",
+        event_type="fault_observed",
+        payload={"operation_id": operation_id, "episode_id": episode_id,
+                 "observation": observation.public()},
+    )
     decision_id = f"{episode_id}:decision:{decision.action.value}:{observation.fingerprint}:{counters['same_thread_attempts']}:{counters['capacity_attempts']}"
     store.record_recovery_decision(
         decision_id=decision_id, episode_id=episode_id, decision=decision.public(),
@@ -352,6 +359,27 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         event_type="recovery_decision_recorded",
         payload={"operation_id": operation_id, "episode_id": episode_id, "decision": decision.public()},
     )
+    action_events = {
+        RecoveryAction.OBSERVE: "reconcile_started",
+        RecoveryAction.WAIT_RETRY: "retry_scheduled",
+        RecoveryAction.SERVICE_WAIT: "service_wait",
+        RecoveryAction.RESUME_SAME_THREAD: "retry_started",
+        RecoveryAction.USE_APPROVED_ROUTE: "route_changed",
+        RecoveryAction.PROBE_CLEAN_CONTEXT: "probe_result",
+        RecoveryAction.REQUEST_CLEAN_MIGRATION: "migration_requested",
+        RecoveryAction.ADOPT_RESULT: "progress_verified",
+        RecoveryAction.BLOCKED: "recovery_blocked",
+    }
+    event_type = action_events.get(decision.action)
+    if event_type:
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{operation_id}:{decision_id}:{event_type}",
+            event_type=event_type,
+            payload={"operation_id": operation_id, "episode_id": episode_id,
+                     "action": decision.action.value, "next_check_at": decision.next_check_at,
+                     "reason": decision.reason},
+        )
     return decision
 
 def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
