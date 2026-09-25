@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import os
 import sys
@@ -12,16 +13,47 @@ from pathlib import Path
 from typing import Sequence
 
 
-HEADER = ["id", "title", "status"]
-ALLOWED_STATUSES = {"todo", "doing", "done"}
+REQUIRED_COLUMNS = ("id", "title", "status")
 
 
 class ConversionError(Exception):
     """An expected input, serialization, or output failure."""
 
 
-def _normalise_row(row: list[str]) -> list[str]:
-    return [field.strip() for field in row]
+def _validate_quote_syntax(text: str) -> None:
+    state = "start"
+    line = 1
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if state == "quoted":
+            if character == '"':
+                if index + 1 < len(text) and text[index + 1] == '"':
+                    index += 2
+                    continue
+                state = "closed"
+            elif character in "\r\n":
+                if character == "\r" and index + 1 < len(text) and text[index + 1] == "\n":
+                    index += 1
+                line += 1
+        elif character == ',':
+            state = "start"
+        elif character in "\r\n":
+            if character == "\r" and index + 1 < len(text) and text[index + 1] == "\n":
+                index += 1
+            line += 1
+            state = "start"
+        elif character == '"':
+            if state != "start":
+                raise ConversionError(f"malformed CSV quoting near row {line}")
+            state = "quoted"
+        elif state == "start":
+            state = "unquoted"
+        elif state == "closed":
+            raise ConversionError(f"malformed CSV quoting near row {line}")
+        index += 1
+    if state == "quoted":
+        raise ConversionError(f"malformed CSV quoting near row {line}")
 
 
 def read_tasks(input_path: Path) -> list[dict[str, str]]:
@@ -36,41 +68,42 @@ def read_tasks(input_path: Path) -> list[dict[str, str]]:
         raise ConversionError(f"cannot open input CSV '{input_path}': {exc}") from exc
 
     try:
-        reader = csv.reader(source, strict=True)
+        text = source.read()
+        _validate_quote_syntax(text)
+        reader = csv.reader(io.StringIO(text, newline=""), strict=True)
         try:
-            header = _normalise_row(next(reader))
+            header = next(reader)
         except StopIteration as exc:
             raise ConversionError("input CSV is empty; expected header id,title,status") from exc
 
-        if header != HEADER:
-            received = ",".join(header)
-            raise ConversionError(
-                f"invalid CSV header: expected {','.join(HEADER)}, got {received}"
-            )
+        positions: dict[str, int] = {}
+        duplicates: list[str] = []
+        for required in REQUIRED_COLUMNS:
+            matches = [index for index, value in enumerate(header) if value == required]
+            if len(matches) > 1:
+                duplicates.append(required)
+            elif matches:
+                positions[required] = matches[0]
+        if duplicates:
+            raise ConversionError(f"duplicate required column(s): {', '.join(duplicates)}")
+        missing = [required for required in REQUIRED_COLUMNS if required not in positions]
+        if missing:
+            raise ConversionError(f"missing required column(s): {', '.join(missing)}")
 
         for row in reader:
             line = reader.line_num
             if not row:
                 raise ConversionError(f"row {line}: blank rows are not allowed")
-            if len(row) != len(HEADER):
-                raise ConversionError(
-                    f"row {line}: expected exactly {len(HEADER)} columns, got {len(row)}"
-                )
+            if any(index >= len(row) for index in positions.values()):
+                raise ConversionError(f"row {line}: missing value for a required column")
 
-            task_id, title, status = _normalise_row(row)
-            if not task_id:
-                raise ConversionError(f"row {line}: id must not be empty")
-            if not title:
-                raise ConversionError(f"row {line}: title must not be empty")
-            if not status:
-                raise ConversionError(f"row {line}: status must not be empty")
+            values = {name: row[index] for name, index in positions.items()}
+            if any(not values[name].strip() for name in REQUIRED_COLUMNS):
+                blank = next(name for name in REQUIRED_COLUMNS if not values[name].strip())
+                raise ConversionError(f"row {line}: {blank} must not be empty")
+            task_id, title, status = (values[name] for name in REQUIRED_COLUMNS)
             if task_id in seen_ids:
                 raise ConversionError(f"row {line}: duplicate id '{task_id}'")
-            if status not in ALLOWED_STATUSES:
-                raise ConversionError(
-                    f"row {line}: unsupported status '{status}'; "
-                    "expected todo, doing, or done"
-                )
 
             seen_ids.add(task_id)
             tasks.append({"id": task_id, "title": title, "status": status})
