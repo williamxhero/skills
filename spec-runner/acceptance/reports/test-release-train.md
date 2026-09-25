@@ -475,3 +475,31 @@ prove a live native SDK migration, OS-level old-writer termination, process
 crash injection at every provider boundary, business recovery under #299, or
 project-level L3-L5 gates. Those remain `not_verified`; #298 remains OPEN until
 its live and downstream acceptance gates are separately evidenced.
+
+
+## RCV-02.4 Windows control database and launcher recovery (2026-09-25)
+
+The native Windows acceptance probe `SRAC-20260925-windows-control-db-restart`
+held the real `spec-runner.sqlite3` in an independent SQLite `BEGIN EXCLUSIVE`
+transaction, confirmed the detached Runner had reached its durable pause, and
+terminated the recorded Runner while that lock was held. After the lock holder
+released the database, the public `status` command read the same control DB and
+`drive` recovered the same `run_id` to `completed`. The control DB remained on
+disk and passed `PRAGMA integrity_check`; both launcher stdout/stderr logs
+remained readable. The raw evidence is
+`SRAC-20260925-windows-control-db-restart.json`.
+
+The probe initially exposed two harness defects: its own integrity-check
+connection was left open on Windows, and recovery removed the deterministic
+stale-owner setting before invoking `drive`. Both are fixed and covered by
+`acceptance/test_windows_control_db_restart_probe.py`. The focused acceptance
+selection passed `2 passed`, and the full source plus acceptance selection
+passed `254 passed, 1 skipped` in 78.94 seconds after excluding the repository's
+known duplicate fixture test-module basenames. A literal recursive `pytest -q`
+still fails collection on those five pre-existing fixture collisions, so that
+project-level collection gate remains open.
+
+This is real native Windows control DB and launcher-log recovery evidence for
+#266 and one RCV-02.4 recovery gate. It does not prove source-thread takeover,
+GitHub merge queue, complete A-J recovery, or the remaining project-level
+L3-L5 gates; those remain `not_verified`, and #266/#300 remain open.
