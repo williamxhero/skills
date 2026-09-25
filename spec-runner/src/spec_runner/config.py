@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 from dataclasses import dataclass
@@ -11,6 +12,16 @@ from typing import Any
 from .errors import RunnerError
 
 CONFIG_SCHEMA_VERSION = "spec-runner-config/v1"
+DEFAULT_GIT_TIMEOUT_SECONDS = 120.0
+
+
+def _positive_timeout(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RunnerError("invalid_config", f"{field} must be a positive finite number")
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise RunnerError("invalid_config", f"{field} must be a positive finite number")
+    return result
 
 
 def _canonical_json(value: object) -> str:
@@ -38,7 +49,7 @@ def _normalise_relative_path(value: Any, field: str) -> Path:
     return candidate
 
 
-def canonical_repository(path_value: Any) -> Path:
+def canonical_repository(path_value: Any, *, timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> Path:
     if not isinstance(path_value, str) or not path_value.strip():
         raise RunnerError("invalid_config", "repository_path must be a non-empty path")
     repository = Path(path_value).expanduser().resolve()
@@ -52,7 +63,14 @@ def canonical_repository(path_value: Any) -> Path:
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=_positive_timeout(timeout_seconds, "repository Git timeout"),
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "repository_git_timeout",
+            "repository Git validation exceeded its bounded timeout",
+            details={"args": ["rev-parse", "--show-toplevel"], "timeout_seconds": float(timeout_seconds)},
+        ) from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("invalid_repository", "repository_path is not a Git worktree") from exc
     git_root = Path(result.stdout.strip()).resolve()
@@ -94,6 +112,7 @@ class RunnerConfig:
     legacy_acceptance_digest: str = ""
     acceptance_timeout_compatible_digest: str = ""
     acceptance_paths: tuple[str, ...] = ()
+    git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -110,7 +129,20 @@ class RunnerConfig:
         if document.get("schema_version") != CONFIG_SCHEMA_VERSION:
             raise RunnerError("invalid_config", f"schema_version must be {CONFIG_SCHEMA_VERSION}")
 
-        repository_path = canonical_repository(document.get("repository_path"))
+        raw_git = document.get("git")
+        if raw_git is None:
+            git_timeout_seconds = DEFAULT_GIT_TIMEOUT_SECONDS
+        elif isinstance(raw_git, dict):
+            git_timeout_seconds = _positive_timeout(
+                raw_git.get("timeout_seconds", DEFAULT_GIT_TIMEOUT_SECONDS),
+                "git.timeout_seconds",
+            )
+        else:
+            raise RunnerError("invalid_config", "git must be an object when configured")
+
+        repository_path = canonical_repository(
+            document.get("repository_path"), timeout_seconds=git_timeout_seconds
+        )
         target_ref = document.get("target_ref")
         if not isinstance(target_ref, str) or not target_ref.strip():
             raise RunnerError("invalid_config", "target_ref must be a non-empty string")
@@ -237,6 +269,10 @@ class RunnerConfig:
             "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks, "write_scope": acceptance_paths}},
             "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized},
         }
+        # Keep pre-timeout config digests stable so persisted runs remain
+        # resumable while an explicit timeout binds new runs.
+        if raw_git is not None:
+            normalized["git"] = {"timeout_seconds": git_timeout_seconds}
         compatibility_normalized = json.loads(_canonical_json(normalized))
         compatibility_normalized["workflow"]["acceptance"] = {"ids": [], "checks": []}
         timeout_compatible_normalized = json.loads(_canonical_json(normalized))
@@ -268,6 +304,7 @@ class RunnerConfig:
             github_receipt_root=(control_root / github_receipt).resolve() if github_receipt else None,
             github_base=github_base if github_repository else None,
             github_merge_authorized=github_authorized,
+            git_timeout_seconds=git_timeout_seconds,
         )
 
 

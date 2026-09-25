@@ -154,6 +154,7 @@ def _parser() -> argparse.ArgumentParser:
     workspace_prepare.add_argument("--run-id", required=True)
     workspace_prepare.add_argument("--spec-key", required=True)
     workspace_prepare.add_argument("--base-ref", default="HEAD")
+    workspace_prepare.add_argument("--git-timeout-seconds", type=float, default=120.0)
     candidate_parser = subparsers.add_parser("candidate", help="run trusted candidate verification")
     candidate_sub = candidate_parser.add_subparsers(dest="candidate_command", required=True)
     candidate_verify = candidate_sub.add_parser("verify")
@@ -162,6 +163,7 @@ def _parser() -> argparse.ArgumentParser:
     candidate_verify.add_argument("--acceptance-version", required=True)
     candidate_verify.add_argument("--checks", required=True, type=Path)
     candidate_verify.add_argument("--acceptance", required=True, type=Path)
+    candidate_verify.add_argument("--git-timeout-seconds", type=float, default=120.0)
     review_parser = subparsers.add_parser("review", help="validate a fresh read-only review receipt")
     review_sub = review_parser.add_subparsers(dest="review_command", required=True)
     review_validate = review_sub.add_parser("validate")
@@ -177,6 +179,7 @@ def _parser() -> argparse.ArgumentParser:
     merge_local_parser.add_argument("--target-ref", required=True)
     merge_local_parser.add_argument("--expected-target-sha", required=True)
     merge_local_parser.add_argument("--run-id", required=True)
+    merge_local_parser.add_argument("--git-timeout-seconds", type=float, default=120.0)
     delivery_parser = subparsers.add_parser("delivery", help="run a trusted local multi-SPEC delivery plan")
     delivery_sub = delivery_parser.add_subparsers(dest="delivery_command", required=True)
     delivery_run = delivery_sub.add_parser("run")
@@ -186,6 +189,7 @@ def _parser() -> argparse.ArgumentParser:
     delivery_run.add_argument("--control-root", required=True, type=Path)
     delivery_run.add_argument("--run-id", required=True)
     delivery_run.add_argument("--target-ref", default="HEAD")
+    delivery_run.add_argument("--git-timeout-seconds", type=float, default=120.0)
     takeover_parser = subparsers.add_parser("takeover", help="inventory and safely adopt an arbitrary-stage delivery")
     takeover_sub = takeover_parser.add_subparsers(dest="takeover_command", required=True)
     takeover_inspect = takeover_sub.add_parser("inspect")
@@ -195,6 +199,7 @@ def _parser() -> argparse.ArgumentParser:
     takeover_inspect.add_argument("--repository", type=Path)
     takeover_inspect.add_argument("--scope", action="append", default=[])
     takeover_inspect.add_argument("--handover-policy", choices=["require_stop_confirmation", "wait_then_takeover", "interrupt_then_takeover"], default="require_stop_confirmation")
+    takeover_inspect.add_argument("--git-timeout-seconds", type=float, default=120.0)
     takeover_sdk_read = takeover_sub.add_parser("sdk-read", help="read one explicitly supplied SDK thread without starting a turn")
     takeover_sdk_read.add_argument("--thread-id", required=True)
     takeover_sdk_read.add_argument("--repository", required=True, type=Path)
@@ -210,6 +215,7 @@ def _parser() -> argparse.ArgumentParser:
     takeover_apply.add_argument("--brief", type=Path)
     takeover_apply.add_argument("--config", type=Path)
     takeover_apply.add_argument("--launch-key")
+    takeover_apply.add_argument("--git-timeout-seconds", type=float, default=120.0)
     diagnostic_parser = subparsers.add_parser("diagnose", help="validate fault and release evidence without LLM calls")
     diagnostic_sub = diagnostic_parser.add_subparsers(dest="diagnostic_command", required=True)
     for name in ("fault-matrix", "release-report"):
@@ -375,15 +381,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             document = plan_json(arguments.file)
             result = resolve_grill(requirement_digest=str(document.get("requirement_digest", "")), questions=document.get("questions", []), decisions=document.get("decisions", {}), authorization=set(document.get("authorization", [])), max_rounds=int(document.get("max_rounds", 1)))
         elif arguments.command == "workspace":
-            result = prepare_workspace(repository=arguments.repository, workspace_root=arguments.workspace_root, run_id=arguments.run_id, spec_key=arguments.spec_key, base_ref=arguments.base_ref)
+            result = prepare_workspace(repository=arguments.repository, workspace_root=arguments.workspace_root, run_id=arguments.run_id, spec_key=arguments.spec_key, base_ref=arguments.base_ref, git_timeout_seconds=arguments.git_timeout_seconds)
         elif arguments.command == "candidate":
             checks_doc = plan_json(arguments.checks)
             acceptance_doc = plan_json(arguments.acceptance)
-            result = verify_candidate(workspace=arguments.workspace, candidate_sha=arguments.candidate_sha, acceptance_version=arguments.acceptance_version, checks=checks_doc.get("checks", []), acceptance=acceptance_doc.get("acceptance", []))
+            result = verify_candidate(workspace=arguments.workspace, candidate_sha=arguments.candidate_sha, acceptance_version=arguments.acceptance_version, checks=checks_doc.get("checks", []), acceptance=acceptance_doc.get("acceptance", []), git_timeout_seconds=arguments.git_timeout_seconds)
         elif arguments.command == "review":
             result = validate_review(result=plan_json(arguments.file), candidate_sha=arguments.candidate_sha, acceptance_version=arguments.acceptance_version)
         elif arguments.command == "merge":
-            result = merge_local(repository=arguments.repository, candidate_branch=arguments.candidate_branch, target_ref=arguments.target_ref, expected_target_sha=arguments.expected_target_sha, workspace_root=arguments.workspace_root, run_id=arguments.run_id)
+            result = merge_local(repository=arguments.repository, candidate_branch=arguments.candidate_branch, target_ref=arguments.target_ref, expected_target_sha=arguments.expected_target_sha, workspace_root=arguments.workspace_root, run_id=arguments.run_id, git_timeout_seconds=arguments.git_timeout_seconds)
         elif arguments.command == "delivery":
             plan = plan_json(arguments.plan)
             result = run_local_delivery(
@@ -393,6 +399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 control_root=arguments.control_root,
                 run_id=arguments.run_id,
                 target_ref=arguments.target_ref,
+                git_timeout_seconds=arguments.git_timeout_seconds,
             )
         elif arguments.command == "takeover":
             if arguments.takeover_command == "sdk-read":
@@ -414,8 +421,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                         repository=arguments.repository.resolve(),
                         handover_policy=arguments.handover_policy,
                         scope=list(arguments.scope),
+                        git_timeout_seconds=arguments.git_timeout_seconds,
                     )
-                report = inspect_takeover(inventory)
+                report = inspect_takeover(inventory, git_timeout_seconds=arguments.git_timeout_seconds)
                 frontier = plan_frontier(report)
                 if arguments.takeover_command == "apply":
                     existing_takeover = None
@@ -462,7 +470,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             report = stored_report
                             frontier = stored_frontier
                     record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
-                    action = completion_action(report)
+                    action = completion_action(report, git_timeout_seconds=arguments.git_timeout_seconds)
                     result = {**record, "frontier": frontier, "action": action}
                     stored_record = record.get("record") if isinstance(record.get("record"), dict) else None
                     last_transition = stored_record.get("last_transition") if isinstance(stored_record, dict) else None
@@ -483,7 +491,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ):
                         report = stored_record["report"]
                         frontier = stored_record["frontier"]
-                        action = completion_action(report)
+                        action = completion_action(report, git_timeout_seconds=arguments.git_timeout_seconds)
                         result["report"] = report
                         result["frontier"] = frontier
                         result["action"] = action
@@ -559,7 +567,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 refreshed_facts = refreshed_inventory.get("facts")
                                 if isinstance(refreshed_facts, dict):
                                     refreshed_facts["source_observation"] = observation_after
-                            report = inspect_takeover(refreshed_inventory)
+                            report = inspect_takeover(
+                                refreshed_inventory,
+                                git_timeout_seconds=arguments.git_timeout_seconds,
+                            )
                             frontier = plan_frontier(report)
                             refreshed = refresh_takeover_evidence(
                                 control_root=arguments.control_root,
@@ -576,7 +587,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             )
                             result["report"] = report
                             result["frontier"] = frontier
-                            action = completion_action(report)
+                            action = completion_action(report, git_timeout_seconds=arguments.git_timeout_seconds)
                             result["action"] = action
                             result["record"] = refreshed["record"]
                             result["transitions"] = refreshed["transitions"]
@@ -594,7 +605,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         result["record"] = intent["record"]
                         result["transitions"] = intent["transitions"]
-                        result["cleanup"] = perform_cleanup(report, prior_cleanup=prior_cleanup)
+                        result["cleanup"] = perform_cleanup(
+                            report,
+                            prior_cleanup=prior_cleanup,
+                            git_timeout_seconds=arguments.git_timeout_seconds,
+                        )
                         cleanup_digest = digest(result["cleanup"])
                         cleanup_state = "cleaned" if result["cleanup"]["outcome"] == "cleaned" else "cleanup_pending"
                         finished = record_takeover_transition(
@@ -683,7 +698,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     elif action["state"] == "resume_delivery" and (arguments.brief or arguments.config):
                         raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
                 else:
-                    result = {"report": report, "frontier": frontier, "action": completion_action(report)}
+                    result = {
+                        "report": report,
+                        "frontier": frontier,
+                        "action": completion_action(
+                            report,
+                            git_timeout_seconds=arguments.git_timeout_seconds,
+                        ),
+                    }
         elif arguments.command == "diagnose":
             if arguments.diagnostic_command == "runtime":
                 result = runtime_report(runner_version=__version__, store_status=status(control_root=arguments.control_root, run_id=None))

@@ -550,7 +550,7 @@ class ProductBoundaryTests(unittest.TestCase):
                 return Path(r"C:\Users\runneradmin\work\repo\fixture.txt")
             return original_resolve(path, *args, **kwargs)
 
-        def git_bytes(_repository, *args):
+        def git_bytes(_repository, *args, **_kwargs):
             if args[:2] == ("ls-files", "--others"):
                 return b"fixture.txt\0"
             return b""

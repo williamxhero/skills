@@ -8,10 +8,12 @@ import shutil
 import subprocess
 import tempfile
 import time
+import math
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .errors import RunnerError
+from .config import DEFAULT_GIT_TIMEOUT_SECONDS
 from .plans import digest
 
 WORKTREE_CLEANUP_TIMEOUT_SECONDS = 2.0
@@ -22,16 +24,36 @@ def _git_command(repository: Path, *args: str) -> list[str]:
     return ["git", "-c", "core.longpaths=true", "-C", os.fspath(repository), *args]
 
 
-def _git(repository: Path, *args: str, check: bool = True) -> str:
+def _git(repository: Path, *args: str, check: bool = True,
+         timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> str:
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
+        raise RunnerError("git_timeout_invalid", "Git timeout must be a positive finite number")
+    timeout_seconds = float(timeout_seconds)
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise RunnerError("git_timeout_invalid", "Git timeout must be a positive finite number")
     try:
-        result = subprocess.run(_git_command(repository, *args), check=check, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            _git_command(repository, *args), check=check, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "implementation_git_timeout",
+            "Git command exceeded its bounded timeout",
+            details={"args": list(args), "timeout_seconds": timeout_seconds},
+        ) from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("git_operation_failed", "Git command failed", details={"args": list(args)}) from exc
     return result.stdout.strip()
 
 
-def git_sha(repository: Path, ref: str = "HEAD") -> str:
-    return _git(repository, "rev-parse", "--verify", ref)
+def git_sha(repository: Path, ref: str = "HEAD",
+            timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> str:
+    return _git(repository, "rev-parse", "--verify", ref, timeout_seconds=timeout_seconds)
+
+
+def git_status(repository: Path, *, timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> str:
+    return _git(repository, "status", "--porcelain", timeout_seconds=timeout_seconds)
 
 
 def _safe_child(root: Path, child: Path) -> Path:
@@ -42,7 +64,8 @@ def _safe_child(root: Path, child: Path) -> Path:
     return child
 
 
-def _worktree_is_registered(*, repository: Path, workspace: Path) -> bool:
+def _worktree_is_registered(*, repository: Path, workspace: Path,
+                            timeout_seconds: float = WORKTREE_CLEANUP_TIMEOUT_SECONDS) -> bool:
     try:
         result = subprocess.run(
             _git_command(repository, "worktree", "list", "--porcelain"),
@@ -51,7 +74,14 @@ def _worktree_is_registered(*, repository: Path, workspace: Path) -> bool:
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=timeout_seconds,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "workspace_cleanup_timeout",
+            "managed worktree registration check exceeded its bounded timeout",
+            details={"timeout_seconds": timeout_seconds},
+        ) from exc
     except OSError as exc:
         raise RunnerError("workspace_cleanup_failed", "could not inspect managed worktree registration") from exc
     if result.returncode != 0:
@@ -87,7 +117,11 @@ def _remove_managed_worktree(*, repository: Path, workspace: Path) -> None:
         # Windows Git can unregister the worktree before it loses the final
         # file handle. In that case the now-orphaned directory is still safe
         # to remove only after the manifest check below has proven ownership.
-        if not _worktree_is_registered(repository=repository, workspace=workspace):
+        if not _worktree_is_registered(
+            repository=repository,
+            workspace=workspace,
+            timeout_seconds=WORKTREE_CLEANUP_TIMEOUT_SECONDS,
+        ):
             return
         raise RunnerError(
             "workspace_cleanup_failed",
@@ -200,9 +234,10 @@ def cleanup_managed_workspace(*, repository: Path, workspace_root: Path, workspa
 
 def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, spec_key: str,
                       base_ref: str, branch: str | None = None,
-                      workspace_suffix: str = "") -> dict[str, object]:
+                      workspace_suffix: str = "",
+                      git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     repository = repository.resolve()
-    base_sha = git_sha(repository, base_ref)
+    base_sha = git_sha(repository, base_ref, timeout_seconds=git_timeout_seconds)
     workspace_root.mkdir(parents=True, exist_ok=True)
     if workspace_root.is_symlink():
         raise RunnerError("workspace_path_escape", "workspace root cannot be a symbolic link")
@@ -221,22 +256,28 @@ def prepare_workspace(*, repository: Path, workspace_root: Path, run_id: str, sp
             raise RunnerError("workspace_adoption_conflict", "existing workspace manifest has no candidate base")
         if persisted_base != base_sha:
             try:
-                git_sha(repository, persisted_base)
+                git_sha(repository, persisted_base, timeout_seconds=git_timeout_seconds)
             except RunnerError as exc:
                 raise RunnerError("workspace_adoption_conflict", "existing workspace candidate base is unavailable") from exc
             # A recovery process must keep the base recorded when the target
             # ref moved after this candidate was created.
             base_sha = persisted_base
-        if workspace.is_dir() and git_sha(workspace) :
+        if workspace.is_dir() and git_sha(workspace, timeout_seconds=git_timeout_seconds):
             return {**previous, "manifest": os.fspath(manifest)}
     if workspace.exists():
         raise RunnerError("workspace_path_conflict", "workspace path already exists without an adopted manifest")
     # A worktree never touches the caller's currently checked-out files.
-    _git(repository, "worktree", "add", "--detach", os.fspath(workspace), base_sha)
+    _git(
+        repository, "worktree", "add", "--detach", os.fspath(workspace), base_sha,
+        timeout_seconds=git_timeout_seconds,
+    )
     try:
-        _git(workspace, "switch", "-c", branch)
+        _git(workspace, "switch", "-c", branch, timeout_seconds=git_timeout_seconds)
     except RunnerError:
-        _git(repository, "worktree", "remove", "--force", os.fspath(workspace))
+        _git(
+            repository, "worktree", "remove", "--force", os.fspath(workspace),
+            timeout_seconds=git_timeout_seconds,
+        )
         raise
     result = {"schema_version": "spec-runner-workspace/v1", "run_id": run_id, "spec_key": spec_key, "workspace": os.fspath(workspace), "branch": branch, "base_sha": base_sha, "repository": os.fspath(repository), "manifest": os.fspath(manifest), "trust_mode": "local_workspace_write", "automatic_merge_allowed": False}
     descriptor, temporary = tempfile.mkstemp(prefix=".workspace-", suffix=".json", dir=workspace_root)
@@ -274,7 +315,9 @@ def _run_check(workspace: Path, command: list[str], timeout: int) -> dict[str, o
     return {"command": command, "exit_code": code, "timed_out": timed_out, "duration_seconds": round(time.monotonic() - started, 3), "stdout_digest": hashlib.sha256(str(stdout).encode()).hexdigest(), "stderr_digest": hashlib.sha256(str(stderr).encode()).hexdigest(), "stdout_tail": tail(stdout), "stderr_tail": tail(stderr), "passed": not timed_out and code == 0}
 
 
-def validate_candidate_write_scope(*, workspace: Path, base_sha: str, allowed_paths: tuple[str, ...] | list[str]) -> list[str]:
+def validate_candidate_write_scope(*, workspace: Path, base_sha: str,
+                                   allowed_paths: tuple[str, ...] | list[str],
+                                   git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> list[str]:
     if not allowed_paths:
         raise RunnerError("write_scope_missing", "production candidate requires a trusted write scope")
     changed: set[str] = set()
@@ -289,7 +332,14 @@ def validate_candidate_write_scope(*, workspace: Path, base_sha: str, allowed_pa
                 _git_command(workspace, *arguments),
                 check=True,
                 capture_output=True,
+                timeout=git_timeout_seconds,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise RunnerError(
+                "implementation_git_timeout",
+                "Git command exceeded its bounded timeout",
+                details={"args": list(arguments), "timeout_seconds": git_timeout_seconds},
+            ) from exc
         except (OSError, subprocess.CalledProcessError) as exc:
             raise RunnerError("candidate_scope_unreadable", "Runner could not read candidate paths") from exc
         changed.update(path.decode("utf-8", errors="surrogateescape") for path in result.stdout.split(b"\0") if path)
@@ -330,14 +380,16 @@ def validate_candidate_write_scope(*, workspace: Path, base_sha: str, allowed_pa
 def verify_candidate(*, workspace: Path, candidate_sha: str, acceptance_version: str,
                      checks: list[dict[str, Any]], acceptance: list[str],
                      base_sha: str | None = None,
-                     allowed_paths: tuple[str, ...] | list[str] = ()) -> dict[str, object]:
+                     allowed_paths: tuple[str, ...] | list[str] = (),
+                     git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     if not acceptance or any(not isinstance(value, str) or not value for value in acceptance):
         raise RunnerError("missing_acceptance_coverage", "candidate verification requires acceptance IDs")
-    actual_before = git_sha(workspace)
+    actual_before = git_sha(workspace, timeout_seconds=git_timeout_seconds)
     if actual_before != candidate_sha:
         raise RunnerError("candidate_sha_mismatch", "workspace HEAD differs from candidate SHA")
     scoped_paths = validate_candidate_write_scope(
-        workspace=workspace, base_sha=base_sha or candidate_sha, allowed_paths=allowed_paths
+        workspace=workspace, base_sha=base_sha or candidate_sha, allowed_paths=allowed_paths,
+        git_timeout_seconds=git_timeout_seconds,
     ) if allowed_paths else []
     results = []
     covered: set[str] = set()
@@ -351,12 +403,13 @@ def verify_candidate(*, workspace: Path, candidate_sha: str, acceptance_version:
         result = _run_check(workspace, check["command"], int(check.get("timeout_seconds", 120)))
         result["acceptance"] = ids
         results.append(result)
-    actual_after = git_sha(workspace)
-    if actual_after != candidate_sha or _git(workspace, "status", "--porcelain"):
+    actual_after = git_sha(workspace, timeout_seconds=git_timeout_seconds)
+    if actual_after != candidate_sha or git_status(workspace, timeout_seconds=git_timeout_seconds):
         raise RunnerError("candidate_changed_during_verification", "candidate changed while checks ran")
     if allowed_paths:
         scoped_paths = validate_candidate_write_scope(
-            workspace=workspace, base_sha=base_sha or candidate_sha, allowed_paths=allowed_paths
+            workspace=workspace, base_sha=base_sha or candidate_sha, allowed_paths=allowed_paths,
+            git_timeout_seconds=git_timeout_seconds,
         )
     if set(acceptance) - covered:
         raise RunnerError("missing_acceptance_coverage", "acceptance IDs lack trusted evidence", details={"missing": sorted(set(acceptance)-covered)})
@@ -382,22 +435,33 @@ def validate_review(*, result: dict[str, Any], candidate_sha: str, acceptance_ve
     return {"candidate_sha": candidate_sha, "findings": findings, "blocking": blocking, "approved": not blocking, "review_digest": digest(result)}
 
 
-def merge_local(*, repository: Path, candidate_branch: str, target_ref: str, expected_target_sha: str, workspace_root: Path, run_id: str) -> dict[str, object]:
+def merge_local(*, repository: Path, candidate_branch: str, target_ref: str,
+                expected_target_sha: str, workspace_root: Path, run_id: str,
+                git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     """Merge in a disposable managed worktree and never reset a user checkout."""
-    if git_sha(repository, target_ref) != expected_target_sha:
+    if git_sha(repository, target_ref, timeout_seconds=git_timeout_seconds) != expected_target_sha:
         raise RunnerError("target_ref_changed", "target ref moved before local merge")
     merge_root = workspace_root / "merge"
     merge_root.mkdir(parents=True, exist_ok=True)
     workspace = _safe_child(merge_root, merge_root / f"{run_id[:8]}")
     if workspace.exists():
         raise RunnerError("workspace_path_conflict", "merge workspace already exists")
-    _git(repository, "worktree", "add", "--detach", os.fspath(workspace), expected_target_sha)
+    _git(
+        repository, "worktree", "add", "--detach", os.fspath(workspace), expected_target_sha,
+        timeout_seconds=git_timeout_seconds,
+    )
     cleanup: dict[str, object] = {"outcome": "not_attempted"}
     merged = False
     try:
-        _git(workspace, "merge", "--no-ff", "--no-edit", candidate_branch)
-        merge_sha = git_sha(workspace)
-        _git(repository, "update-ref", target_ref, merge_sha, expected_target_sha)
+        _git(
+            workspace, "merge", "--no-ff", "--no-edit", candidate_branch,
+            timeout_seconds=git_timeout_seconds,
+        )
+        merge_sha = git_sha(workspace, timeout_seconds=git_timeout_seconds)
+        _git(
+            repository, "update-ref", target_ref, merge_sha, expected_target_sha,
+            timeout_seconds=git_timeout_seconds,
+        )
         merged = True
     except RunnerError:
         raise
@@ -406,11 +470,22 @@ def merge_local(*, repository: Path, candidate_branch: str, target_ref: str, exp
         # must not turn a durable merge into an unknown external outcome.
         if merged and workspace.is_dir():
             try:
-                if not _git(workspace, "status", "--porcelain"):
+                if not git_status(workspace, timeout_seconds=git_timeout_seconds):
                     _remove_managed_worktree(repository=repository, workspace=workspace)
                     cleanup = {"outcome": "cleaned", "workspace": os.fspath(workspace)}
                 else:
                     cleanup = {"outcome": "pending", "reason": "merge_workspace_dirty", "workspace": os.fspath(workspace)}
             except RunnerError as exc:
                 cleanup = {"outcome": "pending", "reason": "merge_workspace_remove_failed", "error_code": exc.code, "workspace": os.fspath(workspace)}
-    return {"schema_version": "spec-runner-local-merge/v1", "target_ref": target_ref, "tested_head": _git(repository, "rev-parse", candidate_branch), "previous_target_sha": expected_target_sha, "merge_sha": git_sha(repository, target_ref), "outcome": "merged", "cleanup": cleanup}
+    return {
+        "schema_version": "spec-runner-local-merge/v1",
+        "target_ref": target_ref,
+        "tested_head": _git(
+            repository, "rev-parse", candidate_branch,
+            timeout_seconds=git_timeout_seconds,
+        ),
+        "previous_target_sha": expected_target_sha,
+        "merge_sha": git_sha(repository, target_ref, timeout_seconds=git_timeout_seconds),
+        "outcome": "merged",
+        "cleanup": cleanup,
+    }

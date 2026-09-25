@@ -3,27 +3,60 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from .errors import RunnerError
+from .config import DEFAULT_GIT_TIMEOUT_SECONDS
 from .plans import digest
 from .store import Store
 
 
-def _git(path: Path, *args: str) -> str:
+def _validated_timeout(value: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RunnerError("git_timeout_invalid", "Git timeout must be a positive finite number")
+    result = float(value)
+    if not math.isfinite(result) or result <= 0:
+        raise RunnerError("git_timeout_invalid", "Git timeout must be a positive finite number")
+    return result
+
+
+def _git(path: Path, *args: str,
+         timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> str:
+    timeout_seconds = _validated_timeout(timeout_seconds)
     try:
-        result = subprocess.run(["git", "-C", os.fspath(path), *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        result = subprocess.run(
+            ["git", "-C", os.fspath(path), *args], check=True, capture_output=True,
+            text=True, encoding="utf-8", errors="replace", timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "implementation_git_timeout",
+            "Git command exceeded its bounded timeout",
+            details={"args": list(args), "timeout_seconds": timeout_seconds},
+        ) from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("takeover_repository_invalid", "takeover repository is not a readable Git worktree") from exc
     return result.stdout.strip()
 
 
-def _git_bytes(path: Path, *args: str) -> bytes:
+def _git_bytes(path: Path, *args: str,
+               timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> bytes:
+    timeout_seconds = _validated_timeout(timeout_seconds)
     try:
-        result = subprocess.run(["git", "-C", os.fspath(path), *args], check=True, capture_output=True)
+        result = subprocess.run(
+            ["git", "-C", os.fspath(path), *args], check=True, capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "implementation_git_timeout",
+            "Git command exceeded its bounded timeout",
+            details={"args": list(args), "timeout_seconds": timeout_seconds},
+        ) from exc
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RunnerError("takeover_repository_invalid", "takeover repository is not a readable Git worktree") from exc
     return result.stdout
@@ -63,8 +96,8 @@ def _path_is_within(path: Path, repository: Path) -> bool:
         return False
 
 
-def _status_entries(repository: Path) -> tuple[list[dict[str, object]], int]:
-    entries = _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z").split(b"\0")
+def _status_entries(repository: Path, *, git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> tuple[list[dict[str, object]], int]:
+    entries = _git_bytes(repository, "status", "--porcelain=v1", "--untracked-files=all", "-z", timeout_seconds=git_timeout_seconds).split(b"\0")
     projected: list[dict[str, object]] = []
     redacted = 0
     index = 0
@@ -87,11 +120,11 @@ def _status_entries(repository: Path) -> tuple[list[dict[str, object]], int]:
     return projected, redacted
 
 
-def _working_tree_snapshot(repository: Path) -> dict[str, object]:
+def _working_tree_snapshot(repository: Path, *, git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     """Capture identifiers and digests without copying user files or secrets."""
-    status_entries, redacted_path_count = _status_entries(repository)
+    status_entries, redacted_path_count = _status_entries(repository, git_timeout_seconds=git_timeout_seconds)
     index_entries = []
-    for raw in _git_bytes(repository, "ls-files", "-s", "-z").split(b"\0"):
+    for raw in _git_bytes(repository, "ls-files", "-s", "-z", timeout_seconds=git_timeout_seconds).split(b"\0"):
         if not raw:
             continue
         metadata, path_bytes = raw.split(b"\t", 1)
@@ -103,7 +136,7 @@ def _working_tree_snapshot(repository: Path) -> dict[str, object]:
             continue
         index_entries.append({"mode": fields[0], "blob_sha": fields[1], "stage": fields[2], "path": relative})
     untracked = []
-    for path_bytes in _git_bytes(repository, "ls-files", "--others", "--exclude-standard", "-z").split(b"\0"):
+    for path_bytes in _git_bytes(repository, "ls-files", "--others", "--exclude-standard", "-z", timeout_seconds=git_timeout_seconds).split(b"\0"):
         if not path_bytes:
             continue
         relative = path_bytes.decode("utf-8", errors="surrogateescape")
@@ -114,8 +147,8 @@ def _working_tree_snapshot(repository: Path) -> dict[str, object]:
             raise RunnerError("takeover_path_escape", "untracked path escapes repository")
         file_sha, size, kind = _file_digest(repository / relative)
         untracked.append({"path": relative, "sha256": file_sha, "size": size, "kind": kind})
-    staged_diff = _git_bytes(repository, "diff", "--cached", "--binary")
-    unstaged_diff = _git_bytes(repository, "diff", "--binary")
+    staged_diff = _git_bytes(repository, "diff", "--cached", "--binary", timeout_seconds=git_timeout_seconds)
+    unstaged_diff = _git_bytes(repository, "diff", "--binary", timeout_seconds=git_timeout_seconds)
     return {
         "consistency": "observed_without_source_stop_proof",
         "index": index_entries,
@@ -135,6 +168,7 @@ def inventory_from_thread_observation(
     repository: Path,
     handover_policy: str = "require_stop_confirmation",
     scope: list[str] | None = None,
+    git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
     """Build the smallest takeover input from an actual SDK observation."""
     thread_id = observation.get("thread_id")
@@ -144,7 +178,7 @@ def inventory_from_thread_observation(
     if not isinstance(completeness, dict):
         raise RunnerError("invalid_thread_observation", "source observation has no completeness record")
     changed_paths = []
-    snapshot = _working_tree_snapshot(repository)
+    snapshot = _working_tree_snapshot(repository, git_timeout_seconds=git_timeout_seconds)
     changed_paths = [str(path) for path in snapshot.get("changed", []) if isinstance(path, str)]
     if scope is not None:
         normalized_scope = [item.replace("\\", "/").strip("/") for item in scope if item.strip()]
@@ -197,25 +231,25 @@ def load_inventory(path: Path) -> dict[str, Any]:
     return inventory
 
 
-def inspect_takeover(inventory: dict[str, Any]) -> dict[str, object]:
+def inspect_takeover(inventory: dict[str, Any], *, git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     repo_value = inventory.get("repository_path")
     if not isinstance(repo_value, str):
         raise RunnerError("invalid_takeover_inventory", "repository_path is required")
     repository = Path(repo_value).expanduser().resolve()
     try:
-        head = _git(repository, "rev-parse", "HEAD")
+        head = _git(repository, "rev-parse", "HEAD", timeout_seconds=git_timeout_seconds)
     except RunnerError:
         # A valid newly initialized repository may not have its first commit.
         # Keep that fact explicit; it is different from a non-Git directory.
         try:
-            _git(repository, "rev-parse", "--git-dir")
+            _git(repository, "rev-parse", "--git-dir", timeout_seconds=git_timeout_seconds)
         except RunnerError:
             raise
         head = "unborn"
-    snapshot = _working_tree_snapshot(repository)
-    branch = _git(repository, "branch", "--show-current")
+    snapshot = _working_tree_snapshot(repository, git_timeout_seconds=git_timeout_seconds)
+    branch = _git(repository, "branch", "--show-current", timeout_seconds=git_timeout_seconds)
     try:
-        latest_commit = _git(repository, "log", "-1", "--format=%H%x00%s")
+        latest_commit = _git(repository, "log", "-1", "--format=%H%x00%s", timeout_seconds=git_timeout_seconds)
     except RunnerError:
         latest_commit = ""
     dirty = bool(snapshot["status_entries"] or snapshot["redacted_path_count"])
@@ -330,14 +364,14 @@ def _valid_handover_evidence(thread_id: str, evidence: object) -> bool:
     )
 
 
-def completion_action(report: dict[str, Any]) -> dict[str, object]:
+def completion_action(report: dict[str, Any], *, git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     """Choose only a mechanical next category; no hidden LLM control loop."""
     if report.get("next_state") == "waiting_handover":
         return {"state": "waiting_handover", "reason": "the selected handover policy requires a real stop confirmation before a new writer starts"}
     if report.get("next_state") == "blocked":
         return {"state": "blocked", "reason": "takeover ownership or active-writer evidence is incomplete"}
     facts = report.get("historical_facts", {})
-    if _authoritative_delivery_present(report):
+    if _authoritative_delivery_present(report, git_timeout_seconds=git_timeout_seconds):
         return {"state": "cleanup_pending", "implementation_calls": 0, "merge_calls": 0}
     if isinstance(facts, dict) and (facts.get("merged") or facts.get("verification_receipt")):
         return {
@@ -349,7 +383,8 @@ def completion_action(report: dict[str, Any]) -> dict[str, object]:
     return {"state": "resume_delivery", "implementation_calls": 0, "merge_calls": 0, "requires": "normal Runner stage loop"}
 
 
-def perform_cleanup(report: dict[str, Any], *, prior_cleanup: dict[str, object] | None = None) -> dict[str, object]:
+def perform_cleanup(report: dict[str, Any], *, prior_cleanup: dict[str, object] | None = None,
+                    git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     """Execute cleanup only after current delivery evidence is revalidated.
 
     A historical merge receipt or arbitrary verification object is not a path
@@ -358,7 +393,8 @@ def perform_cleanup(report: dict[str, Any], *, prior_cleanup: dict[str, object] 
     helper independently verifies workspace ownership.
     """
     facts = report.get("historical_facts", {})
-    if not _authoritative_delivery_present(report) or not isinstance(facts, dict):
+    if (not _authoritative_delivery_present(report, git_timeout_seconds=git_timeout_seconds)
+            or not isinstance(facts, dict)):
         raise RunnerError(
             "takeover_cleanup_not_authorized",
             "cleanup requires authoritative delivery, ownership, and cleanup readbacks; caller supplied historical facts are insufficient",
@@ -421,7 +457,8 @@ def perform_cleanup(report: dict[str, Any], *, prior_cleanup: dict[str, object] 
     }
 
 
-def _authoritative_delivery_present(report: dict[str, Any]) -> bool:
+def _authoritative_delivery_present(report: dict[str, Any], *,
+                                    git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> bool:
     """Require current Git readback before treating a delivery as cleanupable."""
     facts = report.get("historical_facts", {})
     if not isinstance(facts, dict):
@@ -444,11 +481,21 @@ def _authoritative_delivery_present(report: dict[str, Any]) -> bool:
         return False
     repository = Path(str(report.get("repository", ""))).resolve()
     try:
-        if _git(repository, "rev-parse", candidate_sha) != candidate_sha:
+        if _git(repository, "rev-parse", candidate_sha, timeout_seconds=git_timeout_seconds) != candidate_sha:
             return False
-        if _git(repository, "rev-parse", merge_sha) != merge_sha:
+        if _git(repository, "rev-parse", merge_sha, timeout_seconds=git_timeout_seconds) != merge_sha:
             return False
-        subprocess.run(["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", merge_sha, "HEAD"], check=True, capture_output=True)
+        subprocess.run(
+            ["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", merge_sha, "HEAD"],
+            check=True, capture_output=True, timeout=_validated_timeout(git_timeout_seconds),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "implementation_git_timeout",
+            "Git command exceeded its bounded timeout",
+            details={"args": ["merge-base", "--is-ancestor", merge_sha, "HEAD"],
+                     "timeout_seconds": float(git_timeout_seconds)},
+        ) from exc
     except (RunnerError, OSError, subprocess.CalledProcessError):
         return False
     return True

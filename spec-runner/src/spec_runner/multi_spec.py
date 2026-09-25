@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, verify_candidate, validate_review
+from .delivery import cleanup_managed_workspace, git_sha, git_status, merge_local, prepare_workspace, verify_candidate, validate_review
 from .errors import RunnerError
 from .plans import digest, validate_delivery_plan
 
@@ -64,9 +64,20 @@ def _read_receipt(path: Path) -> dict[str, Any] | None:
     return value
 
 
-def _ancestor(repository: Path, candidate_sha: str, target_ref: str) -> bool:
+def _ancestor(repository: Path, candidate_sha: str, target_ref: str,
+              git_timeout_seconds: float = 120.0) -> bool:
     try:
-        result = subprocess.run(["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", candidate_sha, target_ref], check=False, capture_output=True)
+        result = subprocess.run(
+            ["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", candidate_sha, target_ref],
+            check=False, capture_output=True, timeout=git_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunnerError(
+            "implementation_git_timeout",
+            "Git command exceeded its bounded timeout",
+            details={"args": ["merge-base", "--is-ancestor", candidate_sha, target_ref],
+                     "timeout_seconds": git_timeout_seconds},
+        ) from exc
     except OSError as exc:
         raise RunnerError("delivery_git_read_failed", "could not reconcile candidate ancestry") from exc
     return result.returncode == 0
@@ -119,6 +130,7 @@ def run_local_delivery(
     control_root: Path,
     run_id: str,
     target_ref: str,
+    git_timeout_seconds: float = 120.0,
     on_verified: Callable[[dict[str, object]], None] | None = None,
     on_event: Callable[[str, dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
@@ -176,11 +188,18 @@ def run_local_delivery(
         blockers = set(spec.get("blocked_by", [])) - completed
         if blockers:
             raise RunnerError("delivery_dependency_blocked", f"SPEC {key} is blocked", details={"blocked_by": sorted(blockers)})
-        base_sha = git_sha(repository, target_ref)
+        base_sha = git_sha(repository, target_ref, timeout_seconds=git_timeout_seconds)
         item = receipt["specs"].get(key) if isinstance(receipt["specs"].get(key), dict) else {}
         recovering_implementation = bool(item) and item.get("state") == "implementing"
         if item and item.get("base_sha") != base_sha and item.get("state") not in {"merged"}:
-            merge_was_applied = item.get("state") == "verified_candidate" and item.get("candidate_sha") and _ancestor(repository, str(item["candidate_sha"]), target_ref)
+            merge_was_applied = (
+                item.get("state") == "verified_candidate"
+                and item.get("candidate_sha")
+                and _ancestor(
+                    repository, str(item["candidate_sha"]), target_ref,
+                    git_timeout_seconds=git_timeout_seconds,
+                )
+            )
             if not merge_was_applied:
                 raise RunnerError("delivery_base_changed", f"SPEC {key} base changed before recovery", details={"previous": item.get("base_sha"), "current": base_sha})
         if on_event:
@@ -189,7 +208,14 @@ def run_local_delivery(
         # its final receipt. If the candidate is already reachable from the
         # target and the durable state had reached verified_candidate, adopt
         # that result instead of creating a second merge.
-        if item.get("state") == "verified_candidate" and item.get("candidate_sha") and _ancestor(repository, str(item["candidate_sha"]), target_ref):
+        if (
+            item.get("state") == "verified_candidate"
+            and item.get("candidate_sha")
+            and _ancestor(
+                repository, str(item["candidate_sha"]), target_ref,
+                git_timeout_seconds=git_timeout_seconds,
+            )
+        ):
             item.update({"state": "merged", "merge": {"schema_version": "spec-runner-local-merge/v1", "target_ref": target_ref, "tested_head": item["candidate_sha"], "previous_target_sha": item.get("base_sha"), "merge_sha": base_sha, "outcome": "reconciled"}})
             receipt["specs"][key] = item
             completed.add(key)
@@ -199,7 +225,11 @@ def run_local_delivery(
                 on_event("spec_merge_reconciled", {"spec_key": key, "candidate_sha": item["candidate_sha"], "merge_sha": base_sha})
             _write_receipt(receipt_path, receipt)
             continue
-        workspace_info = prepare_workspace(repository=repository, workspace_root=workspace_root, run_id=run_id, spec_key=key, base_ref=target_ref)
+        workspace_info = prepare_workspace(
+            repository=repository, workspace_root=workspace_root, run_id=run_id,
+            spec_key=key, base_ref=target_ref,
+            git_timeout_seconds=git_timeout_seconds,
+        )
         workspace = Path(str(workspace_info["workspace"]))
         item = {**item, "spec_key": key, "base_sha": base_sha, "workspace": str(workspace), "manifest": str(workspace_info["manifest"]), "branch": workspace_info["branch"], "state": "implementing"}
         receipt["specs"][key] = item
@@ -210,9 +240,9 @@ def run_local_delivery(
         candidate_sha = str(item.get("candidate_sha", ""))
         if not candidate_sha:
             if recovering_implementation:
-                actual_sha = git_sha(workspace)
+                actual_sha = git_sha(workspace, timeout_seconds=git_timeout_seconds)
                 try:
-                    dirty = subprocess.run(["git", "-C", os.fspath(workspace), "status", "--porcelain"], check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+                    dirty = git_status(workspace, timeout_seconds=git_timeout_seconds)
                 except (OSError, subprocess.CalledProcessError) as exc:
                     raise RunnerError("delivery_recovery_unknown", f"SPEC {key} workspace could not be reconciled") from exc
                 if actual_sha == base_sha or dirty:
@@ -223,12 +253,12 @@ def run_local_delivery(
             else:
                 for command in spec["implementation"]:
                     _run_command(command, cwd=workspace)
-                candidate_sha = git_sha(workspace)
+                candidate_sha = git_sha(workspace, timeout_seconds=git_timeout_seconds)
             item["candidate_sha"] = candidate_sha
             item["state"] = "candidate"
             receipt["specs"][key] = item
             _write_receipt(receipt_path, receipt)
-        elif git_sha(workspace) != candidate_sha:
+        elif git_sha(workspace, timeout_seconds=git_timeout_seconds) != candidate_sha:
             raise RunnerError("delivery_candidate_changed", f"SPEC {key} candidate no longer matches its receipt")
 
         candidate_receipt = verify_candidate(
@@ -237,6 +267,7 @@ def run_local_delivery(
             acceptance_version=str(spec["acceptance_version"]),
             checks=list(spec["checks"]),
             acceptance=list(spec["acceptance"]),
+            git_timeout_seconds=git_timeout_seconds,
         )
         _test_fault_pause_after_candidate_verified(control_root=control_root, run_id=run_id, spec_key=key)
         review_path = (control_root / str(spec["review_file"])).resolve()
@@ -252,7 +283,12 @@ def run_local_delivery(
         item.update({"state": "verified_candidate", "candidate_receipt": candidate_receipt, "review": validated_review})
         receipt["specs"][key] = item
         _write_receipt(receipt_path, receipt)
-        merged = merge_local(repository=repository, candidate_branch=str(workspace_info["branch"]), target_ref=target_ref, expected_target_sha=base_sha, workspace_root=workspace_root, run_id=f"{key}-{run_id}")
+        merged = merge_local(
+            repository=repository, candidate_branch=str(workspace_info["branch"]),
+            target_ref=target_ref, expected_target_sha=base_sha,
+            workspace_root=workspace_root, run_id=f"{key}-{run_id}",
+            git_timeout_seconds=git_timeout_seconds,
+        )
         merged = _retry_merge_cleanup(repository=repository, workspace_root=workspace_root, merge=merged)
         item.update({"state": "merged", "merge": merged})
         receipt["specs"][key] = item

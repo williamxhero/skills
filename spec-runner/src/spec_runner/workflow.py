@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from .config import RunnerConfig, read_brief
+from .config import DEFAULT_GIT_TIMEOUT_SECONDS, RunnerConfig, read_brief
 from .codex_adapter import CodexAdapter, CodexWorkerResult
 from .errors import RunnerError
 from .store import RunRecord, Store, now
@@ -160,17 +160,18 @@ def _safe_artifact_directory(control_root: Path, config: RunnerConfig, run_id: s
     return directory
 
 
-def _continuation_workspace_identity(*, workspace: Path, workspace_info: dict[str, object]) -> dict[str, object]:
+def _continuation_workspace_identity(*, workspace: Path, workspace_info: dict[str, object],
+                                     git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
     """Capture bounded Git references without copying source or sensitive paths."""
-    status = _git_binary(workspace, "status", "--porcelain=v1", "--untracked-files=all")
-    staged = _git_binary(workspace, "diff", "--cached", "--binary")
-    unstaged = _git_binary(workspace, "diff", "--binary")
+    status = _git_binary(workspace, "status", "--porcelain=v1", "--untracked-files=all", timeout_seconds=git_timeout_seconds)
+    staged = _git_binary(workspace, "diff", "--cached", "--binary", timeout_seconds=git_timeout_seconds)
+    unstaged = _git_binary(workspace, "diff", "--binary", timeout_seconds=git_timeout_seconds)
     return {
         "path": os.fspath(workspace.resolve()),
         "repository": workspace_info.get("repository"),
         "branch": workspace_info.get("branch"),
         "base_sha": workspace_info.get("base_sha"),
-        "head": git_sha(workspace),
+        "head": git_sha(workspace, timeout_seconds=git_timeout_seconds),
         "working_tree": {
             "dirty": bool(status),
             "status_digest": hashlib.sha256(status).hexdigest(),
@@ -1037,7 +1038,7 @@ def _execute_codex_tickets(
     # dependencies between tickets within the current SPEC.
     ticket_spec = dict(spec)
     ticket_spec["blocked_by"] = []
-    base_sha = git_sha(config.repository_path, config.target_ref)
+    base_sha = git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds)
     step_name = "codex_ticket_planning"
     operation_id = f"tickets:{run.run_id}:{spec_key}"
     worker_id = f"codex_sdk:{run.run_id}:{step_name}:{spec_key}"
@@ -1124,7 +1125,8 @@ def _git_binary(repository: Path, *args: str, timeout_seconds: float = _GIT_COMM
     return result.stdout
 
 
-def _reconcile_github_base(*, repository: Path, target_ref: str, base: str) -> dict[str, object]:
+def _reconcile_github_base(*, repository: Path, target_ref: str, base: str,
+                           git_timeout_seconds: float = _GIT_COMMAND_TIMEOUT_SECONDS) -> dict[str, object]:
     """Advance the local delivery base to the exact remote merge result.
 
     GitHub delivery changes the provider first. The next SPEC must prepare its
@@ -1133,19 +1135,30 @@ def _reconcile_github_base(*, repository: Path, target_ref: str, base: str) -> d
     """
     target_branch = target_ref.removeprefix("refs/heads/")
     remote_ref = f"refs/remotes/origin/{base}"
-    _git_checked(repository, "fetch", "origin", f"refs/heads/{base}:{remote_ref}")
-    remote_sha = git_sha(repository, remote_ref)
-    local_sha = git_sha(repository, target_ref)
+    _git_checked(
+        repository, "fetch", "origin", f"refs/heads/{base}:{remote_ref}",
+        timeout_seconds=git_timeout_seconds,
+    )
+    remote_sha = git_sha(repository, remote_ref, timeout_seconds=git_timeout_seconds)
+    local_sha = git_sha(repository, target_ref, timeout_seconds=git_timeout_seconds)
     if local_sha == remote_sha:
         return {"target_ref": target_ref, "previous_sha": local_sha, "synced_sha": remote_sha, "outcome": "already_current"}
-    if _git_checked(repository, "status", "--porcelain"):
+    if _git_checked(repository, "status", "--porcelain",
+                    timeout_seconds=git_timeout_seconds):
         raise RunnerError("github_base_sync_dirty", "cannot advance the local base with uncommitted changes")
-    current_branch = _git_checked(repository, "branch", "--show-current")
+    current_branch = _git_checked(
+        repository, "branch", "--show-current",
+        timeout_seconds=git_timeout_seconds,
+    )
     if current_branch == target_branch:
-        _git_checked(repository, "merge", "--ff-only", remote_ref)
+        _git_checked(repository, "merge", "--ff-only", remote_ref,
+                     timeout_seconds=git_timeout_seconds)
     else:
-        _git_checked(repository, "update-ref", target_ref, remote_sha, local_sha)
-    if git_sha(repository, target_ref) != remote_sha:
+        _git_checked(
+            repository, "update-ref", target_ref, remote_sha, local_sha,
+            timeout_seconds=git_timeout_seconds,
+        )
+    if git_sha(repository, target_ref, timeout_seconds=git_timeout_seconds) != remote_sha:
         raise RunnerError("github_base_sync_unconfirmed", "local base did not reach the provider merge revision")
     return {"target_ref": target_ref, "previous_sha": local_sha, "synced_sha": remote_sha, "outcome": "fast_forwarded"}
 
@@ -1262,7 +1275,7 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
     write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
     base_sha = str(ticket_plan.get("base_sha") or "")
     if not base_sha:
-        base_sha = git_sha(config.repository_path, config.target_ref)
+        base_sha = git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds)
     try:
         # A recovered repair may already have committed its candidate before
         # the Runner process exited.  In that case the workspace is clean, so
@@ -1275,7 +1288,7 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
             allow_blocked=allow_blocked and adopt_existing,
             artifact_root=write_root,
         )
-        workspace_status = _git_checked(workspace, "status", "--porcelain")
+        workspace_status = _git_checked(workspace, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)
     except RunnerError as exc:
         # A blocked worker is admissible only when it actually produced a
         # candidate that the trusted checks can evaluate.  Keep all other
@@ -1291,24 +1304,28 @@ def _finish_repair_candidate_result(*, control_root: Path, config: RunnerConfig,
                 and isinstance(declared.get("blockers"), list)
                 and bool(declared.get("blockers"))):
             raise
-        workspace_status = _git_checked(workspace, "status", "--porcelain")
+        workspace_status = _git_checked(workspace, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)
         if not workspace_status:
             raise exc
         implementation_artifacts(result, workspace, allow_blocked=True, artifact_root=write_root)
-    validate_candidate_write_scope(workspace=workspace, base_sha=base_sha, allowed_paths=config.acceptance_paths)
+    validate_candidate_write_scope(
+        workspace=workspace, base_sha=base_sha, allowed_paths=config.acceptance_paths,
+        git_timeout_seconds=config.git_timeout_seconds,
+    )
     if workspace_status:
-        _git_checked(workspace, "add", "--all")
-        _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: repair {spec_key}")
+        _git_checked(workspace, "add", "--all", timeout_seconds=config.git_timeout_seconds)
+        _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: repair {spec_key}", timeout_seconds=config.git_timeout_seconds)
     elif not adopt_existing:
         raise RunnerError("repair_no_progress", "repair worker produced no candidate changes")
     else:
-        candidate_sha = git_sha(workspace)
+        candidate_sha = git_sha(workspace, timeout_seconds=config.git_timeout_seconds)
         if candidate_sha == str(ticket_plan.get("base_sha") or ""):
             raise RunnerError("repair_no_progress", "repair worker produced no candidate changes")
-    candidate_sha = git_sha(workspace)
+    candidate_sha = git_sha(workspace, timeout_seconds=config.git_timeout_seconds)
     candidate_receipt = verify_candidate(workspace=workspace, candidate_sha=candidate_sha,
         acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks),
-        acceptance=list(config.acceptance_ids), base_sha=base_sha, allowed_paths=config.acceptance_paths)
+        acceptance=list(config.acceptance_ids), base_sha=base_sha, allowed_paths=config.acceptance_paths,
+        git_timeout_seconds=config.git_timeout_seconds)
     store.complete_codex_stage(run.run_id, operation, thread_id=result.thread_id, turn_id=result.turn_id, state="verified_candidate", step_name=step, worker_id=worker)
     # A repaired candidate replaces the previous candidate for the SPEC. Keep
     # the canonical receipt aligned with the verified workspace so GitHub
@@ -1421,7 +1438,10 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
     repository = config.github_repository
     # The branch push is a Runner side effect, after all local candidate gates.
     if push:
-        _git_checked(config.repository_path, "push", "--set-upstream", "origin", branch)
+        _git_checked(
+            config.repository_path, "push", "--set-upstream", "origin", branch,
+            timeout_seconds=config.git_timeout_seconds,
+        )
     body = json.dumps({"run_id": run.run_id, "spec_key": spec_key, "candidate": candidate_receipt,
                        "review": review}, ensure_ascii=False, sort_keys=True)
     operation = f"github:{run.run_id}:{spec_key}:{candidate_sha}"
@@ -1545,14 +1565,16 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
             or Path(str(manifest.get("repository", ""))).resolve() != config.repository_path.resolve()
             or manifest_path.resolve().parent != workspace_root):
         raise RunnerError("github_recovery_evidence_invalid", "failed GitHub workspace manifest is outside the managed repository scope")
-    if git_sha(old_workspace) != old_candidate_sha or git_sha(config.repository_path, old_branch) != old_candidate_sha:
+    if (git_sha(old_workspace, timeout_seconds=config.git_timeout_seconds) != old_candidate_sha
+            or git_sha(config.repository_path, old_branch, timeout_seconds=config.git_timeout_seconds) != old_candidate_sha):
         raise RunnerError("github_recovery_evidence_invalid", "failed GitHub workspace no longer names its recorded candidate")
-    if _git_checked(old_workspace, "status", "--porcelain"):
+    if _git_checked(old_workspace, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds):
         raise RunnerError("github_recovery_evidence_invalid", "failed GitHub workspace is dirty")
 
     base_sync = _reconcile_github_base(
         repository=config.repository_path, target_ref=config.target_ref,
         base=config.github_base.removeprefix("refs/heads/"),
+        git_timeout_seconds=config.git_timeout_seconds,
     )
     recovery_suffix = f"-recovery-{old_short}"
     recovery_branch = f"{old_branch}{recovery_suffix}"
@@ -1564,6 +1586,7 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
         base_ref=config.target_ref,
         branch=recovery_branch,
         workspace_suffix=recovery_suffix,
+        git_timeout_seconds=config.git_timeout_seconds,
     )
     recovery_path = artifact / f"candidate-{spec_key}-recovery-{old_short}.json"
     recovery_workspace_path = Path(str(recovery_workspace["workspace"]))
@@ -1572,25 +1595,25 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
         recovery_sha = recovery_candidate.get("candidate_sha")
         if (recovery_candidate.get("outcome") != "verified"
                 or not isinstance(recovery_sha, str) or len(recovery_sha) != 40
-                or git_sha(recovery_workspace_path) != recovery_sha
-                or _git_checked(recovery_workspace_path, "status", "--porcelain")):
+                or git_sha(recovery_workspace_path, timeout_seconds=config.git_timeout_seconds) != recovery_sha
+                or _git_checked(recovery_workspace_path, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)):
             raise RunnerError("github_recovery_evidence_invalid", "persisted rebased candidate does not match its workspace")
     else:
         patch_path = artifact / f"github-recovery-{spec_key}-{old_short}.patch"
         if not patch_path.is_file():
-            patch = _git_binary(config.repository_path, "diff", "--binary", f"{old_base_sha}..{old_candidate_sha}")
+            patch = _git_binary(config.repository_path, "diff", "--binary", f"{old_base_sha}..{old_candidate_sha}", timeout_seconds=config.git_timeout_seconds)
             if not patch:
                 raise RunnerError("github_recovery_no_changes", "failed GitHub candidate has no changes to recover")
             patch_path.write_bytes(patch)
         recovery_base_sha = str(recovery_workspace["base_sha"])
-        recovery_head = git_sha(recovery_workspace_path)
-        recovery_status = _git_checked(recovery_workspace_path, "status", "--porcelain")
+        recovery_head = git_sha(recovery_workspace_path, timeout_seconds=config.git_timeout_seconds)
+        recovery_status = _git_checked(recovery_workspace_path, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)
         if recovery_head == recovery_base_sha and not recovery_status:
-            _git_checked(recovery_workspace_path, "apply", "--index", os.fspath(patch_path))
-            recovery_status = _git_checked(recovery_workspace_path, "status", "--porcelain")
+            _git_checked(recovery_workspace_path, "apply", "--index", os.fspath(patch_path), timeout_seconds=config.git_timeout_seconds)
+            recovery_status = _git_checked(recovery_workspace_path, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)
         elif recovery_head == recovery_base_sha and recovery_status:
-            staged_patch = _git_binary(recovery_workspace_path, "diff", "--cached", "--binary")
-            unstaged = _git_binary(recovery_workspace_path, "diff", "--binary")
+            staged_patch = _git_binary(recovery_workspace_path, "diff", "--cached", "--binary", timeout_seconds=config.git_timeout_seconds)
+            unstaged = _git_binary(recovery_workspace_path, "diff", "--binary", timeout_seconds=config.git_timeout_seconds)
             if staged_patch != patch_path.read_bytes() or unstaged:
                 raise RunnerError("github_recovery_evidence_invalid", "recovery workspace has changes that do not match its persisted patch")
         elif recovery_status:
@@ -1599,8 +1622,8 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
             if not recovery_status:
                 raise RunnerError("github_recovery_no_changes", "rebased recovery workspace has no candidate changes")
             _git_checked(recovery_workspace_path, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost",
-                         "commit", "-m", f"spec-runner: recover {spec_key} after failed CI")
-        recovery_sha = git_sha(recovery_workspace_path)
+                         "commit", "-m", f"spec-runner: recover {spec_key} after failed CI", timeout_seconds=config.git_timeout_seconds)
+        recovery_sha = git_sha(recovery_workspace_path, timeout_seconds=config.git_timeout_seconds)
         recovery_candidate = verify_candidate(
             workspace=recovery_workspace_path,
             candidate_sha=recovery_sha,
@@ -1609,6 +1632,7 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
             acceptance=list(config.acceptance_ids),
             base_sha=str(recovery_workspace["base_sha"]),
             allowed_paths=config.acceptance_paths,
+            git_timeout_seconds=config.git_timeout_seconds,
         )
         _write_json_atomic(recovery_path, recovery_candidate)
 
@@ -1879,20 +1903,21 @@ def _finish_codex_implementation(
     validate_candidate_write_scope(
         workspace=workspace, base_sha=str(workspace_info["base_sha"]),
         allowed_paths=config.acceptance_paths,
+        git_timeout_seconds=config.git_timeout_seconds,
     )
-    workspace_status = _git_checked(workspace, "status", "--porcelain")
+    workspace_status = _git_checked(workspace, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)
     if workspace_status:
-        _git_checked(workspace, "add", "--all")
-        _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: implement {spec_key}")
+        _git_checked(workspace, "add", "--all", timeout_seconds=config.git_timeout_seconds)
+        _git_checked(workspace, "-c", "user.name=Spec Runner", "-c", "user.email=spec-runner@localhost", "commit", "-m", f"spec-runner: implement {spec_key}", timeout_seconds=config.git_timeout_seconds)
     else:
         # A process can exit after the implementation commit but before the
         # candidate/review phase.  Recovery must adopt that durable commit,
         # not mistake a clean workspace for an implementation that did
         # nothing or start a second worker turn.
-        existing_sha = git_sha(workspace)
+        existing_sha = git_sha(workspace, timeout_seconds=config.git_timeout_seconds)
         if existing_sha == str(workspace_info["base_sha"]):
             raise RunnerError("implementation_no_changes", "implementation worker produced no workspace changes")
-    candidate_sha = git_sha(workspace)
+    candidate_sha = git_sha(workspace, timeout_seconds=config.git_timeout_seconds)
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     try:
@@ -1901,6 +1926,7 @@ def _finish_codex_implementation(
             acceptance_version=str(ticket_plan["digest"]), checks=list(config.acceptance_checks),
             acceptance=list(config.acceptance_ids), base_sha=str(workspace_info["base_sha"]),
             allowed_paths=config.acceptance_paths,
+            git_timeout_seconds=config.git_timeout_seconds,
         )
     except RunnerError as exc:
         if exc.code != "candidate_verification_failed":
@@ -2025,12 +2051,27 @@ def _finish_codex_implementation(
         else:
             store.set_run_state(run.run_id, "spec_completed")
         return {**github_result, "state": "completed" if finalize_run else "spec_completed"}
-    if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
+    if (
+        git_sha(workspace, timeout_seconds=config.git_timeout_seconds) != candidate_sha
+        or _git_checked(workspace, "status", "--porcelain",
+                        timeout_seconds=config.git_timeout_seconds)
+    ):
         raise RunnerError("candidate_changed_after_review", "candidate changed after the verified check/review pair")
-    if git_sha(config.repository_path, str(workspace_info["branch"])) != candidate_sha:
+    if git_sha(
+        config.repository_path, str(workspace_info["branch"]),
+        timeout_seconds=config.git_timeout_seconds,
+    ) != candidate_sha:
         raise RunnerError("candidate_branch_changed", "candidate branch moved after verification")
     expected_target_sha = str(workspace_info["base_sha"])
-    merged = merge_local(repository=config.repository_path, candidate_branch=str(workspace_info["branch"]), target_ref=config.target_ref, expected_target_sha=expected_target_sha, workspace_root=control_root / "delivery-workspaces", run_id=run.run_id)
+    merged = merge_local(
+        repository=config.repository_path,
+        candidate_branch=str(workspace_info["branch"]),
+        target_ref=config.target_ref,
+        expected_target_sha=expected_target_sha,
+        workspace_root=control_root / "delivery-workspaces",
+        run_id=run.run_id,
+        git_timeout_seconds=config.git_timeout_seconds,
+    )
     _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
         spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review, "merge": merged})
     cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=control_root / "delivery-workspaces", workspace=workspace, manifest=Path(str(workspace_info["manifest"])))
@@ -2061,7 +2102,10 @@ def _persist_implementation_continuation(*, control_root: Path, config: RunnerCo
         confirmed_decisions=[],
         tickets=list(ticket_plan.get("tickets", [])) if isinstance(ticket_plan.get("tickets"), list) else [],
         dependencies=[{"spec_key": item} for item in ticket_plan.get("blocked_by", [])] if isinstance(ticket_plan.get("blocked_by"), list) else [],
-        workspace=_continuation_workspace_identity(workspace=workspace, workspace_info=workspace_info),
+        workspace=_continuation_workspace_identity(
+            workspace=workspace, workspace_info=workspace_info,
+            git_timeout_seconds=config.git_timeout_seconds,
+        ),
         verified_items=[],
         remaining_items=[{"kind": "implementation"}, {"kind": "candidate_verification"}, {"kind": "independent_review"}],
         tests=list(config.acceptance_checks),
@@ -2094,6 +2138,7 @@ def _execute_codex_implementation(
     workspace_info = prepare_workspace(
         repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
         run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+        git_timeout_seconds=config.git_timeout_seconds,
     )
     workspace = Path(str(workspace_info["workspace"]))
     write_root = _implementation_write_root(workspace=workspace, config=config, create=True)
@@ -2712,6 +2757,7 @@ def _reconcile_blocked_review(*, control_root: Path, config: RunnerConfig,
     workspace_info = prepare_workspace(
         repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
         run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+        git_timeout_seconds=config.git_timeout_seconds,
     )
     return _finish_codex_implementation(
         control_root=control_root, config=config, brief_digest=brief_digest,
@@ -3053,7 +3099,7 @@ def _reconcile_completed_ticket_turn(*, control_root: Path, config: RunnerConfig
                      "thread_id": thread_id, "turn_id": turn_id},
         )
         return document
-    base_sha = git_sha(config.repository_path, config.target_ref)
+    base_sha = git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds)
     recovered = _persist_ticket_plan(
         control_root=control_root, config=config, run=run, store=store,
         document=document, spec=selected[0], base_sha=base_sha,
@@ -3083,7 +3129,7 @@ def _adopt_existing_ticket_plan(*, control_root: Path, config: RunnerConfig, run
     if not ticket_path.is_file():
         return None
     ticket = load_json(ticket_path)
-    base_sha = git_sha(config.repository_path, config.target_ref)
+    base_sha = git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds)
     validated_ticket = validate_ticket_plan(ticket, expected_spec_key=spec_key, expected_base_sha=base_sha)
     plan_path = artifact_directory / "spec-plan.json"
     if not plan_path.is_file():
@@ -3230,7 +3276,8 @@ def _candidate_workspace_info(*, control_root: Path, config: RunnerConfig,
         if workspace_root not in workspace.parents or not workspace.is_dir():
             continue
         try:
-            if git_sha(workspace) != candidate_sha or _git_checked(workspace, "status", "--porcelain"):
+            if (git_sha(workspace, timeout_seconds=config.git_timeout_seconds) != candidate_sha
+                    or _git_checked(workspace, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)):
                 continue
         except RunnerError:
             continue
@@ -3286,6 +3333,7 @@ def _reconcile_completed_implementation_turn(*, control_root: Path, config: Runn
     workspace_info = prepare_workspace(
         repository=config.repository_path, workspace_root=control_root / "delivery-workspaces",
         run_id=run.run_id, spec_key=spec_key, base_ref=config.target_ref,
+        git_timeout_seconds=config.git_timeout_seconds,
     )
     if Path(str(workspace_info["workspace"])).resolve() != workspace:
         raise RunnerError("recovery_blocked", "implementation workspace adoption changed the persisted workspace identity")
@@ -3388,7 +3436,7 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
         raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
     ticket_plan = validate_ticket_plan(
         load_json(ticket_path), expected_spec_key=spec_key,
-        expected_base_sha=git_sha(config.repository_path, config.target_ref),
+        expected_base_sha=git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds),
     )
     repair_prefix = f"codex_sdk:{run.run_id}:codex_repair:{spec_key}"
     if turn_status != "completed":
@@ -3468,7 +3516,7 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
         and isinstance(document.get("blockers"), list)
         and bool(document.get("blockers"))
         and document.get("questions") == []
-        and git_sha(workspace) != str(ticket_plan.get("base_sha") or "")
+        and git_sha(workspace, timeout_seconds=config.git_timeout_seconds) != str(ticket_plan.get("base_sha") or "")
     )
     if blocked_candidate and turn_status == "completed":
         operation = str(store.operations_for_run(run.run_id)[-1]["operation_id"])
@@ -3525,10 +3573,11 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
             try:
                 verify_candidate(
                     workspace=workspace,
-                    candidate_sha=git_sha(workspace),
+                    candidate_sha=git_sha(workspace, timeout_seconds=config.git_timeout_seconds),
                     acceptance_version=str(ticket_plan["digest"]),
                     checks=list(config.acceptance_checks),
                     acceptance=list(config.acceptance_ids),
+                    git_timeout_seconds=config.git_timeout_seconds,
                 )
             except RunnerError as verification_error:
                 if verification_error.code == "candidate_verification_failed":
@@ -4080,7 +4129,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     raise RunnerError("recovery_blocked", "the orphaned repair intent lacks blocking findings")
                 ticket_plan = validate_ticket_plan(
                     load_json(ticket_path), expected_spec_key=spec_key,
-                    expected_base_sha=git_sha(config.repository_path, config.target_ref),
+                    expected_base_sha=git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds),
                 )
                 workspace = _implementation_workspace_path(
                     control_root=control_root, config=config, run=run, spec_key=spec_key,

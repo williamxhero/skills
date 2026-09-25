@@ -625,3 +625,29 @@ not prove real SDK provider fault injection, live same-thread business
 continuation, Fast/404 provider configuration changes, Windows detached-parent
 recovery beyond the existing control-DB probe, or project-level L3-L5 gates.
 Those remain `not_verified`; #295 and its parent remain open.
+
+## SF-05.1 configurable Git timeout propagation (2026-09-25)
+
+The Git timeout is now a validated `RunnerConfig` setting at
+`git.timeout_seconds`, defaulting to 120 seconds and contributing to new
+configuration digests. Repository canonicalization, workflow reconciliation,
+local delivery, multi-SPEC delivery, and takeover Git reads/writes all receive
+the configured bound. Public workspace, candidate, merge, delivery, and
+takeover commands expose the same override. Timeout failures remain structured
+as `repository_git_timeout`, `implementation_git_timeout`, or the existing
+cleanup-specific timeout, with the attempted command and bound retained where
+the operation is part of the implementation boundary.
+
+The focused timeout and production boundary selection passed `15 passed`. The
+explicit source and acceptance selection passed `271 passed, 1 skipped` in
+71.98 seconds using `PYTHONPATH=spec-runner/src pytest tests acceptance
+--ignore=acceptance/fixture-app -q`; `compileall` and `git diff --check` also
+passed.
+
+This is a bounded configurable increment for #264 and does not close the
+issue. Live SDK long-turn or disconnect recovery, duplicate detached-writer
+prevention across launch/control roots, complete cancellation and handshake
+coverage, and the remaining project-level L3-L5 gates are still
+`not_verified`. Existing targeted Windows control-DB and durable-wait probes do
+not by themselves satisfy the complete #264 acceptance. #264 and its parent
+remain open; #256 remains open with its previously recorded SF-03.1 evidence.

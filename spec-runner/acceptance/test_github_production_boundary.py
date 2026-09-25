@@ -49,7 +49,7 @@ def test_github_pending_is_waiting_and_does_not_merge(monkeypatch, github_contex
             raise AssertionError("pending CI must not merge")
 
     monkeypatch.setattr(workflow, "GitHubDelivery", FakeGitHub)
-    monkeypatch.setattr(workflow, "_git_checked", lambda *args: "")
+    monkeypatch.setattr(workflow, "_git_checked", lambda *args, **_kwargs: "")
     result = workflow._execute_github_delivery(control_root=root, config=config, run=run, spec_key="S1",
         candidate_sha="abc1234", branch="spec-runner/S1", candidate_receipt={"candidate_sha": "abc1234"},
         review={"approved": True})
@@ -69,7 +69,7 @@ def test_github_merge_requires_explicit_authorization(monkeypatch, github_contex
             return {"ready": True, "pending": [], "failed": [], "missing": [], "wrong_sha": []}
 
     monkeypatch.setattr(workflow, "GitHubDelivery", FakeGitHub)
-    monkeypatch.setattr(workflow, "_git_checked", lambda *args: "")
+    monkeypatch.setattr(workflow, "_git_checked", lambda *args, **_kwargs: "")
     with pytest.raises(RunnerError, match="authorization"):
         workflow._execute_github_delivery(control_root=root, config=config, run=run, spec_key="S1",
             candidate_sha="abc1234", branch="spec-runner/S1", candidate_receipt={"candidate_sha": "abc1234"},

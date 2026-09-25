@@ -114,7 +114,7 @@ def test_repair_cannot_commit_unverified_semantic_result(monkeypatch, case, expe
                 return CodexWorkerResult(thread, "repair-turn", "failed" if case == "failed" else "completed",
                                          None, json.dumps(document), 1, 1, 2)
 
-        def git(repository, *args):
+        def git(repository, *args, **_kwargs):
             git_calls.append(args)
             assert args == ("status", "--porcelain"), "no git write may pass this failure gate"
             return ""
