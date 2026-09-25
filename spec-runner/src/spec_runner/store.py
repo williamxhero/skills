@@ -273,6 +273,21 @@ class Store:
                     decision_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS continuation_receipts (
+                    receipt_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES runs(run_id),
+                    spec_key TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    bundle_path TEXT NOT NULL,
+                    bundle_digest TEXT NOT NULL,
+                    input_revision TEXT NOT NULL,
+                    workspace_identity_json TEXT NOT NULL,
+                    last_verified_progress TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(run_id, spec_key, stage, generation)
+                );
                 """
             )
             verification_sql = self.connection.execute(
@@ -906,6 +921,7 @@ class Store:
             "answers": self.answers_for_run(run_id),
             "events": self.events_for_run(run_id),
             "recovery": self.recovery_for_run(run_id),
+            "continuation": self.continuation_receipts_for_run(run_id),
             "writer_leases": [dict(row) for row in self.connection.execute("SELECT * FROM runner_leases WHERE run_id = ?", (run_id,))],
         }
 
@@ -1075,6 +1091,87 @@ class Store:
     def operation(self, operation_id: str) -> dict[str, object] | None:
         row = self.connection.execute("SELECT * FROM operations WHERE operation_id = ?", (operation_id,)).fetchone()
         return dict(row) if row else None
+
+    def record_continuation_bundle(self, *, run_id: str, bundle_path: Path,
+                                   bundle: dict[str, object]) -> dict[str, object]:
+        """Register an already atomically written, schema-checked bundle.
+
+        The file write intentionally happens before this transaction.  A later
+        process can call the same method while reconciling the crash window;
+        identity and digest conflicts fail closed instead of silently replacing
+        the last known handoff.
+        """
+        required = ("run_id", "spec_key", "stage", "input_revision", "bundle_digest", "generation")
+        if bundle.get("run_id") != run_id or any(key not in bundle for key in required):
+            raise RunnerError("continuation_receipt_identity_invalid", "continuation receipt identity does not match its run")
+        generation = bundle.get("generation")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise RunnerError("continuation_receipt_identity_invalid", "continuation receipt generation is invalid")
+        spec_key = str(bundle["spec_key"])
+        stage = str(bundle["stage"])
+        input_revision = str(bundle["input_revision"])
+        bundle_digest = str(bundle["bundle_digest"])
+        if bundle_path.is_symlink() or not bundle_path.is_file():
+            raise RunnerError("continuation_path_invalid", "continuation receipt must reference an existing regular file")
+        digest_body = dict(bundle)
+        digest_body.pop("bundle_digest", None)
+        expected_digest = hashlib.sha256(json.dumps(
+            digest_body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()
+        if bundle_digest != expected_digest:
+            raise RunnerError("continuation_digest_mismatch", "continuation receipt digest does not match its contents")
+        canonical_path = os.fspath(bundle_path.resolve())
+        workspace = bundle.get("workspace")
+        if not isinstance(workspace, dict):
+            raise RunnerError("continuation_receipt_identity_invalid", "continuation receipt has no workspace identity")
+        workspace_json = json.dumps(workspace, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        receipt_id = hashlib.sha256(json.dumps({
+            "run_id": run_id, "spec_key": spec_key, "stage": stage, "generation": generation,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        timestamp = now()
+        with self.transaction():
+            if self.connection.execute("SELECT 1 FROM runs WHERE run_id = ?", (run_id,)).fetchone() is None:
+                raise RunnerError("run_missing", "cannot register continuation for an unknown run")
+            existing = self.connection.execute(
+                "SELECT * FROM continuation_receipts WHERE run_id = ? AND spec_key = ? AND stage = ? AND generation = ?",
+                (run_id, spec_key, stage, generation),
+            ).fetchone()
+            if existing is not None:
+                expected = (canonical_path, bundle_digest, input_revision, workspace_json, bundle.get("last_verified_progress"))
+                actual = tuple(existing[key] for key in ("bundle_path", "bundle_digest", "input_revision", "workspace_identity_json", "last_verified_progress"))
+                if actual != expected:
+                    raise RunnerError("continuation_receipt_conflict", "continuation bundle identity or digest changed")
+                return dict(existing)
+            self.connection.execute(
+                """INSERT INTO continuation_receipts(
+                   receipt_id, run_id, spec_key, stage, generation, bundle_path,
+                   bundle_digest, input_revision, workspace_identity_json,
+                   last_verified_progress, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (receipt_id, run_id, spec_key, stage, generation, canonical_path,
+                 bundle_digest, input_revision, workspace_json,
+                 bundle.get("last_verified_progress"), timestamp, timestamp),
+            )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"continuation:{receipt_id}:registered",
+                event_type="continuation_bundle_registered",
+                payload={"receipt_id": receipt_id, "spec_key": spec_key, "stage": stage,
+                         "generation": generation, "bundle_digest": bundle_digest,
+                         "bundle_path": canonical_path},
+            )
+            row = self.connection.execute("SELECT * FROM continuation_receipts WHERE receipt_id = ?", (receipt_id,)).fetchone()
+            assert row is not None
+            return dict(row)
+
+    def continuation_receipts_for_run(self, run_id: str) -> list[dict[str, object]]:
+        receipts: list[dict[str, object]] = []
+        for row in self.connection.execute(
+                "SELECT * FROM continuation_receipts WHERE run_id = ? ORDER BY generation, spec_key, stage", (run_id,)):
+            item = dict(row)
+            item["workspace_identity"] = json.loads(str(item.pop("workspace_identity_json")))
+            receipts.append(item)
+        return receipts
 
     def upsert_operation(self, *, operation_id: str, run_id: str, operation_kind: str, input_digest: str, state: str = "prepared") -> dict[str, object]:
         timestamp = now()

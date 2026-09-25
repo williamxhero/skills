@@ -421,3 +421,33 @@ This is source and deterministic acceptance evidence for RCV-01.4. It does not
 prove a live SDK injected capacity/Fast/404 incident, a real provider incident,
 Windows detached-parent recovery, clean migration under #292, or project-level
 L3-L5 gates. Those remain `not_verified`; #296 and its parent remain open.
+
+## RCV-02.1 durable continuation receipt and crash-window reconciliation (2026-09-25)
+
+Continuation bundles now use a bounded business-context budget and retain only
+schema-validated fields. The bundle digest is checked during construction and
+again at Store registration. Workspace identity records the repository,
+branch/base/head and bounded Git status, index, worktree, and binary-diff
+digests; it does not copy thread history or hidden model material.
+
+Each atomically written bundle is registered in the run's SQLite Store with
+run/SPEC/stage/generation identity, input revision, canonical bundle path,
+digest, workspace identity, and last verified progress. Registration is
+idempotent for the same receipt and fails closed on identity or digest changes.
+On relaunch with the same launch key, the Runner scans only that run's
+continuation artifacts, validates the bundle and filename identity, and adopts
+an unregistered file into the existing run. It never creates a second run for
+this reconciliation path.
+
+Acceptance coverage includes atomic file round-trip, forbidden encrypted or
+opaque history, digest mismatch, total context budget, receipt readback,
+process exit between file write and Store registration, and same-generation
+receipt conflict. The continuation/store selection passed `13 passed`; the
+explicit source and acceptance selection passed `240 passed, 1 skipped` in
+70.21 seconds. `compileall` and `git diff --check` also passed.
+
+This is source and deterministic crash-window evidence for RCV-02.1. It does
+not prove a real native process crash, live SDK source-thread handoff, Windows
+control DB or log recovery, clean migration under #292, or project-level L3-L5
+gates. Those remain `not_verified`; #297 remains OPEN until its live and
+project acceptance gates are separately evidenced.
