@@ -553,3 +553,11 @@ Recovery decisions now honor a valid structured provider `Retry-After` value for
 The focused recovery-policy selection passed `19 passed`. The explicit source and acceptance selection passed `257 passed, 1 skipped` in 73.00 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q`. `git diff --check` passed.
 
 This is an incremental RCV-01.2 correction. It does not prove a live provider capacity incident, automatic service wake-up, or project-level L3-L5 gates; the recovery issues remain open.
+
+## RCV-01.4 cleanup-debt diagnostic correction (2026-09-25)
+
+Recovery diagnostics now report cleanup debt only for an explicit `cleanup_pending` run state or an explicitly persisted cleanup-debt marker. `blocked`, `service_wait`, and `wait_retry` are control or recovery states and no longer appear as cleanup debt. Acceptance covers all three negative states and the positive cleanup state.
+
+The focused recovery-policy selection passed `20 passed`. The explicit source and acceptance selection passed `258 passed, 1 skipped` in 81.48 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q`. `git diff --check` passed.
+
+This is an incremental RCV-01.4 accuracy correction; real SDK recovery and project-level L3-L5 gates remain `not_verified`.
