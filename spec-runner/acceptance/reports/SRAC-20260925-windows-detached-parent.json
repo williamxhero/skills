@@ -1,0 +1,22 @@
+{
+  "schema_version": "spec-runner-windows-native-detached-parent/v1",
+  "run_marker": "SRAC-20260925-windows-detached-parent",
+  "evidence_kind": "observed_windows_native_detached_parent",
+  "platform": "Windows",
+  "python": "3.13.5",
+  "wrapper_pid": 31212,
+  "child_pid": 38592,
+  "wrapper_exit_code": 0,
+  "parent_exited_before_continue": true,
+  "ready_after_wrapper_exit": true,
+  "status_after_wrapper_exit": "starting",
+  "final_state": "completed",
+  "runtime_pid_readback": 38592,
+  "unverified": [
+    "Windows control DB and launcher log recovery across host/process restart",
+    "live SDK process restart",
+    "source-thread takeover",
+    "GitHub merge queue",
+    "complete A-J recovery acceptance"
+  ]
+}
