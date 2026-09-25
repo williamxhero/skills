@@ -1,0 +1,30 @@
+{
+  "schema_version": "spec-runner-windows-control-db-restart/v1",
+  "run_marker": "SRAC-20260925-windows-control-db-restart",
+  "evidence_kind": "observed_windows_control_db_restart",
+  "platform": "Windows",
+  "python": "3.13.5",
+  "wrapper_pid": 41172,
+  "child_pid": 27900,
+  "lock_holder_pid": 40332,
+  "run_id": "57ed218f-84d3-47d6-8105-66c0b522166b",
+  "lock_acquired_before_runner_termination": true,
+  "runner_terminated_while_lock_held": true,
+  "termination_exit_code": 0,
+  "status_before_recovery": "starting",
+  "drive_exit_code": 0,
+  "recovered_same_run": true,
+  "final_state": "completed",
+  "control_db_exists_after": true,
+  "control_db_integrity_after": "ok",
+  "control_db_digest_before_lock": "e482bad4f5187731ebcfec2b25252a6e8268e64646336476daf3d1b80d662c1c",
+  "control_db_digest_after_recovery": "1d4cbcea587d24b10d6774ef99a6f7062108163f555410f77fb48a1d03ca8092",
+  "launcher_logs_readable": true,
+  "launcher_log_count": 2,
+  "unverified": [
+    "SQLite locking on non-Windows hosts",
+    "source-thread takeover",
+    "GitHub merge queue",
+    "complete A-J recovery acceptance"
+  ]
+}
