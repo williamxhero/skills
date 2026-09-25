@@ -50,6 +50,42 @@ class CodexWorkerResult:
         return result
 
 
+def _sdk_turn_error_payload(error: Any) -> dict[str, object]:
+    """Select public, typed fields of an SDK TurnError without serializing it."""
+    message = getattr(error, "message", None)
+    if message is None and isinstance(error, dict):
+        message = error.get("message")
+    info = getattr(error, "codex_error_info", None)
+    if info is None and isinstance(error, dict):
+        info = error.get("codexErrorInfo", error.get("codex_error_info"))
+    if hasattr(info, "model_dump"):
+        info = info.model_dump(by_alias=True)
+    elif hasattr(info, "root"):
+        info = info.root
+    if hasattr(info, "model_dump"):
+        info = info.model_dump(by_alias=True)
+    if isinstance(info, dict) and len(info) == 1:
+        code, detail = next(iter(info.items()))
+        if code == "root" and hasattr(detail, "value"):
+            code = detail.value
+            detail = None
+        if hasattr(detail, "model_dump"):
+            detail = detail.model_dump(by_alias=True)
+        status = detail.get("httpStatusCode") if isinstance(detail, dict) else None
+    else:
+        code = getattr(info, "value", info) if info is not None else None
+        status = None
+    return {
+        "message": message if isinstance(message, str) else str(error),
+        "code": code if isinstance(code, str) else None,
+        "http_status": status,
+        "source": "sdk_result",
+        "structured": isinstance(code, str) or status is not None,
+        "request_admission": "accepted",
+        "execution_outcome": "failed",
+        "evidence": ["sdk_turn_error_info"] if isinstance(code, str) else ["sdk_turn_error_text_fallback"],
+    }
+
 class CodexAdapter:
     """Small adapter around the published Python Codex SDK.
 
@@ -359,15 +395,7 @@ class CodexAdapter:
         if result_error:
             fault_observation = observation_from_error(
                 operation_kind="codex_turn",
-                error={
-                    "message": result_error,
-                    "source": "sdk_result",
-                    "structured": False,
-                    "thread_id": result_thread_id,
-                    "turn_id": result_turn_id,
-                    "request_admission": "accepted",
-                    "execution_outcome": "failed",
-                },
+                error=_sdk_turn_error_payload(result_error),
                 thread_id=result_thread_id,
                 turn_id=result_turn_id,
                 requested_model=model,
@@ -390,7 +418,7 @@ class CodexAdapter:
             thread_id=result_thread_id,
             turn_id=result_turn_id,
             status=str(getattr(result_status, "value", result_status)),
-            error=str(result_error) if result_error else None,
+            error=fault_observation["message"] if result_error else None,
             final_response=getattr(result, "final_response", None),
             item_count=len(getattr(result, "items", []) or []),
             started_at=getattr(result, "started_at", None),
