@@ -537,3 +537,11 @@ Fault observations previously copied `client_version` into `runtime_version` whe
 The targeted recovery-policy, Runner recovery-runtime, and Codex-adapter selection passed `36 passed, 1 skipped`. The explicit source and acceptance selection passed `256 passed, 1 skipped` in 73.88 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q` with this checkout on `PYTHONPATH`. `git diff --check` passed.
 
 This corrects evidence provenance in RCV-01.1; it does not complete the ticket or prove live SDK injected-error recovery, provider incidents, or project-level L3-L5 gates. Those remain `not_verified`.
+
+## RCV-01.1 worker and attempt provenance correction (2026-09-25)
+
+The Runner recovery failure boundary now carries the durable worker ID and a persisted episode attempt number into `FaultObservation`. The acceptance case creates a real Store worker, records two capacity failures, and verifies the first observation is attributed to that worker with attempt 1. This closes an evidence attribution gap without changing the recovery policy or creating another worker.
+
+The focused recovery policy and Runner runtime selection passed `22 passed`. The explicit source and acceptance selection passed `256 passed, 1 skipped` in 77.01 seconds using `pytest tests acceptance --ignore=acceptance/fixture-app -q`. `git diff --check` passed.
+
+This is an incremental RCV-01.1 correction. Live SDK fault injection, provider incidents, and project-level L3-L5 gates remain `not_verified`; the related issues stay open.
