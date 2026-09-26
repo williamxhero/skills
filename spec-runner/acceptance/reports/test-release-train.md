@@ -912,3 +912,24 @@ This closes the combined Windows control DB and launcher-log lifecycle scenario
 covered by the probe. Live GitHub side-effect reconciliation, source-thread
 takeover, the remaining #266 criteria, and project-level L3-L5 gates remain
 `not_verified`; #266 remains open.
+
+## RCV-01 recovery attempt identity and observation retention (2026-09-26)
+
+Recovery observations now retain distinct provider requests even when they
+share a thread and turn. Their durable observation identity uses the request
+identity when available, so a later request cannot be silently deduplicated as
+the earlier attempt. When a provider explicitly rejects a request but supplies
+neither request nor turn identity, the Runner records an `observe` decision
+with `attempt_identity_missing` and does not issue a retry or consume a
+recovery budget reservation. Existing metadata-only route failures with
+unknown admission retain their bounded route-probe behavior.
+
+Acceptance coverage added two cases for these boundaries. Focused recovery
+runtime plus route-circuit coverage passed `11 passed`; the explicit source
+and acceptance selection passed `327 passed, 1 skipped`; `compileall` and
+`git diff --check` passed.
+
+This is deterministic recovery safety evidence. Live provider incidents,
+same-thread business continuation after an injected live fault, clean source
+thread takeover, and project-level L3-L5 gates remain `not_verified`; RCV-01,
+RCV-02, and their dependent SF tickets remain open.

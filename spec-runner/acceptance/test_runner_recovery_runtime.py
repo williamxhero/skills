@@ -136,6 +136,60 @@ def test_runner_observes_accepted_unknown_result_before_retry(tmp_path: Path) ->
         store.close()
 
 
+def test_recovery_keeps_distinct_requests_on_one_turn(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        for request_id in ("request-one", "request-two"):
+            workflow._record_recovery_failure(
+                run=run, store=store, operation_id="start:" + run.run_id,
+                error=RunnerError(
+                    "sdk_rate_limited", "capacity temporarily unavailable",
+                    details={"fault_observation": {
+                        "message": "capacity temporarily unavailable",
+                        "source": "sdk_result", "structured": True,
+                        "request_admission": "rejected", "execution_outcome": "failed",
+                        "thread_id": "thread-capacity", "turn_id": "turn-capacity",
+                        "request_id": request_id,
+                    }},
+                ),
+            )
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["capacity_attempts"] == 2
+        assert [item["observation"]["request_id"] for item in episode["observations"]] == [
+            "request-one", "request-two",
+        ]
+    finally:
+        store.close()
+
+
+def test_unidentified_rejected_request_cannot_bypass_recovery_budget(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        error = RunnerError(
+            "sdk_rate_limited", "capacity temporarily unavailable",
+            details={"fault_observation": {
+                "message": "capacity temporarily unavailable",
+                "source": "sdk_result", "structured": True,
+                "request_admission": "rejected", "execution_outcome": "failed",
+            }},
+        )
+        first = workflow._record_recovery_failure(
+            run=run, store=store, operation_id="start:" + run.run_id, error=error,
+        )
+        second = workflow._record_recovery_failure(
+            run=run, store=store, operation_id="start:" + run.run_id, error=error,
+        )
+        assert first.action.value == second.action.value == "observe"
+        assert first.reason == "attempt_identity_missing"
+        assert store.recovery_for_run(run.run_id)["episodes"][0]["capacity_attempts"] == 0
+    finally:
+        store.close()
+
+
 def test_wait_retry_is_durable_and_does_not_issue_a_worker_early(tmp_path: Path) -> None:
     root = tmp_path / "control"
     store = Store.open(root, create=True)

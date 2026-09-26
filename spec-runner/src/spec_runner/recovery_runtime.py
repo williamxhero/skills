@@ -9,6 +9,7 @@ shapes intentionally remain unchanged.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from .errors import RunnerError
@@ -123,8 +124,29 @@ class RecoveryRuntime:
             turn_id=observation.turn_id or (str(worker.get("external_turn_id")) if worker.get("external_turn_id") else None),
         )
         decision = decide_recovery(snapshot, [observation], now=datetime.now(timezone.utc))
+        # A new provider attempt must have an identity that survives a process
+        # restart. Without one, retrying could evade the durable budget or
+        # replay a request whose outcome has not been reconciled.
+        if (
+            not attempt_identity
+            and observation.request_admission == "rejected"
+            and decision.action in {
+            RecoveryAction.WAIT_RETRY,
+            RecoveryAction.SERVICE_WAIT,
+            RecoveryAction.RESUME_SAME_THREAD,
+            RecoveryAction.USE_APPROVED_ROUTE,
+            RecoveryAction.PROBE_CLEAN_CONTEXT,
+            RecoveryAction.REQUEST_CLEAN_MIGRATION,
+            }
+        ):
+            decision = replace(
+                decision,
+                action=RecoveryAction.OBSERVE,
+                reason="attempt_identity_missing",
+                preconditions=("reconcile_attempt_identity_before_retry",),
+                next_check_at=None,
+            )
         if route_circuit is not None:
-            from dataclasses import replace
             decision = replace(
                 decision,
                 evidence=decision.evidence + (f"route_circuit:{route_circuit['state']}",),
@@ -138,7 +160,9 @@ class RecoveryRuntime:
             wait_deadline=decision.next_check_at if decision.action == RecoveryAction.SERVICE_WAIT else None,
             last_verified_progress=observation.last_verified_progress,
         )
-        observation_id = f"{episode_id}:observation:{observation.fingerprint}:{observation.turn_id or 'no-turn'}"
+        observation_identity = observation.request_id or observation.turn_id or operation_id
+        observation_key = hashlib.sha256(observation_identity.encode("utf-8")).hexdigest()
+        observation_id = f"{episode_id}:observation:{observation.fingerprint}:{observation_key}"
         store.record_recovery_observation(
             observation_id=observation_id, episode_id=episode_id,
             observation=observation.public(),
@@ -266,4 +290,3 @@ class RecoveryRuntime:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return action, parsed.astimezone(timezone.utc).isoformat()
-
