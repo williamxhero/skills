@@ -751,3 +751,18 @@ launcher log handle and restart observation. A production log-rotation command
 and retention policy do not currently exist, so that capability remains
 `not_verified`, as do the combined control-DB/log lifecycle, external GitHub
 side-effect reconciliation, the remaining #266 criteria, and project L3-L5.
+
+## SF-06.1 installed wheel cold replay (2026-09-26)
+
+The current `c51a5be` source built `spec_runner-0.1.0-py3-none-any.whl` and
+installed it into a fresh Windows virtual environment. The public CLI ran from
+a Chinese/space-containing directory with `PYTHONPATH` cleared and the source
+tree unavailable: `--version` returned `0.1.0`, `diagnose package` verified all
+required package members with no forbidden runtime data, and the public
+deterministic fault matrix passed all 10 cases.
+
+The durable report is
+`SRAC-20260926-cold-install-01.json`. This verifies the installed CLI/package
+boundary and deterministic replay only; live SDK production delivery, live
+GitHub side effects, Windows control-DB/log restart recovery, and source-thread
+takeover remain `not_verified`.

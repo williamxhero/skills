@@ -1,0 +1,57 @@
+{
+  "candidate": {
+    "commit": "c51a5bef10a99626f2352809e4d17b85a8be7ded",
+    "wheel": "spec_runner-0.1.0-py3-none-any.whl",
+    "wheel_sha256": "9e6c83ff68fda956112a0f8706f5b0111dd99681b8c88be1f1fd3b4090de96c8"
+  },
+  "commands": {
+    "fault_matrix": {
+      "cases": 10,
+      "passed": true,
+      "report_digest": "5039f15db775a280cce93ef96659653303577fe86d0cfba84482dfe9d8589f7c",
+      "returncode": 0
+    },
+    "package_diagnose": {
+      "body": {
+        "archive_digest": "40cec4e707c333b61bcf7355c3ae165be76cfe8693dd8ffe15c94260251b0f96",
+        "command": "diagnose",
+        "forbidden_members": [],
+        "member_count": 35,
+        "ok": true,
+        "outcome": "verified",
+        "path": "C:\\Users\\will\\AppData\\Local\\Temp\\spec runner cold install 中文 2_yi27zv\\dist\\spec_runner-0.1.0-py3-none-any.whl",
+        "required_members": {
+          "dependencies.lock.json": true,
+          "metadata": true,
+          "spec_runner/cli.py": true
+        },
+        "runner_version": "0.1.0",
+        "schema_version": "spec-runner-wheel-inspection/v1"
+      },
+      "returncode": 0
+    },
+    "version": {
+      "returncode": 0,
+      "stdout": "0.1.0"
+    }
+  },
+  "environment": {
+    "cwd": "C:\\Users\\will\\AppData\\Local\\Temp\\spec runner cold install 中文 2_yi27zv\\非源码 cwd with spaces",
+    "import_path": "C:\\Users\\will\\AppData\\Local\\Temp\\spec runner cold install 中文 2_yi27zv\\isolated environment\\Lib\\site-packages\\spec_runner\\__init__.py",
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.5",
+    "pythonpath_cleared": true,
+    "source_unavailable": true
+  },
+  "evidence_kind": "windows",
+  "outcome": "passed",
+  "run_marker": "SRAC-20260926-cold-install-01",
+  "schema_version": "spec-runner-installed-wheel-cold-replay/v1",
+  "unverified": [
+    "live SDK production chain",
+    "live GitHub side effects and merge queue",
+    "Windows control DB and launcher log restart combination",
+    "source-thread takeover"
+  ],
+  "verified": true
+}

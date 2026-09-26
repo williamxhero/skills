@@ -131,6 +131,11 @@ hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
   thread or an already archived thread, so those cases remain visible
   capability boundaries rather than inferred history.
 
+- the current `c51a5be` source built and installed a fresh wheel on native
+  Windows with the source tree unavailable and `PYTHONPATH` cleared. From a
+  Chinese/space-containing non-source cwd, the installed public CLI returned
+  `0.1.0`, passed package inspection, and passed all ten deterministic fault
+  cases. Evidence: `SRAC-20260926-cold-install-01.json`.
 ## Not verified / external blockers
 
 These are explicit gaps, not simulated passes:

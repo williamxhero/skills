@@ -114,6 +114,14 @@ invocation, and the broader native Windows file-lock cleanup matrix. These are
 explicitly `not_verified`; no deterministic receipt is promoted to live
 evidence.
 
+On 2026-09-26 the same installed-wheel boundary was replayed from commit
+`c51a5be` on native Windows in a fresh virtual environment and a
+Chinese/space-containing non-source cwd. The source tree was unavailable and
+`PYTHONPATH` was cleared; version, package inspection, and all ten public fault
+cases passed. The report is
+`acceptance/reports/SRAC-20260926-cold-install-01.json`. This remains installed
+artifact and deterministic evidence, not live SDK, GitHub, or takeover proof.
+
 ## Remaining live qualification inputs
 
 The following inputs are needed only to produce additional live qualification
