@@ -129,9 +129,15 @@ def validate_report(report: dict[str, Any]) -> None:
         raise AssertionError("an independent process must hold both launcher logs and block their rotation")
     if report.get("runner_terminated_while_held") is not True:
         raise AssertionError("the recorded detached Runner must be terminated while the log handles are held")
+    if report.get("recovered_same_run_while_log_handles_held") is not True:
+        raise AssertionError("public drive must recover the same run while independent log handles remain held")
+    if report.get("public_rotation_error") != "launcher_log_rotation_failed":
+        raise AssertionError("the public rotation command must report a held-log failure")
     if report.get("rotation_after_release") is not True or report.get("rotated_logs_readable") is not True:
         raise AssertionError("the same launcher logs must rotate and remain readable after release")
-    if report.get("recovered_same_run") is not True or report.get("final_state") != "completed":
+    if report.get("public_rotation_replayed") is not True or report.get("final_state") != "completed":
+        raise AssertionError("the durable public rotation intent must complete after release")
+    if report.get("recovered_same_run") is not True:
         raise AssertionError("public drive must recover the same run after log-handle release")
 
 
@@ -199,33 +205,47 @@ def run_probe(output: Path | None = None) -> dict[str, Any]:
             blocked = [_rotate(stdout_path), _rotate(stderr_path)]
             _write(control / "faults" / f"{run_id}.after_first_artifact.continue", "continue\n")
             termination_code = _terminate_known_pid(child_pid)
+            recovery_env = dict(env)
+            recovery_env.pop("SPEC_RUNNER_FAULT_POINT", None)
+            recovery_args = [
+                "drive", "--brief", str(brief), "--config", str(config),
+                "--control-root", str(control), "--launch-key", "windows-launcher-log-handles",
+            ]
+            recovery_deadline = time.monotonic() + 15
+            drive_code = 2
+            recovered: dict[str, Any] = {}
+            while time.monotonic() < recovery_deadline:
+                drive_code, recovered = _invoke(recovery_args, root, recovery_env)
+                if drive_code == 0:
+                    break
+                if recovered.get("error", {}).get("code") != "writer_busy":
+                    break
+                time.sleep(0.1)
+            recovered_same_run_while_log_handles_held = (
+                drive_code == 0
+                and recovered.get("run", {}).get("run_id") == run_id
+                and recovered.get("run", {}).get("state") == "completed"
+            )
+            rotation_args = [
+                "logs", "rotate", "--control-root", str(control), "--run-id", run_id,
+                "--rotation-key", "windows-replay-01",
+            ]
+            rotation_code, rotation_failure = _invoke(rotation_args, root, recovery_env)
+            public_rotation_error = str(rotation_failure.get("error", {}).get("code") or "")
         finally:
             holder_release.touch()
             holder.wait(timeout=10)
         if holder.returncode != 0:
             raise RuntimeError("launcher-log holder did not close both handles cleanly")
-        rotated = [_rotate(stdout_path), _rotate(stderr_path)]
-        rotated_paths = [stdout_path.with_name(stdout_path.name + ".rotated"), stderr_path.with_name(stderr_path.name + ".rotated")]
-        readable = all(path.is_file() and path.read_text(encoding="utf-8", errors="replace") is not None for path in rotated_paths)
-        recovery_env = dict(env)
-        recovery_env.pop("SPEC_RUNNER_FAULT_POINT", None)
-        recovery_args = [
-            "drive", "--brief", str(brief), "--config", str(config),
-            "--control-root", str(control), "--launch-key", "windows-launcher-log-handles",
+        retry_code, rotation_success = _invoke(rotation_args, root, recovery_env)
+        rotated_paths = [
+            Path(rotation_success.get("rotated_logs", {}).get("stdout", "")),
+            Path(rotation_success.get("rotated_logs", {}).get("stderr", "")),
         ]
-        # A killed production Runner leaves a durable lease until the normal
-        # stale-owner window proves that its PID is gone. Retry the public
-        # recovery boundary until that lease can be reclaimed.
-        recovery_deadline = time.monotonic() + 15
-        drive_code = 2
-        recovered: dict[str, Any] = {}
-        while time.monotonic() < recovery_deadline:
-            drive_code, recovered = _invoke(recovery_args, root, recovery_env)
-            if drive_code == 0:
-                break
-            if recovered.get("error", {}).get("code") != "writer_busy":
-                break
-            time.sleep(0.1)
+        readable = retry_code == 0 and all(
+            path.is_file() and path.read_text(encoding="utf-8", errors="replace") is not None
+            for path in rotated_paths
+        )
         report = {
             "schema_version": "spec-runner-windows-launcher-log-handles/v1",
             "run_marker": "SRAC-20260926-windows-launcher-log-handles-01",
@@ -236,13 +256,16 @@ def run_probe(output: Path | None = None) -> dict[str, Any]:
             "rotation_while_held": blocked,
             "rotation_blocked_while_held": all(not item[0] for item in blocked),
             "runner_terminated_while_held": termination_code == 0,
-            "rotation_after_release": all(item[0] for item in rotated),
+            "rotation_after_release": retry_code == 0,
             "rotated_logs_readable": readable,
+            "public_rotation_error": public_rotation_error,
+            "public_rotation_replayed": rotation_success.get("replayed") is True,
+            "public_rotation_first_exit_code": rotation_code,
             "drive_exit_code": drive_code,
+            "recovered_same_run_while_log_handles_held": recovered_same_run_while_log_handles_held,
             "recovered_same_run": recovered.get("run", {}).get("run_id") == run_id,
             "final_state": recovered.get("run", {}).get("state"),
             "unverified": [
-                "production log-rotation command and retention policy",
                 "control DB lock combined with launcher-log lifecycle",
                 "external GitHub side-effect reconciliation",
                 "remaining #266 and project-level L3-L5 gates",

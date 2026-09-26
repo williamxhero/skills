@@ -18,6 +18,7 @@ from .diagnostics import build_release_report, inspect_wheel, load_json as diagn
 from .matt import load_lock, render_prompt, resolve_grill, resolve_local_skill
 from .multi_spec import run_local_delivery
 from .legacy import legacy_takeover_inventory, read_legacy_database
+from .log_runtime import rotate_launcher_logs
 from .plans import digest, intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
 from .takeover import (
     completion_action,
@@ -31,7 +32,7 @@ from .takeover import (
     write_takeover_record,
 )
 from .tracker import publish_local, read_local
-from .store import Store
+from .store import Store, _process_alive
 from .workflow import control, doctor, drive, launch, resume, start, status
 from .codex_adapter import CodexAdapter
 
@@ -82,6 +83,13 @@ def _parser() -> argparse.ArgumentParser:
     launch_parser.add_argument("--control-root", required=True, type=Path)
     launch_parser.add_argument("--launch-key", required=True)
     launch_parser.add_argument("--handshake-timeout", type=float, default=10.0)
+    logs_parser = subparsers.add_parser("logs", help="maintain durable detached launcher logs")
+    logs_sub = logs_parser.add_subparsers(dest="logs_command", required=True)
+    logs_rotate = logs_sub.add_parser("rotate")
+    logs_rotate.add_argument("--control-root", required=True, type=Path)
+    logs_rotate.add_argument("--run-id", required=True)
+    logs_rotate.add_argument("--rotation-key", required=True)
+    logs_rotate.add_argument("--retain", type=int, default=3)
     tracker_parser = subparsers.add_parser("tracker", help="read or publish a local issue tracker")
     tracker_subparsers = tracker_parser.add_subparsers(dest="tracker_command", required=True)
     tracker_read = tracker_subparsers.add_parser("read")
@@ -341,6 +349,40 @@ def main(argv: Sequence[str] | None = None) -> int:
                 control_root=arguments.control_root,
                 launch_key=arguments.launch_key,
                 handshake_timeout_seconds=arguments.handshake_timeout,
+            )
+        elif arguments.command == "logs":
+            control_root = arguments.control_root.expanduser().resolve()
+            store = Store.open(control_root, create=False)
+            try:
+                record = store.find_by_run_id(arguments.run_id)
+                if record is None:
+                    raise RunnerError("unknown_run", f"run does not exist: {arguments.run_id}")
+                run_status = store.public_status(arguments.run_id)
+                runtime = run_status.get("runtime")
+                runtime_pid = runtime.get("pid") if isinstance(runtime, dict) else None
+                if record.state not in {"completed", "cancelled", "failed", "blocked", "blocked_writer_busy"}:
+                    raise RunnerError(
+                        "launcher_log_run_active",
+                        "launcher logs can be rotated only after the run reaches a terminal state",
+                        details={"run_state": record.state},
+                    )
+                if run_status.get("writer_leases"):
+                    raise RunnerError("launcher_log_owner_active", "a durable writer lease still owns this run")
+                if isinstance(runtime_pid, int) and _process_alive(runtime_pid):
+                    raise RunnerError(
+                        "launcher_log_owner_active",
+                        "the recorded Runner process is still alive",
+                        details={"pid": runtime_pid},
+                    )
+            finally:
+                store.close()
+            if arguments.logs_command != "rotate":
+                raise RunnerError("logs_command_invalid", "unsupported launcher-log command")
+            result = rotate_launcher_logs(
+                control_root=control_root,
+                run_id=arguments.run_id,
+                rotation_key=arguments.rotation_key,
+                retain=arguments.retain,
             )
         elif arguments.command == "tracker":
             if arguments.tracker_command == "read":

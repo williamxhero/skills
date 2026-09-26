@@ -15,8 +15,11 @@ def _report() -> dict[str, object]:
         "holder_ready": True,
         "rotation_blocked_while_held": True,
         "runner_terminated_while_held": True,
+        "recovered_same_run_while_log_handles_held": True,
+        "public_rotation_error": "launcher_log_rotation_failed",
         "rotation_after_release": True,
         "rotated_logs_readable": True,
+        "public_rotation_replayed": True,
         "recovered_same_run": True,
         "final_state": "completed",
     }

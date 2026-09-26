@@ -61,6 +61,7 @@ spec-runner start --brief .\brief.md --config .\runner.json `
   --control-root .\.spec-runner --launch-key example-001
 spec-runner status --control-root .\.spec-runner --run-id <run_id>
 spec-runner doctor --config .\runner.json --control-root .\.spec-runner
+spec-runner logs rotate --control-root .\.spec-runner --run-id <run_id> --rotation-key maintenance-001
 spec-runner pause --control-root .\.spec-runner --run-id <run_id>
 spec-runner resume --brief .\brief.md --config .\runner.json --control-root .\.spec-runner --launch-key example-001
 spec-runner answer --control-root .\.spec-runner --run-id <run_id> --question-id Q1 --value '"approved"'
@@ -185,3 +186,9 @@ reports replayable deterministic cases for normal completion, process restart
 after each durable artifact boundary, takeover continuation, completed-run
 idempotency, input drift, and late cancellation. It also lists live SDK,
 Windows-native, and GitHub merge-queue cases separately as `not_verified`.
+
+`logs rotate` is the public, terminal-run-only launcher log maintenance command.
+It records a rotation intent before moving the stdout/stderr pair, creates fresh
+active files, and replays the same `--rotation-key` after a Windows handle or
+retention cleanup failure. A live writer or durable lease blocks the command
+before it touches either log.

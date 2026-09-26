@@ -433,6 +433,69 @@ class SpecRunnerCliTests(unittest.TestCase):
         else:
             self.fail("detached deterministic runner did not complete")
 
+    def test_public_logs_rotate_is_replayable_for_an_existing_run(self) -> None:
+        code, started = self.start("logs-001")
+        self.assertEqual(code, 0, started)
+        run_id = str(started["run"]["run_id"])
+        launcher_logs = self.control_root / "launcher-logs"
+        launcher_logs.mkdir(parents=True)
+        (launcher_logs / f"{run_id}.stdout.log").write_text("stdout\n", encoding="utf-8")
+        (launcher_logs / f"{run_id}.stderr.log").write_text("stderr\n", encoding="utf-8")
+
+        code, rotated = self.invoke(
+            "logs", "rotate", "--control-root", str(self.control_root),
+            "--run-id", run_id, "--rotation-key", "rotation-1",
+        )
+        self.assertEqual(code, 0, rotated)
+        self.assertEqual(rotated["state"], "rotated")
+        code, replayed = self.invoke(
+            "logs", "rotate", "--control-root", str(self.control_root),
+            "--run-id", run_id, "--rotation-key", "rotation-1",
+        )
+        self.assertEqual(code, 0, replayed)
+        self.assertTrue(replayed["replayed"])
+
+    def test_public_logs_rotate_rejects_a_live_run_before_touching_logs(self) -> None:
+        from spec_runner.store import RunRecord, Store, now
+
+        self.control_root.mkdir(parents=True)
+        store = Store.open(self.control_root, create=True)
+        try:
+            timestamp = now()
+            run = RunRecord(
+                run_id="33333333-3333-4333-8333-333333333333",
+                launch_key="logs-live",
+                input_digest="input",
+                config_digest="config",
+                repository_path=str(self.repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="deterministic_test",
+                state="running",
+                current_step="deterministic_example",
+                log_path="logs/logs-live.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            store.create_run(run, "start:logs-live")
+        finally:
+            store.close()
+        launcher_logs = self.control_root / "launcher-logs"
+        launcher_logs.mkdir(parents=True)
+        stdout = launcher_logs / f"{run.run_id}.stdout.log"
+        stderr = launcher_logs / f"{run.run_id}.stderr.log"
+        stdout.write_text("stdout\n", encoding="utf-8")
+        stderr.write_text("stderr\n", encoding="utf-8")
+
+        code, result = self.invoke(
+            "logs", "rotate", "--control-root", str(self.control_root),
+            "--run-id", run.run_id, "--rotation-key", "rotation-live",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(result["error"]["code"], "launcher_log_run_active")
+        self.assertTrue(stdout.is_file())
+        self.assertTrue(stderr.is_file())
+
     def test_detached_launch_rejects_an_unbounded_or_nonpositive_handshake_timeout(self) -> None:
         code, result = self.invoke(
             "launch",

@@ -791,6 +791,23 @@ and retention policy do not currently exist, so that capability remains
 `not_verified`, as do the combined control-DB/log lifecycle, external GitHub
 side-effect reconciliation, the remaining #266 criteria, and project L3-L5.
 
+## SF-05.3 public launcher-log rotation boundary (2026-09-26)
+
+Added the production `logs rotate` CLI and `log_runtime` module. It persists a
+rotation intent before moving a stdout/stderr pair, creates fresh active files,
+rolls back a partial move when possible, and replays the same rotation key for
+retention cleanup. The public command rejects active runs, live recorded
+processes, and durable writer leases before touching logs. Focused CLI, rotation,
+and Windows-report contract coverage passed `29 passed`; the full source and
+acceptance selection remains to be rerun before commit.
+
+This is deterministic implementation evidence. A native Windows rerun of the
+existing launcher-handle probe against the new public rotation command is still
+required; the prior handle report remains evidence for OS-level locking only.
+The control-DB/log combined lifecycle, external GitHub side-effect
+reconciliation, remaining #266 criteria, and project L3-L5 gates remain
+`not_verified`.
+
 ## SF-06.1 installed wheel cold replay (2026-09-26)
 
 The current `c51a5be` source built `spec_runner-0.1.0-py3-none-any.whl` and
