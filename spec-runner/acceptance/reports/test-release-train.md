@@ -1,3 +1,13 @@
+## RCV-01.2 atomic recovery budget reservation (2026-09-26)
+
+Recovery episode counters now use an idempotent SQLite reservation row keyed by the provider request or turn identity. The reservation and counter increment commit in one transaction, so replaying the same attempt cannot consume budget twice and a crash cannot lose a reservation. Episode upserts preserve the maximum persisted counter instead of allowing a stale snapshot to reduce it. Workflow recovery now persists route probe, clean-context probe, and clean migration consumption after their corresponding action has been attempted, bounding those paths across retries and restarts.
+
+Candidate source revision: 3b8d00b.
+
+The focused Store and Runner recovery-runtime selection had 19 passing tests; the earlier recovery policy selection had 40 passing tests; the explicit source and acceptance selection passed 282 passed, 1 skipped in 68.85 seconds using PYTHONPATH=spec-runner/src pytest spec-runner/tests spec-runner/acceptance --ignore=spec-runner/acceptance/fixture-app -q. compileall and git diff --check passed.
+
+This is an incremental RCV-01.2 correction. It does not prove cross-process route circuit coordination, live provider capacity behavior, SDK timer scheduling beyond the existing deterministic driver, source-thread migration under #292, or project-level L3-L5 gates. Those remain not_verified; #294 and its parent remain open.
+
 # SF integration release train
 
 ## PR receipt identity hardening (2026-09-24)
