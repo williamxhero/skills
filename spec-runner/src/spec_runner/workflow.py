@@ -336,62 +336,18 @@ def _recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | Non
 
 def _drive_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
                   run_id: str | None = None, launch_token: str | None = None) -> dict[str, object]:
-    """Run the workflow, waiting for durable retry deadlines and controls."""
-    launch_key = _validate_launch_key(launch_key)
-    control_root = control_root.expanduser().resolve()
-    active_run_id = run_id
-    woken_deadlines: set[tuple[str, str]] = set()
-    while True:
-        result = start(
-            brief_file=brief_file, config_file=config_file, control_root=control_root,
-            launch_key=launch_key, run_id=active_run_id, launch_token=launch_token,
-        )
-        run_payload = result.get("run")
-        if not isinstance(run_payload, dict) or not isinstance(run_payload.get("run_id"), str):
-            raise RunnerError("run_status_missing", "Runner start returned no durable run identity")
-        active_run_id = str(run_payload["run_id"])
+    """Compatibility adapter for the lifecycle recovery driver."""
+    from .lifecycle import LegacyWorkflowAdapter
+    from .models import RunnerRequest
 
-        while True:
-            store = Store.open(control_root, create=False)
-            try:
-                current = store.find_by_run_id(active_run_id)
-                if current is None:
-                    raise RunnerError("unknown_run", "recovery wait run disappeared from the control database")
-                wait_record = RecoveryRuntime.wait_record(store=store, run_id=active_run_id)
-                if wait_record is None:
-                    if current.state in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
-                        raise RunnerError("recovery_record_missing", "waiting run has no persisted recovery decision")
-                    return {**result, **store.public_status(active_run_id)}
-                action, deadline = wait_record
-                control = store.control_for_run(active_run_id)
-                if control and control.get("requested_state") in {"pause_requested", "cancel_requested"}:
-                    requested = str(control["requested_state"])
-                    stopped_state = "paused" if requested == "pause_requested" else "cancelled"
-                    store.set_run_state(active_run_id, stopped_state)
-                    store.append_event(
-                        run_id=active_run_id,
-                        event_key=f"control:{active_run_id}:{control['generation']}:applied",
-                        event_type="control_applied",
-                        payload={"requested_state": requested, "generation": control["generation"], "during": "recovery_wait"},
-                    )
-                    return {**result, **store.public_status(active_run_id)}
-                wake_key = (action, deadline)
-                remaining = (datetime.fromisoformat(deadline) - datetime.now(timezone.utc)).total_seconds()
-                if remaining <= 0:
-                    if wake_key in woken_deadlines:
-                        return {**result, **store.public_status(active_run_id)}
-                    woken_deadlines.add(wake_key)
-                    store.append_event(
-                        run_id=active_run_id,
-                        event_key=f"recovery:{active_run_id}:timer-woke:{action}:{deadline}",
-                        event_type="recovery_timer_woke",
-                        payload={"action": action, "deadline": deadline},
-                    )
-                    break
-                wait_seconds = min(remaining, 0.25)
-            finally:
-                store.close()
-            time.sleep(wait_seconds)
+    return dict(LegacyWorkflowAdapter().drive(RunnerRequest(
+        brief_file=brief_file,
+        config_file=config_file,
+        control_root=control_root,
+        launch_key=launch_key,
+        run_id=run_id,
+        launch_token=launch_token,
+    )))
 
 
 def _record_codex_turn_started(
@@ -5081,18 +5037,15 @@ def _control_legacy(*, control_root: Path, run_id: str, requested_state: str) ->
 
 
 def _resume_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
-    control_root = control_root.expanduser().resolve()
-    store = Store.open(control_root, create=False)
-    try:
-        existing = store.find_by_launch_key(launch_key)
-        if existing is None:
-            raise RunnerError("unknown_run", "resume requires an existing launch_key")
-        if existing.state == "cancelled":
-            raise RunnerError("cancelled_run", "cancelled runs require explicit creation of a new launch identity")
-        store.clear_control(existing.run_id)
-    finally:
-        store.close()
-    return drive(brief_file=brief_file, config_file=config_file, control_root=control_root, launch_key=launch_key)
+    from .lifecycle import LegacyWorkflowAdapter
+    from .models import RunnerRequest
+
+    return dict(LegacyWorkflowAdapter().resume(RunnerRequest(
+        brief_file=brief_file,
+        config_file=config_file,
+        control_root=control_root,
+        launch_key=launch_key,
+    )))
 
 
 def _launch_claim(*, control_root: Path, run_id: str, child_pid: int, launch_token: str | None = None,
@@ -5131,31 +5084,15 @@ def _launch_legacy(*, brief_file: Path, config_file: Path, control_root: Path, l
 
 
 def _status_legacy(*, control_root: Path, run_id: str | None) -> dict[str, object]:
-    store = Store.open(control_root.expanduser().resolve(), create=False)
-    try:
-        if run_id:
-            return store.public_status(run_id)
-        return {"runs": store.list_status()}
-    finally:
-        store.close()
+    from .lifecycle import LegacyWorkflowAdapter
+
+    return dict(LegacyWorkflowAdapter().status(control_root=control_root, run_id=run_id))
 
 
 def _doctor_legacy(*, config_file: Path | None, control_root: Path) -> dict[str, object]:
-    report: dict[str, object] = {
-        "read_only": True,
-        "control_database_exists": (control_root.expanduser().resolve() / "spec-runner.sqlite3").is_file(),
-        "supported_backends": ["deterministic_test", "codex_sdk"],
-    }
-    if config_file:
-        config = RunnerConfig.from_file(config_file, control_root.expanduser().resolve())
-        report["config"] = {
-            "valid": True,
-            "repository_path": os.fspath(config.repository_path),
-            "execution_backend": config.execution_backend,
-            "requested_model": config.model_name,
-            "requested_effort": config.effort,
-        }
-    return report
+    from .lifecycle import LegacyWorkflowAdapter
+
+    return dict(LegacyWorkflowAdapter().doctor(config_file=config_file, control_root=control_root))
 
 
 def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,

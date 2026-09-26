@@ -45,6 +45,47 @@ def test_runner_start_is_a_typed_compatibility_seam(monkeypatch) -> None:
     assert observed["run_id"] is None
 
 
+def test_runner_accepts_a_lifecycle_port_and_projects_stage_result() -> None:
+    class Port:
+        def start(self, request):
+            assert request.launch_key == "port-1"
+            return {"created": True, "run": {"run_id": "run-1", "state": "planned"}}
+
+        def drive(self, request):
+            return {"run": {"run_id": "run-1", "state": "completed"}}
+
+        def resume(self, request):
+            return {"run": {"run_id": "run-1", "state": "running"}}
+
+        def control(self, **kwargs):
+            return {"accepted": True, **kwargs}
+
+        def launch(self, **kwargs):
+            return {"started": True, "run_id": "run-1"}
+
+        def status(self, **kwargs):
+            return {"run": {"run_id": kwargs["run_id"], "state": "running"}}
+
+        def doctor(self, **kwargs):
+            return {"valid": True}
+
+    request = RunnerRequest(
+        brief_file=Path("brief.md"),
+        config_file=Path("runner.json"),
+        control_root=Path(".control"),
+        launch_key="port-1",
+    )
+    runner = Runner(port=Port())
+
+    assert runner.start(request)["run"]["state"] == "planned"
+    assert runner.drive(request)["run"]["state"] == "completed"
+    assert runner.resume(request)["run"]["state"] == "running"
+    assert runner.control(control_root=Path(".control"), run_id="run-1", requested_state="pause_requested")["accepted"]
+    assert runner.launch(request=request)["started"]
+    assert runner.status(control_root=Path(".control"), run_id="run-1")["run"]["run_id"] == "run-1"
+    assert runner.doctor(config_file=None, control_root=Path(".control"))["valid"]
+
+
 def test_runner_launch_preserves_detached_handshake_projection(monkeypatch) -> None:
     observed: dict[str, object] = {}
 

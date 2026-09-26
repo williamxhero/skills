@@ -9,84 +9,43 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .lifecycle import LifecycleCoordinator, LifecyclePort
 from .models import RunnerRequest, StageResult
 
 
 class Runner:
     """Coordinate one durable lifecycle while preserving legacy projections."""
 
-    @staticmethod
-    def _stage_result(result: dict[str, object]) -> StageResult:
-        """Keep legacy dictionaries at the outer edge of the typed seam."""
-        return StageResult.from_public(result)
+    def __init__(self, port: LifecyclePort | None = None) -> None:
+        self._lifecycle = LifecycleCoordinator(port)
 
     def start_stage(self, request: RunnerRequest) -> StageResult:
-        from . import workflow
-
-        return self._stage_result(workflow._start_legacy(
-            brief_file=request.brief_file,
-            config_file=request.config_file,
-            control_root=request.control_root,
-            launch_key=request.launch_key,
-            run_id=request.run_id,
-            takeover_key=request.takeover_key,
-            launch_token=request.launch_token,
-            migration=request.migration,
-        ))
+        return self._lifecycle.start(request)
 
     def start(self, request: RunnerRequest) -> dict[str, object]:
         return self.start_stage(request).public()
 
     def drive(self, request: RunnerRequest) -> dict[str, object]:
-        from . import workflow
-
-        result = workflow._drive_legacy(
-            brief_file=request.brief_file,
-            config_file=request.config_file,
-            control_root=request.control_root,
-            launch_key=request.launch_key,
-            run_id=request.run_id,
-            launch_token=request.launch_token,
-        )
-        return StageResult.from_public(result).public()
+        return self._lifecycle.drive(request).public()
 
     def resume(self, request: RunnerRequest) -> dict[str, object]:
-        from . import workflow
-
-        result = workflow._resume_legacy(
-            brief_file=request.brief_file,
-            config_file=request.config_file,
-            control_root=request.control_root,
-            launch_key=request.launch_key,
-        )
-        return StageResult.from_public(result).public()
+        return self._lifecycle.resume(request).public()
 
     def control(self, *, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:
-        from . import workflow
-
-        return workflow._control_legacy(
+        return dict(self._lifecycle.control(
             control_root=control_root,
             run_id=run_id,
             requested_state=requested_state,
-        )
+        ))
 
     def launch(self, *, request: RunnerRequest, handshake_timeout_seconds: float = 10.0) -> dict[str, object]:
-        from . import workflow
-
-        return workflow._launch_legacy(
-            brief_file=request.brief_file,
-            config_file=request.config_file,
-            control_root=request.control_root,
-            launch_key=request.launch_key,
+        return dict(self._lifecycle.launch(
+            request=request,
             handshake_timeout_seconds=handshake_timeout_seconds,
-        )
+        ))
 
     def status(self, *, control_root: Path, run_id: str | None) -> dict[str, object]:
-        from . import workflow
-
-        return workflow._status_legacy(control_root=control_root, run_id=run_id)
+        return dict(self._lifecycle.status(control_root=control_root, run_id=run_id))
 
     def doctor(self, *, config_file: Path | None, control_root: Path) -> dict[str, object]:
-        from . import workflow
-
-        return workflow._doctor_legacy(config_file=config_file, control_root=control_root)
+        return dict(self._lifecycle.doctor(config_file=config_file, control_root=control_root))
