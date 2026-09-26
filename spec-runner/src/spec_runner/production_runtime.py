@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from .config import RunnerConfig
 from .errors import RunnerError
@@ -138,6 +138,25 @@ class ProductionWorkflow:
             **delivery,
         }
         self.ports.write_json_atomic(artifact / f"delivery-{spec_key}.json", record)
+
+    def continue_after_spec(self, result: Mapping[str, object]) -> dict[str, object]:
+        """Continue the durable production queue after one SPEC completes.
+
+        Delivery recovery paths may finish one SPEC while the process is
+        already inside a persisted run.  Reloading the run and its plan here
+        keeps that transition in one module instead of making every stage
+        route know how to resume the queue.
+        """
+        if result.get("state") != "spec_completed":
+            return dict(result)
+        run, store = self._durable()
+        current = store.find_by_run_id(run.run_id)
+        if current is None:
+            raise RunnerError("run_status_missing", "completed production SPEC lost its durable run")
+        plan_path = self._artifact(current.run_id) / "spec-plan.json"
+        if not plan_path.is_file():
+            raise RunnerError("spec_plan_missing", "completed production SPEC has no persisted SpecPlan")
+        return replace(self, run=current).run_queue(self.ports.load_json(plan_path))
 
     def _control_boundary(self) -> dict[str, object] | None:
         """Stop production before a new side effect when control is pending."""

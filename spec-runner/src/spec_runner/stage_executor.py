@@ -62,15 +62,7 @@ class WorkflowStageExecutor:
                 control_root=control_root, config=config, run=run, store=store,
                 finalize_run=False,
             )
-            if payload.get("state") == "spec_completed":
-                plan_path = workflow._safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
-                current = store.find_by_run_id(run.run_id)
-                if current is None:
-                    raise workflow.RunnerError("run_status_missing", "completed GitHub wait lost its durable run")
-                payload = workflow._run_production_queue(
-                    control_root=control_root, config=config, brief_digest=brief_digest,
-                    run=current, store=store, spec_plan=workflow.load_json(plan_path),
-                )
+            payload = _continue_production_after_spec(context, payload)
             return StageResult.from_public(payload)
 
         if route.kind == "reviewed":
@@ -81,19 +73,7 @@ class WorkflowStageExecutor:
                 brief_digest=brief_digest,
                 store=store,
             )
-            if payload.get("state") == "spec_completed":
-                plan_path = workflow._safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
-                current = store.find_by_run_id(run.run_id)
-                if current is None:
-                    raise workflow.RunnerError("run_status_missing", "reviewed delivery lost its durable run")
-                payload = workflow._run_production_queue(
-                    control_root=control_root,
-                    config=config,
-                    brief_digest=brief_digest,
-                    run=current,
-                    store=store,
-                    spec_plan=workflow.load_json(plan_path),
-                )
+            payload = _continue_production_after_spec(context, payload)
             return StageResult.from_public(payload)
 
         if route.kind in {"cleanup_migration", "cleanup_production", "cleanup_status"}:
@@ -123,15 +103,7 @@ class WorkflowStageExecutor:
             payload = workflow._retry_production_cleanup(
                 control_root=control_root, config=config, run=run, store=store,
             )
-            if payload.get("state") == "spec_completed":
-                plan_path = workflow._safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
-                current = store.find_by_run_id(run.run_id)
-                if current is None:
-                    raise workflow.RunnerError("run_status_missing", "cleanup lost its durable run")
-                payload = workflow._run_production_queue(
-                    control_root=control_root, config=config, brief_digest=brief_digest,
-                    run=current, store=store, spec_plan=workflow.load_json(plan_path),
-                )
+            payload = _continue_production_after_spec(context, payload)
             return StageResult.from_public(payload)
 
         if route.kind == "needs_input":
@@ -195,6 +167,22 @@ class WorkflowStageExecutor:
             return StageResult.from_public(payload)
 
         return None
+
+
+def _continue_production_after_spec(context: RunContext, payload: dict[str, object]) -> dict[str, object]:
+    """Delegate post-SPEC queue continuation to the production module."""
+    if payload.get("state") != "spec_completed":
+        return payload
+    from . import workflow
+
+    runtime = workflow._production_runtime(
+        control_root=context.control_root,
+        config=context.config,
+        brief_digest=context.brief_digest,
+        run=context.run,
+        store=context.store,
+    )
+    return runtime.continue_after_spec(payload)
 
 
 def execute_stage(context: RunContext, route: StageRoute, executor: StageExecutor | None = None) -> StageResult | None:

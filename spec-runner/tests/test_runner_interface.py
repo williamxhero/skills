@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from spec_runner.models import RunContext, RunnerRequest, StageResult
+from spec_runner.production_runtime import ProductionPorts, ProductionWorkflow
 from spec_runner.runner import Runner
 from spec_runner.stage_progression import StageProgression
 from spec_runner.stage_executor import execute_stage
@@ -237,13 +238,14 @@ def test_stage_executor_continues_the_production_queue_after_reviewed_delivery(t
         observed["reviewed"] = kwargs
         return {"state": "spec_completed", "spec_key": "S1"}
 
-    def run_production_queue(**kwargs):
-        observed["queue"] = kwargs
-        return {"state": "completed"}
+    class ProductionRuntime:
+        def continue_after_spec(self, payload):
+            observed["queue"] = payload
+            return {"state": "completed"}
 
     monkeypatch.setattr("spec_runner.workflow._resume_reviewed_delivery", resume_reviewed_delivery)
     monkeypatch.setattr("spec_runner.workflow._safe_artifact_directory", lambda *args, **kwargs: tmp_path)
-    monkeypatch.setattr("spec_runner.workflow._run_production_queue", run_production_queue)
+    monkeypatch.setattr("spec_runner.workflow._production_runtime", lambda **kwargs: ProductionRuntime())
 
     result = execute_stage(
         RunContext(
@@ -260,7 +262,48 @@ def test_stage_executor_continues_the_production_queue_after_reviewed_delivery(t
     assert result is not None
     assert result.public() == {"state": "completed"}
     assert observed["reviewed"]["brief_digest"] == "digest"
-    assert observed["queue"]["spec_plan"] == {"digest": "plan-1", "specs": []}
+    assert observed["queue"] == {"state": "spec_completed", "spec_key": "S1"}
+
+
+def test_production_workflow_continues_from_durable_spec_completion(tmp_path: Path) -> None:
+    observed: dict[str, object] = {}
+    plan = {"schema_version": "spec-runner-spec-plan/v1", "digest": "plan-1", "specs": []}
+    (tmp_path / "spec-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    initial = SimpleNamespace(run_id="run-1", state="spec_completed")
+    current = SimpleNamespace(run_id="run-1", state="spec_completed", current_step="production_delivery")
+
+    class Store:
+        def find_by_run_id(self, run_id):
+            assert run_id == "run-1"
+            return current
+
+    class ProbeWorkflow(ProductionWorkflow):
+        def run_queue(self, spec_plan):
+            observed["run"] = self.run
+            observed["plan"] = spec_plan
+            return {"state": "completed"}
+
+    ports = ProductionPorts(
+        artifact_directory=lambda root, config, run_id: tmp_path,
+        load_json=lambda path: json.loads(path.read_text(encoding="utf-8")),
+        write_json_atomic=lambda path, document: None,
+        execute_tickets=lambda **kwargs: current,
+        execute_implementation=lambda **kwargs: {"state": "spec_completed"},
+        cleanup_workspace=lambda **kwargs: {"outcome": "cleaned"},
+        close_ticket_plan=lambda **kwargs: {"complete": True},
+    )
+    runtime = ProbeWorkflow(
+        control_root=tmp_path,
+        config=SimpleNamespace(),
+        brief_digest="brief",
+        run=initial,
+        store=Store(),
+        ports=ports,
+    )
+
+    assert runtime.continue_after_spec({"state": "waiting_ci"}) == {"state": "waiting_ci"}
+    assert runtime.continue_after_spec({"state": "spec_completed", "spec_key": "S1"}) == {"state": "completed"}
+    assert observed == {"run": current, "plan": plan}
 
 
 def test_stage_progression_routes_controlled_input_to_recovery() -> None:
