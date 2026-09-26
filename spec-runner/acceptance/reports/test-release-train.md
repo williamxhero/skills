@@ -965,3 +965,23 @@ This is deterministic recovery safety evidence. Live provider incidents,
 same-thread business continuation after an injected live fault, clean source
 thread takeover, and project-level L3-L5 gates remain `not_verified`; RCV-01,
 RCV-02, and their dependent SF tickets remain open.
+## Architecture recovery episode seam and exact wheel replay (2026-09-27)
+
+Commit `1ce0ecfc208cfc24cd2a1dad393afb451ba069f9` binds the recovery
+coordination interface to a `RecoveryEpisode(run, store)` value. The public
+CLI, SQLite schema, event shapes, and receipt formats remain unchanged. The
+source and acceptance selection passed `355 passed, 1 skipped`; compileall and
+`git diff --check` passed.
+
+The exact candidate wheel was installed in a fresh Windows environment with
+the source tree unavailable and `PYTHONPATH` cleared. Package inspection passed,
+and two installed public fault-matrix replays passed all 10 cases with the same
+report digest. Evidence is
+`acceptance/reports/SRAC-20260927-1ce0ecf-installed-wheel.json`.
+
+A new live three-SPEC run was attempted from the same SHA. The first SDK Grill
+turn was rate limited after accepted request admission, with execution outcome
+unknown; no GitHub resources were created. The run is recorded as
+`not_verified` in `acceptance/reports/SRAC-20260927-abcdef123456-production.json`.
+The live SDK, GitHub delivery, source takeover, six-SPEC L4, and final L5 gates
+remain open.

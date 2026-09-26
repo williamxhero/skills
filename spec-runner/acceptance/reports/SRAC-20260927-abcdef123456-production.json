@@ -1,0 +1,28 @@
+{
+  "schema_version": "spec-runner-live-production/v1",
+  "run_marker": "SRAC-20260927-abcdef123456",
+  "base_sha": "1ce0ecfc208cfc24cd2a1dad393afb451ba069f9",
+  "run_id": "0fc6d8e2-2622-4723-8157-7ef81c5b7fd5",
+  "outcome": "not_verified",
+  "state": "failed",
+  "stage": "codex_grill",
+  "external_resources_created": [],
+  "failure": {
+    "code": "sdk_rate_limited",
+    "message": "Codex SDK turn exceeded retry limit with HTTP 429",
+    "request_admission": "accepted",
+    "execution_outcome": "unknown",
+    "thread_id": "01a0dfcf-97ea-7872-a153-2eb543e7ff65",
+    "turn_id": "01a0dfcf-98ed-7223-a378-47882a508f18",
+    "sdk_version": "0.155.1",
+    "model": "gpt-5.5"
+  },
+  "verified": false,
+  "remaining": [
+    "three SPEC production planning, implementation, review, CI, GitHub merge, issue closure and cleanup",
+    "live SDK recovery and process restart",
+    "source thread takeover",
+    "six SPEC release train L4",
+    "final connected L5"
+  ]
+}
