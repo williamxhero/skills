@@ -107,12 +107,16 @@ class RunnerConfig:
     github_base: str | None = None
     github_merge_authorized: bool = False
     github_timeout_seconds: float = DEFAULT_GITHUB_TIMEOUT_SECONDS
+    github_required_approvals: int = 0
+    github_require_branch_protection: bool = False
     # SR-08 added mandatory production acceptance checks after some runs had
     # already persisted their config fingerprint.  Keep the fingerprint of
     # the same config with an empty acceptance section so those runs can be
     # resumed through the public CLI after the required checks are supplied.
     legacy_acceptance_digest: str = ""
     acceptance_timeout_compatible_digest: str = ""
+    legacy_github_policy_digest: str = ""
+    github_policy_compatible: bool = False
     acceptance_paths: tuple[str, ...] = ()
     git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS
 
@@ -260,6 +264,14 @@ class RunnerConfig:
         github_authorized = github.get("merge_authorized", False)
         if not isinstance(github_authorized, bool):
             raise RunnerError("invalid_config", "github.merge_authorized must be boolean")
+        github_required_approvals = github.get("required_approvals", 0)
+        if (isinstance(github_required_approvals, bool)
+                or not isinstance(github_required_approvals, int)
+                or github_required_approvals < 0):
+            raise RunnerError("invalid_config", "github.required_approvals must be a non-negative integer")
+        github_require_branch_protection = github.get("require_branch_protection", False)
+        if not isinstance(github_require_branch_protection, bool):
+            raise RunnerError("invalid_config", "github.require_branch_protection must be boolean")
 
         normalized = {
             "schema_version": CONFIG_SCHEMA_VERSION,
@@ -273,7 +285,7 @@ class RunnerConfig:
             "delivery": {"plan": delivery_plan.as_posix()} if delivery_plan else None,
             "skills": {"config": skill_config.as_posix() if skill_config else None, "roots": [os.fspath(item) for item in skill_roots]},
             "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks, "write_scope": acceptance_paths}},
-            "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized},
+            "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized, "required_approvals": github_required_approvals, "require_branch_protection": github_require_branch_protection},
         }
         if "timeout_seconds" in github:
             normalized["github"]["timeout_seconds"] = github_timeout_seconds
@@ -281,6 +293,9 @@ class RunnerConfig:
         # resumable while an explicit timeout binds new runs.
         if raw_git is not None:
             normalized["git"] = {"timeout_seconds": git_timeout_seconds}
+        legacy_github_normalized = json.loads(_canonical_json(normalized))
+        legacy_github_normalized["github"].pop("required_approvals", None)
+        legacy_github_normalized["github"].pop("require_branch_protection", None)
         compatibility_normalized = json.loads(_canonical_json(normalized))
         compatibility_normalized["workflow"]["acceptance"] = {"ids": [], "checks": []}
         timeout_compatible_normalized = json.loads(_canonical_json(normalized))
@@ -306,6 +321,10 @@ class RunnerConfig:
             acceptance_timeout_compatible_digest=digest_bytes(
                 _canonical_json(timeout_compatible_normalized).encode("utf-8")
             ),
+            legacy_github_policy_digest=digest_bytes(
+                _canonical_json(legacy_github_normalized).encode("utf-8")
+            ),
+            github_policy_compatible=(github_required_approvals == 0 and not github_require_branch_protection),
             acceptance_paths=tuple(acceptance_paths),
             github_repository=github_repository,
             github_required_checks=tuple(github_checks),
@@ -313,6 +332,8 @@ class RunnerConfig:
             github_base=github_base if github_repository else None,
             github_merge_authorized=github_authorized,
             github_timeout_seconds=github_timeout_seconds,
+            github_required_approvals=github_required_approvals,
+            github_require_branch_protection=github_require_branch_protection,
             git_timeout_seconds=git_timeout_seconds,
         )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -285,12 +286,110 @@ class GitHubDelivery:
                 "unknown": unknown,
                 "ready": not missing and not wrong_sha and not pending and not failed and not unknown}
 
+    def _approved_reviews(self, *, repository: str, number: int) -> dict[str, object]:
+        """Read the complete review history and project latest user states."""
+        raw = self.runner([
+            "api", "--paginate", "--slurp", "--method", "GET", "-f", "per_page=100",
+            f"repos/{repository}/pulls/{number}/reviews",
+        ])
+        reviews = self._paged_list(raw, code="github_reviews_incomplete", label="pull request reviews")
+        latest: dict[str, tuple[tuple[datetime, int], dict[str, Any]]] = {}
+        for review in reviews:
+            user = review.get("user")
+            login = user.get("login") if isinstance(user, dict) else None
+            state = review.get("state")
+            if not isinstance(login, str) or not login.strip() or not isinstance(state, str):
+                raise RunnerError("github_reviews_incomplete", "pull request review lacks stable reviewer identity")
+            if state.upper() == "PENDING":
+                continue
+            submitted_at = review.get("submitted_at")
+            review_id = review.get("id")
+            if not isinstance(submitted_at, str) or not isinstance(review_id, int) or isinstance(review_id, bool):
+                raise RunnerError("github_reviews_incomplete", "submitted review lacks a timestamp or numeric identity")
+            try:
+                timestamp = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise RunnerError("github_reviews_incomplete", "submitted review has an invalid timestamp") from exc
+            if timestamp.tzinfo is None:
+                raise RunnerError("github_reviews_incomplete", "submitted review timestamp has no timezone")
+            order = (timestamp.astimezone(timezone.utc), review_id)
+            previous = latest.get(login)
+            if previous is None or order >= previous[0]:
+                latest[login] = (order, {"login": login, "state": state})
+        approved = sorted(login for login, (_, review) in latest.items() if review["state"].upper() == "APPROVED")
+        return {
+            "approved": approved,
+            "approved_count": len(approved),
+            "reviewers": [{"login": login, "state": review[1]["state"]} for login, review in sorted(latest.items())],
+        }
+
+    def _branch_protection(self, *, repository: str, base: str) -> dict[str, object]:
+        """Read branch protection when the production contract requires it."""
+        try:
+            value = json.loads(self.runner(["api", f"repos/{repository}/branches/{base}/protection"]))
+        except RunnerError as exc:
+            if exc.code == "github_not_found":
+                raise RunnerError("github_branch_protection_missing", "required branch protection was not found") from exc
+            raise
+        except json.JSONDecodeError as exc:
+            raise RunnerError("github_protection_incomplete", "branch protection response was not valid JSON") from exc
+        if not isinstance(value, dict):
+            raise RunnerError("github_protection_incomplete", "branch protection response was not an object")
+        return value
+
+    @staticmethod
+    def _validate_merge_readback(pr: object, *, repository: str, number: int,
+                                 expected_head: str, expected_head_ref: str | None,
+                                 expected_base: str) -> dict[str, Any]:
+        if not isinstance(pr, dict) or pr.get("number") != number:
+            raise RunnerError("github_merge_readback_incomplete", "pull request readback has the wrong identity")
+        head = pr.get("head")
+        base = pr.get("base")
+        if not isinstance(head, dict) or not isinstance(base, dict):
+            raise RunnerError("github_merge_readback_incomplete", "pull request readback has incomplete ref identity")
+        head_repo = head.get("repo")
+        base_repo = base.get("repo")
+        if (not isinstance(head_repo, dict) or head_repo.get("full_name") != repository
+                or not isinstance(base_repo, dict) or base_repo.get("full_name") != repository):
+            raise RunnerError("github_identity_mismatch", "pull request refs do not belong to the configured repository")
+        if (head.get("sha") != expected_head or base.get("ref") != expected_base
+                or (expected_head_ref is not None and head.get("ref") != expected_head_ref)):
+            raise RunnerError("stale_pull_request", "PR head or base changed before merge")
+        return pr
+
+    def _enqueue_merge_queue(self, *, pull_request_id: str) -> dict[str, object] | None:
+        query = (
+            "mutation($pullRequestId: ID!) { enqueuePullRequest(input: {pullRequestId: $pullRequestId}) "
+            "{ mergeQueueEntry { id position state } } }"
+        )
+        try:
+            raw = self.runner(["api", "graphql", "-f", f"query={query}", "-F", f"pullRequestId={pull_request_id}"])
+            document = json.loads(raw)
+        except RunnerError as exc:
+            if exc.code in {"github_not_found", "github_rejected"}:
+                return None
+            raise
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(document, dict) or document.get("errors"):
+            return None
+        data = document.get("data")
+        enqueue = data.get("enqueuePullRequest") if isinstance(data, dict) else None
+        entry = enqueue.get("mergeQueueEntry") if isinstance(enqueue, dict) else None
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            return None
+        return {key: entry.get(key) for key in ("id", "position", "state")}
+
     def merge(self, *, repository: str, number: int, expected_head: str,
               expected_base: str | None = None,
               candidate_receipt: dict[str, object] | None = None,
               review: dict[str, object] | None = None,
               checks: dict[str, object] | None = None,
-              allow: bool = False) -> dict[str, object]:
+              allow: bool = False,
+              expected_head_ref: str | None = None,
+              required_approvals: int = 0,
+              require_branch_protection: bool = False,
+              queue_entry: dict[str, object] | None = None) -> dict[str, object]:
         self._repo(repository)
         if not allow:
             raise RunnerError("merge_not_authorized", "merge requires an explicit Runner authorization")
@@ -298,6 +397,9 @@ class GitHubDelivery:
             raise RunnerError("merge_evidence_missing", "merge requires candidate, review, and checks receipts")
         if expected_base is None or not expected_base.strip():
             raise RunnerError("merge_evidence_missing", "merge requires the expected base ref")
+        if (isinstance(required_approvals, bool) or not isinstance(required_approvals, int)
+                or required_approvals < 0):
+            raise RunnerError("merge_evidence_invalid", "required approvals must be a non-negative integer")
         if (candidate_receipt.get("outcome") != "verified"
                 or candidate_receipt.get("candidate_sha") != expected_head):
             raise RunnerError("candidate_not_verified", "merge requires a verified candidate receipt for the expected head")
@@ -312,40 +414,127 @@ class GitHubDelivery:
             pr = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
         except json.JSONDecodeError as exc:
             raise RunnerError("github_merge_readback_incomplete", "pull request readback was not valid JSON") from exc
-        if not isinstance(pr, dict) or pr.get("head", {}).get("sha") != expected_head or pr.get("base", {}).get("ref") != expected_base:
-            raise RunnerError("stale_pull_request", "PR head changed before merge")
+        pr = self._validate_merge_readback(
+            pr, repository=repository, number=number, expected_head=expected_head,
+            expected_head_ref=expected_head_ref, expected_base=expected_base,
+        )
+        if pr.get("draft") is True:
+            raise RunnerError("github_merge_blocked", "draft pull request cannot be merged")
         if pr.get("state") == "closed" and not pr.get("merged"):
             raise RunnerError("github_pull_request_closed", "pull request is closed without a merge")
-        if pr.get("mergeable_state") in {"dirty", "blocked"}:
+        if pr.get("mergeable_state") == "dirty":
             raise RunnerError("github_merge_blocked", "GitHub reports that the pull request cannot be merged")
+        queue_required = pr.get("mergeable_state") == "blocked"
+        protection: dict[str, object] | None = None
+        if require_branch_protection:
+            protection = self._branch_protection(repository=repository, base=expected_base)
+            if not isinstance(protection.get("required_status_checks"), dict):
+                raise RunnerError("github_protection_incomplete", "required branch protection lacks status checks")
+            if not isinstance(protection.get("required_pull_request_reviews"), dict):
+                raise RunnerError("github_protection_incomplete", "required branch protection lacks pull request reviews")
+        approvals: dict[str, object] | None = None
+        if required_approvals:
+            approvals = self._approved_reviews(repository=repository, number=number)
+            if int(approvals["approved_count"]) < required_approvals:
+                raise RunnerError(
+                    "github_approvals_insufficient",
+                    "pull request does not have the required number of approvals",
+                    details={"required": required_approvals, "actual": approvals["approved_count"]},
+                )
         latest_checks = self.checks(repository=repository, candidate_sha=expected_head,
                                     required=[str(item) for item in checks.get("required", [])])
         if latest_checks.get("ready") is not True:
             raise RunnerError("checks_changed_before_merge", "required checks are no longer ready at merge time", details={"checks": latest_checks})
         if pr.get("merged") is True:
+            if not pr.get("merged_at") or not pr.get("merge_commit_sha"):
+                raise RunnerError("github_merge_readback_incomplete", "merged pull request lacks merge identity")
             evidence = {"pr_readback": pr, "candidate_receipt": candidate_receipt,
-                        "review": review, "checks_before": checks, "checks_at_merge": latest_checks}
+                        "review": review, "checks_before": checks, "checks_at_merge": latest_checks,
+                        "approvals": approvals, "protection": protection}
             return {"number": number, "expected_head": expected_head, "expected_base": expected_base,
                     "merged": True, "adopted": True, "sha": pr.get("merge_commit_sha"),
                     "message": "pull request was already merged", "merged_at": pr.get("merged_at"),
                     "evidence_digest": digest(evidence)}
-        result = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}/merge", "--method", "PUT", "-f", "sha=" + expected_head]))
-        if not isinstance(result, dict):
-            raise RunnerError("github_merge_unconfirmed", "merge response was not an object")
-        readback = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
-        if not isinstance(readback, dict):
-            raise RunnerError("github_merge_readback_incomplete", "GitHub PR merge readback was not an object")
-        merged_at = readback.get("merged_at")
-        applied = bool(result.get("merged")) or bool(readback.get("merged")) or bool(merged_at)
-        if not applied:
-            raise RunnerError(
-                "github_merge_not_applied",
-                "GitHub merge request was not confirmed as applied",
-                details={"message": result.get("message"), "number": number, "expected_head": expected_head},
+        if queue_entry is None and queue_required:
+            queue_entry = self._enqueue_merge_queue(
+                pull_request_id=str(pr.get("node_id"))
+            ) if isinstance(pr.get("node_id"), str) and pr.get("node_id") else None
+            if queue_entry is None:
+                raise RunnerError("github_merge_blocked", "GitHub reports that the pull request cannot be merged")
+        if queue_entry is not None:
+            return {
+                "number": number, "expected_head": expected_head, "expected_base": expected_base,
+                "merged": False, "waiting": True, "queue": queue_entry,
+                "message": "pull request remains in the GitHub merge queue",
+            }
+        merge_args = ["api", f"repos/{repository}/pulls/{number}/merge", "--method", "PUT", "-f", "sha=" + expected_head]
+        merge_error: Exception | None = None
+        try:
+            result = json.loads(self.runner(merge_args))
+        except Exception as exc:
+            merge_error = exc
+            try:
+                recovered = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
+            except Exception as readback_exc:
+                raise RunnerError("github_merge_unknown", "merge outcome and exact PR readback are both unknown") from readback_exc
+            readback = self._validate_merge_readback(
+                recovered, repository=repository, number=number, expected_head=expected_head,
+                expected_head_ref=expected_head_ref, expected_base=expected_base,
             )
+            result = {"merged": readback.get("merged") is True,
+                      "sha": readback.get("merge_commit_sha"), "reconciled": True}
+        else:
+            if not isinstance(result, dict):
+                raise RunnerError("github_merge_unconfirmed", "merge response was not an object")
+            try:
+                readback = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
+            except Exception as exc:
+                raise RunnerError("github_merge_unknown", "merge response was received but PR outcome is unknown") from exc
+            readback = self._validate_merge_readback(
+                readback, repository=repository, number=number, expected_head=expected_head,
+                expected_head_ref=expected_head_ref, expected_base=expected_base,
+            )
+        if readback.get("merged") is not True:
+            if merge_error is not None:
+                raise RunnerError(
+                    "github_merge_unknown",
+                    "merge response was lost and the PR is not confirmed merged",
+                    details={"number": number, "expected_head": expected_head},
+                ) from merge_error
+            queue_entry = self._enqueue_merge_queue(
+                pull_request_id=str(readback.get("node_id"))
+            ) if isinstance(readback.get("node_id"), str) and readback.get("node_id") else None
+            if queue_entry is None:
+                raise RunnerError(
+                    "github_merge_not_applied",
+                    "GitHub merge was not confirmed and no merge queue entry was created",
+                    details={"message": result.get("message"), "number": number,
+                             "expected_head": expected_head,
+                             "merge_error": str(merge_error)[:500] if merge_error else None},
+                ) from merge_error
+            try:
+                queued = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
+            except Exception as exc:
+                raise RunnerError("github_merge_unknown", "merge queue entry was created but PR state is unknown") from exc
+            queued = self._validate_merge_readback(
+                queued, repository=repository, number=number, expected_head=expected_head,
+                expected_head_ref=expected_head_ref, expected_base=expected_base,
+            )
+            if queued.get("merged") is not True:
+                return {
+                    "number": number, "expected_head": expected_head, "expected_base": expected_base,
+                    "merged": False, "waiting": True, "queue": queue_entry,
+                    "message": "pull request is waiting in the GitHub merge queue",
+                }
+            readback = queued
+            result = {"merged": True, "sha": readback.get("merge_commit_sha"), "reconciled": True}
+        if not readback.get("merged_at") or not readback.get("merge_commit_sha"):
+            raise RunnerError("github_merge_readback_incomplete", "merged pull request lacks merge identity")
+        merged_at = readback.get("merged_at")
         merge_sha = result.get("sha") or readback.get("merge_commit_sha")
         evidence = {"merge_response": result, "pr_readback": readback, "candidate_receipt": candidate_receipt,
-                    "review": review, "checks_before": checks, "checks_at_merge": latest_checks}
+                    "review": review, "checks_before": checks, "checks_at_merge": latest_checks,
+                    "approvals": approvals, "protection": protection}
         return {"number": number, "expected_head": expected_head, "expected_base": expected_base,
                 "merged": True, "sha": merge_sha, "message": result.get("message"),
                 "merged_at": merged_at, "evidence_digest": digest(evidence)}

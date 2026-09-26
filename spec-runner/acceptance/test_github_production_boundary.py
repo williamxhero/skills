@@ -85,10 +85,43 @@ def test_github_merge_requires_explicit_authorization(monkeypatch, github_contex
             review={"approved": True})
 
 
+def test_github_merge_queue_is_persisted_as_waiting(monkeypatch, github_context):
+    root, config, store, run = github_context
+    calls = []
+
+    class FakeGitHub:
+        def __init__(self, **_kwargs):
+            pass
+
+        def create_or_adopt_pr(self, **kwargs):
+            calls.append("pr")
+            return {"created": True, "receipt": {"number": 7}}
+
+        def checks(self, **kwargs):
+            calls.append("checks")
+            return {"ready": True, "pending": [], "failed": [], "missing": [], "wrong_sha": []}
+
+        def merge(self, **kwargs):
+            calls.append("merge")
+            return {"merged": False, "waiting": True, "queue": {"id": "MQ-7"}}
+
+    monkeypatch.setattr(workflow, "GitHubDelivery", FakeGitHub)
+    monkeypatch.setattr(workflow, "_git_checked", lambda *args, **_kwargs: "")
+    result = workflow._execute_github_delivery(
+        control_root=root, config=config, run=run, spec_key="S1", candidate_sha="abc1234",
+        branch="spec-runner/S1", candidate_receipt={"candidate_sha": "abc1234"},
+        review={"approved": True},
+    )
+    assert result["state"] == "waiting_merge_queue"
+    assert result["merge"]["merged"] is False
+    assert calls == ["pr", "checks", "merge"]
+
+
 @pytest.mark.parametrize("merge_receipt", [{"merged": True}, {"merged": False}])
 @pytest.mark.parametrize("close_fails_once", [False, True])
+@pytest.mark.parametrize("waiting_state", ["waiting_ci", "waiting_merge_queue"])
 def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
-    monkeypatch, github_context, merge_receipt, close_fails_once,
+    monkeypatch, github_context, merge_receipt, close_fails_once, waiting_state,
 ):
     root, config, store, run = github_context
     artifact = root / "artifacts" / run.run_id
@@ -100,7 +133,8 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
         "findings": [], "review_digest": "review-digest",
     }
     (artifact / "github-S1.json").write_text(json.dumps({
-        "spec_key": "S1", "state": "waiting_ci", "candidate": candidate, "review": review,
+        "spec_key": "S1", "state": waiting_state, "candidate": candidate, "review": review,
+        **({"merge": {"queue": {"id": "MQ-1"}}} if waiting_state == "waiting_merge_queue" else {}),
     }), encoding="utf-8")
     (artifact / "github-S0.json").write_text(json.dumps({
         "spec_key": "S0", "state": "waiting_ci", "candidate": {"candidate_sha": "b" * 40},
@@ -122,12 +156,13 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
     workspaces.mkdir()
     manifest = workspaces / "run.manifest.json"
     manifest.write_text(json.dumps({"run_id": run.run_id, "spec_key": "S1", "branch": "spec-runner/S1", "workspace": str(root / "workspace")}), encoding="utf-8")
-    store.set_run_state(run.run_id, "waiting_ci")
+    store.set_run_state(run.run_id, waiting_state)
     run = store.find_by_run_id(run.run_id)
     assert run is not None
     calls = []
     responses = iter([
-        {"state": "waiting_ci", "spec_key": "S1", "candidate": candidate, "review": review},
+        {"state": waiting_state, "spec_key": "S1", "candidate": candidate, "review": review,
+         **({"merge": {"queue": {"id": "MQ-1"}}} if waiting_state == "waiting_merge_queue" else {})},
         {"state": "github_completed", "spec_key": "S1", "candidate": candidate,
          "review": review, "merge": merge_receipt},
     ])
@@ -136,6 +171,7 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
         calls.append(kwargs)
         assert kwargs["candidate_receipt"] == candidate
         assert kwargs["review"] == review
+        assert kwargs["queue_entry"] == ({"id": "MQ-1"} if waiting_state == "waiting_merge_queue" else None)
         return next(responses)
 
     monkeypatch.setattr(workflow, "_execute_github_delivery", fake_delivery)
@@ -152,7 +188,7 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
         return {"complete": True}
     monkeypatch.setattr(workflow, "_close_published_ticket_plan", fake_close)
     first = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store)
-    assert first["state"] == "waiting_ci"
+    assert first["state"] == waiting_state
     assert calls[0]["push"] is False
     if merge_receipt["merged"]:
         second = workflow._resume_waiting_github(control_root=root, config=config, run=run, store=store, finalize_run=False)
@@ -185,7 +221,7 @@ def test_waiting_ci_resume_reuses_durable_evidence_and_only_cleans_after_merge(
         assert store.find_by_run_id(run.run_id).state == "spec_completed"
         assert json.loads((artifact / "completed-specs.json").read_text())["specs"] == ["S0", "S1"]
     else:
-        assert store.find_by_run_id(run.run_id).state == "waiting_ci"
+        assert store.find_by_run_id(run.run_id).state == waiting_state
         assert not (artifact / "delivery-S1.json").exists()
 
 

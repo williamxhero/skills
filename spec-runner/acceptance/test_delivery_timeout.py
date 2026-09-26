@@ -132,6 +132,8 @@ def test_configured_github_timeout_is_validated_and_bound_to_config_digest(tmp_p
             "receipt_root": "receipts",
             "base": "main",
             "merge_authorized": False,
+            "required_approvals": 2,
+            "require_branch_protection": True,
             "timeout_seconds": 6.5,
         },
     }
@@ -139,6 +141,17 @@ def test_configured_github_timeout_is_validated_and_bound_to_config_digest(tmp_p
     config_file.write_text(json.dumps(document), encoding="utf-8")
     config = RunnerConfig.from_file(config_file, tmp_path / "control")
     assert config.github_timeout_seconds == 6.5
+    assert config.github_required_approvals == 2
+    assert config.github_require_branch_protection is True
+
+    legacy_document = json.loads(json.dumps(document))
+    legacy_document["github"].pop("required_approvals")
+    legacy_document["github"].pop("require_branch_protection")
+    legacy_file = tmp_path / "runner-github-legacy.json"
+    legacy_file.write_text(json.dumps(legacy_document), encoding="utf-8")
+    legacy_config = RunnerConfig.from_file(legacy_file, tmp_path / "control")
+    assert legacy_config.github_policy_compatible is True
+    assert legacy_config.legacy_github_policy_digest != legacy_config.digest
 
     default_document = json.loads(json.dumps(document))
     default_document["github"].pop("timeout_seconds")
