@@ -1632,6 +1632,9 @@ class CodexWorkflowControlTests(unittest.TestCase):
                             "thread_status": "idle",
                         }
 
+                    def archive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                        return {"thread_id": thread_id, "archived": True, "pages_read": 1}
+
                 with (
                     patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
                     patch.object(workflow, "git_sha", return_value="base-sha"),

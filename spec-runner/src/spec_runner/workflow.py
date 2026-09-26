@@ -496,6 +496,53 @@ def _planning_turn_requires_retry(*, control_root: Path, config: RunnerConfig,
     return False
 
 
+def _reconcile_completed_planning_turn(
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store,
+    thread_id: str, turn_id: str, brief_digest: str,
+) -> RunRecord:
+    """Finish a valid persisted planning turn without invoking the worker again."""
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    result_path = artifact_directory / (
+        f"codex_planning-{hashlib.sha256(turn_id.encode('utf-8')).hexdigest()}.json"
+    )
+    result = load_json(result_path)
+    if (
+        result.get("thread_id") != thread_id
+        or result.get("turn_id") != turn_id
+        or result.get("status") != "completed"
+        or result.get("error") is not None
+    ):
+        raise RunnerError("recovery_blocked", "completed planning turn receipt does not match its durable identity")
+    try:
+        document = json.loads(str(result.get("final_response") or "null"))
+    except json.JSONDecodeError as exc:
+        raise RunnerError("recovery_blocked", "completed planning turn has invalid structured output") from exc
+    if not isinstance(document, dict) or document.get("outcome") != "planned":
+        raise RunnerError("recovery_blocked", "completed planning turn has no planned SpecPlan")
+    document.update(schema_version="spec-runner-spec-plan/v1", requirement_digest=brief_digest)
+    validated = validate_spec_plan(document)
+    plan_path = artifact_directory / "spec-plan.json"
+    if plan_path.is_file() and load_json(plan_path) != validated:
+        raise RunnerError("recovery_blocked", "persisted SpecPlan conflicts with its completed worker turn")
+    _write_json_atomic(plan_path, validated)
+    _archive_worker_readback(
+        store=store, run_id=run.run_id, operation_id=f"planning:{run.run_id}",
+        thread_id=thread_id, turn_id=turn_id, repository_path=config.repository_path,
+    )
+    completed = store.complete_codex_stage(
+        run.run_id, f"planning:{run.run_id}", thread_id=thread_id, turn_id=turn_id,
+        state="planned", step_name="codex_planning",
+        worker_id=f"codex_sdk:{run.run_id}:codex_planning",
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"recovery:{run.run_id}:completed-planning-turn:{turn_id}",
+        event_type="completed_sdk_turn_reconciled",
+        payload={"step": "codex_planning", "thread_id": thread_id, "turn_id": turn_id},
+    )
+    return completed
+
+
 def _blocked_planning_retry_thread(*, control_root: Path, config: RunnerConfig,
                                    run: RunRecord, store: Store,
                                    brief_digest: str) -> str | None:
@@ -576,6 +623,11 @@ def _persist_ticket_plan(*, control_root: Path, config: RunnerConfig,
         "event": "ticket_plan_published", "spec_key": spec_key,
         "ticket_count": len(validated["tickets"]), "tracker": tracker_receipts,
     })
+    _archive_worker_readback(
+        store=store, run_id=run.run_id, operation_id=operation_id,
+        thread_id=result.thread_id, turn_id=result.turn_id,
+        repository_path=config.repository_path,
+    )
     return store.complete_codex_stage(
         run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id,
         state="tickets_ready", step_name=step_name, worker_id=worker_id,
@@ -635,8 +687,11 @@ def _execute_codex_grill(*, control_root: Path, config: RunnerConfig, brief: str
                     thread_id=result.thread_id, turn_id=result.turn_id)
     directory = _safe_artifact_directory(control_root, config, run.run_id)
     (directory / "grill-handoff.json").write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    archive = CodexAdapter().archive_and_readback(thread_id=result.thread_id, repository_path=config.repository_path)
-    store.append_event(run_id=run.run_id, event_key=f"grill:{run.run_id}:archived", event_type="cleanup_readback", payload=archive)
+    _archive_worker_readback(
+        store=store, run_id=run.run_id, operation_id=operation,
+        thread_id=result.thread_id, turn_id=result.turn_id,
+        repository_path=config.repository_path,
+    )
     return store.complete_codex_stage(run.run_id, operation, thread_id=result.thread_id,
         turn_id=result.turn_id, state="clarified", step_name=step, worker_id=worker)
 
@@ -719,7 +774,15 @@ def _execute_codex_planning(
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / "spec-plan.json").write_text(json.dumps(validated, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
-    completed = store.complete_codex_stage(run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id, state="planned", step_name=step_name, worker_id=worker_id)
+    _archive_worker_readback(
+        store=store, run_id=run.run_id, operation_id=operation_id,
+        thread_id=result.thread_id, turn_id=result.turn_id,
+        repository_path=config.repository_path,
+    )
+    completed = store.complete_codex_stage(
+        run.run_id, operation_id, thread_id=result.thread_id, turn_id=result.turn_id,
+        state="planned", step_name=step_name, worker_id=worker_id,
+    )
     store.write_log(control_root, run.run_id, {"event": "spec_plan_validated", "thread_id": result.thread_id, "turn_id": result.turn_id, "spec_count": len(validated["specs"])})
     return completed
 
@@ -768,6 +831,59 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
         ) + "\n---\n"
         (source / filename).write_text(frontmatter + body.rstrip() + "\n", encoding="utf-8", newline="\n")
     return source
+
+
+def _archive_worker_readback(
+    *, store: Store, run_id: str, operation_id: str, thread_id: str, turn_id: str,
+    repository_path: Path,
+) -> dict[str, object]:
+    """Persist one identity-checked archive receipt and reuse it on replay."""
+    event_key = f"cleanup:{run_id}:{operation_id}:archive_readback:{thread_id}:{turn_id}"
+    event = next(
+        (item for item in store.events_for_run(run_id) if item.get("event_key") == event_key),
+        None,
+    )
+    if event is None and operation_id.startswith("grill:"):
+        # Pre-SF-03.3 Grill runs used ``<operation>:archived`` and did not
+        # include the turn in the event key. Reuse that receipt when its
+        # thread identity still proves the same cleanup operation.
+        event = next(
+            (
+                item for item in store.events_for_run(run_id)
+                if item.get("event_key") == f"{operation_id}:archived"
+            ),
+            None,
+        )
+    if event is not None:
+        receipt = event.get("payload")
+    else:
+        receipt = CodexAdapter().archive_and_readback(
+            thread_id=thread_id, repository_path=repository_path,
+        )
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("thread_id") != thread_id
+            or receipt.get("archived") is not True
+        ):
+            raise RunnerError("archive_readback_failed", "worker archive readback did not match its identity")
+        store.append_event(
+            run_id=run_id,
+            event_key=event_key,
+            event_type="cleanup_readback",
+            payload=receipt,
+        )
+        event = next(
+            (item for item in store.events_for_run(run_id) if item.get("event_key") == event_key),
+            None,
+        )
+        receipt = event.get("payload") if event is not None else None
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("thread_id") != thread_id
+        or receipt.get("archived") is not True
+    ):
+        raise RunnerError("archive_readback_failed", "persisted worker archive receipt changed identity")
+    return receipt
 
 
 def _ticket_plan_github_draft(*, plan: dict[str, object], run_id: str) -> dict[str, object]:
@@ -1032,9 +1148,17 @@ def _execute_independent_review(*, control_root: Path, config: RunnerConfig, bri
             code=exc.code,
         )
         raise
-    store.complete_codex_stage(run.run_id, review_operation, thread_id=review_result.thread_id, turn_id=review_result.turn_id, state="reviewed", step_name=review_step, worker_id=review_worker)
     (artifact_directory / f"review-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps({**validated, "worker": review_result.public()}, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    CodexAdapter().archive_and_readback(thread_id=review_result.thread_id, repository_path=workspace)
+    _archive_worker_readback(
+        store=store, run_id=run.run_id, operation_id=review_operation,
+        thread_id=review_result.thread_id, turn_id=review_result.turn_id,
+        repository_path=workspace,
+    )
+    store.complete_codex_stage(
+        run.run_id, review_operation, thread_id=review_result.thread_id,
+        turn_id=review_result.turn_id, state="reviewed", step_name=review_step,
+        worker_id=review_worker,
+    )
     return validated, review_result
 
 
@@ -3414,7 +3538,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
         )
         return {"created": False, **_run_delivery_plan(control_root=control_root, config=config, run=run, store=store)}
     if config.execution_backend != "deterministic_test":
-        if run.state in {"running", "cleanup_pending", "failed"} and run.current_step == "codex_planning":
+        if run.state in {"starting", "running", "cleanup_pending", "failed"} and run.current_step == "codex_planning":
             workers = store.workers_for_run(run.run_id)
             worker_id = f"codex_sdk:{run.run_id}:codex_planning"
             worker = latest_worker(
@@ -3452,11 +3576,12 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     thread_id=thread_id,
                 )
                 return {"created": False, **resumed}
-            elif run.state != "failed":
-                raise RunnerError(
-                    "recovery_blocked",
-                    "completed planning turn has no persisted validated SpecPlan",
+            else:
+                completed = _reconcile_completed_planning_turn(
+                    control_root=control_root, config=config, run=run, store=store,
+                    thread_id=thread_id, turn_id=turn_id, brief_digest=brief_digest,
                 )
+                return {"created": False, **store.public_status(completed.run_id)}
         if run.state == "failed":
             resumable_steps = {
                 "codex_example",
@@ -3580,7 +3705,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     ),
                 ),
             }
-        if run.state in {"running", "cleanup_pending", "blocked"} and run.current_step == "codex_review":
+        if run.state in {"starting", "running", "cleanup_pending", "blocked"} and run.current_step == "codex_review":
             review_prefix = f"codex_sdk:{run.run_id}:codex_review:"
             review_workers = [
                 worker for worker in store.workers_for_run(run.run_id)
@@ -3732,7 +3857,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
             )
             ticket_plan = load_json(artifact_directory / f"ticket-plan-{spec_key}.json")
             try:
-                independent_review(
+                expected_review = independent_review(
                     review_result,
                     implementation_thread="__recovery_review_owner__",
                     candidate_sha=str(candidate_receipt["candidate_sha"]),
@@ -3752,7 +3877,29 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                     )
                     worker = next(item for item in store.workers_for_run(run.run_id) if item.get("worker_id") == worker["worker_id"])
             else:
-                raise RunnerError("recovery_blocked", "review receipt was valid but the stage cannot be replayed safely")
+                review_path = artifact_directory / f"review-{spec_key}-{candidate_receipt['candidate_sha'][:12]}.json"
+                if review_path.is_file():
+                    persisted_review = load_json(review_path)
+                    if any(persisted_review.get(key) != value for key, value in expected_review.items()):
+                        raise RunnerError("recovery_blocked", "persisted completed review receipt changed")
+                _archive_worker_readback(
+                    store=store, run_id=run.run_id, operation_id=f"review:{run.run_id}:{spec_key}:{candidate_receipt['candidate_sha']}",
+                    thread_id=thread_id, turn_id=turn_id, repository_path=workspace,
+                )
+                store.complete_codex_stage(
+                    run.run_id,
+                    f"review:{run.run_id}:{spec_key}:{candidate_receipt['candidate_sha']}",
+                    thread_id=thread_id, turn_id=turn_id, state="reviewed",
+                    step_name="codex_review", worker_id=str(worker["worker_id"]),
+                )
+                store.append_event(
+                    run_id=run.run_id,
+                    event_key=f"recovery:{run.run_id}:completed-review-turn:{turn_id}",
+                    event_type="completed_sdk_turn_reconciled",
+                    payload={"step": "codex_review", "spec_key": spec_key,
+                             "thread_id": thread_id, "turn_id": turn_id},
+                )
+                return {"created": False, **store.public_status(run.run_id)}
             recovered = _reconcile_rejected_review(
                 control_root=control_root,
                 config=config,
@@ -3852,7 +3999,7 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 turn_status=str(repair_turn_status),
             )
             return {"created": False, **recovered}
-        if run.state in {"running", "cleanup_pending"} and run.current_step == "codex_ticket_planning":
+        if run.state in {"starting", "running", "cleanup_pending"} and run.current_step == "codex_ticket_planning":
             workers = store.workers_for_run(run.run_id)
             worker_prefix = f"codex_sdk:{run.run_id}:codex_ticket_planning:"
             stage_workers = [

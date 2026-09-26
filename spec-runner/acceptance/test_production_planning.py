@@ -47,12 +47,12 @@ def spec_document():
          "covers": ["R1"], "route": {"model": "fake", "effort": "high", "reason": "test"}}]}
 
 
-def adapter(monkeypatch, documents, *, status="completed"):
+def adapter(monkeypatch, documents, *, status="completed", archive_receipt=None):
     calls = []
 
     class Fake:
         def archive_and_readback(self, **kwargs):
-            return {"thread_id": kwargs["thread_id"], "archived": True, "pages_read": 1}
+            return archive_receipt or {"thread_id": kwargs["thread_id"], "archived": True, "pages_read": 1}
 
         def run_semantic(self, **kwargs):
             calls.append(kwargs)
@@ -63,6 +63,64 @@ def adapter(monkeypatch, documents, *, status="completed"):
 
     monkeypatch.setattr(workflow, "CodexAdapter", Fake)
     return calls
+
+
+def test_archive_receipt_is_durable_and_replay_does_not_archive_again(context, monkeypatch):
+    root, config, store, run = context
+    calls = []
+
+    class Fake:
+        def archive_and_readback(self, **kwargs):
+            calls.append(kwargs)
+            return {"thread_id": kwargs["thread_id"], "archived": True, "pages_read": 1}
+
+    monkeypatch.setattr(workflow, "CodexAdapter", Fake)
+    first = workflow._archive_worker_readback(
+        store=store, run_id=run.run_id, operation_id="planning:" + run.run_id,
+        thread_id="planning-thread", turn_id="planning-turn", repository_path=config.repository_path,
+    )
+    second = workflow._archive_worker_readback(
+        store=store, run_id=run.run_id, operation_id="planning:" + run.run_id,
+        thread_id="planning-thread", turn_id="planning-turn", repository_path=config.repository_path,
+    )
+    assert first == second
+    assert len(calls) == 1
+    assert [event for event in store.events_for_run(run.run_id)
+            if event["event_type"] == "cleanup_readback"][-1]["payload"] == first
+
+
+def test_archive_identity_failure_does_not_advance_planning_stage(context, monkeypatch):
+    root, config, store, run = context
+    adapter(
+        monkeypatch,
+        [spec_document()],
+        archive_receipt={"thread_id": "different-thread", "archived": True, "pages_read": 1},
+    )
+    with pytest.raises(RunnerError, match="identity"):
+        workflow._execute_codex_planning(
+            control_root=root, config=config, brief="Requirement", brief_digest="brief",
+            run=run, store=store,
+        )
+    current = store.find_by_run_id(run.run_id)
+    assert current is not None
+    assert current.state == "running"
+    assert store.operations_for_run(run.run_id)[-1]["state"] == "running"
+    assert store.workers_for_run(run.run_id)[-1]["state"] == "running"
+
+
+def test_persisted_archive_identity_mismatch_is_rejected(context, monkeypatch):
+    root, config, store, run = context
+    event_key = f"cleanup:{run.run_id}:planning:{run.run_id}:archive_readback:planning-thread:planning-turn"
+    store.append_event(
+        run_id=run.run_id, event_key=event_key, event_type="cleanup_readback",
+        payload={"thread_id": "different-thread", "archived": True, "pages_read": 1},
+    )
+    monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("replay must use persisted evidence"))
+    with pytest.raises(RunnerError, match="identity"):
+        workflow._archive_worker_readback(
+            store=store, run_id=run.run_id, operation_id="planning:" + run.run_id,
+            thread_id="planning-thread", turn_id="planning-turn", repository_path=config.repository_path,
+        )
 
 
 def assert_strict_json_schema(schema):
