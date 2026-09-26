@@ -887,3 +887,28 @@ against a real GitHub sandbox, live SDK interruption/provider recovery,
 external side-effect reconciliation after an in-flight merge, complete
 takeover-chain coverage, and project-level L3-L5 gates remain `not_verified`;
 #265 and its parent remain open.
+
+## SF-05.3 combined control DB and launcher-log restart (2026-09-26)
+
+The native Windows combined probe held the real control SQLite database with an
+independent `BEGIN EXCLUSIVE` process and held both recorded detached stdout and
+stderr launcher logs with delete sharing denied. A public `drive` attempt
+returned `control_database_busy` in 7.843 seconds, and the SQLite digest was
+unchanged. The recorded detached child was terminated while both locks were
+held. After releasing only the database lock, public `drive` recovered the same
+run to `completed` while the log handles remained held; rotation returned the
+structured `launcher_log_rotation_failed` error. Releasing the log handles and
+replaying the same rotation intent succeeded, the rotated logs were readable,
+and the control database remained present with `PRAGMA integrity_check=ok`.
+
+Durable evidence is
+`acceptance/reports/SRAC-20260926-windows-control-db-launcher-logs-01.json`,
+run `698d9970-4e51-4568-a4ab-7bec4201f1d3`. The native report contract
+selection passed `2 passed`; the explicit source and acceptance selection after
+this increment passed `325 passed, 1 skipped`; `compileall` and
+`git diff --check` passed.
+
+This closes the combined Windows control DB and launcher-log lifecycle scenario
+covered by the probe. Live GitHub side-effect reconciliation, source-thread
+takeover, the remaining #266 criteria, and project-level L3-L5 gates remain
+`not_verified`; #266 remains open.
