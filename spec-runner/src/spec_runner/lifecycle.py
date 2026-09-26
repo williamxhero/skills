@@ -11,15 +11,13 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Protocol
 
 from .config import RunnerConfig
 from .errors import RunnerError
 from .models import RunnerRequest, StageResult
-from .recovery import RecoveryAction
-from .recovery_runtime import RecoveryRuntime
+from .run_coordinator import RunCoordinator
 from .store import Store
 
 
@@ -66,65 +64,27 @@ class LegacyWorkflowAdapter:
     def drive(self, request: RunnerRequest) -> Mapping[str, object]:
         from . import workflow
 
-        launch_key = workflow._validate_launch_key(request.launch_key)
-        control_root = request.control_root.expanduser().resolve()
-        active_run_id = request.run_id
-        woken_deadlines: set[tuple[str, str]] = set()
-        while True:
-            result = workflow.start(
-                brief_file=request.brief_file,
-                config_file=request.config_file,
+        def start_operation(
+            current: RunnerRequest,
+            *,
+            run_id: str | None,
+            launch_key: str,
+            control_root: Path,
+        ) -> Mapping[str, object]:
+            return workflow.start(
+                brief_file=current.brief_file,
+                config_file=current.config_file,
                 control_root=control_root,
                 launch_key=launch_key,
-                run_id=active_run_id,
-                launch_token=request.launch_token,
+                run_id=run_id,
+                launch_token=current.launch_token,
             )
-            run_payload = result.get("run")
-            if not isinstance(run_payload, dict) or not isinstance(run_payload.get("run_id"), str):
-                raise RunnerError("run_status_missing", "Runner start returned no durable run identity")
-            active_run_id = str(run_payload["run_id"])
 
-            while True:
-                store = Store.open(control_root, create=False)
-                try:
-                    current = store.find_by_run_id(active_run_id)
-                    if current is None:
-                        raise RunnerError("unknown_run", "recovery wait run disappeared from the control database")
-                    wait_record = RecoveryRuntime.wait_record(store=store, run_id=active_run_id)
-                    if wait_record is None:
-                        if current.state in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
-                            raise RunnerError("recovery_record_missing", "waiting run has no persisted recovery decision")
-                        return {**result, **store.public_status(active_run_id)}
-                    action, deadline = wait_record
-                    control = store.control_for_run(active_run_id)
-                    if control and control.get("requested_state") in {"pause_requested", "cancel_requested"}:
-                        requested = str(control["requested_state"])
-                        stopped_state = "paused" if requested == "pause_requested" else "cancelled"
-                        store.set_run_state(active_run_id, stopped_state)
-                        store.append_event(
-                            run_id=active_run_id,
-                            event_key=f"control:{active_run_id}:{control['generation']}:applied",
-                            event_type="control_applied",
-                            payload={"requested_state": requested, "generation": control["generation"], "during": "recovery_wait"},
-                        )
-                        return {**result, **store.public_status(active_run_id)}
-                    wake_key = (action, deadline)
-                    remaining = (datetime.fromisoformat(deadline) - datetime.now(timezone.utc)).total_seconds()
-                    if remaining <= 0:
-                        if wake_key in woken_deadlines:
-                            return {**result, **store.public_status(active_run_id)}
-                        woken_deadlines.add(wake_key)
-                        store.append_event(
-                            run_id=active_run_id,
-                            event_key=f"recovery:{active_run_id}:timer-woke:{action}:{deadline}",
-                            event_type="recovery_timer_woke",
-                            payload={"action": action, "deadline": deadline},
-                        )
-                        break
-                    wait_seconds = min(remaining, 0.25)
-                finally:
-                    store.close()
-                time.sleep(wait_seconds)
+        return RunCoordinator(
+            start_operation=start_operation,
+            validate_launch_key=workflow._validate_launch_key,
+            sleep=time.sleep,
+        ).drive(request).public()
 
     def resume(self, request: RunnerRequest) -> Mapping[str, object]:
         from . import workflow
