@@ -674,3 +674,23 @@ prevention across launch/control roots, complete cancellation and handshake
 coverage, and remaining project-level L3-L5 gates remain `not_verified`.
 Existing Windows control-DB and timer probes cover their named cases, not the
 whole SF-05.1 acceptance. #264 and its parent remain open.
+## SF-05.1 control-plane fail-closed during an active SDK turn (2026-09-26)
+
+The public Codex adapter turn watcher now treats a control-plane read failure as
+unsafe to continue. It calls the SDK turn's interrupt boundary before returning
+an explicit `sdk_control_unavailable` error, records the control exception type
+and whether interruption succeeded, and returns
+`sdk_control_interrupt_failed` when the SDK cannot be interrupted. A regression
+uses the published turn seam with a blocking turn and a failing control read;
+it proves the active turn is interrupted and the failure remains structured.
+
+The affected control/recovery/timeout selection passed `63 passed, 1 skipped`.
+The explicit source and acceptance selection passed `276 passed, 1 skipped` in
+`76.88 seconds` using `PYTHONPATH=spec-runner/src pytest spec-runner/tests
+spec-runner/acceptance --ignore=spec-runner/acceptance/fixture-app -q`.
+`compileall` and `git diff --check` passed.
+
+This is a bounded SF-05.1 control-plane increment. It does not prove live SDK
+provider recovery, cross-launch/control-root duplicate-writer prevention,
+complete cancellation/handshake coverage, or project-level L3-L5 gates; those
+remain `not_verified`, and #264 plus its parent remain open.

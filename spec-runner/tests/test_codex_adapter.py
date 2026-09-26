@@ -422,6 +422,43 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertEqual(applied, ["pause_requested"])
         self.assertEqual(result.status, "interrupted")
 
+    def test_control_plane_failure_interrupts_active_turn_and_is_structured(self) -> None:
+        turn = BlockingTurn()
+
+        def factory(config: object) -> FakeCodex:
+            codex = FakeCodex(config)
+            codex.thread = FakeThreadWithTurn()
+            codex.thread.turn = lambda prompt, **kwargs: turn  # type: ignore[method-assign]
+            return codex
+
+        sdk = types.SimpleNamespace(
+            CodexConfig=lambda **kwargs: kwargs,
+            Codex=object,
+            Sandbox=types.SimpleNamespace(workspace_write="workspace-write"),
+            ApprovalMode=types.SimpleNamespace(deny_all="deny_all"),
+        )
+        calls = 0
+
+        def failed_control_state() -> str | None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return None
+            raise OSError("control database unavailable")
+
+        with self.assertRaises(RunnerError) as context:
+            CodexAdapter(codex_factory=factory, sdk_module=sdk).run(
+                prompt="do the bounded task",
+                repository_path=Path("C:/repo"),
+                model="gpt-test",
+                effort="high",
+                control_state=failed_control_state,
+            )
+
+        self.assertEqual(context.exception.code, "sdk_control_unavailable")
+        self.assertTrue(turn.interrupted.is_set())
+        self.assertEqual(context.exception.details["exception_type"], "OSError")
+        self.assertTrue(context.exception.details["interrupted"])
     def test_missing_approval_policy_is_a_structured_capability_error(self) -> None:
         sdk = types.SimpleNamespace(
             CodexConfig=lambda **kwargs: kwargs,

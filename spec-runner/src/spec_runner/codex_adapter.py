@@ -454,13 +454,28 @@ class CodexAdapter:
         stop = threading.Event()
         finished = threading.Event()
         interrupt_error: list[Exception] = []
+        control_error: list[Exception] = []
+        control_interrupted = False
+
+        def fail_closed(exc: Exception) -> None:
+            nonlocal control_interrupted
+            control_error.append(exc)
+            try:
+                interrupt()
+            except Exception as interrupt_exc:  # pragma: no cover - SDK-specific
+                interrupt_error.append(interrupt_exc)
+            else:
+                control_interrupted = True
 
         def watch() -> None:
             while not finished.is_set():
                 try:
                     requested = control_state()
                 except Exception as exc:  # pragma: no cover - transport-specific
-                    interrupt_error.append(exc)
+                    # A failed control read is not permission to let a live
+                    # turn continue. Interrupt first, then surface the control
+                    # plane failure at the public adapter boundary.
+                    fail_closed(exc)
                     return
                 if requested in {"pause_requested", "cancel_requested"}:
                     try:
@@ -484,6 +499,21 @@ class CodexAdapter:
             finished.set()
             stop.set()
             watcher.join(timeout=1.0)
+        if control_error:
+            details: dict[str, object] = {
+                "exception_type": type(control_error[0]).__name__,
+                "interrupted": control_interrupted,
+            }
+            if interrupt_error:
+                details["interrupt_exception_type"] = type(interrupt_error[0]).__name__
+            code = "sdk_control_unavailable" if control_interrupted else "sdk_control_interrupt_failed"
+            raise RunnerError(
+                code,
+                "the Runner lost its control plane while a Codex turn was active"
+                if control_interrupted
+                else "the Runner could not interrupt a Codex turn after losing its control plane",
+                details=details,
+            ) from control_error[0]
         if interrupt_error:
             raise RunnerError(
                 "sdk_interrupt_failed",
