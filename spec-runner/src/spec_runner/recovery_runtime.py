@@ -27,46 +27,22 @@ from .store import RunRecord, Store
 
 @dataclass(frozen=True)
 class RecoveryEpisode:
-    """Narrow recovery interface bound to one durable run and Store.
-
-    The persistence implementation remains centralized in ``RecoveryRuntime``
-    for compatibility.  Callers use this object so they do not repeatedly
-    pass the same run and Store handles through the recovery seam.
-    """
+    """Coordinate durable recovery for one run through a narrow interface."""
 
     run: RunRecord
     store: Store
-
-    def record_failure(self, *, operation_id: str, error: RunnerError) -> RecoveryDecision:
-        return RecoveryRuntime.record_failure(
-            run=self.run, store=self.store, operation_id=operation_id, error=error,
-        )
-
-    def waits(self) -> bool:
-        return RecoveryRuntime.waits(run=self.run, store=self.store)
-
-    def wait_record(self) -> tuple[str, str] | None:
-        return RecoveryRuntime.wait_record(store=self.store, run_id=self.run.run_id)
-
-
-class RecoveryRuntime:
-    """Compatibility implementation for the RecoveryEpisode seam."""
-
-    @classmethod
-    def episode(cls, *, run: RunRecord, store: Store) -> RecoveryEpisode:
-        return RecoveryEpisode(run=run, store=store)
 
     @staticmethod
     def episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
         identity = f"{run_id}:{operation_kind}:{stage}:{generation}"
         return "episode-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
-    @classmethod
-    def record_failure(cls, *, run: RunRecord, store: Store, operation_id: str,
-                       error: RunnerError) -> RecoveryDecision:
+    def record_failure(self, *, operation_id: str, error: RunnerError) -> RecoveryDecision:
         """Persist one observed fault and its deterministic state transition."""
+        run = self.run
+        store = self.store
         operation_kind = "codex_turn" if run.backend_kind == "codex_sdk" else run.backend_kind
-        episode_id = cls.episode_identity(
+        episode_id = self.episode_identity(
             run_id=run.run_id, operation_kind=operation_kind, stage=run.current_step,
         )
         existing = store.recovery_episode(episode_id) or {}
@@ -249,8 +225,9 @@ class RecoveryRuntime:
             )
         return decision
 
-    @staticmethod
-    def waits(*, run: RunRecord, store: Store) -> bool:
+    def waits(self) -> bool:
+        run = self.run
+        store = self.store
         recovery = store.recovery_for_run(run.run_id).get("episodes", [])
         if not recovery:
             return False
@@ -295,8 +272,9 @@ class RecoveryRuntime:
             return False
         return True
 
-    @staticmethod
-    def wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
+    def wait_record(self) -> tuple[str, str] | None:
+        store = self.store
+        run_id = self.run.run_id
         recovery = store.recovery_for_run(run_id).get("episodes", [])
         if not isinstance(recovery, list) or not recovery:
             return None
@@ -319,3 +297,35 @@ class RecoveryRuntime:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return action, parsed.astimezone(timezone.utc).isoformat()
+
+
+class RecoveryRuntime:
+    """Compatibility façade for callers that still use static recovery calls."""
+
+    @staticmethod
+    def episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
+        return RecoveryEpisode.episode_identity(
+            run_id=run_id, operation_kind=operation_kind, stage=stage, generation=generation,
+        )
+
+    @staticmethod
+    def episode(*, run: RunRecord, store: Store) -> RecoveryEpisode:
+        return RecoveryEpisode(run=run, store=store)
+
+    @staticmethod
+    def record_failure(*, run: RunRecord, store: Store, operation_id: str,
+                       error: RunnerError) -> RecoveryDecision:
+        return RecoveryEpisode(run=run, store=store).record_failure(
+            operation_id=operation_id, error=error,
+        )
+
+    @staticmethod
+    def waits(*, run: RunRecord, store: Store) -> bool:
+        return RecoveryEpisode(run=run, store=store).waits()
+
+    @staticmethod
+    def wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
+        run = store.find_by_run_id(run_id)
+        if run is None:
+            return None
+        return RecoveryEpisode(run=run, store=store).wait_record()
