@@ -290,6 +290,12 @@ class Store:
                     decision_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS recovery_budget_reservations (
+                    reservation_id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL REFERENCES recovery_episodes(episode_id),
+                    counter_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS continuation_receipts (
                     receipt_id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL REFERENCES runs(run_id),
@@ -1058,7 +1064,12 @@ class Store:
                    ON CONFLICT(episode_id) DO UPDATE SET state=excluded.state,
                    same_thread_attempts=excluded.same_thread_attempts, capacity_attempts=excluded.capacity_attempts,
                    route_probe_attempts=excluded.route_probe_attempts, clean_probe_attempts=excluded.clean_probe_attempts,
-                   migration_attempts=excluded.migration_attempts, no_progress_attempts=excluded.no_progress_attempts,
+                   migration_attempts=MAX(recovery_episodes.migration_attempts, excluded.migration_attempts),
+                   no_progress_attempts=MAX(recovery_episodes.no_progress_attempts, excluded.no_progress_attempts),
+                   same_thread_attempts=MAX(recovery_episodes.same_thread_attempts, excluded.same_thread_attempts),
+                   capacity_attempts=MAX(recovery_episodes.capacity_attempts, excluded.capacity_attempts),
+                   route_probe_attempts=MAX(recovery_episodes.route_probe_attempts, excluded.route_probe_attempts),
+                   clean_probe_attempts=MAX(recovery_episodes.clean_probe_attempts, excluded.clean_probe_attempts),
                    retry_deadline=excluded.retry_deadline, wait_deadline=excluded.wait_deadline,
                    last_verified_progress=excluded.last_verified_progress, updated_at=excluded.updated_at""",
                 (episode_id, run_id, operation_kind, stage, generation, state,
@@ -1068,6 +1079,44 @@ class Store:
             )
             self._insert_event(run_id=run_id, event_key=f"recovery:{episode_id}:episode:{state}:{timestamp}",
                                event_type="recovery_episode_updated", payload={"episode_id": episode_id, "state": state, **values})
+        return self.recovery_episode(episode_id) or {}
+
+    def reserve_recovery_budget(self, *, reservation_id: str, episode_id: str,
+                                counter_name: str) -> dict[str, object]:
+        """Atomically consume one recovery counter, once per attempt identity.
+
+        The reservation row closes the crash window between deciding to retry and
+        writing the updated episode. Replaying the same provider attempt is
+        idempotent; a later attempt must use a new request/turn identity.
+        """
+        allowed = {
+            "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
+            "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
+        }
+        if counter_name not in allowed:
+            raise RunnerError("recovery_counter_invalid", "unknown recovery budget counter")
+        timestamp = now()
+        with self.transaction():
+            episode = self.connection.execute(
+                "SELECT * FROM recovery_episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            if episode is None:
+                raise RunnerError("recovery_episode_missing", "cannot reserve budget for an unknown episode")
+            cursor = self.connection.execute(
+                "INSERT OR IGNORE INTO recovery_budget_reservations(reservation_id, episode_id, counter_name, created_at) VALUES (?, ?, ?, ?)",
+                (reservation_id, episode_id, counter_name, timestamp),
+            )
+            if cursor.rowcount == 1:
+                self.connection.execute(
+                    f"UPDATE recovery_episodes SET {counter_name} = {counter_name} + 1, updated_at = ? WHERE episode_id = ?",
+                    (timestamp, episode_id),
+                )
+                self._insert_event(
+                    run_id=str(episode["run_id"]),
+                    event_key=f"recovery:{episode_id}:budget:{reservation_id}",
+                    event_type="recovery_budget_reserved",
+                    payload={"episode_id": episode_id, "counter": counter_name, "reservation_id": reservation_id},
+                )
         return self.recovery_episode(episode_id) or {}
 
     def recovery_episode(self, episode_id: str) -> dict[str, object] | None:

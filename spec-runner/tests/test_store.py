@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from spec_runner.errors import RunnerError
-from spec_runner.store import Store
+from spec_runner.store import Store, RunRecord, now
 
 
 class StoreLeaseTests(unittest.TestCase):
@@ -324,6 +324,46 @@ class StoreLeaseTests(unittest.TestCase):
                 self.assertEqual(status["recovery"]["episodes"][0]["generation"], 2)
                 self.assertEqual(status["recovery"]["episodes"][0]["observations"][0]["observation"]["family"], "capacity")
                 self.assertEqual(status["recovery"]["episodes"][0]["decisions"][0]["decision"]["action"], "service_wait")
+            finally:
+                store.close()
+
+    def test_recovery_budget_reservation_is_idempotent_and_monotonic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-reservation", launch_key="reservation", input_digest="input",
+                    config_digest="config", repository_path=temp, target_ref="HEAD",
+                    artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                    current_step="implement", log_path="logs/run.jsonl",
+                    created_at=timestamp, updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-reservation")
+                store.upsert_recovery_episode(
+                    episode_id="episode-reservation", run_id=run.run_id,
+                    operation_kind="implementation", stage="implement", generation=0,
+                )
+                first = store.reserve_recovery_budget(
+                    reservation_id="attempt-1", episode_id="episode-reservation",
+                    counter_name="capacity_attempts",
+                )
+                duplicate = store.reserve_recovery_budget(
+                    reservation_id="attempt-1", episode_id="episode-reservation",
+                    counter_name="capacity_attempts",
+                )
+                store.upsert_recovery_episode(
+                    episode_id="episode-reservation", run_id=run.run_id,
+                    operation_kind="implementation", stage="implement", generation=0,
+                    counters={"capacity_attempts": 0},
+                )
+                second = store.reserve_recovery_budget(
+                    reservation_id="attempt-2", episode_id="episode-reservation",
+                    counter_name="capacity_attempts",
+                )
+                self.assertEqual(first["capacity_attempts"], 1)
+                self.assertEqual(duplicate["capacity_attempts"], 1)
+                self.assertEqual(second["capacity_attempts"], 2)
             finally:
                 store.close()
 

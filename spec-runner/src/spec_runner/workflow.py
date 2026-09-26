@@ -327,6 +327,11 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         run_id=run.run_id, operation_kind=operation_kind, stage=run.current_step,
     )
     existing = store.recovery_episode(episode_id) or {}
+    if not existing:
+        existing = store.upsert_recovery_episode(
+            episode_id=episode_id, run_id=run.run_id, operation_kind=operation_kind,
+            stage=run.current_step, generation=0,
+        )
     workers = store.workers_for_run(run.run_id)
     worker = workers[-1] if workers else {}
     fault = error.details.get("fault_observation") if isinstance(error.details, dict) else None
@@ -348,14 +353,36 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
             "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
         )
     }
+    prior_episodes = store.recovery_for_run(run.run_id).get("episodes", [])
+    prior = next((item for item in prior_episodes if item.get("episode_id") == episode_id), {})
+    decisions = prior.get("decisions", []) if isinstance(prior, dict) else []
+    prior_action = decisions[-1].get("decision", {}).get("action") if decisions else None
+    counter_name: str | None = None
     if observation.family == FaultFamily.CAPACITY.value:
-        counters["capacity_attempts"] += 1
+        counter_name = "capacity_attempts"
     elif observation.family in {
         FaultFamily.FAST_NOT_CONFIGURED.value,
         FaultFamily.STREAM_DISCONNECTED.value,
         FaultFamily.UNKNOWN.value,
     }:
-        counters["same_thread_attempts"] += 1
+        counter_name = "same_thread_attempts"
+    elif observation.family == FaultFamily.ROUTE_NOT_FOUND.value and prior_action == RecoveryAction.USE_APPROVED_ROUTE.value:
+        counter_name = "route_probe_attempts"
+    elif observation.family == FaultFamily.ENCRYPTED_ITEM_MISMATCH.value:
+        if prior_action == RecoveryAction.PROBE_CLEAN_CONTEXT.value:
+            counter_name = "clean_probe_attempts"
+        elif prior_action == RecoveryAction.REQUEST_CLEAN_MIGRATION.value:
+            counter_name = "migration_attempts"
+    attempt_identity = observation.request_id or observation.turn_id
+    if counter_name and attempt_identity:
+        reserved = store.reserve_recovery_budget(
+            reservation_id=f"{episode_id}:attempt:{attempt_identity}",
+            episode_id=episode_id, counter_name=counter_name,
+        )
+        counters = {
+            key: int(reserved.get(key) or 0)
+            for key in counters
+        }
     snapshot = RecoverySnapshot(
         run_id=run.run_id,
         operation_kind=operation_kind,

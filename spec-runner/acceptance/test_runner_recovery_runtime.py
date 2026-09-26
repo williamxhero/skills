@@ -31,7 +31,7 @@ def _run(root: Path) -> RunRecord:
     )
 
 
-def _capacity_error() -> RunnerError:
+def _capacity_error(turn_id: str = "turn-capacity") -> RunnerError:
     return RunnerError(
         "sdk_rate_limited",
         "Codex SDK turn was rate limited",
@@ -43,7 +43,7 @@ def _capacity_error() -> RunnerError:
                 "request_admission": "rejected",
                 "execution_outcome": "failed",
                 "thread_id": "thread-capacity",
-                "turn_id": "turn-capacity",
+                "turn_id": turn_id,
             }
         },
     )
@@ -60,20 +60,24 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
     )
     try:
         first = workflow._record_recovery_failure(
-            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error()
+            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-1")
         )
         second = workflow._record_recovery_failure(
-            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error()
+            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-2")
+        )
+        duplicate = workflow._record_recovery_failure(
+            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-2")
         )
         assert first.action.value == "wait_retry"
         assert second.action.value == "service_wait"
+        assert duplicate.action.value == "service_wait"
         status = store.public_status(run.run_id)
         episode = status["recovery"]["episodes"][0]
         assert episode["capacity_attempts"] == 2
         assert episode["state"] == "service_wait"
         assert episode["observations"][0]["observation"]["worker_id"] == "worker-capacity"
         assert episode["observations"][0]["observation"]["attempt"] == 1
-        assert len(episode["observations"]) == 1
+        assert len(episode["observations"]) == 2
         assert episode["decisions"][-1]["decision"]["action"] == "service_wait"
         assert any(event["event_type"] == "recovery_decision_recorded" for event in status["events"])
         assert any(event["event_type"] == "fault_observed" for event in status["events"])
@@ -157,9 +161,10 @@ def test_drive_wakes_once_after_persisted_retry_deadline(tmp_path: Path, monkeyp
     store = Store.open(root, create=True)
     run = _run(tmp_path)
     store.create_run(run, "start:" + run.run_id)
-    for _ in range(failure_count):
+    for index in range(failure_count):
         workflow._record_recovery_failure(
-            run=run, store=store, operation_id="start:" + run.run_id, error=_capacity_error()
+            run=run, store=store, operation_id="start:" + run.run_id,
+            error=_capacity_error(f"turn-capacity-{index}"),
         )
     episode = store.recovery_for_run(run.run_id)["episodes"][0]
     deadline = (datetime.now(timezone.utc) + timedelta(seconds=0.04)).isoformat()
@@ -248,6 +253,63 @@ def test_drive_wait_observes_pause_and_cancel_without_starting_another_check(tmp
             and event["payload"].get("during") == "recovery_wait"
             for event in result["events"]
         )
+
+
+def _fault_error(message: str, turn_id: str) -> RunnerError:
+    return RunnerError(
+        "sdk_failure",
+        message,
+        details={
+            "fault_observation": {
+                "message": message,
+                "source": "sdk_result",
+                "structured": True,
+                "request_admission": "rejected",
+                "execution_outcome": "failed",
+                "thread_id": "thread-recovery",
+                "turn_id": turn_id,
+            }
+        },
+    )
+
+
+def test_route_probe_and_clean_migration_budgets_are_durable_and_bounded(tmp_path: Path) -> None:
+    for family, messages, expected in (
+        (
+            "route",
+            ["model does not exist or you do not have access"] * 3,
+            ["use_approved_route", "wait_for_config", "wait_for_config"],
+        ),
+        (
+            "encrypted",
+            ["encrypted item-id mismatch"] * 3,
+            ["probe_clean_context", "request_clean_migration", "blocked"],
+        ),
+    ):
+        root = tmp_path / family
+        store = Store.open(root, create=True)
+        run = _run(tmp_path)
+        store.create_run(run, "start:" + run.run_id)
+        try:
+            decisions = []
+            for index, message in enumerate(messages):
+                decisions.append(
+                    workflow._record_recovery_failure(
+                        run=run,
+                        store=store,
+                        operation_id="start:" + run.run_id,
+                        error=_fault_error(message, f"turn-{family}-{index}"),
+                    ).action.value
+                )
+            assert decisions == expected
+            episode = store.recovery_for_run(run.run_id)["episodes"][0]
+            if family == "route":
+                assert episode["route_probe_attempts"] == 1
+            else:
+                assert episode["clean_probe_attempts"] == 1
+                assert episode["migration_attempts"] == 1
+        finally:
+            store.close()
 
 
 def test_failed_worker_result_keeps_structured_fault_family() -> None:
