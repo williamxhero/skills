@@ -298,6 +298,11 @@ def _run_check(workspace: Path, command: list[str], timeout: int) -> dict[str, o
         # output.  Keep the post-check scope scan meaningful without allowing
         # the trusted check to create ignored files outside the worker scope.
         check_environment = os.environ.copy()
+        # Python bytecode is also a test side effect.  In a worktree that
+        # contains tracked legacy .pyc files, importing a module can otherwise
+        # mutate the candidate before the scope scan and create a false
+        # product violation.
+        check_environment["PYTHONDONTWRITEBYTECODE"] = "1"
         check_environment["PYTEST_ADDOPTS"] = (
             f'{check_environment.get("PYTEST_ADDOPTS", "").strip()} -p no:cacheprovider'
         ).strip()

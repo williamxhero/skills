@@ -29,6 +29,7 @@ from .continuation import ContinuationBundle, read_bundle, write_bundle_atomic
 from .recovery_runtime import RecoveryRuntime
 from .recovery_evidence import latest_worker, read_turn_evidence
 from .production_runtime import ProductionWorkflow
+from .stage_progression import StageProgression
 from .recovery import (
     RecoveryAction,
     RecoveryDecision,
@@ -4758,7 +4759,24 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
             _reconcile_continuation_bundles(
                 control_root=control_root, config=config, run=existing, store=store,
             )
-            if existing.state in {"completed", "cancelled", "blocked_writer_busy"}:
+            route = StageProgression.select(
+                existing,
+                config,
+                has_control=(
+                    store.control_for_run(existing.run_id) is not None
+                    if existing.state in {"needs_input", "paused"}
+                    else False
+                ),
+                migration_requested=(migration is not None),
+                migration_archive_pending=(
+                    _migration_source_archive_retry_pending(
+                        store=store, run_id=existing.run_id,
+                    )
+                    if existing.state == "cleanup_pending"
+                    else False
+                ),
+            )
+            if route.kind == "terminal":
                 if launch_token:
                     store.register_runtime(
                         existing.run_id,
@@ -4779,7 +4797,24 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
             if RecoveryRuntime.waits(run=existing, store=store):
                 return {"created": False, **store.public_status(existing.run_id)}
             existing = store.find_by_run_id(existing.run_id) or existing
-            if existing.state == "blocked" and config.execution_backend == "codex_sdk" and existing.current_step == "codex_planning":
+            route = StageProgression.select(
+                existing,
+                config,
+                has_control=(
+                    store.control_for_run(existing.run_id) is not None
+                    if existing.state in {"needs_input", "paused"}
+                    else False
+                ),
+                migration_requested=migration is not None,
+                migration_archive_pending=(
+                    _migration_source_archive_retry_pending(
+                        store=store, run_id=existing.run_id,
+                    )
+                    if existing.state == "cleanup_pending"
+                    else False
+                ),
+            )
+            if route.kind == "blocked_recovery" and existing.current_step == "codex_planning":
                 retry_thread = _blocked_planning_retry_thread(
                     control_root=control_root, config=config, run=existing,
                     store=store, brief_digest=brief_digest,
@@ -4791,7 +4826,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                         thread_id=retry_thread,
                     )
                     return {"created": False, **resumed}
-            if existing.state == "blocked" and config.execution_backend == "codex_sdk":
+            if route.kind == "blocked_recovery":
                 retry_identity = _blocked_implementation_retry_identity(
                     control_root=control_root, config=config, run=existing, store=store,
                 )
@@ -4802,24 +4837,24 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                         thread_id=retry_identity[0], spec_key=retry_identity[1],
                     )
                     return {"created": False, **resumed}
-            if existing.state == "ready_for_next":
+            if route.kind == "ready_for_next":
                 final_status = _advance_second_stage(
                     control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
                 )
                 return {"created": False, **final_status}
-            if existing.state == "planned":
+            if route.kind == "planned":
                 plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
                 if not plan_path.is_file():
                     raise RunnerError("spec_plan_missing", "planned run has no persisted SpecPlan")
                 return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
                     store=store, spec_plan=load_json(plan_path))}
-            if existing.state == "tickets_ready" and config.workflow_mode == "production":
+            if route.kind == "production_queue" and existing.state == "tickets_ready":
                 plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
                 return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
                     store=store, spec_plan=load_json(plan_path))}
-            if existing.state in {"waiting_ci", "waiting_merge_queue"} and config.workflow_mode == "production":
+            if route.kind == "waiting_github":
                 resumed = _resume_waiting_github(control_root=control_root, config=config, run=existing, store=store, finalize_run=False)
                 if resumed.get("state") == "spec_completed":
                     plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
@@ -4828,13 +4863,13 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     return {"created": False, **_run_production_queue(control_root=control_root, config=config,
                         brief_digest=brief_digest, run=current, store=store, spec_plan=load_json(plan_path))}
                 return {"created": False, **resumed}
-            if existing.state == "spec_completed" and config.workflow_mode == "production":
+            if route.kind == "production_queue" and existing.state == "spec_completed":
                 plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
                 return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
                     store=store, spec_plan=load_json(plan_path))}
-            if existing.state == "cleanup_pending":
-                if _migration_source_archive_retry_pending(store=store, run_id=existing.run_id):
+            if route.kind in {"cleanup_migration", "cleanup_production", "cleanup_status"}:
+                if route.kind == "cleanup_migration":
                     migration_cleanup = _retry_migration_source_archive(config=config, store=store, run=existing)
                     if migration_cleanup.get("migration_cleanup") is not None:
                         if migration_cleanup.get("state") == "ready_for_next":
@@ -4851,7 +4886,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                                 brief_digest=brief_digest, store=store,
                             )}
                         return {"created": False, **migration_cleanup}
-                if config.workflow_mode != "production":
+                if route.kind == "cleanup_status":
                     return {"created": False, **store.public_status(existing.run_id)}
                 cleanup = _retry_production_cleanup(control_root=control_root, config=config, run=existing, store=store)
                 if cleanup.get("state") == "spec_completed":
@@ -4861,7 +4896,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     return {"created": False, **_run_production_queue(control_root=control_root, config=config,
                         brief_digest=brief_digest, run=current, store=store, spec_plan=load_json(plan_path))}
                 return {"created": False, **cleanup}
-            if existing.state == "needs_input" and not store.control_for_run(existing.run_id):
+            if route.kind == "needs_input":
                 worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
                 questions: list[dict[str, object]] = []
                 if worker_result.is_file():
@@ -4875,7 +4910,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     resumed = _resume_codex_stage(control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store)
                     return {"created": False, **resumed}
                 return {"created": False, **store.public_status(existing.run_id)}
-            if migration is not None and config.execution_backend == "codex_sdk" and existing.state in {"starting", "failed"}:
+            if route.kind == "migration":
                 persisted_migration = store.thread_migration(str(migration.get("migration_key") or ""))
                 if persisted_migration is not None and persisted_migration.get("state") == "uncertain":
                     raise RunnerError("thread_successor_uncertain", "successor creation is uncertain; reconcile the recorded migration before retry")
@@ -4896,7 +4931,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     )
                     return {"created": False, **resumed}
 
-            if existing.state == "paused" and not store.control_for_run(existing.run_id):
+            if route.kind == "paused":
                 if config.execution_backend == "codex_sdk":
                     resumed = _resume_codex_stage(
                         control_root=control_root,
@@ -4935,7 +4970,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
             raise RunnerError("run_id_conflict", "run_id already exists; choose another UUID")
 
         timestamp = now()
-        stage_name = "delivery_plan" if config.delivery_plan is not None else ("deterministic_example" if config.execution_backend == "deterministic_test" else ("codex_planning" if config.workflow_mode == "production" else "codex_example"))
+        stage_name = StageProgression.initial_stage(config)
         record = RunRecord(
             run_id=requested_run_id,
             launch_key=launch_key,

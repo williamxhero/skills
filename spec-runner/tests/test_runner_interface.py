@@ -5,8 +5,11 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from spec_runner.models import RunContext, RunnerRequest, StageResult
 from spec_runner.runner import Runner
+from spec_runner.stage_progression import StageProgression
 
 
 def test_stage_result_preserves_legacy_status_projection() -> None:
@@ -160,3 +163,77 @@ def test_run_context_keeps_durable_status_at_one_edge() -> None:
     )
 
     assert context.public_status() == {"run": {"run_id": "run-1"}}
+
+
+def test_stage_progression_selects_production_recovery_routes() -> None:
+    config = SimpleNamespace(
+        delivery_plan=None,
+        execution_backend="codex_sdk",
+        workflow_mode="production",
+    )
+    run = SimpleNamespace(state="waiting_ci")
+
+    route = StageProgression.select(run, config)
+
+    assert route.kind == "waiting_github"
+    assert route.production is True
+
+
+def test_stage_progression_routes_controlled_input_to_recovery() -> None:
+    config = SimpleNamespace(
+        delivery_plan=None,
+        execution_backend="codex_sdk",
+        workflow_mode="production",
+    )
+    run = SimpleNamespace(state="needs_input")
+
+    route = StageProgression.select(run, config, has_control=True)
+
+    assert route.kind == "recover"
+
+
+def test_stage_progression_keeps_cleanup_status_for_nonproduction_runs() -> None:
+    config = SimpleNamespace(
+        delivery_plan=None,
+        execution_backend="deterministic_test",
+        workflow_mode="single",
+    )
+    run = SimpleNamespace(state="cleanup_pending")
+
+    assert StageProgression.select(run, config).kind == "cleanup_status"
+
+
+def test_stage_progression_selects_initial_stage_without_io() -> None:
+    config = SimpleNamespace(
+        delivery_plan=None,
+        execution_backend="codex_sdk",
+        workflow_mode="production",
+    )
+
+    assert StageProgression.initial_stage(config) == "codex_planning"
+
+
+@pytest.mark.parametrize(
+    ("state", "mode", "expected"),
+    [
+        ("completed", "production", "terminal"),
+        ("blocked_writer_busy", "single", "terminal"),
+        ("ready_for_next", "single", "ready_for_next"),
+        ("planned", "production", "planned"),
+        ("tickets_ready", "production", "production_queue"),
+        ("tickets_ready", "single", "recover"),
+        ("waiting_merge_queue", "production", "waiting_github"),
+        ("spec_completed", "production", "production_queue"),
+        ("cleanup_pending", "production", "cleanup_production"),
+        ("failed", "single", "recover"),
+    ],
+)
+def test_stage_progression_maps_persisted_state_to_one_route(state, mode, expected) -> None:
+    config = SimpleNamespace(
+        delivery_plan=None,
+        execution_backend="codex_sdk" if mode == "production" else "deterministic_test",
+        workflow_mode=mode,
+    )
+    run = SimpleNamespace(state=state)
+
+    assert StageProgression.select(run, config).kind == expected

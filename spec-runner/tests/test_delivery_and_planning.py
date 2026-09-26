@@ -181,6 +181,20 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertTrue(result["passed"])
             self.assertFalse((workspace / ".pytest_cache").exists())
 
+    def test_pytest_candidate_check_disables_bytecode_side_effects(self):
+        with tempfile.TemporaryDirectory() as temp:
+            workspace = Path(temp)
+            (workspace / "test_pass.py").write_text("def test_pass():\n    assert True\n", encoding="utf-8")
+
+            result = _run_check(
+                workspace,
+                ["python", "-m", "pytest", "test_pass.py", "-q"],
+                120,
+            )
+
+            self.assertTrue(result["passed"])
+            self.assertEqual(list(workspace.rglob("*.pyc")), [])
+
     def test_candidate_scope_ignores_unchanged_long_tracked_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp) / "repo"
