@@ -1,0 +1,36 @@
+{
+  "schema_version": "spec-runner-windows-launcher-log-handles/v1",
+  "run_marker": "SRAC-20260926-windows-launcher-log-handles-01",
+  "evidence_kind": "observed_windows_launcher_log_handles",
+  "platform": "Windows",
+  "python": "3.13.5",
+  "run_id": "b9a2cc45-f6df-4a30-a218-3b76529698fb",
+  "wrapper_pid": 10928,
+  "child_pid": 26164,
+  "wrapper_exit_code": 0,
+  "holder_pid": 30580,
+  "holder_ready": true,
+  "rotation_while_held": [
+    [
+      false,
+      "PermissionError"
+    ],
+    [
+      false,
+      "PermissionError"
+    ]
+  ],
+  "rotation_blocked_while_held": true,
+  "runner_terminated_while_held": true,
+  "rotation_after_release": true,
+  "rotated_logs_readable": true,
+  "drive_exit_code": 0,
+  "recovered_same_run": true,
+  "final_state": "completed",
+  "unverified": [
+    "production log-rotation command and retention policy",
+    "control DB lock combined with launcher-log lifecycle",
+    "external GitHub side-effect reconciliation",
+    "remaining #266 and project-level L3-L5 gates"
+  ]
+}

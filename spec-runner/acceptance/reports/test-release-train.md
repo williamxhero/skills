@@ -734,3 +734,20 @@ cleanup replay only. Independent launcher-log handle/rotation/final cleanup,
 combination with a control-DB lock, external GitHub side-effect reconciliation,
 the remaining #266 criteria, and project L3-L5 gates remain `not_verified`;
 #266 stays open.
+
+## SF-05.3 independent launcher log handles (2026-09-26)
+
+The native Windows probe launched a detached Runner through the public
+`launch` command, held both recorded stdout and stderr launcher logs from a
+separate process with delete sharing denied, and confirmed rotation was
+blocked while those handles were held. The exact detached child was then
+terminated by its recorded PID, the handles were released, both same log
+objects rotated and remained readable, and public `drive` recovered the same
+run to `completed`.
+
+The observation is recorded in
+`SRAC-20260926-windows-launcher-log-handles-01.json`. This is an OS-level
+launcher log handle and restart observation. A production log-rotation command
+and retention policy do not currently exist, so that capability remains
+`not_verified`, as do the combined control-DB/log lifecycle, external GitHub
+side-effect reconciliation, the remaining #266 criteria, and project L3-L5.
