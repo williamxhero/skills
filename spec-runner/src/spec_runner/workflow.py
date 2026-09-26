@@ -562,8 +562,8 @@ def _recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | Non
     return action, parsed.astimezone(timezone.utc).isoformat()
 
 
-def drive(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
-          run_id: str | None = None, launch_token: str | None = None) -> dict[str, object]:
+def _drive_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+                  run_id: str | None = None, launch_token: str | None = None) -> dict[str, object]:
     """Run the workflow, waiting for durable retry deadlines and controls."""
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
@@ -5050,9 +5050,9 @@ def _continue_initial_clean_migration(*, control_root: Path, config: RunnerConfi
     raise RunnerError("thread_migration_stage_invalid", "clean migration can only resume an initial Codex stage")
 
 
-def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
-          run_id: str | None = None, takeover_key: str | None = None,
-          launch_token: str | None = None, migration: dict[str, object] | None = None) -> dict[str, object]:
+def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+                  run_id: str | None = None, takeover_key: str | None = None,
+                  launch_token: str | None = None, migration: dict[str, object] | None = None) -> dict[str, object]:
     launch_key = _validate_launch_key(launch_key)
     control_root = control_root.expanduser().resolve()
     brief, brief_digest = read_brief(brief_file)
@@ -5437,7 +5437,7 @@ def _acceptance_upgrade_compatible(existing: RunRecord, config: RunnerConfig) ->
     )
 
 
-def control(*, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:
+def _control_legacy(*, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:
     store = Store.open(control_root.expanduser().resolve(), create=False)
     try:
         record = store.find_by_run_id(run_id)
@@ -5451,7 +5451,7 @@ def control(*, control_root: Path, run_id: str, requested_state: str) -> dict[st
         store.close()
 
 
-def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
+def _resume_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
     control_root = control_root.expanduser().resolve()
     store = Store.open(control_root, create=False)
     try:
@@ -5524,8 +5524,8 @@ def _terminate_unclaimed_child(child: subprocess.Popen[bytes], *, timeout_second
         return False
 
 
-def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
-           handshake_timeout_seconds: float = 10.0) -> dict[str, object]:
+def _launch_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+                   handshake_timeout_seconds: float = 10.0) -> dict[str, object]:
     """Start a detached Runner and return only after its durable handshake."""
     launch_key = _validate_launch_key(launch_key)
     if handshake_timeout_seconds <= 0:
@@ -5605,7 +5605,7 @@ def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
     )
 
 
-def status(*, control_root: Path, run_id: str | None) -> dict[str, object]:
+def _status_legacy(*, control_root: Path, run_id: str | None) -> dict[str, object]:
     store = Store.open(control_root.expanduser().resolve(), create=False)
     try:
         if run_id:
@@ -5615,7 +5615,7 @@ def status(*, control_root: Path, run_id: str | None) -> dict[str, object]:
         store.close()
 
 
-def doctor(*, config_file: Path | None, control_root: Path) -> dict[str, object]:
+def _doctor_legacy(*, config_file: Path | None, control_root: Path) -> dict[str, object]:
     report: dict[str, object] = {
         "read_only": True,
         "control_database_exists": (control_root.expanduser().resolve() / "spec-runner.sqlite3").is_file(),
@@ -5631,3 +5631,66 @@ def doctor(*, config_file: Path | None, control_root: Path) -> dict[str, object]
             "requested_effort": config.effort,
         }
     return report
+
+
+def start(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+          run_id: str | None = None, takeover_key: str | None = None,
+          launch_token: str | None = None, migration: dict[str, object] | None = None) -> dict[str, object]:
+    from .runner import Runner
+    from .models import RunnerRequest
+
+    return Runner().start(RunnerRequest(
+        brief_file=brief_file, config_file=config_file, control_root=control_root,
+        launch_key=launch_key, run_id=run_id, takeover_key=takeover_key,
+        launch_token=launch_token, migration=migration,
+    ))
+
+
+def drive(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+          run_id: str | None = None, launch_token: str | None = None) -> dict[str, object]:
+    from .runner import Runner
+    from .models import RunnerRequest
+
+    return Runner().drive(RunnerRequest(
+        brief_file=brief_file, config_file=config_file, control_root=control_root,
+        launch_key=launch_key, run_id=run_id, launch_token=launch_token,
+    ))
+
+
+def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str) -> dict[str, object]:
+    from .runner import Runner
+    from .models import RunnerRequest
+
+    return Runner().resume(RunnerRequest(
+        brief_file=brief_file, config_file=config_file, control_root=control_root,
+        launch_key=launch_key,
+    ))
+
+
+def control(*, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:
+    from .runner import Runner
+    return Runner().control(control_root=control_root, run_id=run_id, requested_state=requested_state)
+
+
+def launch(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
+           handshake_timeout_seconds: float = 10.0) -> dict[str, object]:
+    from .runner import Runner
+    from .models import RunnerRequest
+
+    return Runner().launch(
+        request=RunnerRequest(
+            brief_file=brief_file, config_file=config_file, control_root=control_root,
+            launch_key=launch_key,
+        ),
+        handshake_timeout_seconds=handshake_timeout_seconds,
+    )
+
+
+def status(*, control_root: Path, run_id: str | None) -> dict[str, object]:
+    from .runner import Runner
+    return Runner().status(control_root=control_root, run_id=run_id)
+
+
+def doctor(*, config_file: Path | None, control_root: Path) -> dict[str, object]:
+    from .runner import Runner
+    return Runner().doctor(config_file=config_file, control_root=control_root)
