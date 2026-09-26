@@ -712,3 +712,25 @@ This proves the rejected control write did not advance the control DB in this
 scenario. Independent launcher-log handle/rotation behavior, cleanup_pending to
 cleaned replay, external side-effect reconciliation, and the remaining #266 and
 project-level L3-L5 gates remain not_verified.
+
+## SF-05.3 public cleanup replay on native Windows (2026-09-26)
+
+The new Windows cleanup replay probe creates and merges a real candidate
+worktree, persists matching production plan, ticket, merge, and run receipts,
+then holds a Win32 delete-denying handle from a separate process. The public
+`start` command returns `cleanup_pending` while that handle is held. After the
+holder exits, the same public entry retries the persisted run and reaches
+`completed`; the managed workspace and manifest are removed. The main branch
+HEAD and merge receipt remain unchanged, and worker and operation counts do
+not increase.
+
+The native observation is recorded in
+`SRAC-20260926-windows-cleanup-replay-01.json` (run
+`2db6b503-4fb5-490b-8354-cdae84028a40`). The native probe completed through
+the public CLI, the focused cleanup/production selection passed `38 passed`,
+and the explicit source + acceptance selection passed `278 passed, 1 skipped`.
+`compileall` and `git diff --check` passed. This covers the merged-worktree
+cleanup replay only. Independent launcher-log handle/rotation/final cleanup,
+combination with a control-DB lock, external GitHub side-effect reconciliation,
+the remaining #266 criteria, and project L3-L5 gates remain `not_verified`;
+#266 stays open.
