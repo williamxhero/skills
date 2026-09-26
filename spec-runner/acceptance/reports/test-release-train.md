@@ -985,3 +985,12 @@ unknown; no GitHub resources were created. The run is recorded as
 `not_verified` in `acceptance/reports/SRAC-20260927-abcdef123456-production.json`.
 The live SDK, GitHub delivery, source takeover, six-SPEC L4, and final L5 gates
 remain open.
+
+The final follow-up refactor moved the recovery persistence implementation into
+`RecoveryEpisode`; `RecoveryRuntime` remains only as a compatibility facade.
+Commit `46b22d9452238a1fc7664753ad1b5a47f942e5e6` passed the complete source
+and acceptance selection with `355 passed, 1 skipped`. Its exact installed
+wheel passed package inspection and two deterministic 10-case fault replays
+with identical digest `e97931787be888eb6ccea1b4c3cc477dd21dd023aeb87201965d62b0fe069efe`.
+Evidence is
+`acceptance/reports/SRAC-20260927-46b22d9-installed-wheel.json`.
