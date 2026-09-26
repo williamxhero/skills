@@ -1014,3 +1014,18 @@ branch, or other GitHub resource was created. Evidence is
 The 429 is an external capacity blocker for live production qualification. It
 does not change deterministic implementation status and does not close SF-02,
 SF-03, SF-04, SF-05, SF-06, RCV-01, RCV-02, or SF-00.
+
+## Recovery episode stage identity correction (2026-09-27)
+
+The live run exposed a real recovery defect: a failure raised while the
+production entry was moving from Grill into planning could be recorded against
+the stale `codex_planning` identity, and the next same-run failure could open a
+second episode for `codex_grill`. The compatibility workflow now reloads the
+latest durable Run record before recording recovery, so the episode stage,
+incident identity, and capacity budget follow the latest persisted worker
+intent across the transition.
+
+The focused recovery selection passed `11 passed`; the complete source and
+acceptance selection passed `357 passed, 1 skipped`. `compileall` and
+`git diff --check` passed. This corrects deterministic recovery accounting and
+does not promote the blocked live SDK run or any project-level live gate.

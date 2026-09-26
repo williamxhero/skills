@@ -132,6 +132,40 @@ def test_runner_observes_accepted_unknown_result_before_retry(tmp_path: Path) ->
         store.close()
 
 
+def test_recovery_uses_latest_worker_stage_for_episode_identity(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    store.begin_stage(
+        run.run_id,
+        step_name="codex_grill",
+        operation_id="grill:" + run.run_id,
+        backend_kind="codex_sdk",
+        worker_id="worker-grill",
+    )
+    try:
+        first = workflow._record_recovery_failure(
+            run=run,
+            store=store,
+            operation_id="start:" + run.run_id,
+            error=_capacity_error("turn-grill-1"),
+        )
+        second = workflow._record_recovery_failure(
+            run=run,
+            store=store,
+            operation_id="start:" + run.run_id,
+            error=_capacity_error("turn-grill-2"),
+        )
+        assert first.action.value == "wait_retry"
+        assert second.action.value == "service_wait"
+        episodes = store.recovery_for_run(run.run_id)["episodes"]
+        assert len(episodes) == 1
+        assert episodes[0]["stage"] == "codex_grill"
+        assert episodes[0]["capacity_attempts"] == 2
+    finally:
+        store.close()
+
+
 def test_recovery_keeps_distinct_requests_on_one_turn(tmp_path: Path) -> None:
     store = Store.open(tmp_path / "control", create=True)
     run = _run(tmp_path)

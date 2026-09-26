@@ -324,7 +324,13 @@ def _recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, 
 def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
                              error: RunnerError) -> RecoveryDecision:
     """Compatibility façade for durable fault observation and decisions."""
-    return RecoveryEpisode(run=run, store=store).record_failure(operation_id=operation_id, error=error)
+    current = store.find_by_run_id(run.run_id) or run
+    return RecoveryEpisode(run=current, store=store).record_failure(operation_id=operation_id, error=error)
+
+
+def _latest_durable_run(*, store: Store, run: RunRecord) -> RunRecord:
+    """Use the stage identity persisted by the latest worker intent."""
+    return store.find_by_run_id(run.run_id) or run
 
 
 def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
@@ -4864,16 +4870,17 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     route,
                 )
             except RunnerError as exc:
-                decision = RecoveryEpisode(run=existing, store=store).record_failure(
-                    operation_id=f"start:{existing.run_id}", error=exc,
+                recovery_run = _latest_durable_run(store=store, run=existing)
+                decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
+                    operation_id=f"start:{recovery_run.run_id}", error=exc,
                 )
                 if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
-                    store.fail_run(existing.run_id, f"start:{existing.run_id}", state=decision.action.value)
-                    return {"created": False, **store.public_status(existing.run_id)}
-                store.set_run_state(existing.run_id, "blocked")
+                    store.fail_run(recovery_run.run_id, f"start:{recovery_run.run_id}", state=decision.action.value)
+                    return {"created": False, **store.public_status(recovery_run.run_id)}
+                store.set_run_state(recovery_run.run_id, "blocked")
                 store.append_event(
-                    run_id=existing.run_id,
-                    event_key=f"recovery:{existing.run_id}:blocked",
+                    run_id=recovery_run.run_id,
+                    event_key=f"recovery:{recovery_run.run_id}:blocked",
                     event_type="recovery_blocked",
                     payload={"code": exc.code, "message": exc.message},
                 )
@@ -4908,14 +4915,17 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
                 )
             except RunnerError as exc:
-                decision = RecoveryEpisode(run=existing, store=store).record_failure(operation_id=f"start:{existing.run_id}", error=exc)
+                recovery_run = _latest_durable_run(store=store, run=existing)
+                decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
+                    operation_id=f"start:{recovery_run.run_id}", error=exc,
+                )
                 if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
-                    store.fail_run(existing.run_id, f"start:{existing.run_id}", state=decision.action.value)
-                    return {"created": False, **store.public_status(existing.run_id)}
-                store.set_run_state(existing.run_id, "blocked")
+                    store.fail_run(recovery_run.run_id, f"start:{recovery_run.run_id}", state=decision.action.value)
+                    return {"created": False, **store.public_status(recovery_run.run_id)}
+                store.set_run_state(recovery_run.run_id, "blocked")
                 store.append_event(
-                    run_id=existing.run_id,
-                    event_key=f"recovery:{existing.run_id}:blocked",
+                    run_id=recovery_run.run_id,
+                    event_key=f"recovery:{recovery_run.run_id}:blocked",
                     event_type="recovery_blocked",
                     payload={"code": exc.code, "message": exc.message},
                 )
@@ -5001,15 +5011,18 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     thread_id=successor_thread_id,
                 )
         except RunnerError as exc:
-            decision = RecoveryEpisode(run=record, store=store).record_failure(operation_id=operation_id, error=exc)
+            recovery_run = _latest_durable_run(store=store, run=record)
+            decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
+                operation_id=operation_id, error=exc,
+            )
             state = decision.action.value if decision.action in {
                 RecoveryAction.WAIT_RETRY,
                 RecoveryAction.SERVICE_WAIT,
                 RecoveryAction.WAIT_FOR_CONFIG,
             } else "failed"
-            store.fail_run(record.run_id, operation_id, state=state)
+            store.fail_run(recovery_run.run_id, operation_id, state=state)
             if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
-                return {"created": True, **store.public_status(record.run_id)}
+                return {"created": True, **store.public_status(recovery_run.run_id)}
             raise
         if finished.state in {"paused", "cancelled"}:
             if finished.state == "cancelled":
