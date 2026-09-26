@@ -16,7 +16,19 @@ from spec_runner.delivery import _run_check, cleanup_managed_workspace, git_sha,
 from spec_runner.diagnostics import build_release_report, inspect_wheel, runtime_report, validate_fault_matrix, validate_release_report
 from spec_runner.matt import resolve_grill
 from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
-from spec_runner.takeover import _working_tree_snapshot, completion_action, inspect_takeover, inventory_from_thread_observation, perform_cleanup, plan_frontier, record_takeover_transition, write_takeover_record
+from spec_runner.takeover import (
+    _working_tree_snapshot,
+    completion_action,
+    frontier_execution_steps,
+    frontier_step_transition,
+    inspect_takeover,
+    inventory_from_thread_observation,
+    perform_cleanup,
+    plan_frontier,
+    record_takeover_transition,
+    verify_frontier_step,
+    write_takeover_record,
+)
 from spec_runner.legacy import legacy_takeover_inventory, read_legacy_database
 from spec_runner.multi_spec import run_local_delivery
 
@@ -519,6 +531,49 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(frontier["categories"]["reverified"], ["SR-01", "SR-02"])
             self.assertEqual(frontier["categories"]["new_work"], ["SR-03"])
             self.assertEqual([step["target"] for step in frontier["steps"]], ["SR-01", "SR-02", "SR-03"])
+
+    def test_frontier_execution_steps_have_stable_identity_and_skip_verified_work(self):
+        frontier = {
+            "schema_version": "spec-runner-frontier/v1",
+            "state": "planned",
+            "digest": "frontier-v1",
+            "steps": [
+                {"kind": "reverify", "target": "SR-01", "reason": "read back delivery"},
+                {"kind": "resume", "target": "remaining_acceptance", "reason": "continue the queue"},
+            ],
+        }
+        first = frontier_execution_steps(frontier)
+        second = frontier_execution_steps(frontier)
+        self.assertEqual([item.step_id for item in first], [item.step_id for item in second])
+        event_key, payload = frontier_step_transition(first[0], state="frontier_step_verified", payload={"evidence": "receipt"})
+        remaining = frontier_execution_steps(frontier, [{"event_key": event_key, "state": "frontier_step_verified", "payload": payload}])
+        self.assertEqual([item.target for item in remaining], ["remaining_acceptance"])
+
+    def test_frontier_execution_rejects_unexecutable_step_kind(self):
+        with self.assertRaisesRegex(RunnerError, "not executable"):
+            frontier_execution_steps({
+                "schema_version": "spec-runner-frontier/v1",
+                "state": "planned",
+                "digest": "frontier-v1",
+                "steps": [{"kind": "publish", "target": "issue", "reason": "external side effect"}],
+            })
+
+    def test_working_tree_adoption_requires_exact_snapshot_readback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / "partial.py").write_text("partial\n", encoding="utf-8")
+            report = inspect_takeover({
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repo),
+                "source_threads": [],
+                "artifacts": [{"path": "partial.py"}],
+                "facts": {"requirements": ["finish"], "working_tree": {"snapshot_digest": "placeholder"}},
+            })
+            frontier = plan_frontier(report)
+            step = next(item for item in frontier_execution_steps(frontier) if item.target == "working_tree")
+            self.assertIsNone(verify_frontier_step(report, step))
 
     def test_thread_observation_builds_scoped_inventory_and_safe_git_snapshot(self):
         with tempfile.TemporaryDirectory() as temp:
