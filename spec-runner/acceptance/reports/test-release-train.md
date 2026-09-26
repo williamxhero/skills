@@ -694,3 +694,21 @@ This is a bounded SF-05.1 control-plane increment. It does not prove live SDK
 provider recovery, cross-launch/control-root duplicate-writer prevention,
 complete cancellation/handshake coverage, or project-level L3-L5 gates; those
 remain `not_verified`, and #264 plus its parent remain open.
+## SF-05.3 rejected control-DB write does not advance state (2026-09-26)
+
+The native Windows control-DB restart probe now records a SHA-256 digest before
+and after the public drive attempt made while an independent process holds the
+real SQLite database with BEGIN EXCLUSIVE. The attempt returned structured
+control_database_busy in 7.798 seconds, the digest stayed identical, the known
+Runner was terminated while the lock was held, and the same run later recovered
+to completed. The database remained present and passed PRAGMA integrity_check;
+two launcher logs remained readable.
+
+The acceptance contract selection passed 2 passed. The related CLI/process
+selection passed 24 passed in 16.99 seconds. Durable evidence is
+SRAC-20260926-windows-control-db-rejected-write.json.
+
+This proves the rejected control write did not advance the control DB in this
+scenario. Independent launcher-log handle/rotation behavior, cleanup_pending to
+cleaned replay, external side-effect reconciliation, and the remaining #266 and
+project-level L3-L5 gates remain not_verified.

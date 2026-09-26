@@ -96,6 +96,8 @@ def validate_report(report: dict[str, Any]) -> None:
         raise AssertionError("the public lock attempt must record its bounded wait")
     if report.get("lock_write_attempt_elapsed_seconds", 0) > 10:
         raise AssertionError("the public lock attempt exceeded its bounded wait")
+    if not report.get("control_db_digest_during_lock") or report.get("lock_did_not_advance") is not True:
+        raise AssertionError("the control DB must remain byte-identical during the rejected lock attempt")
     if report.get("runner_terminated_while_lock_held") is not True:
         raise AssertionError("the known detached Runner must be terminated while the lock is held")
     if report.get("control_db_exists_after") is not True or report.get("control_db_integrity_after") != "ok":
@@ -192,6 +194,10 @@ def run_probe(output: Path | None = None) -> dict[str, Any]:
             )
             lock_attempt_elapsed = time.monotonic() - lock_attempt_started
             lock_attempt_error = str(lock_attempt.get("error", {}).get("code") or "")
+            lock_digest_after_attempt = _digest(database)
+            lock_did_not_advance = lock_digest_after_attempt == lock_digest_before
+            if not lock_did_not_advance:
+                raise RuntimeError("control DB bytes changed during the rejected lock attempt")
             if lock_attempt_code != 2 or lock_attempt_error != "control_database_busy":
                 raise RuntimeError("public drive did not fail closed with a structured control DB lock error")
             _write(control / "faults" / f"{run_id}.after_first_artifact.continue", "continue\n")
@@ -230,6 +236,8 @@ def run_probe(output: Path | None = None) -> dict[str, Any]:
             "lock_acquired_before_runner_termination": holder_ready.is_file(),
             "lock_write_attempt_error": lock_attempt_error,
             "lock_write_attempt_elapsed_seconds": round(lock_attempt_elapsed, 3),
+            "control_db_digest_during_lock": lock_digest_after_attempt,
+            "lock_did_not_advance": lock_did_not_advance,
             "runner_terminated_while_lock_held": runner_terminated_while_lock_held,
             "termination_exit_code": termination_code,
             "status_before_recovery": before["run"]["state"],

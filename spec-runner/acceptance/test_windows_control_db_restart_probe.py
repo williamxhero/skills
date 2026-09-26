@@ -14,6 +14,8 @@ def _report() -> dict[str, object]:
         "lock_acquired_before_runner_termination": True,
         "lock_write_attempt_error": "control_database_busy",
         "lock_write_attempt_elapsed_seconds": 5.0,
+        "control_db_digest_during_lock": "same",
+        "lock_did_not_advance": True,
         "runner_terminated_while_lock_held": True,
         "control_db_exists_after": True,
         "control_db_integrity_after": "ok",
