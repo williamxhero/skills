@@ -53,7 +53,7 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
         )
         return {"created": False, **_run_delivery_plan(control_root=control_root, config=config, run=run, store=store)}
     if config.execution_backend != "deterministic_test":
-        if run.state in {"starting", "running", "cleanup_pending", "failed"} and run.current_step == "codex_planning":
+        if run.state in {"starting", "running", "cleanup_pending", "failed", "blocked"} and run.current_step == "codex_planning":
             workers = store.workers_for_run(run.run_id)
             worker_id = f"codex_sdk:{run.run_id}:codex_planning"
             worker = latest_worker(
@@ -73,7 +73,7 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
             inspection = evidence.inspection
             terminal_completed = evidence.has_status("completed")
             if not terminal_completed:
-                if run.state != "failed":
+                if run.state not in {"failed", "blocked"}:
                     raise RunnerError("recovery_blocked", "the planning turn has no uniquely recoverable terminal result")
             elif _planning_turn_requires_retry(
                 control_root=control_root, config=config, run=run,
@@ -97,7 +97,10 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
                     thread_id=thread_id, turn_id=turn_id, brief_digest=brief_digest,
                 )
                 return {"created": False, **store.public_status(completed.run_id)}
-        if run.state == "failed":
+        if run.state == "failed" or (
+            run.state == "blocked"
+            and run.current_step in {"codex_example", "codex_grill", "codex_planning", "codex_ticket_planning", "codex_second"}
+        ):
             resumable_steps = {
                 "codex_example",
                 "codex_grill",
@@ -121,13 +124,17 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
                 expected_worker_id = f"{worker_prefix}:{run.current_step}"
                 matches_stage = lambda worker_id: worker_id == expected_worker_id
             worker = latest_worker(
-                workers=workers, backend_kind="codex_sdk", states={"failed"},
+                workers=workers,
+                backend_kind="codex_sdk",
+                states={"failed", "running"} if run.state == "blocked" else {"failed"},
                 exact_id=(expected_worker_id if run.current_step == "codex_example" else None),
                 prefix=(None if run.current_step == "codex_example" else f"{worker_prefix}:{run.current_step}:" if run.current_step in {"codex_ticket_planning", "codex_implementation"} else f"{worker_prefix}:{run.current_step}"),
             )
             if run.current_step == "codex_example":
                 worker = latest_worker(
-                    workers=workers, backend_kind="codex_sdk", states={"failed"},
+                    workers=workers,
+                    backend_kind="codex_sdk",
+                    states={"failed", "running"} if run.state == "blocked" else {"failed"},
                     exact_id=expected_worker_id,
                 )
             thread_id = str(worker.get("external_thread_id") or "") if worker else ""

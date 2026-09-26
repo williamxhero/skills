@@ -1074,6 +1074,88 @@ class CodexWorkflowControlTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_blocked_grill_resumes_after_terminal_failed_turn_readback(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-blocked-grill-recovery-") as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            config = RunnerConfig(
+                repository, "HEAD", Path("artifacts"), "codex_sdk", ("grill",),
+                "fake", "high", (Path("artifacts"),), None, None, (), "test", "config",
+            )
+            run_id = "33333333-3333-3333-3333-333333333333"
+            run = RunRecord(
+                run_id=run_id,
+                launch_key="blocked-grill-recovery",
+                input_digest="brief",
+                config_digest="config",
+                repository_path=str(repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="codex_sdk",
+                state="starting",
+                current_step="codex_grill",
+                log_path="logs/run.jsonl",
+                created_at=now(),
+                updated_at=now(),
+            )
+            store = Store.open(root / "control", create=True)
+            try:
+                store.create_run(run, f"start:{run_id}")
+                worker_id = f"codex_sdk:{run_id}:codex_grill"
+                operation_id = f"grill:{run_id}"
+                store.begin_stage(
+                    run_id,
+                    step_name="codex_grill",
+                    operation_id=operation_id,
+                    backend_kind="codex_sdk",
+                    worker_id=worker_id,
+                )
+                store.record_codex_turn_started(
+                    run_id,
+                    operation_id,
+                    thread_id="grill-thread",
+                    turn_id="grill-turn",
+                    step_name="codex_grill",
+                    worker_id=worker_id,
+                )
+                store.set_run_state(run_id, "blocked")
+                blocked = store.find_by_run_id(run_id)
+                assert blocked is not None
+
+                class ReadOnlyAdapter:
+                    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                        assert thread_id == "grill-thread"
+                        assert repository_path == repository
+                        return {
+                            "schema_version": "spec-runner-sdk-thread-inspection/v1",
+                            "thread_id": thread_id,
+                            "thread_status": "idle",
+                            "active_flags": [],
+                            "started_turn": False,
+                            "turn_count": 1,
+                            "turns": [{"turn_id": "grill-turn", "status": "failed"}],
+                        }
+
+                with (
+                    patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                    patch.object(workflow, "_resume_codex_stage", return_value={"state": "running"}) as resume,
+                ):
+                    recovered = workflow._recover_after_process_exit(
+                        control_root=root / "control",
+                        config=config,
+                        run=blocked,
+                        brief="brief",
+                        brief_digest="brief",
+                        store=store,
+                    )
+
+                self.assertEqual(recovered, {"created": False, "state": "running"})
+                resume.assert_called_once()
+                self.assertEqual(resume.call_args.kwargs["thread_id"], "grill-thread")
+            finally:
+                store.close()
+
     def test_process_exit_reconciles_completed_running_implementation_turn(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-running-implementation-recovery-") as temp:
             root = Path(temp)
