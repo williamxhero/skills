@@ -22,6 +22,7 @@ JsonLoader = Callable[[Path], dict[str, object]]
 JsonWriter = Callable[[Path, dict[str, object]], None]
 ArtifactDirectory = Callable[[Path, RunnerConfig, str], Path]
 TicketRunner = Callable[..., RunRecord]
+PlanningRunner = Callable[..., RunRecord]
 ImplementationRunner = Callable[..., dict[str, object]]
 CleanupRunner = Callable[..., dict[str, object]]
 TicketCloser = Callable[..., dict[str, object]]
@@ -36,6 +37,7 @@ class ProductionPorts:
 
     artifact_directory: ArtifactDirectory
     load_json: JsonLoader
+    execute_planning: PlanningRunner
     write_json_atomic: JsonWriter
     execute_tickets: TicketRunner
     execute_implementation: ImplementationRunner
@@ -67,6 +69,25 @@ class ProductionWorkflow:
         if self.run is None or self.store is None:
             raise RunnerError("run_missing", "production workflow requires its durable run and Store")
         return self.run, self.store
+
+    def plan(self, *, brief: str, thread_id: str | None = None) -> RunRecord:
+        """Run the production planning stage through the production seam.
+
+        The compatibility workflow supplies the SDK adapter as a port.  This
+        keeps the lifecycle entry focused on leases and recovery while this
+        module owns the transition from a production brief to a persisted
+        SpecPlan.
+        """
+        run, store = self._durable()
+        return self.ports.execute_planning(
+            control_root=self.control_root,
+            config=self.config,
+            brief=brief,
+            brief_digest=self.brief_digest,
+            run=run,
+            store=store,
+            thread_id=thread_id,
+        )
 
     def completed_specs(self, run_id: str | None = None) -> set[str]:
         """Read Store completion receipts; validate the JSON projection only."""

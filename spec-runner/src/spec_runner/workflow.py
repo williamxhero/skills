@@ -4423,6 +4423,7 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
         ports=ProductionPorts(
             artifact_directory=_safe_artifact_directory,
             load_json=load_json,
+            execute_planning=_execute_codex_planning,
             write_json_atomic=_write_json_atomic,
             execute_tickets=_execute_codex_tickets,
             execute_implementation=_execute_codex_implementation,
@@ -4987,10 +4988,13 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store
                 )
             elif config.workflow_mode == "production":
-                finished = _execute_codex_planning(
-                    control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store,
-                    thread_id=successor_thread_id,
-                )
+                finished = _production_runtime(
+                    control_root=control_root,
+                    config=config,
+                    brief_digest=brief_digest,
+                    run=record,
+                    store=store,
+                ).plan(brief=brief, thread_id=successor_thread_id)
             else:
                 finished = _execute_codex_example(
                     control_root=control_root, config=config, brief=brief, brief_digest=brief_digest, run=record, store=store,

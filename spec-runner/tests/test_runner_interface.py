@@ -29,6 +29,45 @@ def test_stage_result_preserves_legacy_status_projection() -> None:
     assert result.public() == payload
 
 
+def test_production_workflow_owns_initial_planning_transition() -> None:
+    observed: dict[str, object] = {}
+
+    class Store:
+        def find_by_run_id(self, run_id):
+            return None
+
+    run = SimpleNamespace(run_id="run-1")
+
+    def execute_planning(**kwargs):
+        observed.update(kwargs)
+        return run
+
+    ports = ProductionPorts(
+        artifact_directory=lambda *_args: Path("artifacts"),
+        load_json=lambda _path: {},
+        execute_planning=execute_planning,
+        write_json_atomic=lambda *_args: None,
+        execute_tickets=lambda **_kwargs: run,
+        execute_implementation=lambda **_kwargs: {},
+        cleanup_workspace=lambda **_kwargs: {},
+        close_ticket_plan=lambda **_kwargs: {},
+    )
+    workflow = ProductionWorkflow(
+        control_root=Path(".control"),
+        config=SimpleNamespace(),
+        brief_digest="brief-digest",
+        run=run,
+        store=Store(),
+        ports=ports,
+    )
+
+    assert workflow.plan(brief="Requirement", thread_id="successor-thread") is run
+    assert observed["brief"] == "Requirement"
+    assert observed["brief_digest"] == "brief-digest"
+    assert observed["thread_id"] == "successor-thread"
+    assert observed["run"] is run
+
+
 def test_runner_start_is_a_typed_compatibility_seam(monkeypatch) -> None:
     observed: dict[str, object] = {}
 
@@ -286,6 +325,7 @@ def test_production_workflow_continues_from_durable_spec_completion(tmp_path: Pa
     ports = ProductionPorts(
         artifact_directory=lambda root, config, run_id: tmp_path,
         load_json=lambda path: json.loads(path.read_text(encoding="utf-8")),
+        execute_planning=lambda **kwargs: current,
         write_json_atomic=lambda path, document: None,
         execute_tickets=lambda **kwargs: current,
         execute_implementation=lambda **kwargs: {"state": "spec_completed"},
