@@ -3,14 +3,11 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-import secrets
 import subprocess
-import sys
 import tempfile
 import threading
 import time
 import uuid
-from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -31,13 +28,10 @@ from .store import _process_alive
 from .continuation import ContinuationBundle, read_bundle, write_bundle_atomic
 from .recovery_runtime import RecoveryRuntime
 from .recovery_evidence import latest_worker, read_turn_evidence
+from .production_runtime import ProductionWorkflow
 from .recovery import (
-    FaultFamily,
     RecoveryAction,
     RecoveryDecision,
-    RecoverySnapshot,
-    decide_recovery,
-    observation_from_error,
 )
 
 
@@ -85,9 +79,9 @@ def _run_worker(*, adapter: CodexAdapter, phase: str, config: RunnerConfig, prom
 
 
 def _validate_launch_key(value: str) -> str:
-    if not value or len(value) > 200 or any(character.isspace() for character in value):
-        raise RunnerError("invalid_launch_key", "launch_key must be non-empty, at most 200 characters, and contain no whitespace")
-    return value
+    from .launcher import validate_launch_key
+
+    return validate_launch_key(value)
 
 
 def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str, global_path: ScopeLock | None = None) -> tuple[threading.Event, threading.Thread]:
@@ -315,253 +309,6 @@ def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stag
         "questions": questions,
         **result.public(),
     }
-
-
-def _legacy_recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
-    identity = f"{run_id}:{operation_kind}:{stage}:{generation}"
-    return "episode-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-
-
-def _legacy_record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
-                                    error: RunnerError) -> RecoveryDecision:
-    """Persist the observed fault and execute its deterministic state transition."""
-    operation_kind = "codex_turn" if run.backend_kind == "codex_sdk" else run.backend_kind
-    episode_id = _legacy_recovery_episode_identity(
-        run_id=run.run_id, operation_kind=operation_kind, stage=run.current_step,
-    )
-    existing = store.recovery_episode(episode_id) or {}
-    if not existing:
-        existing = store.upsert_recovery_episode(
-            episode_id=episode_id, run_id=run.run_id, operation_kind=operation_kind,
-            stage=run.current_step, generation=0,
-        )
-    workers = store.workers_for_run(run.run_id)
-    worker = workers[-1] if workers else {}
-    fault = error.details.get("fault_observation") if isinstance(error.details, dict) else None
-    observation = observation_from_error(
-        operation_kind=operation_kind,
-        error=fault if isinstance(fault, dict) else error,
-        run_id=run.run_id,
-        stage=run.current_step,
-        attempt=int(existing.get("same_thread_attempts") or 0) + int(existing.get("capacity_attempts") or 0) + 1,
-        worker_id=(str(fault.get("worker_id")) if isinstance(fault, dict) and fault.get("worker_id") else (str(worker.get("worker_id")) if worker.get("worker_id") else None)),
-        thread_id=(str(fault.get("thread_id")) if isinstance(fault, dict) and fault.get("thread_id") else (str(error.details.get("thread_id")) if error.details.get("thread_id") else None)),
-        turn_id=(str(fault.get("turn_id")) if isinstance(fault, dict) and fault.get("turn_id") else (str(error.details.get("turn_id")) if error.details.get("turn_id") else None)),
-        last_verified_progress=None,
-    )
-    route_circuit: dict[str, object] | None = None
-    if observation.family == FaultFamily.ROUTE_NOT_FOUND.value and observation.route_scope != "unknown":
-        cooldown = observation.retry_after_seconds
-        try:
-            cooldown_seconds = max(30.0, float(cooldown)) if cooldown is not None else 30.0
-        except (TypeError, ValueError):
-            cooldown_seconds = 30.0
-        route_circuit = store.record_route_failure(
-            route_scope=observation.route_scope,
-            failure_fingerprint=observation.fingerprint,
-            cooldown_seconds=cooldown_seconds,
-            owner_token=f"recovery:{run.run_id}",
-        )
-    counters = {
-        key: int(existing.get(key) or 0)
-        for key in (
-            "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
-            "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
-        )
-    }
-    prior_episodes = store.recovery_for_run(run.run_id).get("episodes", [])
-    prior = next((item for item in prior_episodes if item.get("episode_id") == episode_id), {})
-    decisions = prior.get("decisions", []) if isinstance(prior, dict) else []
-    prior_action = decisions[-1].get("decision", {}).get("action") if decisions else None
-    counter_name: str | None = None
-    if observation.family == FaultFamily.CAPACITY.value:
-        counter_name = "capacity_attempts"
-    elif observation.family in {
-        FaultFamily.FAST_NOT_CONFIGURED.value,
-        FaultFamily.STREAM_DISCONNECTED.value,
-        FaultFamily.UNKNOWN.value,
-    }:
-        counter_name = "same_thread_attempts"
-    elif observation.family == FaultFamily.ROUTE_NOT_FOUND.value and prior_action == RecoveryAction.USE_APPROVED_ROUTE.value:
-        counter_name = "route_probe_attempts"
-    elif observation.family == FaultFamily.ENCRYPTED_ITEM_MISMATCH.value:
-        if prior_action == RecoveryAction.PROBE_CLEAN_CONTEXT.value:
-            counter_name = "clean_probe_attempts"
-        elif prior_action == RecoveryAction.REQUEST_CLEAN_MIGRATION.value:
-            counter_name = "migration_attempts"
-    attempt_identity = observation.request_id or observation.turn_id
-    if counter_name and attempt_identity:
-        reserved = store.reserve_recovery_budget(
-            reservation_id=f"{episode_id}:attempt:{attempt_identity}",
-            episode_id=episode_id, counter_name=counter_name,
-        )
-        counters = {
-            key: int(reserved.get(key) or 0)
-            for key in counters
-        }
-    snapshot = RecoverySnapshot(
-        run_id=run.run_id,
-        operation_kind=operation_kind,
-        stage=run.current_step,
-        active_execution=worker.get("state") == "running" and observation.execution_outcome == "unknown",
-        request_admission=observation.request_admission,
-        execution_outcome=observation.execution_outcome,
-        same_thread_attempts=counters["same_thread_attempts"],
-        capacity_attempts=counters["capacity_attempts"],
-        route_probe_attempts=counters["route_probe_attempts"],
-        clean_probe_attempts=counters["clean_probe_attempts"],
-        migration_attempts=counters["migration_attempts"],
-        no_progress_attempts=counters["no_progress_attempts"],
-        thread_id=observation.thread_id or (str(worker.get("external_thread_id")) if worker.get("external_thread_id") else None),
-        turn_id=observation.turn_id or (str(worker.get("external_turn_id")) if worker.get("external_turn_id") else None),
-    )
-    decision = decide_recovery(snapshot, [observation], now=datetime.now(timezone.utc))
-    if route_circuit is not None:
-        decision = replace(
-            decision,
-            evidence=decision.evidence + (f"route_circuit:{route_circuit['state']}",),
-            preconditions=decision.preconditions + ("route_probe_requires_atomic_half_open_lease",),
-        )
-    state = decision.action.value
-    store.upsert_recovery_episode(
-        episode_id=episode_id, run_id=run.run_id, operation_kind=operation_kind,
-        stage=run.current_step, generation=0, state=state, counters=counters,
-        retry_deadline=decision.next_check_at if decision.action == RecoveryAction.WAIT_RETRY else None,
-        wait_deadline=decision.next_check_at if decision.action == RecoveryAction.SERVICE_WAIT else None,
-        last_verified_progress=observation.last_verified_progress,
-    )
-    observation_id = f"{episode_id}:observation:{observation.fingerprint}:{observation.turn_id or 'no-turn'}"
-    store.record_recovery_observation(
-        observation_id=observation_id, episode_id=episode_id,
-        observation=observation.public(),
-    )
-    store.append_event(
-        run_id=run.run_id,
-        event_key=f"recovery:{operation_id}:observation:{observation_id}",
-        event_type="fault_observed",
-        payload={"operation_id": operation_id, "episode_id": episode_id,
-                 "observation": observation.public()},
-    )
-    decision_id = f"{episode_id}:decision:{decision.action.value}:{observation.fingerprint}:{counters['same_thread_attempts']}:{counters['capacity_attempts']}"
-    store.record_recovery_decision(
-        decision_id=decision_id, episode_id=episode_id, decision=decision.public(),
-    )
-    store.append_event(
-        run_id=run.run_id,
-        event_key=f"recovery:{operation_id}:{decision_id}",
-        event_type="recovery_decision_recorded",
-        payload={"operation_id": operation_id, "episode_id": episode_id, "decision": decision.public()},
-    )
-    if route_circuit is not None:
-        store.append_event(
-            run_id=run.run_id,
-            event_key=f"recovery:{operation_id}:route-circuit:{observation.fingerprint}",
-            event_type="route_circuit_updated",
-            payload={
-                "operation_id": operation_id,
-                "route_scope": observation.route_scope,
-                "state": route_circuit.get("state"),
-                "reason": route_circuit.get("reason"),
-                "failure_fingerprint": observation.fingerprint,
-            },
-        )
-    action_events = {
-        RecoveryAction.OBSERVE: "reconcile_started",
-        RecoveryAction.WAIT_RETRY: "retry_scheduled",
-        RecoveryAction.SERVICE_WAIT: "service_wait",
-        RecoveryAction.RESUME_SAME_THREAD: "retry_started",
-        RecoveryAction.USE_APPROVED_ROUTE: "route_changed",
-        RecoveryAction.PROBE_CLEAN_CONTEXT: "probe_result",
-        RecoveryAction.REQUEST_CLEAN_MIGRATION: "migration_requested",
-        RecoveryAction.ADOPT_RESULT: "progress_verified",
-        RecoveryAction.BLOCKED: "recovery_blocked",
-    }
-    event_type = action_events.get(decision.action)
-    if event_type:
-        store.append_event(
-            run_id=run.run_id,
-            event_key=f"recovery:{operation_id}:{decision_id}:{event_type}",
-            event_type=event_type,
-            payload={"operation_id": operation_id, "episode_id": episode_id,
-                     "action": decision.action.value, "next_check_at": decision.next_check_at,
-                     "reason": decision.reason},
-        )
-    return decision
-
-def _legacy_recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
-    """Prevent a relaunch from bypassing a persisted recovery wait or block."""
-    recovery = store.recovery_for_run(run.run_id).get("episodes", [])
-    if not recovery:
-        return False
-    episode = recovery[-1]
-    decisions = episode.get("decisions") if isinstance(episode, dict) else None
-    decision = decisions[-1].get("decision") if isinstance(decisions, list) and decisions else None
-    if not isinstance(decision, dict):
-        return False
-    action = str(decision.get("action") or "")
-    if run.state not in {action, "paused"} or action == RecoveryAction.OBSERVE.value:
-        return False
-    if action in {
-        RecoveryAction.WAIT_RETRY.value,
-        RecoveryAction.SERVICE_WAIT.value,
-        RecoveryAction.WAIT_FOR_CONFIG.value,
-        RecoveryAction.BLOCKED.value,
-        RecoveryAction.NEEDS_INPUT.value,
-        RecoveryAction.PROBE_CLEAN_CONTEXT.value,
-        RecoveryAction.REQUEST_CLEAN_MIGRATION.value,
-        RecoveryAction.USE_APPROVED_ROUTE.value,
-        RecoveryAction.RECONNECT_RUNTIME.value,
-    }:
-        if run.state == "paused":
-            control = store.control_for_run(run.run_id)
-            if control and control.get("requested_state") in {"pause_requested", "cancel_requested"}:
-                return True
-            store.set_run_state(run.run_id, action)
-        deadline = episode.get("wait_deadline") if action == RecoveryAction.SERVICE_WAIT.value else episode.get("retry_deadline")
-        if deadline:
-            try:
-                parsed_deadline = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
-                if parsed_deadline.tzinfo is None:
-                    parsed_deadline = parsed_deadline.replace(tzinfo=timezone.utc)
-                if parsed_deadline > datetime.now(timezone.utc):
-                    return True
-            except (TypeError, ValueError):
-                return True
-            store.fail_run(run.run_id, f"start:{run.run_id}", state="failed")
-            store.append_event(
-                run_id=run.run_id,
-                event_key=f"recovery:{run.run_id}:wait-expired:{action}",
-                event_type="recovery_wait_expired",
-                payload={"action": action, "deadline": deadline},
-            )
-            return False
-        return True
-    return False
-
-
-def _legacy_recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
-    recovery = store.recovery_for_run(run_id).get("episodes", [])
-    if not isinstance(recovery, list) or not recovery:
-        return None
-    episode = recovery[-1]
-    decisions = episode.get("decisions") if isinstance(episode, dict) else None
-    decision = decisions[-1].get("decision") if isinstance(decisions, list) and decisions else None
-    if not isinstance(decision, dict):
-        return None
-    action = str(decision.get("action") or "")
-    if action not in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
-        return None
-    key = "wait_deadline" if action == RecoveryAction.SERVICE_WAIT.value else "retry_deadline"
-    deadline = episode.get(key)
-    if not isinstance(deadline, str) or not deadline:
-        raise RunnerError("recovery_deadline_missing", "persisted recovery wait has no deadline", details={"run_id": run_id, "action": action})
-    try:
-        parsed = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise RunnerError("recovery_deadline_invalid", "persisted recovery wait deadline is invalid", details={"run_id": run_id, "action": action}) from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return action, parsed.astimezone(timezone.utc).isoformat()
 
 
 def _recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
@@ -1818,149 +1565,13 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
 
 def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: RunRecord,
                            store: Store, finalize_run: bool = True) -> dict[str, object]:
-    artifact = _safe_artifact_directory(control_root, config, run.run_id)
-    github_files = sorted(artifact.glob("github-*.json"))
-    manifests = []
-    for path in (control_root / "delivery-workspaces").glob("*.manifest.json"):
-        try:
-            document = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if document.get("run_id") == run.run_id:
-            manifests.append((path, document))
-    waiting = []
-    completed_specs = _production_completed_specs(
-        control_root=control_root, config=config, run_id=run.run_id, store=store,
-    )
-    for path in github_files:
-        document = load_json(path)
-        if (document.get("state") == "waiting_ci"
-                and document.get("spec_key") not in completed_specs):
-            waiting.append(document)
-    if len(waiting) != 1:
-        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run needs one unambiguous SPEC delivery receipt")
-    github = waiting[0]
-    spec_key = github.get("spec_key")
-    if not isinstance(spec_key, str) or not spec_key:
-        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub receipt has no SPEC identity")
-    candidate_path = artifact / f"candidate-{spec_key}.json"
-    if not candidate_path.is_file():
-        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run has no candidate receipt for its SPEC")
-    candidate = load_json(candidate_path)
-    candidate_sha = candidate.get("candidate_sha")
-    github_candidate = github.get("candidate")
-    if (candidate.get("outcome") != "verified" or not isinstance(candidate_sha, str)
-            or len(candidate_sha) != 40 or not isinstance(github_candidate, dict)
-            or github_candidate.get("candidate_sha") != candidate_sha):
-        raise RunnerError("github_waiting_evidence_invalid", "waiting GitHub receipt does not match its verified candidate")
-    review_path = artifact / f"review-{spec_key}-{candidate_sha[:12]}.json"
-    if not review_path.is_file():
-        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run has no validated review for its candidate")
-    review = load_json(review_path)
-    github_review = github.get("review")
-    review_projection = {
-        key: review.get(key)
-        for key in ("approved", "blocking", "candidate_sha", "findings", "review_digest")
-    }
-    legacy_review_receipt = isinstance(github_review, dict) and github_review == review
-    if (review.get("approved") is not True or review.get("candidate_sha") != candidate_sha
-            or not isinstance(review.get("review_digest"), str) or not review["review_digest"].strip()
-            or not isinstance(github_review, dict)
-            or (github_review != review_projection and not legacy_review_receipt)):
-        raise RunnerError("github_waiting_evidence_invalid", "waiting GitHub receipt does not match its validated independent review")
-    github_branch = github.get("branch")
-    matching_manifests = [
-        item for item in manifests
-        if item[1].get("spec_key") == spec_key
-        and (github_branch is None or item[1].get("branch") == github_branch)
-    ]
-    if len(matching_manifests) != 1:
-        raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run needs one workspace manifest for its SPEC")
-    manifest_path, manifest = matching_manifests[0]
-    result = _execute_github_delivery(control_root=control_root, config=config, run=run,
-        spec_key=spec_key, candidate_sha=candidate_sha, branch=str(manifest["branch"]),
-        candidate_receipt=candidate, review=review_projection, push=False)
-    if _definitive_failed_github_checks(checks=result.get("checks"), candidate_sha=candidate_sha):
-        result = _recover_failed_github_candidate(
-            control_root=control_root, config=config, run=run, store=store,
-            spec_key=spec_key, candidate=candidate, review=review_projection,
-            github={**github, **result}, failed_checks=result["checks"],
-            manifest_path=manifest_path, manifest=manifest,
-        )
-        recovery_manifest = result.pop("_workspace_manifest", None)
-        if not isinstance(recovery_manifest, str) or not recovery_manifest:
-            raise RunnerError("github_recovery_evidence_invalid", "recovered delivery has no cleanup manifest")
-        manifest_path = Path(recovery_manifest)
-        manifest = load_json(manifest_path)
-        manifests.append((manifest_path, manifest))
-    if result["state"] != "github_completed":
-        if result.get("state") == "waiting_ci":
-            _write_json_atomic(artifact / f"github-{spec_key}.json", result)
-            store.set_run_state(run.run_id, "waiting_ci")
-        return result
-    merge = result.get("merge")
-    if not isinstance(merge, dict) or merge.get("merged") is not True:
-        raise RunnerError("github_merge_unconfirmed", "GitHub delivery cannot complete without a confirmed merge receipt")
-    _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
-                               spec_key=str(result["spec_key"]), delivery=result)
-    spec_manifests = [
-        (path, document) for path, document in manifests
-        if document.get("spec_key") == spec_key
-    ]
-    cleanups = [
-        cleanup_managed_workspace(repository=config.repository_path,
-            workspace_root=control_root / "delivery-workspaces",
-            workspace=Path(str(document["workspace"])), manifest=path, preserve_manifest=True)
-        for path, document in spec_manifests
-    ]
-    cleanup = cleanups[0] if len(cleanups) == 1 else {
-        "outcome": "cleaned" if cleanups and all(item.get("outcome") == "cleaned" for item in cleanups) else "pending",
-        "workspaces": cleanups,
-    }
-    result["cleanup"] = cleanup
-    if cleanup["outcome"] != "cleaned":
-        store.mark_cleanup_pending(run.run_id)
-        result["state"] = "cleanup_pending"
-    else:
-        ticket_path = artifact / f"ticket-plan-{spec_key}.json"
-        if not ticket_path.is_file():
-            raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
-        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
-                                   spec_key=spec_key, delivery=result)
-        try:
-            result["issue_closure"] = _close_published_ticket_plan(
-                config=config, plan=load_json(ticket_path), run_id=run.run_id, store=store,
-            )
-        except RunnerError as exc:
-            result["issue_closure"] = {"state": "pending", "error_code": exc.code}
-            _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
-                                       spec_key=spec_key, delivery=result)
-            store.mark_cleanup_pending(run.run_id)
-            result["state"] = "cleanup_pending"
-            return result
-        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
-                                   spec_key=spec_key, delivery=result)
-        finalized_cleanups = [
-            cleanup_managed_workspace(repository=config.repository_path,
-                workspace_root=control_root / "delivery-workspaces",
-                workspace=Path(str(document["workspace"])), manifest=path)
-            for path, document in spec_manifests
-        ]
-        if any(item.get("outcome") != "cleaned" for item in finalized_cleanups):
-            store.mark_cleanup_pending(run.run_id)
-            result["manifest_cleanup"] = finalized_cleanups
-            result["state"] = "cleanup_pending"
-            return result
-        if finalize_run:
-            store.mark_archived(run.run_id, state="completed")
-        else:
-            plan = load_json(artifact / "spec-plan.json")
-            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
-                spec_key=str(result["spec_key"]), plan_digest=str(plan.get("digest", "")))
-            store.set_run_state(run.run_id, "spec_completed")
-    if not finalize_run and result.get("state") == "github_completed":
-        result["state"] = "spec_completed"
-    return result
+    """Compatibility façade for CI wait and production delivery recovery."""
+    return _production_runtime(
+        control_root=control_root,
+        config=config,
+        run=run,
+        store=store,
+    ).resume_waiting_github(finalize_run=finalize_run)
 
 
 def _finish_codex_implementation(
@@ -4575,50 +4186,48 @@ def _blocked_implementation_retry_identity(*, control_root: Path, config: Runner
 
 
 def _production_completed_specs(*, control_root: Path, config: RunnerConfig, run_id: str, store: Store) -> set[str]:
-    persisted = store.production_completed_specs(run_id)
-    path = _safe_artifact_directory(control_root, config, run_id) / "completed-specs.json"
-    if not path.exists():
-        return persisted
-    document = load_json(path)
-    values = document.get("specs", [])
-    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-        raise RunnerError("completed_specs_corrupt", "completed SPEC record is invalid")
-    # The file is only a human-readable projection; only transactional Store
-    # receipts may advance the production queue.
-    return persisted
+    return _production_runtime(
+        control_root=control_root, config=config, run_id=run_id, store=store,
+    ).completed_specs(run_id)
 
 
 def _record_production_spec(*, control_root: Path, config: RunnerConfig, run_id: str, spec_key: str,
                             plan_digest: str, store: Store) -> None:
-    directory = _safe_artifact_directory(control_root, config, run_id)
-    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run_id, store=store)
-    completed.add(spec_key)
-    receipt = load_json(directory / f"delivery-{spec_key}.json")
-    delivery_digest = hashlib.sha256(json.dumps(receipt, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-    store.complete_production_spec(run_id=run_id, spec_key=spec_key, plan_digest=plan_digest,
-                                   delivery_digest=delivery_digest)
-    path = directory / "completed-specs.json"
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"schema_version": "spec-runner-completed-specs/v1",
-        "plan_digest": plan_digest, "specs": sorted(completed)}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8", newline="\n")
-    temporary.replace(path)
+    _production_runtime(
+        control_root=control_root, config=config, run_id=run_id, store=store,
+    ).record_spec(spec_key=spec_key, plan_digest=plan_digest, run_id=run_id)
 
 
 def _persist_delivery_evidence(*, control_root: Path, config: RunnerConfig, run_id: str,
                                spec_key: str, delivery: dict[str, object]) -> None:
     """Durably bind successful delivery to its exact plan before cleanup."""
-    artifact = _safe_artifact_directory(control_root, config, run_id)
-    plan = load_json(artifact / "spec-plan.json")
-    ticket = load_json(artifact / f"ticket-plan-{spec_key}.json")
-    record = {"schema_version": "spec-runner-production-delivery/v1", "run_id": run_id,
-              "spec_key": spec_key, "plan_digest": plan.get("digest"),
-              "ticket_plan_digest": ticket.get("digest"), **delivery}
-    path = artifact / f"delivery-{spec_key}.json"
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(record, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
-                         encoding="utf-8", newline="\n")
-    temporary.replace(path)
+    _production_runtime(
+        control_root=control_root, config=config, run_id=run_id,
+    ).persist_delivery_evidence(spec_key=spec_key, delivery=delivery, run_id=run_id)
+
+
+def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str | None = None,
+                        store: Store | None = None, run: RunRecord | None = None,
+                        brief_digest: str = "") -> ProductionWorkflow:
+    if run is None:
+        run = store.find_by_run_id(run_id) if store is not None else None
+    return ProductionWorkflow(
+        control_root=control_root,
+        config=config,
+        brief_digest=brief_digest,
+        run=run,
+        store=store,
+        artifact_directory=_safe_artifact_directory,
+        load_json=load_json,
+        write_json_atomic=_write_json_atomic,
+        execute_tickets=_execute_codex_tickets,
+        execute_implementation=_execute_codex_implementation,
+        cleanup_workspace=cleanup_managed_workspace,
+        close_ticket_plan=_close_published_ticket_plan,
+        execute_github_delivery=_execute_github_delivery,
+        recover_github_candidate=_recover_failed_github_candidate,
+        definitive_failed_checks=_definitive_failed_github_checks,
+    )
 
 
 def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_digest: str,
@@ -4651,158 +4260,21 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
 
 def _run_production_queue_impl(*, control_root: Path, config: RunnerConfig, brief_digest: str,
                                run: RunRecord, store: Store, spec_plan: dict[str, object]) -> dict[str, object]:
-    """Drive every ready SPEC in one program-owned production run.
-
-    The model plans the queue once. The Runner alone selects the next ready
-    SPEC, persists completion, and continues from the latest plan; no parent
-    conversation owns a cross-SPEC dispatch loop.
-    """
-    specs = spec_plan.get("specs")
-    if not isinstance(specs, list) or any(not isinstance(item, dict) for item in specs):
-        raise RunnerError("invalid_spec_plan", "production queue requires keyed SPEC objects")
-    completed = _production_completed_specs(control_root=control_root, config=config, run_id=run.run_id, store=store)
-    while len(completed) < len(specs):
-        ready = [item for item in specs if str(item.get("key")) not in completed and
-                 set(item.get("blocked_by", [])) <= completed]
-        if not ready:
-            raise RunnerError("production_queue_blocked", "no dependency-ready SPEC remains")
-        spec = ready[0]
-        spec_key = str(spec["key"])
-        ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob(f"ticket-plan-{spec_key}.json"))
-        if ticket_files and run.state == "tickets_ready":
-            ticketed = run
-        else:
-            ticketed = _execute_codex_tickets(
-                control_root=control_root, config=config, brief_digest=brief_digest, run=run,
-                store=store, spec_plan={**spec_plan, "specs": [spec]})
-        if ticketed.state != "tickets_ready":
-            current = store.find_by_run_id(run.run_id) or run
-            return {"state": current.state, **store.public_status(run.run_id)}
-        ticket_files = sorted(_safe_artifact_directory(control_root, config, run.run_id).glob(f"ticket-plan-{spec_key}.json"))
-        if not ticket_files:
-            raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
-        delivered = _execute_codex_implementation(
-            control_root=control_root, config=config, brief_digest=brief_digest, run=ticketed,
-            store=store, ticket_plan=load_json(ticket_files[-1]), finalize_run=False)
-        if delivered.get("state") in {"waiting_ci", "cleanup_pending"}:
-            return delivered
-        # A completed SPEC may have been recovered from a completed CI wait.
-        # Persist that fact before selecting another queue item.
-        if delivered.get("state") == "spec_completed" and str(delivered.get("spec_key")) == spec_key:
-            _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
-                spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
-            completed.add(spec_key)
-            current = store.find_by_run_id(run.run_id)
-            if current is None:
-                raise RunnerError("run_missing", "production queue run disappeared during continuation")
-            run = current
-            continue
-        if delivered.get("state") != "spec_completed":
-            return delivered
-        _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
-            spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
-        completed.add(spec_key)
-        current = store.find_by_run_id(run.run_id)
-        if current is None:
-            raise RunnerError("run_missing", "production queue run disappeared during continuation")
-        run = current
-    store.mark_archived(run.run_id, state="completed")
-    return {"state": "completed", **store.public_status(run.run_id)}
+    return _production_runtime(
+        control_root=control_root,
+        config=config,
+        brief_digest=brief_digest,
+        run=run,
+        store=store,
+    ).run_queue(spec_plan)
 
 
 def _retry_production_cleanup(*, control_root: Path, config: RunnerConfig, run: RunRecord,
                               store: Store) -> dict[str, object]:
     """Retry only Runner-owned cleanup after a production process exit."""
-    root = control_root / "delivery-workspaces"
-    manifests: list[Path] = []
-    for manifest in root.glob("*.manifest.json"):
-        try:
-            document = load_json(manifest)
-        except RunnerError:
-            continue
-        if document.get("run_id") == run.run_id:
-            manifests.append(manifest)
-    artifact = _safe_artifact_directory(control_root, config, run.run_id)
-    plan_path = artifact / "spec-plan.json"
-    if not plan_path.is_file():
-        raise RunnerError("production_cleanup_evidence_missing", "cleanup retry requires persisted delivery, plan and ticket evidence")
-    plan = load_json(plan_path)
-    manifest_documents = [(manifest, load_json(manifest)) for manifest in manifests]
-    manifest_spec_keys = [document.get("spec_key") for _, document in manifest_documents]
-    if any(not isinstance(spec_key, str) or not spec_key for spec_key in manifest_spec_keys):
-        raise RunnerError("production_cleanup_evidence_missing", "workspace manifest has no SPEC identity")
-    spec_keys = set(manifest_spec_keys)
-    for receipt_path in artifact.glob("delivery-*.json"):
-        receipt = load_json(receipt_path)
-        if receipt.get("run_id") == run.run_id and isinstance(receipt.get("spec_key"), str):
-            spec_keys.add(str(receipt["spec_key"]))
-    if not spec_keys:
-        raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no delivery or workspace evidence")
-    if not manifests and config.github_repository is None:
-        raise RunnerError("production_cleanup_evidence_missing", "cleanup_pending run has no owned workspace manifest")
-    for spec_key in spec_keys:
-        receipt_path = artifact / f"delivery-{spec_key}.json"
-        ticket_path = artifact / f"ticket-plan-{spec_key}.json"
-        if not receipt_path.is_file() or not ticket_path.is_file():
-            raise RunnerError("production_cleanup_evidence_missing", "cleanup retry requires persisted delivery, plan and ticket evidence")
-        receipt, ticket = load_json(receipt_path), load_json(ticket_path)
-        if (receipt.get("spec_key") != spec_key or receipt.get("run_id") != run.run_id
-                or receipt.get("plan_digest") != plan.get("digest")
-                or receipt.get("ticket_plan_digest") != ticket.get("digest")
-                or not isinstance(receipt.get("candidate"), dict)
-                or not isinstance(receipt.get("review"), dict)
-                or receipt.get("review", {}).get("approved") is not True
-                or not isinstance(receipt.get("merge"), dict)
-                or receipt.get("merge", {}).get("merged") is not True):
-            raise RunnerError("production_cleanup_evidence_invalid", "persisted delivery evidence does not prove this SPEC was reviewed and merged")
-        if spec_key not in set(manifest_spec_keys) and config.github_repository is not None:
-            if (not isinstance(receipt.get("cleanup"), dict)
-                    or receipt["cleanup"].get("outcome") != "cleaned"
-                    or not isinstance(receipt.get("issue_closure"), dict)
-                    or receipt["issue_closure"].get("complete") is not True):
-                raise RunnerError("production_cleanup_evidence_invalid", "manifest-free SPEC lacks durable cleanup and issue closure readbacks")
-    results = [cleanup_managed_workspace(
-        repository=config.repository_path, workspace_root=root,
-        workspace=Path(str(document["workspace"])), manifest=manifest, preserve_manifest=True)
-        for manifest, document in manifest_documents]
-    if any(item.get("outcome") != "cleaned" for item in results):
-        return {"state": "cleanup_pending", "cleanup": results}
-    closures = []
-    closures_by_spec: dict[str, dict[str, object] | None] = {}
-    for spec_key in sorted(spec_keys):
-        ticket_plan = load_json(artifact / f"ticket-plan-{spec_key}.json")
-        try:
-            closure = _close_published_ticket_plan(
-                config=config, plan=ticket_plan, run_id=run.run_id, store=store,
-            )
-            closures.append(closure)
-            closures_by_spec[spec_key] = closure
-        except RunnerError as exc:
-            return {"state": "cleanup_pending", "cleanup": results,
-                    "issue_closure": {"spec_key": spec_key, "error_code": exc.code}}
-    finalized = [cleanup_managed_workspace(
-        repository=config.repository_path, workspace_root=root,
-        workspace=Path(str(document["workspace"])), manifest=manifest)
-        for manifest, document in manifest_documents]
-    if any(item.get("outcome") != "cleaned" for item in finalized):
-        return {"state": "cleanup_pending", "cleanup": results, "manifest_cleanup": finalized}
-    for spec_key, closure in closures_by_spec.items():
-        delivery_path = artifact / f"delivery-{spec_key}.json"
-        delivery = load_json(delivery_path)
-        delivery["issue_closure"] = closure
-        if spec_key in set(manifest_spec_keys):
-            delivery["cleanup"] = {"outcome": "cleaned", "recovered": True}
-        _write_json_atomic(delivery_path, delivery)
-    for spec_key in sorted(spec_keys):
-        _record_production_spec(control_root=control_root, config=config, run_id=run.run_id, store=store,
-            spec_key=str(spec_key), plan_digest=str(plan["digest"]))
-    store.set_run_state(run.run_id, "spec_completed")
-    completed = {"state": "spec_completed", "cleanup": results, "issue_closures": closures}
-    if len(spec_keys) == 1:
-        completed["spec_key"] = next(iter(spec_keys))
-    else:
-        completed["spec_keys"] = sorted(spec_keys)
-    return completed
+    return _production_runtime(
+        control_root=control_root, config=config, run=run, store=store,
+    ).retry_cleanup()
 
 
 def _prepare_clean_migration(*, store: Store, config: RunnerConfig, run: RunRecord,
@@ -5468,140 +4940,36 @@ def _resume_legacy(*, brief_file: Path, config_file: Path, control_root: Path, l
 
 def _launch_claim(*, control_root: Path, run_id: str, child_pid: int, launch_token: str | None = None,
                   launch_key: str | None = None) -> dict[str, object] | None:
-    """Read a detached launch claim without creating control state."""
-    try:
-        store = Store.open(control_root, create=False)
-    except RunnerError:
-        return None
-    try:
-        record = store.find_by_run_id(run_id)
-        if record is None and launch_key:
-            record = store.find_by_launch_key(launch_key)
-        runtime = store.runtime_for_run(run_id) if record else None
-        if record is not None:
-            runtime = store.runtime_for_run(record.run_id)
-        token_claim = (
-            isinstance(launch_token, str)
-            and bool(launch_token)
-            and isinstance(runtime, dict)
-            and record is not None
-            and str(runtime.get("owner_token", "")).startswith(f"{record.run_id}:launch:{launch_token}:")
-        )
-        # On Windows a detached interpreter can be started through a launcher
-        # process whose PID is returned by Popen while the interpreter that
-        # owns the Runner lease receives a different PID. The launch token is
-        # passed only to this child and persisted in its runtime owner record,
-        # providing an exact durable identity for that case. A matching PID
-        # remains sufficient for older direct-start behavior.
-        if record and runtime and (int(runtime["pid"]) == child_pid or token_claim):
-            return {
-                "started": True,
-                "pid": child_pid,
-                "run_id": record.run_id,
-                "run": store.public_status(record.run_id),
-            }
-        return None
-    finally:
-        store.close()
+    """Compatibility façade for detached launch identity readback."""
+    from .launcher import launch_claim
+
+    return launch_claim(
+        control_root=control_root,
+        run_id=run_id,
+        child_pid=child_pid,
+        launch_token=launch_token,
+        launch_key=launch_key,
+    )
 
 
 def _terminate_unclaimed_child(child: subprocess.Popen[bytes], *, timeout_seconds: float = 2.0) -> bool:
-    """Stop only a child that never claimed a durable Runner identity."""
-    if child.poll() is not None:
-        return True
-    try:
-        child.terminate()
-        child.wait(timeout=timeout_seconds)
-        return True
-    except subprocess.TimeoutExpired:
-        try:
-            child.kill()
-            child.wait(timeout=timeout_seconds)
-            return True
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-    except OSError:
-        return False
+    """Compatibility façade for safe unclaimed-child cleanup."""
+    from .launcher import terminate_unclaimed_child
+
+    return terminate_unclaimed_child(child, timeout_seconds=timeout_seconds)
 
 
 def _launch_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
                    handshake_timeout_seconds: float = 10.0) -> dict[str, object]:
-    """Start a detached Runner and return only after its durable handshake."""
-    launch_key = _validate_launch_key(launch_key)
-    if handshake_timeout_seconds <= 0:
-        raise RunnerError("launch_timeout_invalid", "detached launch handshake timeout must be positive")
-    # The child runs from control_root, so resolve inputs before spawning it.
-    brief_file = brief_file.expanduser().resolve()
-    config_file = config_file.expanduser().resolve()
-    control_root = control_root.expanduser().resolve()
-    # Validate all user inputs before creating the child or control files.
-    read_brief(brief_file)
-    RunnerConfig.from_file(config_file, control_root)
-    run_id = str(uuid.uuid4())
-    launch_token = secrets.token_hex(32)
-    log_root = control_root / "launcher-logs"
-    log_root.mkdir(parents=True, exist_ok=True)
-    stdout_path = log_root / f"{run_id}.stdout.log"
-    stderr_path = log_root / f"{run_id}.stderr.log"
-    command = [
-        sys.executable,
-        "-m",
-        "spec_runner.cli",
-        "drive",
-        "--brief",
-        os.fspath(brief_file),
-        "--config",
-        os.fspath(config_file),
-        "--control-root",
-        os.fspath(control_root),
-        "--launch-key",
-        launch_key,
-        "--run-id",
-        run_id,
-        "--launch-token",
-        launch_token,
-    ]
-    creation_flags = 0
-    if os.name == "nt":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
-        child = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=stdout,
-            stderr=stderr,
-            close_fds=True,
-            creationflags=creation_flags,
-            cwd=os.fspath(control_root),
-        )
-    deadline = time.monotonic() + handshake_timeout_seconds
-    while time.monotonic() < deadline:
-        claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid,
-                                launch_token=launch_token, launch_key=launch_key)
-        if claimed is not None:
-            return {"log_path": os.fspath(stdout_path), **claimed}
-        if child.poll() is not None:
-            raise RunnerError(
-                "launch_handshake_failed",
-                "detached Runner exited before claiming the run",
-                details={"exit_code": child.returncode, "stderr_log": os.fspath(stderr_path)},
-            )
-        time.sleep(0.05)
-    claimed = _launch_claim(control_root=control_root, run_id=run_id, child_pid=child.pid,
-                            launch_token=launch_token, launch_key=launch_key)
-    if claimed is not None:
-        return {"log_path": os.fspath(stdout_path), **claimed}
-    terminated = _terminate_unclaimed_child(child)
-    if not terminated:
-        raise RunnerError(
-            "launch_cleanup_failed",
-            "detached Runner missed its handshake and could not be stopped safely",
-            details={"pid": child.pid, "stdout_log": os.fspath(stdout_path), "stderr_log": os.fspath(stderr_path)},
-        )
-    raise RunnerError(
-        "launch_handshake_timeout",
-        "detached Runner did not claim the run before the handshake deadline",
-        details={"pid": child.pid, "stdout_log": os.fspath(stdout_path), "stderr_log": os.fspath(stderr_path), "terminated": True},
+    """Compatibility façade for the detached lifecycle module."""
+    from .launcher import DetachedLauncher
+
+    return DetachedLauncher().launch(
+        brief_file=brief_file,
+        config_file=config_file,
+        control_root=control_root,
+        launch_key=launch_key,
+        handshake_timeout_seconds=handshake_timeout_seconds,
     )
 
 

@@ -15,10 +15,15 @@ from .models import RunnerRequest, StageResult
 class Runner:
     """Coordinate one durable lifecycle while preserving legacy projections."""
 
-    def start(self, request: RunnerRequest) -> dict[str, object]:
+    @staticmethod
+    def _stage_result(result: dict[str, object]) -> StageResult:
+        """Keep legacy dictionaries at the outer edge of the typed seam."""
+        return StageResult.from_public(result)
+
+    def start_stage(self, request: RunnerRequest) -> StageResult:
         from . import workflow
 
-        result = workflow._start_legacy(
+        return self._stage_result(workflow._start_legacy(
             brief_file=request.brief_file,
             config_file=request.config_file,
             control_root=request.control_root,
@@ -27,8 +32,10 @@ class Runner:
             takeover_key=request.takeover_key,
             launch_token=request.launch_token,
             migration=request.migration,
-        )
-        return StageResult.from_public(result).public()
+        ))
+
+    def start(self, request: RunnerRequest) -> dict[str, object]:
+        return self.start_stage(request).public()
 
     def drive(self, request: RunnerRequest) -> dict[str, object]:
         from . import workflow
@@ -83,4 +90,3 @@ class Runner:
         from . import workflow
 
         return workflow._doctor_legacy(config_file=config_file, control_root=control_root)
-
