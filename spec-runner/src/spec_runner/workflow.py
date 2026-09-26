@@ -29,6 +29,8 @@ from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, i
 from .github_delivery import GitHubDelivery
 from .store import _process_alive
 from .continuation import ContinuationBundle, read_bundle, write_bundle_atomic
+from .recovery_runtime import RecoveryRuntime
+from .recovery_evidence import latest_worker, read_turn_evidence
 from .recovery import (
     FaultFamily,
     RecoveryAction,
@@ -315,16 +317,16 @@ def _declared_model_result(result: CodexWorkerResult, *, brief_digest: str, stag
     }
 
 
-def _recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
+def _legacy_recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
     identity = f"{run_id}:{operation_kind}:{stage}:{generation}"
     return "episode-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
-                             error: RunnerError) -> RecoveryDecision:
+def _legacy_record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
+                                    error: RunnerError) -> RecoveryDecision:
     """Persist the observed fault and execute its deterministic state transition."""
     operation_kind = "codex_turn" if run.backend_kind == "codex_sdk" else run.backend_kind
-    episode_id = _recovery_episode_identity(
+    episode_id = _legacy_recovery_episode_identity(
         run_id=run.run_id, operation_kind=operation_kind, stage=run.current_step,
     )
     existing = store.recovery_episode(episode_id) or {}
@@ -486,7 +488,7 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         )
     return decision
 
-def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
+def _legacy_recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
     """Prevent a relaunch from bypassing a persisted recovery wait or block."""
     recovery = store.recovery_for_run(run.run_id).get("episodes", [])
     if not recovery:
@@ -537,7 +539,7 @@ def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bo
     return False
 
 
-def _recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
+def _legacy_recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
     recovery = store.recovery_for_run(run_id).get("episodes", [])
     if not isinstance(recovery, list) or not recovery:
         return None
@@ -560,6 +562,29 @@ def _recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | Non
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return action, parsed.astimezone(timezone.utc).isoformat()
+
+
+def _recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:
+    """Compatibility façade for the durable recovery seam."""
+    return RecoveryRuntime.episode_identity(
+        run_id=run_id, operation_kind=operation_kind, stage=stage, generation=generation,
+    )
+
+
+def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
+                             error: RunnerError) -> RecoveryDecision:
+    """Compatibility façade for durable fault observation and decisions."""
+    return RecoveryRuntime.record_failure(run=run, store=store, operation_id=operation_id, error=error)
+
+
+def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
+    """Compatibility façade for persisted recovery wait admission."""
+    return RecoveryRuntime.waits(run=run, store=store)
+
+
+def _recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
+    """Compatibility façade for the durable recovery timer contract."""
+    return RecoveryRuntime.wait_record(store=store, run_id=run_id)
 
 
 def _drive_legacy(*, brief_file: Path, config_file: Path, control_root: Path, launch_key: str,
@@ -585,7 +610,7 @@ def _drive_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                 current = store.find_by_run_id(active_run_id)
                 if current is None:
                     raise RunnerError("unknown_run", "recovery wait run disappeared from the control database")
-                wait_record = _recovery_wait_record(store=store, run_id=active_run_id)
+                wait_record = RecoveryRuntime.wait_record(store=store, run_id=active_run_id)
                 if wait_record is None:
                     if current.state in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
                         raise RunnerError("recovery_record_missing", "waiting run has no persisted recovery decision")
@@ -3772,45 +3797,22 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
         if run.state in {"running", "cleanup_pending", "failed"} and run.current_step == "codex_planning":
             workers = store.workers_for_run(run.run_id)
             worker_id = f"codex_sdk:{run.run_id}:codex_planning"
-            stage_workers = [
-                worker for worker in workers
-                if worker.get("backend_kind") == "codex_sdk"
-                and worker.get("state") in {"running", "failed", "interrupted", "rejected"}
-                and worker.get("worker_id") == worker_id
-            ]
-            worker = stage_workers[-1] if stage_workers else None
+            worker = latest_worker(
+                workers=workers, backend_kind="codex_sdk",
+                states={"running", "failed", "interrupted", "rejected"},
+                exact_id=worker_id,
+            )
             thread_id = str(worker.get("external_thread_id") or "") if worker else ""
             turn_id = str(worker.get("external_turn_id") or "") if worker else ""
             if worker is None or not thread_id or not turn_id:
                 raise RunnerError("recovery_blocked", "the planning stage has no uniquely identified worker result")
-            try:
-                inspection = CodexAdapter().read_thread(
-                    thread_id=thread_id,
-                    repository_path=config.repository_path,
-                )
-            except RunnerError as exc:
-                raise RunnerError(
-                    "recovery_blocked",
-                    "the persisted planning thread could not be reconciled; inspect it before retry",
-                    details={"inspection_error": exc.code},
-                ) from exc
-            turns = inspection.get("turns") if isinstance(inspection, dict) else None
-            turn_count = inspection.get("turn_count") if isinstance(inspection, dict) else None
-            terminal_completed = (
-                isinstance(inspection, dict)
-                and inspection.get("started_turn") is False
-                and inspection.get("thread_id") == thread_id
-                and inspection.get("thread_status") == "idle"
-                and inspection.get("active_flags") == []
-                and isinstance(turns, list)
-                and isinstance(turn_count, int)
-                and not isinstance(turn_count, bool)
-                and turn_count == len(turns)
-                and bool(turns)
-                and isinstance(turns[-1], dict)
-                and turns[-1].get("turn_id") == turn_id
-                and turns[-1].get("status") == "completed"
+            evidence = read_turn_evidence(
+                adapter=CodexAdapter(), thread_id=thread_id, turn_id=turn_id,
+                repository_path=config.repository_path,
+                error_message="the persisted planning thread could not be reconciled; inspect it before retry",
             )
+            inspection = evidence.inspection
+            terminal_completed = evidence.has_status("completed")
             if not terminal_completed:
                 if run.state != "failed":
                     raise RunnerError("recovery_blocked", "the planning turn has no uniquely recoverable terminal result")
@@ -3858,13 +3860,16 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
             else:
                 expected_worker_id = f"{worker_prefix}:{run.current_step}"
                 matches_stage = lambda worker_id: worker_id == expected_worker_id
-            stage_workers = [
-                worker for worker in workers
-                if worker.get("backend_kind") == "codex_sdk"
-                and worker.get("state") == "failed"
-                and matches_stage(str(worker.get("worker_id", "")))
-            ]
-            worker = stage_workers[-1] if stage_workers else None
+            worker = latest_worker(
+                workers=workers, backend_kind="codex_sdk", states={"failed"},
+                exact_id=(expected_worker_id if run.current_step == "codex_example" else None),
+                prefix=(None if run.current_step == "codex_example" else f"{worker_prefix}:{run.current_step}:" if run.current_step in {"codex_ticket_planning", "codex_implementation"} else f"{worker_prefix}:{run.current_step}"),
+            )
+            if run.current_step == "codex_example":
+                worker = latest_worker(
+                    workers=workers, backend_kind="codex_sdk", states={"failed"},
+                    exact_id=expected_worker_id,
+                )
             thread_id = str(worker.get("external_thread_id") or "") if worker else ""
             turn_id = str(worker.get("external_turn_id") or "") if worker else ""
             if not thread_id or not turn_id:
@@ -3881,17 +3886,12 @@ def _recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run
                 inspection_repository = _implementation_workspace_path(
                     control_root=control_root, config=config, run=run, spec_key=spec_key,
                 )
-            try:
-                inspection = CodexAdapter().read_thread(
-                    thread_id=thread_id,
-                    repository_path=inspection_repository,
-                )
-            except RunnerError as exc:
-                raise RunnerError(
-                    "recovery_blocked",
-                    "the persisted SDK thread could not be reconciled; inspect it before retry",
-                    details={"inspection_error": exc.code},
-                ) from exc
+            evidence = read_turn_evidence(
+                adapter=CodexAdapter(), thread_id=thread_id, turn_id=turn_id,
+                repository_path=inspection_repository,
+                error_message="the persisted SDK thread could not be reconciled; inspect it before retry",
+            )
+            inspection = evidence.inspection
             if not isinstance(inspection, dict):
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
             turns = inspection.get("turns")
@@ -4633,7 +4633,7 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
             spec_plan=spec_plan,
         )
     except RunnerError as exc:
-        decision = _record_recovery_failure(run=run, store=store, operation_id=f"start:{run.run_id}", error=exc)
+        decision = RecoveryRuntime.record_failure(run=run, store=store, operation_id=f"start:{run.run_id}", error=exc)
         # The initial planning stage is wrapped by start(), but production
         # queue work begins after that boundary. Close the durable run before
         # returning a queue error so a process exit cannot leave it running.
@@ -5135,7 +5135,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                 log_path=os.fspath(control_root / existing.log_path),
             )
             heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
-            if _recovery_waits(run=existing, store=store, config=config):
+            if RecoveryRuntime.waits(run=existing, store=store):
                 return {"created": False, **store.public_status(existing.run_id)}
             existing = store.find_by_run_id(existing.run_id) or existing
             if existing.state == "blocked" and config.execution_backend == "codex_sdk" and existing.current_step == "codex_planning":
@@ -5275,7 +5275,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
                 )
             except RunnerError as exc:
-                decision = _record_recovery_failure(run=existing, store=store, operation_id=f"start:{existing.run_id}", error=exc)
+                decision = RecoveryRuntime.record_failure(run=existing, store=store, operation_id=f"start:{existing.run_id}", error=exc)
                 if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
                     store.fail_run(existing.run_id, f"start:{existing.run_id}", state=decision.action.value)
                     return {"created": False, **store.public_status(existing.run_id)}
@@ -5365,7 +5365,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     thread_id=successor_thread_id,
                 )
         except RunnerError as exc:
-            decision = _record_recovery_failure(run=record, store=store, operation_id=operation_id, error=exc)
+            decision = RecoveryRuntime.record_failure(run=record, store=store, operation_id=operation_id, error=exc)
             state = decision.action.value if decision.action in {
                 RecoveryAction.WAIT_RETRY,
                 RecoveryAction.SERVICE_WAIT,
