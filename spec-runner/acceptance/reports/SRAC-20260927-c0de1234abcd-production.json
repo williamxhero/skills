@@ -4,7 +4,7 @@
   "base_sha": "de26e63ea757d759b8376a98728805370c72f183",
   "run_id": "3712b6d2-d74d-4016-96d5-982adedb9901",
   "outcome": "not_verified",
-  "state": "failed",
+  "state": "blocked",
   "stage": "codex_grill",
   "external_resources_created": [],
   "failure": {

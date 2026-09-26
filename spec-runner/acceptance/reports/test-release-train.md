@@ -1009,7 +1009,10 @@ turn was accepted and then exhausted on HTTP 429, with execution outcome
 `unknown`; the exact thread and turn identities were recorded. No issue, PR,
 branch, or other GitHub resource was created. Evidence is
 `acceptance/reports/SRAC-20260927-c0de1234abcd-production.json` and remains
-`not_verified`.
+`not_verified`. The durable SQLite run is
+`3712b6d2-d74d-4016-96d5-982adedb9901` and its final state is `blocked` after
+the recovery readback; the SDK thread ID is retained separately as the
+external worker identity.
 
 The 429 is an external capacity blocker for live production qualification. It
 does not change deterministic implementation status and does not close SF-02,
