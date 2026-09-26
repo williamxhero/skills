@@ -9,15 +9,23 @@
   "external_resources_created": [],
   "failure": {
     "code": "sdk_rate_limited",
-    "message": "Codex SDK turn exceeded retry limit with HTTP 429",
+    "message": "Codex SDK same-thread recovery turn exceeded retry limit with HTTP 429",
     "request_admission": "accepted",
     "execution_outcome": "unknown",
     "thread_id": "01a0dfe8-197b-7742-9748-d7aa68bf3072",
-    "turn_id": "01a0dfe8-1a53-7950-a403-768d0973a475",
+    "turn_id": "01a0e013-f48e-74c1-8804-187da7ec7739",
     "sdk_version": "0.155.1",
     "model": "gpt-5.5",
     "fault_family": "capacity",
-    "evidence_source": "public CLI runner-start.jsonl"
+    "evidence_source": "public CLI resume and status readback"
+  },
+  "recovery": {
+    "same_thread": true,
+    "thread_id": "01a0dfe8-197b-7742-9748-d7aa68bf3072",
+    "attempts": 2,
+    "capacity_budget_remaining": 0,
+    "final_action": "observe",
+    "execution_outcome": "unknown"
   },
   "verified": false,
   "remaining": [

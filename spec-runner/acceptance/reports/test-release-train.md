@@ -1018,6 +1018,22 @@ The 429 is an external capacity blocker for live production qualification. It
 does not change deterministic implementation status and does not close SF-02,
 SF-03, SF-04, SF-05, SF-06, RCV-01, RCV-02, or SF-00.
 
+## Same-thread recovery readback (2026-09-27)
+
+The same public `resume` entrypoint was used with the existing launch key after
+the first terminal failed turn. The Runner read back the original SDK thread,
+continued on that thread, and received another HTTP 429. No second run, thread,
+issue, PR, branch, or other GitHub resource was created. The durable run remains
+`blocked`; the recovery episode has two capacity observations and zero remaining
+capacity retry budget, with `request_admission=accepted` and
+`execution_outcome=unknown`. The external thread identity remains
+`01a0dfe8-197b-7742-9748-d7aa68bf3072`, while the durable run identity remains
+`3712b6d2-d74d-4016-96d5-982adedb9901`.
+
+This proves same-thread recovery accounting and the no-duplicate-writer guard
+for this live incident. It does not prove successful production delivery or
+discharge the live SDK, GitHub, takeover, Windows, L4, or L5 gates.
+
 ## Recovery episode stage identity correction (2026-09-27)
 
 The live run exposed a real recovery defect: a failure raised while the
