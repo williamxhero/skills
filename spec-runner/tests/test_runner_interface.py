@@ -206,6 +206,63 @@ def test_stage_progression_selects_production_recovery_routes() -> None:
     assert route.production is True
 
 
+def test_stage_progression_routes_reviewed_production_to_delivery() -> None:
+    config = SimpleNamespace(
+        delivery_plan=None,
+        execution_backend="codex_sdk",
+        workflow_mode="production",
+    )
+    for state in ("reviewed", "verified_candidate"):
+        run = SimpleNamespace(state=state, current_step="codex_review")
+
+        route = StageProgression.select(run, config)
+
+        assert route.kind == "reviewed"
+        assert route.production is True
+
+
+def test_stage_executor_continues_the_production_queue_after_reviewed_delivery(tmp_path: Path, monkeypatch) -> None:
+    run = SimpleNamespace(run_id="run-1", state="reviewed")
+    config = SimpleNamespace(workflow_mode="production")
+    observed: dict[str, object] = {}
+    plan_path = tmp_path / "spec-plan.json"
+    plan_path.write_text(json.dumps({"digest": "plan-1", "specs": []}), encoding="utf-8")
+
+    class Store:
+        def find_by_run_id(self, run_id):
+            assert run_id == "run-1"
+            return SimpleNamespace(run_id=run_id, state="spec_completed")
+
+    def resume_reviewed_delivery(**kwargs):
+        observed["reviewed"] = kwargs
+        return {"state": "spec_completed", "spec_key": "S1"}
+
+    def run_production_queue(**kwargs):
+        observed["queue"] = kwargs
+        return {"state": "completed"}
+
+    monkeypatch.setattr("spec_runner.workflow._resume_reviewed_delivery", resume_reviewed_delivery)
+    monkeypatch.setattr("spec_runner.workflow._safe_artifact_directory", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setattr("spec_runner.workflow._run_production_queue", run_production_queue)
+
+    result = execute_stage(
+        RunContext(
+            control_root=tmp_path,
+            config=config,
+            brief="brief",
+            brief_digest="digest",
+            run=run,
+            store=Store(),
+        ),
+        StageRoute(kind="reviewed", state="reviewed", production=True),
+    )
+
+    assert result is not None
+    assert result.public() == {"state": "completed"}
+    assert observed["reviewed"]["brief_digest"] == "digest"
+    assert observed["queue"]["spec_plan"] == {"digest": "plan-1", "specs": []}
+
+
 def test_stage_progression_routes_controlled_input_to_recovery() -> None:
     config = SimpleNamespace(
         delivery_plan=None,

@@ -21,6 +21,7 @@ RouteKind = Literal[
     "ready_for_next",
     "planned",
     "production_queue",
+    "reviewed",
     "waiting_github",
     "cleanup_migration",
     "cleanup_production",
@@ -79,6 +80,12 @@ class StageProgression:
             return StageRoute("waiting_github", state, production)
         if state == "spec_completed" and production:
             return StageRoute("production_queue", state, production)
+        if (
+            state in {"reviewed", "verified_candidate"}
+            and production
+            and run.current_step == "codex_review"
+        ):
+            return StageRoute("reviewed", state, production)
         if state == "cleanup_pending":
             if migration_archive_pending:
                 return StageRoute("cleanup_migration", state, production)

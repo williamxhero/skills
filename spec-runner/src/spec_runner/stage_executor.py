@@ -73,6 +73,29 @@ class WorkflowStageExecutor:
                 )
             return StageResult.from_public(payload)
 
+        if route.kind == "reviewed":
+            payload = workflow._resume_reviewed_delivery(
+                control_root=control_root,
+                config=config,
+                run=run,
+                brief_digest=brief_digest,
+                store=store,
+            )
+            if payload.get("state") == "spec_completed":
+                plan_path = workflow._safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
+                current = store.find_by_run_id(run.run_id)
+                if current is None:
+                    raise workflow.RunnerError("run_status_missing", "reviewed delivery lost its durable run")
+                payload = workflow._run_production_queue(
+                    control_root=control_root,
+                    config=config,
+                    brief_digest=brief_digest,
+                    run=current,
+                    store=store,
+                    spec_plan=workflow.load_json(plan_path),
+                )
+            return StageResult.from_public(payload)
+
         if route.kind in {"cleanup_migration", "cleanup_production", "cleanup_status"}:
             if route.kind == "cleanup_migration":
                 migration_cleanup = workflow._retry_migration_source_archive(

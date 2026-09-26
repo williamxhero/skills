@@ -1682,6 +1682,37 @@ def _resume_waiting_github(*, control_root: Path, config: RunnerConfig, run: Run
     ).resume_waiting_github(finalize_run=finalize_run)
 
 
+def _resume_reviewed_delivery(*, control_root: Path, config: RunnerConfig,
+                              run: RunRecord, brief_digest: str,
+                              store: Store) -> dict[str, object]:
+    """Resume production delivery from a durably approved review.
+
+    Review completion is a durable frontier.  If the process exits before the
+    delivery call starts, the normal recovery states do not apply, but the
+    existing approved-review reconciliation already validates every artifact
+    needed by the finish path.  Keep this wrapper as the stage seam so the
+    executor does not know how review worker identities are encoded.
+    """
+    review_prefix = f"codex_sdk:{run.run_id}:codex_review:"
+    workers = [
+        worker for worker in store.workers_for_run(run.run_id)
+        if worker.get("backend_kind") == "codex_sdk"
+        and worker.get("state") == "reviewed"
+        and str(worker.get("worker_id") or "").startswith(review_prefix)
+    ]
+    worker = workers[-1] if workers else None
+    if worker is None:
+        raise RunnerError("reviewed_evidence_missing", "reviewed production run has no approved review worker")
+    return _reconcile_approved_review(
+        control_root=control_root,
+        config=config,
+        run=run,
+        store=store,
+        worker=worker,
+        brief_digest=brief_digest,
+    )
+
+
 def _finish_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     ticket_plan: dict[str, object], workspace_info: dict[str, object], result: CodexWorkerResult,
@@ -4818,18 +4849,37 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     else False
                 ),
             )
-            stage_result = execute_stage(
-                RunContext(
-                    control_root=control_root,
-                    config=config,
-                    brief=brief,
-                    brief_digest=brief_digest,
+            try:
+                stage_result = execute_stage(
+                    RunContext(
+                        control_root=control_root,
+                        config=config,
+                        brief=brief,
+                        brief_digest=brief_digest,
+                        run=existing,
+                        store=store,
+                        migration=migration,
+                    ),
+                    route,
+                )
+            except RunnerError as exc:
+                decision = RecoveryRuntime.record_failure(
                     run=existing,
                     store=store,
-                    migration=migration,
-                ),
-                route,
-            )
+                    operation_id=f"start:{existing.run_id}",
+                    error=exc,
+                )
+                if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
+                    store.fail_run(existing.run_id, f"start:{existing.run_id}", state=decision.action.value)
+                    return {"created": False, **store.public_status(existing.run_id)}
+                store.set_run_state(existing.run_id, "blocked")
+                store.append_event(
+                    run_id=existing.run_id,
+                    event_key=f"recovery:{existing.run_id}:blocked",
+                    event_type="recovery_blocked",
+                    payload={"code": exc.code, "message": exc.message},
+                )
+                raise
             if stage_result is not None:
                 return {"created": False, **stage_result.public()}
             if route.kind == "blocked_recovery" and existing.current_step == "codex_planning":
