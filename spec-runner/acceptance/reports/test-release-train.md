@@ -651,3 +651,26 @@ coverage, and the remaining project-level L3-L5 gates are still
 `not_verified`. Existing targeted Windows control-DB and durable-wait probes do
 not by themselves satisfy the complete #264 acceptance. #264 and its parent
 remain open; #256 remains open with its previously recorded SF-03.1 evidence.
+
+## SF-05.1 configurable GitHub command timeout (2026-09-25)
+
+GitHub CLI operations now share a validated `github.timeout_seconds` Runner
+setting, defaulting to 120 seconds. Production issue publication/closure and
+PR/check/merge delivery receive the configured bound; the public tracker and
+GitHub delivery commands also accept `--timeout-seconds`. Explicit values bind
+to the config digest. Timeout errors retain the relevant command and bound and
+continue to require reconciliation before a write is retried.
+
+The focused CLI/tracker/PR/production-boundary/timeout selection passed
+`85 passed`. The explicit source and acceptance selection passed
+`275 passed, 1 skipped` in 82.04 seconds using
+`PYTHONPATH=spec-runner/src pytest spec-runner/tests spec-runner/acceptance
+--ignore=spec-runner/acceptance/fixture-app -q`. `compileall` and
+`git diff --check` passed.
+
+This closes the fixed-timeout gap for GitHub CLI calls only; it does not close
+#264. Live SDK long-turn/disconnect recovery, duplicate detached-writer
+prevention across launch/control roots, complete cancellation and handshake
+coverage, and remaining project-level L3-L5 gates remain `not_verified`.
+Existing Windows control-DB and timer probes cover their named cases, not the
+whole SF-05.1 acceptance. #264 and its parent remain open.

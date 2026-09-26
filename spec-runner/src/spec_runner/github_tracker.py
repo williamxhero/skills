@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from .errors import RunnerError
+from .config import DEFAULT_GITHUB_TIMEOUT_SECONDS
+from .github_cli import safe_github_args, validate_github_timeout
 from .tracker import IssueRecord, PlanSnapshot
 
 
@@ -34,11 +36,20 @@ _DEFINITIVE_PUBLICATION_FAILURES = frozenset({
 
 
 class GitHubTracker:
-    def __init__(self, *, runner: Callable[[list[str]], str] | None = None):
-        self._runner = runner or self._run_gh
+    def __init__(self, *, runner: Callable[[list[str]], str] | None = None,
+                 timeout_seconds: float = DEFAULT_GITHUB_TIMEOUT_SECONDS):
+        self.timeout_seconds = self._validate_timeout(timeout_seconds)
+        self._runner = runner or (lambda arguments: self._run_gh(
+            arguments, timeout_seconds=self.timeout_seconds,
+        ))
 
     @staticmethod
-    def _run_gh(arguments: list[str]) -> str:
+    def _validate_timeout(value: float) -> float:
+        return validate_github_timeout(value)
+
+    @staticmethod
+    def _run_gh(arguments: list[str], *, timeout_seconds: float = DEFAULT_GITHUB_TIMEOUT_SECONDS) -> str:
+        timeout_seconds = GitHubTracker._validate_timeout(timeout_seconds)
         try:
             # Keep arbitrary Unicode issue bodies out of shell/CLI argument
             # encoding. gh reads UTF-8 without BOM from the file directly.
@@ -51,9 +62,13 @@ class GitHubTracker:
                         prepared[index - 1] = "-F"
                         prepared[index] = f"body=@{body_file}"
                 result = subprocess.run(["gh", *prepared], check=True, capture_output=True,
-                                        text=True, encoding="utf-8", timeout=120)
+                                        text=True, encoding="utf-8", timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
-            raise RunnerError("github_timeout", "GitHub command exceeded 120 seconds; reconcile writes before retry") from exc
+            raise RunnerError(
+                "github_timeout",
+                "GitHub command exceeded its bounded timeout; reconcile writes before retry",
+                details={"args": safe_github_args(arguments), "timeout_seconds": timeout_seconds},
+            ) from exc
         except FileNotFoundError as exc:
             raise RunnerError("github_unavailable", "gh CLI is not installed") from exc
         except subprocess.CalledProcessError as exc:

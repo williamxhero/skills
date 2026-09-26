@@ -33,9 +33,14 @@ def github_context(tmp_path: Path):
 
 def test_github_pending_is_waiting_and_does_not_merge(monkeypatch, github_context):
     root, config, store, run = github_context
+    config = replace(config, github_timeout_seconds=9.5)
     calls = []
+    constructor_options = []
 
     class FakeGitHub:
+        def __init__(self, **_kwargs):
+            constructor_options.append(_kwargs)
+
         def create_or_adopt_pr(self, **kwargs):
             calls.append("pr")
             return {"created": True, "receipt": {"number": 7}}
@@ -55,6 +60,7 @@ def test_github_pending_is_waiting_and_does_not_merge(monkeypatch, github_contex
         review={"approved": True})
     assert result["state"] == "waiting_ci"
     assert calls == ["pr", "checks"]
+    assert constructor_options == [{"timeout_seconds": 9.5}]
 
 
 def test_github_merge_requires_explicit_authorization(monkeypatch, github_context):
@@ -62,6 +68,9 @@ def test_github_merge_requires_explicit_authorization(monkeypatch, github_contex
     config = replace(config, github_merge_authorized=False)
 
     class FakeGitHub:
+        def __init__(self, **_kwargs):
+            pass
+
         def create_or_adopt_pr(self, **kwargs):
             return {"created": True, "receipt": {"number": 7}}
 

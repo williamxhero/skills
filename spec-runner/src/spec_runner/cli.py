@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from . import __version__
+from .config import DEFAULT_GITHUB_TIMEOUT_SECONDS
 from .errors import RunnerError
 from .github_tracker import GitHubTracker
 from .github_delivery import GitHubDelivery
@@ -93,12 +94,14 @@ def _parser() -> argparse.ArgumentParser:
     tracker_github.add_argument("--repository", required=True)
     tracker_github.add_argument("--issue", required=True, type=int)
     tracker_github.add_argument("--linked-issue", action="append", type=int, default=[])
+    tracker_github.add_argument("--timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
     tracker_github_publish = tracker_subparsers.add_parser("github-publish")
     tracker_github_publish.add_argument("--repository", required=True)
     tracker_github_publish.add_argument("--draft", required=True, type=Path)
     tracker_github_publish.add_argument("--receipt-root", required=True, type=Path)
     tracker_github_publish.add_argument("--operation-id", required=True)
     tracker_github_publish.add_argument("--relation-mode", choices=["body_links", "native"], default="body_links")
+    tracker_github_publish.add_argument("--timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
     github_delivery_parser = subparsers.add_parser("github-delivery", help="guarded GitHub PR/check/merge operations")
     github_delivery_sub = github_delivery_parser.add_subparsers(dest="github_delivery_command", required=True)
     pr_parser = github_delivery_sub.add_parser("pr")
@@ -109,10 +112,12 @@ def _parser() -> argparse.ArgumentParser:
     pr_parser.add_argument("--body", required=True, type=Path)
     pr_parser.add_argument("--operation-id", required=True)
     pr_parser.add_argument("--receipt-root", required=True, type=Path)
+    pr_parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
     checks_parser = github_delivery_sub.add_parser("checks")
     checks_parser.add_argument("--repository", required=True)
     checks_parser.add_argument("--candidate-sha", required=True)
     checks_parser.add_argument("--required", action="append", required=True)
+    checks_parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
     merge_parser = github_delivery_sub.add_parser("merge")
     merge_parser.add_argument("--repository", required=True)
     merge_parser.add_argument("--number", required=True, type=int)
@@ -122,6 +127,7 @@ def _parser() -> argparse.ArgumentParser:
     merge_parser.add_argument("--review", required=True, type=Path)
     merge_parser.add_argument("--checks", required=True, type=Path)
     merge_parser.add_argument("--authorize", action="store_true")
+    merge_parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
     intake_parser = subparsers.add_parser("intake", help="adopt an explicit existing plan without regenerating tickets")
     intake_sub = intake_parser.add_subparsers(dest="intake_command", required=True)
     intake_local = intake_sub.add_parser("local")
@@ -344,12 +350,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     read_local(arguments.source_root), arguments.target_root, operation_id=arguments.operation_id
                 )
             elif arguments.tracker_command == "github-read":
-                github_result = GitHubTracker().read_issue(
+                github_result = GitHubTracker(timeout_seconds=arguments.timeout_seconds).read_issue(
                     repository=arguments.repository, number=arguments.issue, linked_numbers=arguments.linked_issue
                 )
                 result = {"snapshot": github_result.snapshot.public(), "relation_evidence": github_result.relation_evidence}
             else:
-                result = GitHubTracker().publish_draft(
+                result = GitHubTracker(timeout_seconds=arguments.timeout_seconds).publish_draft(
                     repository=arguments.repository,
                     draft=plan_json(arguments.draft),
                     operation_id=arguments.operation_id,
@@ -357,7 +363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     relation_mode=arguments.relation_mode,
                 )
         elif arguments.command == "github-delivery":
-            adapter = GitHubDelivery()
+            adapter = GitHubDelivery(timeout_seconds=arguments.timeout_seconds)
             if arguments.github_delivery_command == "pr":
                 result = adapter.create_or_adopt_pr(repository=arguments.repository, head=arguments.head, base=arguments.base, candidate_sha=arguments.candidate_sha, body=arguments.body.read_text(encoding="utf-8"), operation_id=arguments.operation_id, receipt_root=arguments.receipt_root)
             elif arguments.github_delivery_command == "checks":

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import RunnerError
+from .config import DEFAULT_GITHUB_TIMEOUT_SECONDS
+from .github_cli import safe_github_args, validate_github_timeout
 from .plans import digest
 
 
@@ -22,16 +24,27 @@ _DEFINITIVE_PR_CREATE_FAILURES = frozenset({
 
 
 class GitHubDelivery:
-    def __init__(self, *, runner: Callable[[list[str]], str] | None = None):
-        self.runner = runner or self._gh
+    def __init__(self, *, runner: Callable[[list[str]], str] | None = None,
+                 timeout_seconds: float = DEFAULT_GITHUB_TIMEOUT_SECONDS):
+        self.timeout_seconds = self._validate_timeout(timeout_seconds)
+        self.runner = runner or (lambda args: self._gh(args, timeout_seconds=self.timeout_seconds))
 
     @staticmethod
-    def _gh(args: list[str]) -> str:
+    def _validate_timeout(value: float) -> float:
+        return validate_github_timeout(value)
+
+    @staticmethod
+    def _gh(args: list[str], *, timeout_seconds: float = DEFAULT_GITHUB_TIMEOUT_SECONDS) -> str:
+        timeout_seconds = GitHubDelivery._validate_timeout(timeout_seconds)
         try:
             return subprocess.run(["gh", *args], check=True, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=120).stdout
+                                  encoding="utf-8", errors="replace", timeout=timeout_seconds).stdout
         except subprocess.TimeoutExpired as exc:
-            raise RunnerError("github_delivery_timeout", "GitHub delivery exceeded the 120 second boundary; reconcile before retry") from exc
+            raise RunnerError(
+                "github_delivery_timeout",
+                "GitHub delivery exceeded its bounded timeout; reconcile before retry",
+                details={"args": safe_github_args(args), "timeout_seconds": timeout_seconds},
+            ) from exc
         except OSError as exc:
             raise RunnerError("github_delivery_unavailable", "gh CLI is not available") from exc
         except subprocess.CalledProcessError as exc:

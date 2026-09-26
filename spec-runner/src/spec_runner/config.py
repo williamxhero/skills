@@ -13,6 +13,7 @@ from .errors import RunnerError
 
 CONFIG_SCHEMA_VERSION = "spec-runner-config/v1"
 DEFAULT_GIT_TIMEOUT_SECONDS = 120.0
+DEFAULT_GITHUB_TIMEOUT_SECONDS = 120.0
 
 
 def _positive_timeout(value: Any, field: str) -> float:
@@ -105,6 +106,7 @@ class RunnerConfig:
     github_receipt_root: Path | None = None
     github_base: str | None = None
     github_merge_authorized: bool = False
+    github_timeout_seconds: float = DEFAULT_GITHUB_TIMEOUT_SECONDS
     # SR-08 added mandatory production acceptance checks after some runs had
     # already persisted their config fingerprint.  Keep the fingerprint of
     # the same config with an empty acceptance section so those runs can be
@@ -239,6 +241,10 @@ class RunnerConfig:
             github = {}
         if not isinstance(github, dict):
             raise RunnerError("invalid_config", "github must be an object when configured")
+        github_timeout_seconds = _positive_timeout(
+            github.get("timeout_seconds", DEFAULT_GITHUB_TIMEOUT_SECONDS),
+            "github.timeout_seconds",
+        )
         github_repository = github.get("repository")
         if github_repository is not None and (not isinstance(github_repository, str) or not github_repository or "/" not in github_repository or any(character.isspace() for character in github_repository)):
             raise RunnerError("invalid_config", "github.repository must be owner/name")
@@ -269,6 +275,8 @@ class RunnerConfig:
             "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks, "write_scope": acceptance_paths}},
             "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized},
         }
+        if "timeout_seconds" in github:
+            normalized["github"]["timeout_seconds"] = github_timeout_seconds
         # Keep pre-timeout config digests stable so persisted runs remain
         # resumable while an explicit timeout binds new runs.
         if raw_git is not None:
@@ -304,6 +312,7 @@ class RunnerConfig:
             github_receipt_root=(control_root / github_receipt).resolve() if github_receipt else None,
             github_base=github_base if github_repository else None,
             github_merge_authorized=github_authorized,
+            github_timeout_seconds=github_timeout_seconds,
             git_timeout_seconds=git_timeout_seconds,
         )
 

@@ -328,8 +328,12 @@ def test_github_tracker_is_published_after_local_plan_and_requests_native_relati
     adapter(monkeypatch, [spec_document(), {"outcome": "planned", "questions": [], "tickets": [
         {"key": "T1", "title": "Ticket", "body": "Implement R1", "acceptance": ["R1"], "blocked_by": []}] }])
     published = []
+    timeout_options = []
 
     class FakeGitHubTracker:
+        def __init__(self, **kwargs):
+            timeout_options.append(kwargs)
+
         def publish_draft(self, **kwargs):
             published.append(kwargs)
             return {"created": True, "receipt": {"operation_id": kwargs["operation_id"], "complete": True,
@@ -344,6 +348,7 @@ def test_github_tracker_is_published_after_local_plan_and_requests_native_relati
     assert published[0]["relation_mode"] == "native"
     assert published[0]["draft"]["umbrella"]["key"] == "S1"
     assert published[0]["draft"]["specs"][0]["key"] == "T1"
+    assert timeout_options == [{"timeout_seconds": config.github_timeout_seconds}]
     operation = store.external_operation("tickets:test-production:S1")
     assert operation["state"] == "completed"
     assert operation["repository"] == "williamxhero/skills"

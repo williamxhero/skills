@@ -982,7 +982,7 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
     def complete_issue_operation(*, operation_id: str, receipt: dict[str, object]) -> None:
         store.complete_external_operation(operation_id=operation_id, receipt=receipt)
 
-    result = GitHubTracker().publish_draft(repository=config.github_repository, draft=draft,
+    result = GitHubTracker(timeout_seconds=config.github_timeout_seconds).publish_draft(repository=config.github_repository, draft=draft,
         operation_id=operation_id, receipt_root=config.github_receipt_root,
         relation_mode="native", operation_intent=prepare_issue_operation,
         operation_completed=complete_issue_operation)
@@ -1017,7 +1017,7 @@ def _close_published_ticket_plan(*, config: RunnerConfig, plan: dict[str, object
     def complete(*, operation_id: str, receipt: dict[str, object]) -> None:
         store.complete_external_operation(operation_id=operation_id, receipt=receipt)
 
-    return GitHubTracker().close_published(repository=config.github_repository,
+    return GitHubTracker(timeout_seconds=config.github_timeout_seconds).close_published(repository=config.github_repository,
         draft=_ticket_plan_github_draft(plan=plan, run_id=run_id),
         operation_id=publication_operation, publication_receipt=publication["receipt"],
         relation_mode="native", operation_intent=prepare, operation_completed=complete)
@@ -1445,7 +1445,7 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
     body = json.dumps({"run_id": run.run_id, "spec_key": spec_key, "candidate": candidate_receipt,
                        "review": review}, ensure_ascii=False, sort_keys=True)
     operation = f"github:{run.run_id}:{spec_key}:{candidate_sha}"
-    delivery = GitHubDelivery()
+    delivery = GitHubDelivery(timeout_seconds=config.github_timeout_seconds)
     pr_result = delivery.create_or_adopt_pr(repository=repository, head=branch, base=base,
         candidate_sha=candidate_sha, body=body, operation_id=operation,
         receipt_root=config.github_receipt_root)
