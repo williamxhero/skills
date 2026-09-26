@@ -25,6 +25,7 @@ class RunContext:
     brief_digest: str
     run: RunRecord
     store: Store
+    migration: dict[str, Any] | None = None
 
     def public_status(self) -> dict[str, object]:
         """Return the legacy status projection at the orchestration seam."""

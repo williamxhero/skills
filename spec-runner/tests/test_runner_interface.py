@@ -10,6 +10,8 @@ import pytest
 from spec_runner.models import RunContext, RunnerRequest, StageResult
 from spec_runner.runner import Runner
 from spec_runner.stage_progression import StageProgression
+from spec_runner.stage_executor import execute_stage
+from spec_runner.stage_progression import StageRoute
 
 
 def test_stage_result_preserves_legacy_status_projection() -> None:
@@ -163,6 +165,31 @@ def test_run_context_keeps_durable_status_at_one_edge() -> None:
     )
 
     assert context.public_status() == {"run": {"run_id": "run-1"}}
+
+
+def test_stage_executor_is_a_replaceable_typed_seam() -> None:
+    context = RunContext(
+        control_root=Path(".control"),
+        config=SimpleNamespace(),
+        brief="brief",
+        brief_digest="digest",
+        run=SimpleNamespace(run_id="run-1", state="failed"),
+        store=SimpleNamespace(),
+    )
+    route = StageRoute(kind="recover", state="failed")
+    observed: dict[str, object] = {}
+
+    class Executor:
+        def execute(self, received_context, received_route):
+            observed["context"] = received_context
+            observed["route"] = received_route
+            return StageResult(run_id="run-1", state="completed", payload={"state": "completed"})
+
+    result = execute_stage(context, route, Executor())
+
+    assert result is not None
+    assert result.public() == {"state": "completed"}
+    assert observed == {"context": context, "route": route}
 
 
 def test_stage_progression_selects_production_recovery_routes() -> None:

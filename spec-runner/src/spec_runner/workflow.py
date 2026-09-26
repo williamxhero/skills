@@ -34,6 +34,8 @@ from .recovery import (
     RecoveryAction,
     RecoveryDecision,
 )
+from .models import RunContext
+from .stage_executor import execute_stage
 
 
 def _implementation_write_root(*, workspace: Path, config: RunnerConfig, create: bool) -> Path:
@@ -4816,6 +4818,20 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     else False
                 ),
             )
+            stage_result = execute_stage(
+                RunContext(
+                    control_root=control_root,
+                    config=config,
+                    brief=brief,
+                    brief_digest=brief_digest,
+                    run=existing,
+                    store=store,
+                    migration=migration,
+                ),
+                route,
+            )
+            if stage_result is not None:
+                return {"created": False, **stage_result.public()}
             if route.kind == "blocked_recovery" and existing.current_step == "codex_planning":
                 retry_thread = _blocked_planning_retry_thread(
                     control_root=control_root, config=config, run=existing,
@@ -4839,115 +4855,6 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                         thread_id=retry_identity[0], spec_key=retry_identity[1],
                     )
                     return {"created": False, **resumed}
-            if route.kind == "ready_for_next":
-                final_status = _advance_second_stage(
-                    control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
-                )
-                return {"created": False, **final_status}
-            if route.kind == "planned":
-                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
-                if not plan_path.is_file():
-                    raise RunnerError("spec_plan_missing", "planned run has no persisted SpecPlan")
-                return {"created": False, **_run_production_queue(
-                    control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
-                    store=store, spec_plan=load_json(plan_path))}
-            if route.kind == "production_queue" and existing.state == "tickets_ready":
-                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
-                return {"created": False, **_run_production_queue(
-                    control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
-                    store=store, spec_plan=load_json(plan_path))}
-            if route.kind == "waiting_github":
-                resumed = _resume_waiting_github(control_root=control_root, config=config, run=existing, store=store, finalize_run=False)
-                if resumed.get("state") == "spec_completed":
-                    plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
-                    current = store.find_by_run_id(existing.run_id)
-                    assert current is not None
-                    return {"created": False, **_run_production_queue(control_root=control_root, config=config,
-                        brief_digest=brief_digest, run=current, store=store, spec_plan=load_json(plan_path))}
-                return {"created": False, **resumed}
-            if route.kind == "production_queue" and existing.state == "spec_completed":
-                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
-                return {"created": False, **_run_production_queue(
-                    control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
-                    store=store, spec_plan=load_json(plan_path))}
-            if route.kind in {"cleanup_migration", "cleanup_production", "cleanup_status"}:
-                if route.kind == "cleanup_migration":
-                    migration_cleanup = _retry_migration_source_archive(config=config, store=store, run=existing)
-                    if migration_cleanup.get("migration_cleanup") is not None:
-                        if migration_cleanup.get("state") == "ready_for_next":
-                            current = store.find_by_run_id(existing.run_id) or existing
-                            if config.workflow_mode == "production":
-                                plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
-                                if plan_path.is_file():
-                                    return {"created": False, **_run_production_queue(
-                                        control_root=control_root, config=config, brief_digest=brief_digest,
-                                        run=current, store=store, spec_plan=load_json(plan_path),
-                                    )}
-                            return {"created": False, **_advance_second_stage(
-                                control_root=control_root, config=config, run=current,
-                                brief_digest=brief_digest, store=store,
-                            )}
-                        return {"created": False, **migration_cleanup}
-                if route.kind == "cleanup_status":
-                    return {"created": False, **store.public_status(existing.run_id)}
-                cleanup = _retry_production_cleanup(control_root=control_root, config=config, run=existing, store=store)
-                if cleanup.get("state") == "spec_completed":
-                    plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
-                    current = store.find_by_run_id(existing.run_id)
-                    assert current is not None
-                    return {"created": False, **_run_production_queue(control_root=control_root, config=config,
-                        brief_digest=brief_digest, run=current, store=store, spec_plan=load_json(plan_path))}
-                return {"created": False, **cleanup}
-            if route.kind == "needs_input":
-                worker_result = _safe_artifact_directory(control_root, config, existing.run_id) / "worker-result.json"
-                questions: list[dict[str, object]] = []
-                if worker_result.is_file():
-                    try:
-                        document = json.loads(worker_result.read_text(encoding="utf-8"))
-                        questions = [item for item in document.get("questions", []) if isinstance(item, dict) and isinstance(item.get("id"), str)]
-                    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                        questions = []
-                answer_ids = {str(item["question_id"]) for item in store.answers_for_run(existing.run_id)}
-                if questions and {str(item["id"]) for item in questions}.issubset(answer_ids) and config.execution_backend == "codex_sdk":
-                    resumed = _resume_codex_stage(control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store)
-                    return {"created": False, **resumed}
-                return {"created": False, **store.public_status(existing.run_id)}
-            if route.kind == "migration":
-                persisted_migration = store.thread_migration(str(migration.get("migration_key") or ""))
-                if persisted_migration is not None and persisted_migration.get("state") == "uncertain":
-                    raise RunnerError("thread_successor_uncertain", "successor creation is uncertain; reconcile the recorded migration before retry")
-                workers = store.workers_for_run(existing.run_id)
-                current_worker = workers[-1] if workers else {}
-                if not current_worker.get("external_turn_id"):
-                    successor = (str(persisted_migration.get("successor_thread_id") or "") if persisted_migration else "")
-                    if not successor:
-                        successor = _prepare_clean_migration(
-                            store=store, config=config, run=existing, migration=migration,
-                            stage=existing.current_step, input_revision=brief_digest,
-                        ) or ""
-                    if not successor:
-                        raise RunnerError("thread_successor_missing", "owner transfer has no successor identity")
-                    resumed = _continue_initial_clean_migration(
-                        control_root=control_root, config=config, run=existing, brief=brief,
-                        brief_digest=brief_digest, store=store, successor_thread_id=successor,
-                    )
-                    return {"created": False, **resumed}
-
-            if route.kind == "paused":
-                if config.execution_backend == "codex_sdk":
-                    resumed = _resume_codex_stage(
-                        control_root=control_root,
-                        config=config,
-                        run=existing,
-                        brief=brief,
-                        brief_digest=brief_digest,
-                        store=store,
-                    )
-                    return {"created": False, **resumed}
-                resumed = _advance_second_stage(
-                    control_root=control_root, config=config, run=existing, brief_digest=brief_digest, store=store
-                )
-                return {"created": False, **resumed}
             try:
                 recovered_status = _recover_after_process_exit(
                     control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
