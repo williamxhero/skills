@@ -121,6 +121,11 @@ class TaskCsvToJsonTests(unittest.TestCase):
             ("extra-column", "id,title,status\n1,todo,open,extra\n", "expected 3 fields"),
             ("blank-field", "id,title,status\n1,  ,open\n", "column 2"),
             ("blank-row", "id,title,status\n\n", "blank data row"),
+            (
+                "unescaped-quote",
+                'id,title,status\n1,bad "quote,open\n',
+                "unescaped quote",
+            ),
             ("malformed", 'id,title,status\n1,"unterminated,open\n', "CSV syntax error"),
             ("bad-encoding", b"id,title,status\n1,\xff,open\n", "input encoding error"),
         ]

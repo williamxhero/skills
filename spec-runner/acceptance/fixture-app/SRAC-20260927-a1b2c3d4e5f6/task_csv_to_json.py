@@ -24,6 +24,90 @@ def fail(message: str) -> NoReturn:
     raise ConversionError(message)
 
 
+def is_record_separator(text: str, index: int) -> bool:
+    return text[index] == "\n" or text[index] == "\r"
+
+
+def next_after_record_separator(text: str, index: int) -> int:
+    if text[index] == "\r" and index + 1 < len(text) and text[index + 1] == "\n":
+        return index + 2
+    return index + 1
+
+
+def validate_csv_quotes(text: str) -> None:
+    row = 1
+    column = 1
+    index = 0
+    field_start = True
+    in_quotes = False
+    after_quote = False
+
+    while index < len(text):
+        character = text[index]
+
+        if in_quotes:
+            if character == '"':
+                if index + 1 < len(text) and text[index + 1] == '"':
+                    index += 2
+                    column += 2
+                    continue
+                in_quotes = False
+                after_quote = True
+            elif is_record_separator(text, index):
+                index = next_after_record_separator(text, index)
+                row += 1
+                column = 1
+                continue
+            column += 1
+            index += 1
+            continue
+
+        if after_quote:
+            if character == ",":
+                field_start = True
+                after_quote = False
+                column += 1
+                index += 1
+                continue
+            if is_record_separator(text, index):
+                index = next_after_record_separator(text, index)
+                row += 1
+                column = 1
+                field_start = True
+                after_quote = False
+                continue
+            fail(f'CSV syntax error at row {row}, column {column}: expected delimiter after quote')
+
+        if character == '"':
+            if field_start:
+                in_quotes = True
+                field_start = False
+                column += 1
+                index += 1
+                continue
+            fail(f'CSV syntax error at row {row}, column {column}: unescaped quote')
+
+        if character == ",":
+            field_start = True
+            column += 1
+            index += 1
+            continue
+
+        if is_record_separator(text, index):
+            index = next_after_record_separator(text, index)
+            row += 1
+            column = 1
+            field_start = True
+            continue
+
+        field_start = False
+        column += 1
+        index += 1
+
+    if in_quotes:
+        fail(f"CSV syntax error at row {row}, column {column}: unterminated quoted field")
+
+
 def same_path(input_path: Path, output_path: Path) -> bool:
     """Return whether the two arguments identify the same filesystem path."""
     input_absolute = os.path.realpath(os.path.abspath(input_path))
@@ -49,6 +133,8 @@ def read_records(input_path: Path) -> list[dict[str, str]]:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         fail(f"input encoding error at byte {exc.start}: expected UTF-8")
+
+    validate_csv_quotes(text)
 
     reader = csv.reader(io.StringIO(text, newline=""), strict=True)
     try:
