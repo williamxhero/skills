@@ -3,12 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import uuid
 from pathlib import Path
 from typing import Sequence
 
 from . import __version__
-from .config import DEFAULT_GITHUB_TIMEOUT_SECONDS, RunnerConfig
+from .config import DEFAULT_GITHUB_TIMEOUT_SECONDS
 from .errors import RunnerError
 from .github_tracker import GitHubTracker
 from .github_delivery import GitHubDelivery
@@ -19,21 +18,15 @@ from .matt import load_lock, render_prompt, resolve_grill, resolve_local_skill
 from .multi_spec import run_local_delivery
 from .legacy import legacy_takeover_inventory, read_legacy_database
 from .log_runtime import rotate_launcher_logs
-from .plans import digest, intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
+from .plans import intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
 from .takeover import (
     completion_action,
-    frontier_execution_steps,
-    frontier_step_transition,
     inspect_takeover,
     inventory_from_thread_observation,
     load_inventory,
-    perform_cleanup,
     plan_frontier,
-    record_takeover_transition,
-    refresh_takeover_evidence,
-    verify_frontier_step,
-    write_takeover_record,
 )
+from .takeover_runtime import TakeoverExecutionRequest, TakeoverRuntime
 from .tracker import publish_local, read_local
 from .store import Store, _process_alive
 from .workflow import control, doctor, drive, launch, resume, start, status
@@ -275,37 +268,6 @@ def _emit(payload: dict[str, object]) -> None:
     print(json.dumps({"schema_version": CLI_SCHEMA_VERSION, **payload}, ensure_ascii=False, sort_keys=True))
 
 
-def _source_material_digest(observation: object) -> str | None:
-    """Compare source requirements while ignoring mutable activity status."""
-    if not isinstance(observation, dict):
-        return None
-    return digest({
-        "thread": observation.get("thread"),
-        "business_items": observation.get("business_items"),
-        "completeness": observation.get("completeness"),
-        "turn_count": observation.get("turn_count"),
-    })
-
-
-def _takeover_transition(
-    transitions: object,
-    *,
-    event_key: str,
-    state: str,
-) -> dict[str, object] | None:
-    if not isinstance(transitions, list):
-        return None
-    return next(
-        (
-            item for item in reversed(transitions)
-            if isinstance(item, dict)
-            and item.get("event_key") == event_key
-            and item.get("state") == state
-        ),
-        None,
-    )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     arguments = parser.parse_args(argv)
@@ -507,392 +469,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report = inspect_takeover(inventory, git_timeout_seconds=arguments.git_timeout_seconds)
                 frontier = plan_frontier(report)
                 if arguments.takeover_command == "apply":
-                    existing_takeover = None
-                    database = arguments.control_root.expanduser().resolve() / "spec-runner.sqlite3"
-                    if database.is_file():
-                        existing_store = Store.open(arguments.control_root.expanduser().resolve(), create=False)
-                        try:
-                            existing_takeover = existing_store.takeover_record(arguments.takeover_key)
-                        finally:
-                            existing_store.close()
-                    if isinstance(existing_takeover, dict):
-                        stored_report = existing_takeover.get("report")
-                        stored_frontier = existing_takeover.get("frontier")
-                        stored_snapshot = stored_report.get("repository_snapshot") if isinstance(stored_report, dict) else None
-                        stored_handover = stored_report.get("handover") if isinstance(stored_report, dict) else None
-                        stored_facts = stored_report.get("historical_facts") if isinstance(stored_report, dict) else None
-                        fresh_facts = inventory.get("facts")
-                        stored_material = _source_material_digest(
-                            stored_facts.get("source_observation") if isinstance(stored_facts, dict) else None
-                        )
-                        fresh_material = _source_material_digest(
-                            fresh_facts.get("source_observation") if isinstance(fresh_facts, dict) else None
-                        )
-                        fresh_snapshot = report.get("repository_snapshot")
-                        stored_thread_ids = sorted(
-                            str(item.get("thread_id")) for item in stored_report.get("adopted_threads", [])
-                            if isinstance(item, dict) and isinstance(item.get("thread_id"), str)
-                        ) if isinstance(stored_report, dict) and isinstance(stored_report.get("adopted_threads"), list) else []
-                        fresh_thread_ids = sorted(
-                            str(item.get("id")) for item in inventory.get("source_threads", [])
-                            if isinstance(item, dict) and isinstance(item.get("id"), str)
-                        ) if isinstance(inventory.get("source_threads"), list) else []
-                        if (
-                            isinstance(stored_report, dict)
-                            and isinstance(stored_frontier, dict)
-                            and isinstance(stored_snapshot, dict)
-                            and isinstance(fresh_snapshot, dict)
-                            and isinstance(stored_handover, dict)
-                            and stored_handover.get("state") == "released"
-                            and stored_snapshot.get("snapshot_digest") == fresh_snapshot.get("snapshot_digest")
-                            and stored_thread_ids == fresh_thread_ids
-                            and stored_material == fresh_material
-                        ):
-                            report = stored_report
-                            frontier = stored_frontier
-                    record = write_takeover_record(control_root=arguments.control_root, takeover_key=arguments.takeover_key, report=report, frontier=frontier)
-                    action = completion_action(report, git_timeout_seconds=arguments.git_timeout_seconds)
-                    result = {**record, "frontier": frontier, "action": action}
-                    stored_record = record.get("record") if isinstance(record.get("record"), dict) else None
-                    last_transition = stored_record.get("last_transition") if isinstance(stored_record, dict) else None
-                    prior_cleanup = (
-                        last_transition.get("payload")
-                        if isinstance(last_transition, dict)
-                        and last_transition.get("state") == "cleanup_pending"
-                        and isinstance(last_transition.get("payload"), dict)
-                        else None
-                    )
-                    if (
-                        not record.get("created")
-                        and isinstance(last_transition, dict)
-                        and str(last_transition.get("event_key", "")).startswith(f"{arguments.takeover_key}:handover:reobserved:")
-                        and isinstance(stored_record, dict)
-                        and isinstance(stored_record.get("report"), dict)
-                        and isinstance(stored_record.get("frontier"), dict)
-                    ):
-                        report = stored_record["report"]
-                        frontier = stored_record["frontier"]
-                        action = completion_action(report, git_timeout_seconds=arguments.git_timeout_seconds)
-                        result["report"] = report
-                        result["frontier"] = frontier
-                        result["action"] = action
-                    if record.get("created"):
-                        observed = record_takeover_transition(
+                    result = TakeoverRuntime(
+                        TakeoverExecutionRequest(
+                            inventory=inventory,
                             control_root=arguments.control_root,
                             takeover_key=arguments.takeover_key,
-                            state="observed",
-                            event_key=f"{arguments.takeover_key}:observed:{report['digest']}",
-                            payload={"report_digest": report["digest"], "frontier_digest": frontier["digest"]},
-                        )
-                        result["record"] = observed["record"]
-                        result["transitions"] = observed["transitions"]
-                    prior_takeover_state = record.get("record", {}).get("state") if isinstance(record.get("record"), dict) else None
-                    if (
-                        action["state"] in {"blocked", "waiting_handover"}
-                        and arguments.thread_id
-                        and arguments.handover_policy == "interrupt_then_takeover"
-                    ):
-                        intent = record_takeover_transition(
-                            control_root=arguments.control_root,
-                            takeover_key=arguments.takeover_key,
-                            state="handover_interrupt_intent",
-                            event_key=f"{arguments.takeover_key}:handover:interrupt:intent",
-                            payload={"thread_id": arguments.thread_id},
-                        )
-                        result["record"] = intent["record"]
-                        result["transitions"] = intent["transitions"]
-                        if prior_takeover_state == "handover_interrupt_intent":
-                            # The prior process may have sent the request and
-                            # died before recording its outcome. Preserve the
-                            # uncertainty and require a fresh source readback;
-                            # repeating an interrupt could race a live writer.
-                            handover = {
-                                "schema_version": "spec-runner-sdk-thread-interrupt/v1",
-                                "thread_id": arguments.thread_id,
-                                "accepted": None,
-                                "reason": "interrupt_outcome_unknown",
-                                "evidence_limits": {"dispatcher_quiesced": False, "ownership_transferred": False},
-                            }
-                        else:
-                            handover = CodexAdapter().interrupt_thread(
-                                thread_id=arguments.thread_id,
-                                repository_path=arguments.repository.resolve(),
-                            )
-                        result["handover"] = handover
-                        finished = record_takeover_transition(
-                            control_root=arguments.control_root,
-                            takeover_key=arguments.takeover_key,
-                            state="handover_interrupt_observed",
-                            event_key=f"{arguments.takeover_key}:handover:interrupt:{digest(handover)}",
-                            payload=handover,
-                        )
-                        result["record"] = finished["record"]
-                        result["transitions"] = finished["transitions"]
-                        if handover.get("accepted") is True:
-                            refreshed_inventory = json.loads(json.dumps(inventory, ensure_ascii=False))
-                            refreshed_threads = refreshed_inventory.get("source_threads", [])
-                            if not isinstance(refreshed_threads, list):
-                                raise RunnerError("takeover_inventory_invalid", "source_threads must remain a list after handover")
-                            refreshed_source = next(
-                                (item for item in refreshed_threads
-                                 if isinstance(item, dict) and item.get("id") == arguments.thread_id),
-                                None,
-                            )
-                            if not isinstance(refreshed_source, dict):
-                                raise RunnerError("takeover_source_missing", "handover readback does not identify the source thread")
-                            refreshed_source["handover_evidence"] = handover
-                            refreshed_source["active"] = False
-                            observation_after = handover.get("observation_after")
-                            if isinstance(observation_after, dict):
-                                refreshed_source["observation"] = observation_after
-                                refreshed_facts = refreshed_inventory.get("facts")
-                                if isinstance(refreshed_facts, dict):
-                                    refreshed_facts["source_observation"] = observation_after
-                            report = inspect_takeover(
-                                refreshed_inventory,
-                                git_timeout_seconds=arguments.git_timeout_seconds,
-                            )
-                            frontier = plan_frontier(report)
-                            refreshed = refresh_takeover_evidence(
-                                control_root=arguments.control_root,
-                                takeover_key=arguments.takeover_key,
-                                report=report,
-                                frontier=frontier,
-                                event_key=f"{arguments.takeover_key}:handover:reobserved:{report['digest']}",
-                                payload={
-                                    "thread_id": arguments.thread_id,
-                                    "handover_digest": digest(handover),
-                                    "report_digest": report["digest"],
-                                    "frontier_digest": frontier["digest"],
-                                },
-                            )
-                            result["report"] = report
-                            result["frontier"] = frontier
-                            action = completion_action(report, git_timeout_seconds=arguments.git_timeout_seconds)
-                            result["action"] = action
-                            result["record"] = refreshed["record"]
-                            result["transitions"] = refreshed["transitions"]
-                    execution_steps = frontier_execution_steps(
-                        frontier,
-                        result.get("transitions") if isinstance(result.get("transitions"), list) else None,
-                    )
-                    result["execution"] = {
-                        "state": (
-                            frontier["state"]
-                            if frontier["state"] != "planned"
-                            else ("pending" if execution_steps else "verified")
-                        ),
-                        "steps": [step.public() for step in execution_steps],
-                    }
-                    unsupported_steps = [
-                        step for step in execution_steps
-                        if not (
-                            (step.kind == "adopt" and step.target == "working_tree")
-                            or (step.kind == "resume" and step.target == "remaining_acceptance")
-                        )
-                    ]
-                    if unsupported_steps:
-                        result["execution"] = {
-                            "state": "blocked",
-                            "steps": [step.public() for step in execution_steps],
-                            "blocker": "frontier_step_handler_missing",
-                        }
-                    if execution_steps:
-                        adoption_step = next(
-                            (step for step in execution_steps if step.kind == "adopt" and step.target == "working_tree"),
-                            None,
-                        )
-                        adoption_evidence = verify_frontier_step(report, adoption_step) if adoption_step else None
-                        if adoption_step is not None and adoption_evidence is not None:
-                            verify_event_key, verify_payload = frontier_step_transition(
-                                adoption_step,
-                                state="frontier_step_verified",
-                                payload={"evidence": adoption_evidence},
-                            )
-                            verified_adoption = record_takeover_transition(
-                                control_root=arguments.control_root,
-                                takeover_key=arguments.takeover_key,
-                                state="frontier_step_verified",
-                                event_key=f"{arguments.takeover_key}:{verify_event_key}",
-                                payload=verify_payload,
-                            )
-                            result["record"] = verified_adoption["record"]
-                            result["transitions"] = verified_adoption["transitions"]
-                            execution_steps = frontier_execution_steps(frontier, result["transitions"])
-                            result["execution"] = {
-                                "state": "blocked" if unsupported_steps else ("verified" if not execution_steps else "pending"),
-                                "steps": [step.public() for step in execution_steps],
-                                **({"blocker": "frontier_step_handler_missing"} if unsupported_steps else {}),
-                            }
-                    current_record = result.get("record") if isinstance(result.get("record"), dict) else record.get("record")
-                    prior_state = record.get("record", {}).get("state") if isinstance(record.get("record"), dict) else None
-                    if action["state"] == "cleanup_pending" and prior_state == "cleaned":
-                        result["cleanup"] = {"outcome": "cleaned", "attempted": 0, "results": [], "replayed": True}
-                        result["action"] = {**action, "state": "cleaned"}
-                    elif action["state"] == "cleanup_pending":
-                        intent = record_takeover_transition(
-                            control_root=arguments.control_root,
-                            takeover_key=arguments.takeover_key,
-                            state="cleanup_intent",
-                            event_key=f"{arguments.takeover_key}:cleanup:intent",
-                            payload={"targets": report.get("historical_facts", {}).get("cleanup_targets", [])},
-                        )
-                        result["record"] = intent["record"]
-                        result["transitions"] = intent["transitions"]
-                        result["cleanup"] = perform_cleanup(
-                            report,
-                            prior_cleanup=prior_cleanup,
                             git_timeout_seconds=arguments.git_timeout_seconds,
-                        )
-                        cleanup_digest = digest(result["cleanup"])
-                        cleanup_state = "cleaned" if result["cleanup"]["outcome"] == "cleaned" else "cleanup_pending"
-                        finished = record_takeover_transition(
-                            control_root=arguments.control_root,
-                            takeover_key=arguments.takeover_key,
-                            state=cleanup_state,
-                            event_key=f"{arguments.takeover_key}:cleanup:result:{cleanup_digest}",
-                            payload=result["cleanup"],
-                        )
-                        result["record"] = finished["record"]
-                        result["transitions"] = finished["transitions"]
-                        if cleanup_state == "cleaned":
-                            result["action"] = {**action, "state": "cleaned"}
-                    # A cleanup-only takeover has no remaining implementation
-                    # authority. Persist the adoption record but do not create a
-                    # generic worker run merely to make status look active.
-                    transitions = result.get("transitions")
-                    execution_result = next(
-                        (item for item in reversed(transitions)
-                         if isinstance(item, dict) and item.get("state") == "execution_started"),
-                        None,
-                    ) if isinstance(transitions, list) else None
-                    existing_transition = current_record.get("last_transition") if isinstance(current_record, dict) else None
-                    if execution_result is not None:
-                        existing_transition = execution_result
-                    existing_runner = existing_transition.get("payload", {}).get("runner") if isinstance(existing_transition, dict) and isinstance(existing_transition.get("payload"), dict) else None
-                    active_step = execution_steps[0] if execution_steps else None
-                    supports_runner = (
-                        active_step is not None
-                        and active_step.kind == "resume"
-                        and active_step.target == "remaining_acceptance"
-                    )
-                    if arguments.config and arguments.brief:
-                        # Keep the existing deterministic takeover fixture
-                        # entrypoint while production steps without a handler
-                        # remain explicitly pending in the execution report.
-                        configured = RunnerConfig.from_file(arguments.config, arguments.control_root)
-                        supports_runner = supports_runner or configured.execution_backend == "deterministic_test"
-                    if action["state"] == "resume_delivery" and frontier["state"] == "planned" and supports_runner and isinstance(existing_runner, dict):
-                        result["runner"] = existing_runner
-                    elif action["state"] == "resume_delivery" and frontier["state"] == "planned" and supports_runner and arguments.brief and arguments.config:
-                        launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
-                        intent_transition = _takeover_transition(
-                            transitions,
-                            event_key=f"{arguments.takeover_key}:execution:intent",
-                            state="execution_intent",
-                        )
-                        prior_payload = intent_transition.get("payload") if isinstance(intent_transition, dict) else None
-                        if isinstance(prior_payload, dict):
-                            execution_payload = prior_payload
-                        else:
-                            adopted = report.get("adopted_threads", [])
-                            if not adopted and not report.get("unresolved") and not report.get("historical_facts", {}).get("source_observation"):
-                                # Deterministic/local takeover fixtures can resume
-                                # without an SDK source thread. They do not need a
-                                # clean-thread migration receipt.
-                                execution_payload = {
-                                    "launch_key": launch_key, "frontier_digest": frontier["digest"],
-                                }
-                            else:
-                                if not isinstance(adopted, list) or len(adopted) != 1 or not isinstance(adopted[0], dict):
-                                    raise RunnerError("thread_migration_source_ambiguous", "clean migration requires exactly one adopted source thread")
-                                source_thread_id = str(adopted[0].get("thread_id") or "")
-                                handover = adopted[0].get("handover")
-                                if not source_thread_id or not isinstance(handover, dict):
-                                    raise RunnerError("thread_migration_handover_missing", "clean migration requires persisted source handover evidence")
-                                execution_payload = {
-                                    "launch_key": launch_key, "run_id": str(uuid.uuid4()),
-                                    "migration_key": f"{arguments.takeover_key}:thread-migration",
-                                    "source_thread_id": source_thread_id, "handover": handover,
-                                    "owner_generation": 0, "frontier_digest": frontier["digest"],
-                                }
-                        step_event_key, step_payload = frontier_step_transition(
-                            active_step,
-                            state="frontier_step_started",
-                            payload={"launch_key": launch_key},
-                        )
-                        started_step = record_takeover_transition(
-                            control_root=arguments.control_root,
-                            takeover_key=arguments.takeover_key,
-                            state="frontier_step_started",
-                            event_key=f"{arguments.takeover_key}:{step_event_key}",
-                            payload=step_payload,
-                        )
-                        result["record"] = started_step["record"]
-                        result["transitions"] = started_step["transitions"]
-                        intent = record_takeover_transition(
-                            control_root=arguments.control_root,
-                            takeover_key=arguments.takeover_key,
-                            state="execution_intent",
-                            event_key=f"{arguments.takeover_key}:execution:intent",
-                            payload=execution_payload,
-                        )
-                        result["record"] = intent["record"]
-                        result["transitions"] = intent["transitions"]
-                        result["runner"] = start(
-                            brief_file=arguments.brief,
-                            config_file=arguments.config,
-                            control_root=arguments.control_root,
-                            launch_key=launch_key,
-                            run_id=str(execution_payload.get("run_id") or uuid.uuid4()),
-                            takeover_key=arguments.takeover_key,
-                            migration=({
-                                "migration_key": str(execution_payload["migration_key"]),
-                                "source_thread_id": str(execution_payload["source_thread_id"]),
-                                "handover": execution_payload["handover"],
-                                "owner_generation": int(execution_payload.get("owner_generation", 0)),
-                            } if "migration_key" in execution_payload else None),
-                        )
-                        completed = record_takeover_transition(
-                            control_root=arguments.control_root,
-                            takeover_key=arguments.takeover_key,
-                            state="execution_started",
-                            event_key=f"{arguments.takeover_key}:execution:result:{digest(result['runner'])}",
-                            payload={"launch_key": launch_key, "runner": result["runner"]},
-                        )
-                        result["record"] = completed["record"]
-                        result["transitions"] = completed["transitions"]
-                    elif action["state"] == "resume_delivery" and bool(arguments.brief) != bool(arguments.config):
-                        raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
-
-                    runner = result.get("runner")
-                    if (
-                        active_step is not None
-                        and active_step.kind == "resume"
-                        and active_step.target == "remaining_acceptance"
-                        and isinstance(runner, dict)
-                    ):
-                        run_projection = runner.get("run")
-                        if isinstance(run_projection, dict) and run_projection.get("state") == "completed":
-                            verify_event_key, verify_payload = frontier_step_transition(
-                                active_step,
-                                state="frontier_step_verified",
-                                payload={"runner": runner},
-                            )
-                            verified_step = record_takeover_transition(
-                                control_root=arguments.control_root,
-                                takeover_key=arguments.takeover_key,
-                                state="frontier_step_verified",
-                                event_key=f"{arguments.takeover_key}:{verify_event_key}",
-                                payload=verify_payload,
-                            )
-                            result["record"] = verified_step["record"]
-                            result["transitions"] = verified_step["transitions"]
-                            remaining_steps = frontier_execution_steps(frontier, result["transitions"])
-                            result["execution"] = {
-                                "state": "verified" if not remaining_steps else "partial",
-                                "steps": [step.public() for step in remaining_steps],
-                            }
+                            brief=arguments.brief,
+                            config=arguments.config,
+                            launch_key=arguments.launch_key,
+                            thread_id=arguments.thread_id,
+                            repository=arguments.repository,
+                            handover_policy=arguments.handover_policy,
+                        ),
+                        start_runner=start,
+                        interrupt_thread=CodexAdapter().interrupt_thread,
+                    ).apply()
+                    _emit({"ok": True, "command": arguments.command, **result})
+                    return 0
                 else:
                     result = {
                         "report": report,

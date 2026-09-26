@@ -227,7 +227,7 @@ class SpecRunnerCliTests(unittest.TestCase):
             "repository_path": str(self.repository),
             "source_threads": [],
             "artifacts": [],
-            "facts": {"requirements": ["continue delivery"], "tracker": True, "partial_code": True},
+            "facts": {"requirements": ["continue delivery"], "tracker": True},
         }), encoding="utf-8")
 
         arguments = (
@@ -253,6 +253,39 @@ class SpecRunnerCliTests(unittest.TestCase):
         code, status = self.invoke("status", "--control-root", str(self.control_root))
         self.assertEqual(code, 0)
         self.assertEqual([item["run_id"] for item in status["runs"]], [run_id])
+
+    def test_takeover_mixed_frontier_blocks_without_starting_generic_runner(self) -> None:
+        inventory = self.root / "mixed-takeover.json"
+        inventory.write_text(json.dumps({
+            "schema_version": "spec-runner-takeover-input/v1",
+            "repository_path": str(self.repository),
+            "source_threads": [],
+            "artifacts": [],
+            "facts": {
+                "requirements": ["finish all three SPECs"],
+                "tracker": True,
+                "specs": [
+                    {"key": "SPEC-1", "state": "completed"},
+                    {"key": "SPEC-2", "state": "partial"},
+                    {"key": "SPEC-3", "state": "not_started"},
+                ],
+            },
+        }), encoding="utf-8")
+
+        code, result = self.invoke(
+            "takeover", "apply", "--file", str(inventory), "--control-root", str(self.control_root),
+            "--takeover-key", "mixed-frontier", "--brief", str(self.brief), "--config", str(self.config),
+        )
+
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["action"]["state"], "resume_delivery")
+        self.assertEqual(result["execution"]["state"], "blocked")
+        self.assertEqual(result["execution"]["blocker"], "frontier_step_handler_missing")
+        self.assertEqual([step["target"] for step in result["execution"]["steps"]], ["SPEC-1", "SPEC-2", "SPEC-3"])
+        self.assertNotIn("runner", result)
+        code, status = self.invoke("status", "--control-root", str(self.control_root))
+        self.assertEqual(code, 0)
+        self.assertEqual(status["runs"], [])
 
     def test_start_with_unknown_takeover_record_fails_closed(self) -> None:
         from spec_runner.workflow import start
