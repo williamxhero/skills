@@ -913,6 +913,38 @@ covered by the probe. Live GitHub side-effect reconciliation, source-thread
 takeover, the remaining #266 criteria, and project-level L3-L5 gates remain
 `not_verified`; #266 remains open.
 
+## SF-05.3 combined probe replay (2026-09-26)
+
+The combined native Windows probe was replayed after the public answer-contract
+change. It again held the control SQLite database and both detached launcher
+logs, rejected the locked `drive` with `control_database_busy` in 7.799 seconds
+without changing the database digest, terminated the exact recorded Runner,
+and recovered the same run to `completed`. Log rotation remained blocked while
+the handles were held, then succeeded and was replayable after release. The
+durable receipt is
+`acceptance/reports/SRAC-20260926-windows-control-db-launcher-logs-02.json`;
+the database passed `PRAGMA integrity_check` and both rotated logs were
+readable.
+
+This confirms the covered Windows lock and restart scenario on the current
+candidate. It does not discharge live GitHub side effects, source-thread
+takeover, the remaining #266 acceptance items, or project L3-L5 gates.
+
+## SF-02.3 answer contract boundary (2026-09-26)
+
+The public `answer` command now reads the durable worker question before
+writing. It requires the question ID and receipt input digest to match the
+waiting run, and validates offered choices. Unknown questions, stale receipts,
+and invalid choices fail before `run_answers` or the resume intent changes;
+valid answers keep the existing atomic answer-plus-wake behavior and SQLite
+schema. Added CLI and acceptance negative cases, plus the source and
+acceptance selection, passed `330 passed, 1 skipped`.
+
+This is deterministic public-entry evidence for the answer contract. A live
+single SPEC using the current Skill, real implementation/review workers, and
+the full production delivery path remains `not_verified`; #254 and its parent
+remain open.
+
 ## RCV-01 recovery attempt identity and observation retention (2026-09-26)
 
 Recovery observations now retain distinct provider requests even when they

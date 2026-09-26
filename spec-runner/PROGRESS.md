@@ -122,6 +122,20 @@ cases passed. The report is
 `acceptance/reports/SRAC-20260926-cold-install-01.json`. This remains installed
 artifact and deterministic evidence, not live SDK, GitHub, or takeover proof.
 
+The public business-answer boundary was tightened on 2026-09-26. A waiting
+answer now requires a matching durable worker question and input digest, and
+choice-valued questions reject values outside their persisted options before
+the answer or resume intent is written. The source and acceptance selection
+passed `330 passed, 1 skipped`.
+
+The native Windows control-database and launcher-log combined probe was replayed
+against this candidate. It rejected a locked `drive` with `control_database_busy`
+without advancing the database, terminated the exact detached owner, recovered
+the same run to `completed`, and replayed log rotation after handle release.
+Evidence: `acceptance/reports/SRAC-20260926-windows-control-db-launcher-logs-02.json`.
+This confirms the covered Windows combination; the remaining project-level
+acceptance gates stay explicitly `not_verified`.
+
 ## Remaining live qualification inputs
 
 The following inputs are needed only to produce additional live qualification

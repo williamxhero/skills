@@ -493,19 +493,86 @@ class Store:
         row = self.connection.execute("SELECT * FROM run_controls WHERE run_id = ?", (run_id,)).fetchone()
         return dict(row) if row else None
 
-    def submit_answer(self, *, run_id: str, question_id: str, value: object) -> dict[str, object]:
-        return self._submit_answer(run_id=run_id, question_id=question_id, value=value, wake=False)
+    def submit_answer(
+        self,
+        *,
+        run_id: str,
+        question_id: str,
+        value: object,
+        question: dict[str, object] | None = None,
+        expected_input_digest: str | None = None,
+    ) -> dict[str, object]:
+        return self._submit_answer(
+            run_id=run_id,
+            question_id=question_id,
+            value=value,
+            wake=False,
+            question=question,
+            expected_input_digest=expected_input_digest,
+        )
 
-    def submit_answer_and_wake(self, *, run_id: str, question_id: str, value: object) -> dict[str, object]:
+    def submit_answer_and_wake(
+        self,
+        *,
+        run_id: str,
+        question_id: str,
+        value: object,
+        question: dict[str, object] | None = None,
+        expected_input_digest: str | None = None,
+    ) -> dict[str, object]:
         """Commit an answer and its same-run resume intent atomically."""
-        return self._submit_answer(run_id=run_id, question_id=question_id, value=value, wake=True)
+        return self._submit_answer(
+            run_id=run_id,
+            question_id=question_id,
+            value=value,
+            wake=True,
+            question=question,
+            expected_input_digest=expected_input_digest,
+        )
 
-    def _submit_answer(self, *, run_id: str, question_id: str, value: object, wake: bool) -> dict[str, object]:
+    def _submit_answer(
+        self,
+        *,
+        run_id: str,
+        question_id: str,
+        value: object,
+        wake: bool,
+        question: dict[str, object] | None,
+        expected_input_digest: str | None,
+    ) -> dict[str, object]:
         if not question_id or any(character.isspace() for character in question_id):
             raise RunnerError("invalid_answer", "question_id must be non-empty and contain no whitespace")
         record = self.find_by_run_id(run_id)
         if record is None:
             raise RunnerError("unknown_run", f"run does not exist: {run_id}")
+        if expected_input_digest is not None and expected_input_digest != record.input_digest:
+            raise RunnerError(
+                "answer_input_stale",
+                "the answer belongs to a different requirement revision",
+                details={"run_id": run_id, "question_id": question_id},
+            )
+        if question is not None:
+            declared_id = question.get("id")
+            declared_text = question.get("question")
+            options = question.get("options", [])
+            if (
+                declared_id != question_id
+                or not isinstance(declared_text, str)
+                or not declared_text.strip()
+                or not isinstance(options, list)
+                or any(not isinstance(option, str) or not option.strip() for option in options)
+            ):
+                raise RunnerError(
+                    "answer_question_invalid",
+                    "the answer does not match the durable pending question",
+                    details={"run_id": run_id, "question_id": question_id},
+                )
+            if options and (not isinstance(value, str) or value not in options):
+                raise RunnerError(
+                    "answer_value_invalid",
+                    "the answer is not one of the choices offered by the pending question",
+                    details={"run_id": run_id, "question_id": question_id},
+                )
         if record.state in {"cancelled", "completed", "failed", "blocked", "blocked_writer_busy"} and wake:
             raise RunnerError("cancelled_run", "cancelled runs cannot be revived by an answer")
         value_json = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

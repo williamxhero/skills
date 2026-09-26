@@ -143,6 +143,63 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(conflict["error"]["code"], "answer_conflict")
 
+    def test_answer_cli_validates_the_durable_question_before_waking(self) -> None:
+        from spec_runner.store import RunRecord, Store, now
+
+        run_id = "answer-contract-run"
+        timestamp = now()
+        self.control_root.mkdir(parents=True)
+        store = Store.open(self.control_root, create=True)
+        try:
+            run = RunRecord(
+                run_id=run_id,
+                launch_key="answer-contract-launch",
+                input_digest="brief-v2",
+                config_digest="config",
+                repository_path=str(self.repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="codex_sdk",
+                state="needs_input",
+                current_step="codex_planning",
+                log_path="logs/answer-contract.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            store.create_run(run, "start:answer-contract-run")
+        finally:
+            store.close()
+        artifact = self.control_root / "artifacts" / run_id
+        artifact.mkdir(parents=True)
+        (artifact / "worker-result.json").write_text(
+            json.dumps({
+                "schema_version": "spec-runner-worker-result/v1",
+                "input_digest": "brief-v2",
+                "questions": [{"id": "format", "question": "Which format?", "options": ["json", "csv"]}],
+            }),
+            encoding="utf-8",
+        )
+
+        code, unknown = self.invoke(
+            "answer", "--control-root", str(self.control_root), "--run-id", run_id,
+            "--question-id", "other", "--value", "json",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(unknown["error"]["code"], "answer_question_unknown")
+        code, invalid = self.invoke(
+            "answer", "--control-root", str(self.control_root), "--run-id", run_id,
+            "--question-id", "format", "--value", "xml",
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(invalid["error"]["code"], "answer_value_invalid")
+        code, accepted = self.invoke(
+            "answer", "--control-root", str(self.control_root), "--run-id", run_id,
+            "--question-id", "format", "--value", "json",
+        )
+        self.assertEqual(code, 0, accepted)
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["control"]["requested_state"], "resume_requested")
+
     def test_cleanup_only_takeover_does_not_create_an_implementation_run(self) -> None:
         inventory = self.root / "cleanup-takeover.json"
         inventory.write_text(json.dumps({

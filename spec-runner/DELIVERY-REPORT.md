@@ -136,16 +136,33 @@ hosted Ubuntu and Windows jobs passed the native Windows cleanup lock matrix.
   Chinese/space-containing non-source cwd, the installed public CLI returned
   `0.1.0`, passed package inspection, and passed all ten deterministic fault
   cases. Evidence: `SRAC-20260926-cold-install-01.json`.
+## Current candidate evidence (2026-09-26)
+
+The public `answer` command now validates the durable worker question, its
+input digest, and offered choices before writing an answer or resume intent.
+Unknown questions, stale receipts, and invalid choices fail closed. The
+source and acceptance selection passed `330 passed, 1 skipped`; this remains
+deterministic contract evidence and does not replace live single-SPEC worker
+and delivery acceptance.
+
+The native Windows combined control-database and launcher-log probe was
+replayed against this candidate. A locked `drive` returned
+`control_database_busy` without advancing the SQLite database, the exact
+detached owner was terminated, the same run recovered to `completed`, and log
+rotation replayed successfully after handle release. Evidence:
+`acceptance/reports/SRAC-20260926-windows-control-db-launcher-logs-02.json`.
+The covered Windows combination is verified; remaining project-level gates
+remain explicitly unverified.
+
 ## Not verified / external blockers
 
 These are explicit gaps, not simulated passes:
 
 - real three-SPEC GitHub issue/PR/check/merge/cleanup side effects in the
   authorized `williamxhero/skills` acceptance scope;
-* Windows control-database and launcher-log locks across a detached Runner
-  restart or host/process failure (single-file, managed-worktree cleanup/retry,
-  direct SQLite/log/artifact-directory locks, and a detached artifact-lock
-  process are verified);
+* Windows control-database and launcher-log behavior outside the combined
+  probe's covered restart and rotation scenario, including the remaining
+  project-level #266 acceptance items;
 - real production three-SPEC acceptance against the current local Skill
   installation. The runtime reads the current authorized local Skill without a
   Matt hash or commit admission gate; upstream Matt invocation remains an
