@@ -1497,11 +1497,59 @@ class Store:
                 (run_id, spec_key, stage, generation),
             ).fetchone()
             if existing is not None:
-                expected = (canonical_path, bundle_digest, input_revision, workspace_json, bundle.get("last_verified_progress"))
-                actual = tuple(existing[key] for key in ("bundle_path", "bundle_digest", "input_revision", "workspace_identity_json", "last_verified_progress"))
-                if actual != expected:
+                if (
+                    existing["bundle_path"] == canonical_path
+                    and existing["bundle_digest"] == bundle_digest
+                    and existing["input_revision"] == input_revision
+                    and existing["workspace_identity_json"] == workspace_json
+                    and existing["last_verified_progress"] == bundle.get("last_verified_progress")
+                ):
+                    return dict(existing)
+
+                # The business handoff keeps one receipt per generation, while
+                # its workspace snapshot is a mutable observation. Rebuild the
+                # previous bundle digest with the stored observation so a
+                # restart can refresh progress without accepting a changed
+                # requirement or ticket plan.
+                previous_body = dict(bundle)
+                previous_body.pop("bundle_digest", None)
+                previous_body["workspace"] = json.loads(str(existing["workspace_identity_json"]))
+                previous_body["last_verified_progress"] = existing["last_verified_progress"]
+                previous_digest = hashlib.sha256(json.dumps(
+                    previous_body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")).hexdigest()
+                immutable_match = (
+                    existing["bundle_path"] == canonical_path
+                    and existing["input_revision"] == input_revision
+                    and previous_digest == existing["bundle_digest"]
+                )
+                if not immutable_match:
                     raise RunnerError("continuation_receipt_conflict", "continuation bundle identity or digest changed")
-                return dict(existing)
+                self.connection.execute(
+                    """UPDATE continuation_receipts
+                       SET bundle_digest = ?, workspace_identity_json = ?,
+                           last_verified_progress = ?, updated_at = ?
+                       WHERE receipt_id = ?""",
+                    (bundle_digest, workspace_json, bundle.get("last_verified_progress"), timestamp, existing["receipt_id"]),
+                )
+                self._insert_event(
+                    run_id=run_id,
+                    event_key=f"continuation:{existing['receipt_id']}:observed:{bundle_digest}",
+                    event_type="continuation_bundle_observed",
+                    payload={
+                        "receipt_id": existing["receipt_id"],
+                        "spec_key": spec_key,
+                        "stage": stage,
+                        "generation": generation,
+                        "bundle_digest": bundle_digest,
+                        "previous_bundle_digest": existing["bundle_digest"],
+                    },
+                )
+                row = self.connection.execute(
+                    "SELECT * FROM continuation_receipts WHERE receipt_id = ?", (existing["receipt_id"],)
+                ).fetchone()
+                assert row is not None
+                return dict(row)
             self.connection.execute(
                 """INSERT INTO continuation_receipts(
                    receipt_id, run_id, spec_key, stage, generation, bundle_path,

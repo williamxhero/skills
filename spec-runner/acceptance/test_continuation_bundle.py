@@ -102,6 +102,30 @@ def test_continuation_receipt_digest_conflict_fails_closed(tmp_path):
         store.close()
 
 
+def test_continuation_receipt_refreshes_workspace_observation(tmp_path):
+    control = tmp_path / "control"
+    store = Store.open(control, create=True)
+    run = _run_record(tmp_path)
+    store.create_run(run, "start:run-1")
+    path = control / "artifacts" / run.run_id / "continuation-S1.json"
+    first = build_bundle(bundle_input()).public()
+    write_bundle_atomic(path, build_bundle(bundle_input()))
+    store.record_continuation_bundle(run_id=run.run_id, bundle_path=path, bundle=first)
+    changed = dict(bundle_input())
+    changed["workspace"] = {"path": "worktree", "branch": "runner/S1", "head": "def"}
+    second = build_bundle(changed).public()
+    write_bundle_atomic(path, build_bundle(changed))
+
+    try:
+        receipt = store.record_continuation_bundle(run_id=run.run_id, bundle_path=path, bundle=second)
+        assert receipt["bundle_digest"] == second["bundle_digest"]
+        status = store.public_status(run.run_id)
+        assert status["continuation"][0]["workspace_identity"]["head"] == "def"
+        assert any(event["event_type"] == "continuation_bundle_observed" for event in status["events"])
+    finally:
+        store.close()
+
+
 def test_runner_reconciliation_adopts_only_the_existing_run(tmp_path):
     control = tmp_path / "control"
     store = Store.open(control, create=True)

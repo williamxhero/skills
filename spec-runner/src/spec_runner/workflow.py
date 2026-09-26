@@ -1127,6 +1127,22 @@ def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest:
     step = "codex_repair"
     worker = f"codex_sdk:{run.run_id}:{step}:{spec_key}"
     write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
+    # Repair input is part of the durable handoff.  A candidate verification
+    # failure can happen before an independent review receipt exists, so the
+    # recovery path must not depend on review artifacts to reconstruct the
+    # findings that authorized this repair turn.
+    findings_digest = digest(findings)
+    _write_json_atomic(
+        artifact_directory / f"repair-findings-{spec_key}-{findings_digest[:12]}.json",
+        {
+            "schema_version": "spec-runner-repair-findings/v1",
+            "run_id": run.run_id,
+            "spec_key": spec_key,
+            "operation_id": operation,
+            "findings_digest": findings_digest,
+            "findings": findings,
+        },
+    )
     store.begin_stage(run.run_id, step_name=step, operation_id=operation, backend_kind="codex_sdk", worker_id=worker)
     adapter = CodexAdapter()
     if not start_new_thread:
@@ -3210,12 +3226,19 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
 
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     review_files = sorted(artifact_directory.glob(f"review-{spec_key}-*.json"))
-    if not review_files:
-        raise RunnerError("recovery_blocked", "failed repair turn has no persisted review findings")
-    review = load_json(review_files[-1])
-    findings = review.get("blocking")
+    repair_findings_files = sorted(artifact_directory.glob(f"repair-findings-{spec_key}-*.json"))
+    findings_document = load_json(review_files[-1]) if review_files else None
+    if findings_document is None and repair_findings_files:
+        findings_document = load_json(repair_findings_files[-1])
+    if findings_document is None:
+        raise RunnerError("recovery_blocked", "failed repair turn has no persisted repair findings")
+    findings = (
+        findings_document.get("blocking")
+        if "blocking" in findings_document
+        else findings_document.get("findings")
+    )
     if not isinstance(findings, list) or not findings:
-        raise RunnerError("recovery_blocked", "failed repair turn has no persisted blocking findings")
+        raise RunnerError("recovery_blocked", "failed repair turn has no persisted repair findings")
     ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
     if not ticket_path.is_file():
         raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")

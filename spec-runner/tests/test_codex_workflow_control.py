@@ -1530,8 +1530,15 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     }),
                     encoding="utf-8",
                 )
-                (artifact / "review-SPEC-95-5fd4820bf202.json").write_text(
-                    json.dumps({"blocking": [{"severity": "high", "status": "open", "description": "repair this"}]}),
+                # Candidate verification can fail before an independent review
+                # exists. Recovery must use the durable repair handoff itself.
+                (artifact / "repair-findings-SPEC-95-candidate-failure.json").write_text(
+                    json.dumps({
+                        "schema_version": "spec-runner-repair-findings/v1",
+                        "run_id": run_id,
+                        "spec_key": "SPEC-95",
+                        "findings": [{"severity": "high", "status": "open", "description": "repair this"}],
+                    }),
                     encoding="utf-8",
                 )
 
