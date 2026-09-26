@@ -433,6 +433,153 @@ class SpecRunnerCliTests(unittest.TestCase):
         else:
             self.fail("detached deterministic runner did not complete")
 
+    def test_duplicate_detached_launch_reuses_terminal_identity_without_spawning(self) -> None:
+        code, first = self.invoke(
+            "launch",
+            "--brief", str(self.brief),
+            "--config", str(self.config),
+            "--control-root", str(self.control_root),
+            "--launch-key", "detached-replay-001",
+        )
+        self.assertEqual(code, 0, first)
+        run_id = first["run_id"]
+
+        self.brief.write_text("changed detached input", encoding="utf-8")
+        code, conflict = self.invoke(
+            "launch",
+            "--brief", str(self.brief),
+            "--config", str(self.config),
+            "--control-root", str(self.control_root),
+            "--launch-key", "detached-replay-001",
+        )
+        self.assertEqual(code, 2, conflict)
+        self.assertEqual(conflict["error"]["code"], "launch_key_input_conflict")
+        self.brief.write_text("# 中文 brief\n交付隔离交接。\n", encoding="utf-8")
+
+        code, second = self.invoke(
+            "launch",
+            "--brief", str(self.brief),
+            "--config", str(self.config),
+            "--control-root", str(self.control_root),
+            "--launch-key", "detached-replay-001",
+        )
+        self.assertEqual(code, 0, second)
+        self.assertFalse(second["started"])
+        self.assertEqual(second["run_id"], run_id)
+        self.assertEqual(second["run"]["run"]["run_id"], run_id)
+
+        code, status = self.invoke("status", "--control-root", str(self.control_root))
+        self.assertEqual(code, 0, status)
+        self.assertEqual([item["run_id"] for item in status["runs"]], [run_id])
+
+    def test_duplicate_active_detached_launch_reuses_runtime_without_second_child(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(SOURCE_ROOT)
+        environment["SPEC_RUNNER_FAULT_POINT"] = "after_first_artifact"
+        first_process = subprocess.run(
+            [
+                sys.executable, "-m", "spec_runner.cli", "launch",
+                "--brief", str(self.brief), "--config", str(self.config),
+                "--control-root", str(self.control_root), "--launch-key", "detached-active-001",
+            ],
+            cwd=self.root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(first_process.returncode, 0, first_process.stderr)
+        first = json.loads(first_process.stdout)
+        run_id = str(first["run_id"])
+        ready = self.control_root / "faults" / f"{run_id}.after_first_artifact.ready"
+        for _ in range(100):
+            if ready.is_file():
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("detached child did not reach the deterministic pause")
+
+        code, second = self.invoke(
+            "launch",
+            "--brief", str(self.brief), "--config", str(self.config),
+            "--control-root", str(self.control_root), "--launch-key", "detached-active-001",
+        )
+        self.assertEqual(code, 0, second)
+        self.assertTrue(second["started"])
+        self.assertEqual(second["pid"], first["pid"])
+        self.assertEqual(second["run_id"], run_id)
+
+        (self.control_root / "faults" / f"{run_id}.after_first_artifact.continue").write_text("continue\n", encoding="utf-8")
+        for _ in range(100):
+            code, status = self.invoke("status", "--control-root", str(self.control_root), "--run-id", run_id)
+            if code == 0 and status["run"]["state"] == "completed":
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("replayed detached child did not complete")
+
+    def test_detached_launch_rejects_a_second_control_root_for_the_same_repository_scope(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(SOURCE_ROOT)
+        environment["SPEC_RUNNER_FAULT_POINT"] = "after_first_artifact"
+        first_process = subprocess.run(
+            [
+                sys.executable, "-m", "spec_runner.cli", "launch",
+                "--brief", str(self.brief), "--config", str(self.config),
+                "--control-root", str(self.control_root), "--launch-key", "scope-owner-001",
+            ],
+            cwd=self.root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(first_process.returncode, 0, first_process.stderr)
+        first = json.loads(first_process.stdout)
+        run_id = str(first["run_id"])
+        ready = self.control_root / "faults" / f"{run_id}.after_first_artifact.ready"
+        for _ in range(100):
+            if ready.is_file():
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("detached child did not reach the deterministic pause")
+
+        second_root = self.root / "second control root"
+        second_config = self.root / "second-runner.json"
+        second_config.write_text(
+            self.config.read_text(encoding="utf-8").replace(
+                str(self.control_root), str(second_root)
+            ),
+            encoding="utf-8",
+        )
+        process = subprocess.run(
+            [
+                sys.executable, "-m", "spec_runner.cli", "launch",
+                "--brief", str(self.brief), "--config", str(second_config),
+                "--control-root", str(second_root), "--launch-key", "scope-owner-002",
+                "--handshake-timeout", "0.5",
+            ],
+            cwd=self.root,
+            env=os.environ | {"PYTHONPATH": str(SOURCE_ROOT)},
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(process.returncode, 2, process.stdout)
+        blocked = json.loads(process.stdout)
+        self.assertEqual(blocked["error"]["code"], "global_writer_busy")
+        self.assertFalse(second_root.exists())
+
+        (self.control_root / "faults" / f"{run_id}.after_first_artifact.continue").write_text("continue\n", encoding="utf-8")
+        for _ in range(100):
+            code, status = self.invoke("status", "--control-root", str(self.control_root), "--run-id", run_id)
+            if code == 0 and status["run"]["state"] == "completed":
+                break
+            time.sleep(0.05)
+        else:
+            self.fail("scope owner did not complete after releasing the fault boundary")
+
     def test_public_logs_rotate_is_replayable_for_an_existing_run(self) -> None:
         code, started = self.start("logs-001")
         self.assertEqual(code, 0, started)

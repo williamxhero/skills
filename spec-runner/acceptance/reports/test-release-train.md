@@ -844,3 +844,25 @@ This increment covers the SDK exception and result conversion boundary only.
 The four real provider entry paths, live injected recovery, full attribution
 matrix, and project-level L3-L5 gates remain `not_verified`; #293 and its
 parent remain open.
+
+## SF-05.1 detached launch identity and writer exclusion (2026-09-26)
+
+The public detached `launch` path now reads and validates an existing
+`launch_key` before creating a child UUID or launcher log. A terminal replay
+returns the recorded run without spawning another process. An active replay
+returns the same durable run and PID only when the runtime owner token still
+matches its writer lease. Launchers for different control roots share a
+repository/ref process lock, so an active writer cannot be raced by a second
+detached child. The handshake also requires the child to hold the matching
+durable writer lease; a runtime row by itself is not accepted as ownership.
+
+The focused public CLI selection passed `12 passed`, covering terminal replay,
+active replay, same repository/ref contention across control roots, input
+conflict, relative paths, and the existing handshake cases. The explicit source
+and acceptance selection passed `320 passed, 1 skipped`; `compileall` and
+`git diff --check` passed.
+
+This is deterministic process and SQLite evidence. Native Windows duplicate
+launch under a detached restart, live SDK long-turn/provider recovery, complete
+cancellation and handshake coverage, and project-level L3-L5 gates remain
+`not_verified`; #264 and its parent remain open.

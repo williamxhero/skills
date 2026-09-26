@@ -61,6 +61,7 @@ spec-runner start --brief .\brief.md --config .\runner.json `
   --control-root .\.spec-runner --launch-key example-001
 spec-runner status --control-root .\.spec-runner --run-id <run_id>
 spec-runner doctor --config .\runner.json --control-root .\.spec-runner
+spec-runner launch --brief .\brief.md --config .\runner.json --control-root .\.spec-runner --launch-key example-001
 spec-runner logs rotate --control-root .\.spec-runner --run-id <run_id> --rotation-key maintenance-001
 spec-runner pause --control-root .\.spec-runner --run-id <run_id>
 spec-runner resume --brief .\brief.md --config .\runner.json --control-root .\.spec-runner --launch-key example-001
@@ -73,6 +74,11 @@ they never create a control directory, SQLite database, Git resource, credential
 or SDK installation. Reusing a launch key with identical normalized inputs returns
 the original run. Reusing it with changed input is rejected; use a new launch key
 for a deliberately new run.
+
+`launch` reuses an existing launch identity after validating its normalized
+brief and configuration. It does not create a second detached child for an
+active or terminal `launch_key`; the same repository/ref is also protected
+across different control roots by the writer lock.
 
 The live SDK case is intentionally not run by ordinary tests because it requires
 the operator's existing Codex authentication. Set `execution_backend` to
