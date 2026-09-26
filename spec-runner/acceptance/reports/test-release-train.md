@@ -776,3 +776,25 @@ The durable report is
 boundary and deterministic replay only; live SDK production delivery, live
 GitHub side effects, Windows control-DB/log restart recovery, and source-thread
 takeover remain `not_verified`.
+
+## RCV-01.1 SDK exception and process-exit observation boundary (2026-09-26)
+
+The Codex adapter now projects structured error data from SDK JSON-RPC and
+transport exceptions into the same `FaultObservation` shape used by failed
+turn results. It preserves the discriminated `codexErrorInfo` code and
+`httpStatusCode` when the SDK exposes them, records the SDK exception type and
+an explicit structured-versus-text evidence marker, classifies transport or
+client-process exits as stream disconnections, and keeps admission/outcome
+`unknown` when no formal turn identity exists. A failed turn with no SDK error
+object also receives a structured fallback observation and receipt error.
+
+The focused adapter/recovery/SDK contract selection passed `43 passed, 1
+skipped`. The explicit source and acceptance selection passed `285 passed, 1
+skipped` in `68.26 seconds` using `PYTHONPATH=spec-runner/src pytest
+spec-runner/tests spec-runner/acceptance
+--ignore=spec-runner/acceptance/fixture-app -q`; `compileall` passed.
+
+This increment covers the SDK exception and result conversion boundary only.
+The four real provider entry paths, live injected recovery, full attribution
+matrix, and project-level L3-L5 gates remain `not_verified`; #293 and its
+parent remain open.

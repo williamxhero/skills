@@ -100,7 +100,7 @@ def classify_fault(*, code: Any = None, error_type: Any = None, message: Any = N
         return FaultFamily.NEEDS_INPUT, "needs_input"
     if status in {408, 425, 429, 500, 502, 503, 504} or any(token in haystack for token in ("capacity", "rate limit", "temporarily unavailable", "server busy", "429")):
         return FaultFamily.CAPACITY, "capacity_or_transient"
-    if any(token in haystack for token in ("stream disconnected", "response stream disconnected", "response stream connection failed", "responsestreamdisconnected", "responsestreamconnectionfailed", "stream closed", "connection reset", "broken pipe", "eof", "disconnect")):
+    if any(token in haystack for token in ("stream disconnected", "response stream disconnected", "response stream connection failed", "responsestreamdisconnected", "responsestreamconnectionfailed", "stream closed", "transport closed", "connection closed", "connection reset", "broken pipe", "eof", "disconnect", "process exited")):
         return FaultFamily.STREAM_DISCONNECTED, "stream_disconnected"
     return FaultFamily.UNKNOWN, "unknown"
 

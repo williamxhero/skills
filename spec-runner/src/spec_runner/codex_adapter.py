@@ -50,6 +50,34 @@ class CodexWorkerResult:
         return result
 
 
+def _sdk_public_mapping(value: Any) -> Any:
+    """Project an SDK model or enum into a bounded public representation."""
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(by_alias=True, exclude_none=True)
+        except TypeError:
+            dumped = value.model_dump()
+        return _sdk_public_mapping(dumped)
+    if hasattr(value, "root"):
+        return _sdk_public_mapping(value.root)
+    if hasattr(value, "value") and not isinstance(value, (str, bytes)):
+        return _sdk_public_mapping(value.value)
+    if isinstance(value, dict):
+        return {key: _sdk_public_mapping(item) for key, item in value.items()}
+    return value
+
+
+def _sdk_error_info_fields(info: Any) -> tuple[object | None, object | None]:
+    """Extract a discriminated SDK error code and its optional HTTP status."""
+    value = _sdk_public_mapping(info)
+    if isinstance(value, dict) and len(value) == 1:
+        code, detail = next(iter(value.items()))
+        detail = _sdk_public_mapping(detail)
+        status = detail.get("httpStatusCode", detail.get("http_status_code")) if isinstance(detail, dict) else None
+        return code, status
+    return value if isinstance(value, str) else None, None
+
+
 def _sdk_turn_error_payload(error: Any) -> dict[str, object]:
     """Select public, typed fields of an SDK TurnError without serializing it."""
     message = getattr(error, "message", None)
@@ -58,32 +86,52 @@ def _sdk_turn_error_payload(error: Any) -> dict[str, object]:
     info = getattr(error, "codex_error_info", None)
     if info is None and isinstance(error, dict):
         info = error.get("codexErrorInfo", error.get("codex_error_info"))
-    if hasattr(info, "model_dump"):
-        info = info.model_dump(by_alias=True)
-    elif hasattr(info, "root"):
-        info = info.root
-    if hasattr(info, "model_dump"):
-        info = info.model_dump(by_alias=True)
-    if isinstance(info, dict) and len(info) == 1:
-        code, detail = next(iter(info.items()))
-        if code == "root" and hasattr(detail, "value"):
-            code = detail.value
-            detail = None
-        if hasattr(detail, "model_dump"):
-            detail = detail.model_dump(by_alias=True)
-        status = detail.get("httpStatusCode") if isinstance(detail, dict) else None
-    else:
-        code = getattr(info, "value", info) if info is not None else None
-        status = None
+    code, status = _sdk_error_info_fields(info)
     return {
         "message": message if isinstance(message, str) else str(error),
         "code": code if isinstance(code, str) else None,
+        "error_type": type(error).__name__,
         "http_status": status,
         "source": "sdk_result",
         "structured": isinstance(code, str) or status is not None,
         "request_admission": "accepted",
         "execution_outcome": "failed",
         "evidence": ["sdk_turn_error_info"] if isinstance(code, str) else ["sdk_turn_error_text_fallback"],
+    }
+
+
+def _sdk_exception_payload(error: BaseException, *, thread_id: str | None,
+                           turn_id: str | None, requested_model: str,
+                           requested_effort: str) -> dict[str, object]:
+    """Normalize SDK transport/RPC exceptions at the same boundary as results."""
+    data = _sdk_public_mapping(getattr(error, "data", None))
+    info = getattr(error, "codex_error_info", None) or getattr(error, "codexErrorInfo", None)
+    if info is None and isinstance(data, dict):
+        info = data.get("codexErrorInfo", data.get("codex_error_info"))
+    code, status = _sdk_error_info_fields(info)
+    if code is None and getattr(error, "code", None) is not None:
+        code = str(getattr(error, "code"))
+    if status is None and isinstance(data, dict):
+        status = data.get("httpStatusCode", data.get("http_status_code"))
+    evidence = ["sdk_exception_type"]
+    if code is not None or status is not None:
+        evidence.append("sdk_exception_structured_fields")
+    else:
+        evidence.append("sdk_exception_text_fallback")
+    return {
+        "message": str(getattr(error, "message", None) or error)[:500],
+        "code": code if isinstance(code, str) else None,
+        "error_type": type(error).__name__,
+        "http_status": status,
+        "source": "sdk_exception",
+        "structured": code is not None or status is not None,
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "request_admission": "accepted" if turn_id else "unknown",
+        "execution_outcome": "unknown",
+        "requested_model": requested_model,
+        "requested_effort": requested_effort,
+        "evidence": evidence,
     }
 
 class CodexAdapter:
@@ -344,7 +392,13 @@ class CodexAdapter:
             raise
         except Exception as exc:
             message = str(exc).lower()
-            details = getattr(exc, "details", {}) or {}
+            sdk_fault = _sdk_exception_payload(
+                exc,
+                thread_id=result_thread_id if "result_thread_id" in locals() else None,
+                turn_id=result_turn_id if "result_turn_id" in locals() else None,
+                requested_model=model,
+                requested_effort=effort,
+            )
             if "does not exist or you do not have access" in message:
                 code = "sdk_model_unavailable"
                 description = "the requested model was rejected by the current Codex account or runtime"
@@ -375,7 +429,7 @@ class CodexAdapter:
                     "external_result_requires_reconciliation": "result_turn_id" in locals(),
                     "fault_observation": observation_from_error(
                         operation_kind="codex_turn",
-                        error=exc,
+                        error=sdk_fault,
                         thread_id=result_thread_id if "result_thread_id" in locals() else None,
                         turn_id=result_turn_id if "result_turn_id" in locals() else None,
                         requested_model=model,
@@ -418,7 +472,7 @@ class CodexAdapter:
             thread_id=result_thread_id,
             turn_id=result_turn_id,
             status=str(getattr(result_status, "value", result_status)),
-            error=fault_observation["message"] if result_error else None,
+            error=fault_observation["message"] if fault_observation else None,
             final_response=getattr(result, "final_response", None),
             item_count=len(getattr(result, "items", []) or []),
             started_at=getattr(result, "started_at", None),
