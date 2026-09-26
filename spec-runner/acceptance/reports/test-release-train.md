@@ -866,3 +866,24 @@ This is deterministic process and SQLite evidence. Native Windows duplicate
 launch under a detached restart, live SDK long-turn/provider recovery, complete
 cancellation and handshake coverage, and project-level L3-L5 gates remain
 `not_verified`; #264 and its parent remain open.
+
+## SF-05.2 production control boundary before GitHub resume (2026-09-26)
+
+The production workflow now consumes a persisted pause or cancel request at
+the queue boundary and at the GitHub waiting-resume boundary. It records the
+control application, moves the run to `paused` or `cancelled`, and returns the
+durable status before selecting another SPEC or invoking GitHub delivery. This
+preserves the existing candidate, review, merge and cleanup evidence; it does
+not pretend that an already accepted external merge was undone.
+
+Focused GitHub production boundary coverage passed `12 passed`, including
+pause and cancel during CI or merge-queue waiting, with no GitHub adapter call;
+production queue coverage also proves cancellation before selecting the next
+SPEC. The explicit source and acceptance selection passed `323 passed, 1
+skipped`; `compileall` and `git diff --check` passed.
+
+This is deterministic production orchestration evidence. Public CLI recovery
+against a real GitHub sandbox, live SDK interruption/provider recovery,
+external side-effect reconciliation after an in-flight merge, complete
+takeover-chain coverage, and project-level L3-L5 gates remain `not_verified`;
+#265 and its parent remain open.

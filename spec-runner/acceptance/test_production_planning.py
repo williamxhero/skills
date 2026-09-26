@@ -89,6 +89,25 @@ def test_archive_receipt_is_durable_and_replay_does_not_archive_again(context, m
             if event["event_type"] == "cleanup_readback"][-1]["payload"] == first
 
 
+def test_production_queue_honors_cancel_before_selecting_the_next_spec(context):
+    root, config, store, run = context
+    store.set_run_state(run.run_id, "planned")
+    store.request_control(run.run_id, "cancel_requested")
+
+    result = workflow._run_production_queue(
+        control_root=root,
+        config=config,
+        brief_digest="brief",
+        run=store.find_by_run_id(run.run_id),
+        store=store,
+        spec_plan={"digest": "plan-1", "specs": [{"key": "S1", "blocked_by": []}]},
+    )
+
+    assert result["state"] == "cancelled"
+    assert result["run"]["state"] == "cancelled"
+    assert not (root / "artifacts" / run.run_id).exists()
+
+
 def test_archive_identity_failure_does_not_advance_planning_stage(context, monkeypatch):
     root, config, store, run = context
     adapter(

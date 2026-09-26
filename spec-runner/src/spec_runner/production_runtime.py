@@ -132,6 +132,25 @@ class ProductionWorkflow:
         }
         self.write_json_atomic(artifact / f"delivery-{spec_key}.json", record)
 
+    def _control_boundary(self) -> dict[str, object] | None:
+        """Stop production before a new side effect when control is pending."""
+        run, store = self._durable()
+        control = store.control_for_run(run.run_id)
+        requested = str(control.get("requested_state")) if control else ""
+        if requested not in {"pause_requested", "cancel_requested"}:
+            return None
+        stopped_state = "paused" if requested == "pause_requested" else "cancelled"
+        if run.state != stopped_state:
+            store.set_run_state(run.run_id, stopped_state)
+        generation = control.get("generation") if control else None
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"control:{run.run_id}:{generation}:applied",
+            event_type="control_applied",
+            payload={"requested_state": requested, "generation": generation, "during": "production"},
+        )
+        return {"state": stopped_state, **store.public_status(run.run_id)}
+
     def run_queue(self, spec_plan: dict[str, object]) -> dict[str, object]:
         """Select and complete dependency-ready SPECs in plan order."""
         run, store = self._durable()
@@ -146,6 +165,9 @@ class ProductionWorkflow:
             raise RunnerError("invalid_spec_plan", "production queue requires keyed SPEC objects")
         completed = self.completed_specs()
         while len(completed) < len(specs):
+            stopped = self._control_boundary()
+            if stopped is not None:
+                return stopped
             ready = [
                 item for item in specs
                 if str(item.get("key")) not in completed
@@ -170,6 +192,9 @@ class ProductionWorkflow:
             if ticketed.state != "tickets_ready":
                 current = store.find_by_run_id(run.run_id) or run
                 return {"state": current.state, **store.public_status(run.run_id)}
+            stopped = self._control_boundary()
+            if stopped is not None:
+                return stopped
             ticket_files = sorted(self._artifact(run.run_id).glob(f"ticket-plan-{spec_key}.json"))
             if not ticket_files:
                 raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
@@ -204,6 +229,9 @@ class ProductionWorkflow:
     def resume_waiting_github(self, *, finalize_run: bool = True) -> dict[str, object]:
         """Reconcile one persisted CI wait, then finish delivery and cleanup."""
         run, store = self._durable()
+        stopped = self._control_boundary()
+        if stopped is not None:
+            return stopped
         artifact = self._artifact()
         github_files = sorted(artifact.glob("github-*.json"))
         manifests = []
@@ -270,6 +298,9 @@ class ProductionWorkflow:
         if len(matching_manifests) != 1:
             raise RunnerError("github_waiting_evidence_missing", "waiting GitHub run needs one workspace manifest for its SPEC")
         manifest_path, manifest = matching_manifests[0]
+        stopped = self._control_boundary()
+        if stopped is not None:
+            return stopped
         result = self.execute_github_delivery(
             control_root=self.control_root,
             config=self.config,

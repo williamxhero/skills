@@ -63,6 +63,34 @@ def test_github_pending_is_waiting_and_does_not_merge(monkeypatch, github_contex
     assert constructor_options == [{"timeout_seconds": 9.5}]
 
 
+@pytest.mark.parametrize("requested_state, expected_state", [
+    ("pause_requested", "paused"),
+    ("cancel_requested", "cancelled"),
+])
+def test_waiting_github_control_stops_before_external_resume_side_effect(
+    monkeypatch, github_context, requested_state, expected_state,
+):
+    root, config, store, run = github_context
+    store.set_run_state(run.run_id, "waiting_ci")
+    store.request_control(run.run_id, requested_state)
+
+    def unexpected_delivery(**_kwargs):
+        raise AssertionError("a paused or cancelled production run must not resume GitHub delivery")
+
+    monkeypatch.setattr(workflow, "_execute_github_delivery", unexpected_delivery)
+    current = store.find_by_run_id(run.run_id)
+    assert current is not None
+    result = workflow._resume_waiting_github(
+        control_root=root, config=config, run=current, store=store, finalize_run=False,
+    )
+
+    assert result["state"] == expected_state
+    assert result["run"]["state"] == expected_state
+    assert store.find_by_run_id(run.run_id).state == expected_state
+    applied = [event for event in store.events_for_run(run.run_id) if event["event_type"] == "control_applied"]
+    assert applied[-1]["payload"]["during"] == "production"
+
+
 def test_github_merge_requires_explicit_authorization(monkeypatch, github_context):
     root, config, store, run = github_context
     config = replace(config, github_merge_authorized=False)
