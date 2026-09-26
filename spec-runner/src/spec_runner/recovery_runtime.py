@@ -9,6 +9,7 @@ shapes intentionally remain unchanged.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -24,8 +25,36 @@ from .recovery import (
 from .store import RunRecord, Store
 
 
+@dataclass(frozen=True)
+class RecoveryEpisode:
+    """Narrow recovery interface bound to one durable run and Store.
+
+    The persistence implementation remains centralized in ``RecoveryRuntime``
+    for compatibility.  Callers use this object so they do not repeatedly
+    pass the same run and Store handles through the recovery seam.
+    """
+
+    run: RunRecord
+    store: Store
+
+    def record_failure(self, *, operation_id: str, error: RunnerError) -> RecoveryDecision:
+        return RecoveryRuntime.record_failure(
+            run=self.run, store=self.store, operation_id=operation_id, error=error,
+        )
+
+    def waits(self) -> bool:
+        return RecoveryRuntime.waits(run=self.run, store=self.store)
+
+    def wait_record(self) -> tuple[str, str] | None:
+        return RecoveryRuntime.wait_record(store=self.store, run_id=self.run.run_id)
+
+
 class RecoveryRuntime:
-    """Coordinate durable recovery state for one persisted run."""
+    """Compatibility implementation for the RecoveryEpisode seam."""
+
+    @classmethod
+    def episode(cls, *, run: RunRecord, store: Store) -> RecoveryEpisode:
+        return RecoveryEpisode(run=run, store=store)
 
     @staticmethod
     def episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:

@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from spec_runner.errors import RunnerError
+from spec_runner.recovery_runtime import RecoveryEpisode
 from spec_runner.store import RunRecord, Store, now
 from spec_runner import workflow
 
@@ -59,15 +60,10 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
         backend_kind="codex_sdk", worker_id="worker-capacity",
     )
     try:
-        first = workflow._record_recovery_failure(
-            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-1")
-        )
-        second = workflow._record_recovery_failure(
-            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-2")
-        )
-        duplicate = workflow._record_recovery_failure(
-            run=run, store=store, operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-2")
-        )
+        episode = RecoveryEpisode(run=run, store=store)
+        first = episode.record_failure(operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-1"))
+        second = episode.record_failure(operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-2"))
+        duplicate = episode.record_failure(operation_id="planning:" + run.run_id, error=_capacity_error("turn-capacity-2"))
         assert first.action.value == "wait_retry"
         assert second.action.value == "service_wait"
         assert duplicate.action.value == "service_wait"

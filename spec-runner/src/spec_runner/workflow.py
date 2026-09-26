@@ -26,7 +26,7 @@ from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, i
 from .github_delivery import GitHubDelivery
 from .store import _process_alive
 from .continuation import ContinuationBundle, read_bundle, write_bundle_atomic
-from .recovery_runtime import RecoveryRuntime
+from .recovery_runtime import RecoveryEpisode, RecoveryRuntime
 from .recovery_evidence import latest_worker, read_turn_evidence
 from .production_runtime import ProductionPorts, ProductionWorkflow
 from .stage_progression import StageProgression
@@ -324,12 +324,12 @@ def _recovery_episode_identity(*, run_id: str, operation_kind: str, stage: str, 
 def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
                              error: RunnerError) -> RecoveryDecision:
     """Compatibility façade for durable fault observation and decisions."""
-    return RecoveryRuntime.record_failure(run=run, store=store, operation_id=operation_id, error=error)
+    return RecoveryEpisode(run=run, store=store).record_failure(operation_id=operation_id, error=error)
 
 
 def _recovery_waits(*, run: RunRecord, store: Store, config: RunnerConfig) -> bool:
     """Compatibility façade for persisted recovery wait admission."""
-    return RecoveryRuntime.waits(run=run, store=store)
+    return RecoveryEpisode(run=run, store=store).waits()
 
 
 def _recovery_wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
@@ -4447,7 +4447,7 @@ def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_dig
             spec_plan=spec_plan,
         )
     except RunnerError as exc:
-        decision = RecoveryRuntime.record_failure(run=run, store=store, operation_id=f"start:{run.run_id}", error=exc)
+        decision = RecoveryEpisode(run=run, store=store).record_failure(operation_id=f"start:{run.run_id}", error=exc)
         # The initial planning stage is wrapped by start(), but production
         # queue work begins after that boundary. Close the durable run before
         # returning a queue error so a process exit cannot leave it running.
@@ -4829,7 +4829,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                 log_path=os.fspath(control_root / existing.log_path),
             )
             heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(control_root=control_root, scope=lease_scope, owner_token=owner_token, global_path=global_lease)
-            if RecoveryRuntime.waits(run=existing, store=store):
+            if RecoveryEpisode(run=existing, store=store).waits():
                 return {"created": False, **store.public_status(existing.run_id)}
             existing = store.find_by_run_id(existing.run_id) or existing
             route = StageProgression.select(
@@ -4863,11 +4863,8 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     route,
                 )
             except RunnerError as exc:
-                decision = RecoveryRuntime.record_failure(
-                    run=existing,
-                    store=store,
-                    operation_id=f"start:{existing.run_id}",
-                    error=exc,
+                decision = RecoveryEpisode(run=existing, store=store).record_failure(
+                    operation_id=f"start:{existing.run_id}", error=exc,
                 )
                 if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
                     store.fail_run(existing.run_id, f"start:{existing.run_id}", state=decision.action.value)
@@ -4910,7 +4907,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     control_root=control_root, config=config, run=existing, brief=brief, brief_digest=brief_digest, store=store
                 )
             except RunnerError as exc:
-                decision = RecoveryRuntime.record_failure(run=existing, store=store, operation_id=f"start:{existing.run_id}", error=exc)
+                decision = RecoveryEpisode(run=existing, store=store).record_failure(operation_id=f"start:{existing.run_id}", error=exc)
                 if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
                     store.fail_run(existing.run_id, f"start:{existing.run_id}", state=decision.action.value)
                     return {"created": False, **store.public_status(existing.run_id)}
@@ -5000,7 +4997,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                     thread_id=successor_thread_id,
                 )
         except RunnerError as exc:
-            decision = RecoveryRuntime.record_failure(run=record, store=store, operation_id=operation_id, error=exc)
+            decision = RecoveryEpisode(run=record, store=store).record_failure(operation_id=operation_id, error=exc)
             state = decision.action.value if decision.action in {
                 RecoveryAction.WAIT_RETRY,
                 RecoveryAction.SERVICE_WAIT,
