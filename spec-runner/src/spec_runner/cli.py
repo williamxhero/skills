@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from . import __version__
-from .config import DEFAULT_GITHUB_TIMEOUT_SECONDS
+from .config import DEFAULT_GITHUB_TIMEOUT_SECONDS, RunnerConfig
 from .errors import RunnerError
 from .github_tracker import GitHubTracker
 from .github_delivery import GitHubDelivery
@@ -22,6 +22,8 @@ from .log_runtime import rotate_launcher_logs
 from .plans import digest, intake_snapshot, load_json as plan_json, validate_spec_plan, validate_ticket_plan
 from .takeover import (
     completion_action,
+    frontier_execution_steps,
+    frontier_step_transition,
     inspect_takeover,
     inventory_from_thread_observation,
     load_inventory,
@@ -29,6 +31,7 @@ from .takeover import (
     plan_frontier,
     record_takeover_transition,
     refresh_takeover_evidence,
+    verify_frontier_step,
     write_takeover_record,
 )
 from .tracker import publish_local, read_local
@@ -282,6 +285,25 @@ def _source_material_digest(observation: object) -> str | None:
         "completeness": observation.get("completeness"),
         "turn_count": observation.get("turn_count"),
     })
+
+
+def _takeover_transition(
+    transitions: object,
+    *,
+    event_key: str,
+    state: str,
+) -> dict[str, object] | None:
+    if not isinstance(transitions, list):
+        return None
+    return next(
+        (
+            item for item in reversed(transitions)
+            if isinstance(item, dict)
+            and item.get("event_key") == event_key
+            and item.get("state") == state
+        ),
+        None,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -650,6 +672,59 @@ def main(argv: Sequence[str] | None = None) -> int:
                             result["action"] = action
                             result["record"] = refreshed["record"]
                             result["transitions"] = refreshed["transitions"]
+                    execution_steps = frontier_execution_steps(
+                        frontier,
+                        result.get("transitions") if isinstance(result.get("transitions"), list) else None,
+                    )
+                    result["execution"] = {
+                        "state": (
+                            frontier["state"]
+                            if frontier["state"] != "planned"
+                            else ("pending" if execution_steps else "verified")
+                        ),
+                        "steps": [step.public() for step in execution_steps],
+                    }
+                    unsupported_steps = [
+                        step for step in execution_steps
+                        if not (
+                            (step.kind == "adopt" and step.target == "working_tree")
+                            or (step.kind == "resume" and step.target == "remaining_acceptance")
+                        )
+                    ]
+                    if unsupported_steps:
+                        result["execution"] = {
+                            "state": "blocked",
+                            "steps": [step.public() for step in execution_steps],
+                            "blocker": "frontier_step_handler_missing",
+                        }
+                    if execution_steps:
+                        adoption_step = next(
+                            (step for step in execution_steps if step.kind == "adopt" and step.target == "working_tree"),
+                            None,
+                        )
+                        adoption_evidence = verify_frontier_step(report, adoption_step) if adoption_step else None
+                        if adoption_step is not None and adoption_evidence is not None:
+                            verify_event_key, verify_payload = frontier_step_transition(
+                                adoption_step,
+                                state="frontier_step_verified",
+                                payload={"evidence": adoption_evidence},
+                            )
+                            verified_adoption = record_takeover_transition(
+                                control_root=arguments.control_root,
+                                takeover_key=arguments.takeover_key,
+                                state="frontier_step_verified",
+                                event_key=f"{arguments.takeover_key}:{verify_event_key}",
+                                payload=verify_payload,
+                            )
+                            result["record"] = verified_adoption["record"]
+                            result["transitions"] = verified_adoption["transitions"]
+                            execution_steps = frontier_execution_steps(frontier, result["transitions"])
+                            result["execution"] = {
+                                "state": "blocked" if unsupported_steps else ("verified" if not execution_steps else "pending"),
+                                "steps": [step.public() for step in execution_steps],
+                                **({"blocker": "frontier_step_handler_missing"} if unsupported_steps else {}),
+                            }
+                    current_record = result.get("record") if isinstance(result.get("record"), dict) else record.get("record")
                     prior_state = record.get("record", {}).get("state") if isinstance(record.get("record"), dict) else None
                     if action["state"] == "cleanup_pending" and prior_state == "cleaned":
                         result["cleanup"] = {"outcome": "cleaned", "attempted": 0, "results": [], "replayed": True}
@@ -685,19 +760,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # A cleanup-only takeover has no remaining implementation
                     # authority. Persist the adoption record but do not create a
                     # generic worker run merely to make status look active.
-                    existing_transition = record.get("record", {}).get("last_transition") if isinstance(record.get("record"), dict) else None
+                    transitions = result.get("transitions")
+                    execution_result = next(
+                        (item for item in reversed(transitions)
+                         if isinstance(item, dict) and item.get("state") == "execution_started"),
+                        None,
+                    ) if isinstance(transitions, list) else None
+                    existing_transition = current_record.get("last_transition") if isinstance(current_record, dict) else None
+                    if execution_result is not None:
+                        existing_transition = execution_result
                     existing_runner = existing_transition.get("payload", {}).get("runner") if isinstance(existing_transition, dict) and isinstance(existing_transition.get("payload"), dict) else None
-                    if action["state"] == "resume_delivery" and frontier["state"] == "planned" and isinstance(existing_runner, dict) and prior_state in {"execution_started", "completed"}:
+                    active_step = execution_steps[0] if execution_steps else None
+                    supports_runner = (
+                        active_step is not None
+                        and active_step.kind == "resume"
+                        and active_step.target == "remaining_acceptance"
+                    )
+                    if arguments.config and arguments.brief:
+                        # Keep the existing deterministic takeover fixture
+                        # entrypoint while production steps without a handler
+                        # remain explicitly pending in the execution report.
+                        configured = RunnerConfig.from_file(arguments.config, arguments.control_root)
+                        supports_runner = supports_runner or configured.execution_backend == "deterministic_test"
+                    if action["state"] == "resume_delivery" and frontier["state"] == "planned" and supports_runner and isinstance(existing_runner, dict):
                         result["runner"] = existing_runner
-                    elif action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:
+                    elif action["state"] == "resume_delivery" and frontier["state"] == "planned" and supports_runner and arguments.brief and arguments.config:
                         launch_key = arguments.launch_key or f"takeover:{arguments.takeover_key}"
-                        prior_payload = (
-                            existing_transition.get("payload")
-                            if isinstance(existing_transition, dict)
-                            and existing_transition.get("state") == "execution_intent"
-                            and isinstance(existing_transition.get("payload"), dict)
-                            else None
+                        intent_transition = _takeover_transition(
+                            transitions,
+                            event_key=f"{arguments.takeover_key}:execution:intent",
+                            state="execution_intent",
                         )
+                        prior_payload = intent_transition.get("payload") if isinstance(intent_transition, dict) else None
                         if isinstance(prior_payload, dict):
                             execution_payload = prior_payload
                         else:
@@ -722,6 +816,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                                     "source_thread_id": source_thread_id, "handover": handover,
                                     "owner_generation": 0, "frontier_digest": frontier["digest"],
                                 }
+                        step_event_key, step_payload = frontier_step_transition(
+                            active_step,
+                            state="frontier_step_started",
+                            payload={"launch_key": launch_key},
+                        )
+                        started_step = record_takeover_transition(
+                            control_root=arguments.control_root,
+                            takeover_key=arguments.takeover_key,
+                            state="frontier_step_started",
+                            event_key=f"{arguments.takeover_key}:{step_event_key}",
+                            payload=step_payload,
+                        )
+                        result["record"] = started_step["record"]
+                        result["transitions"] = started_step["transitions"]
                         intent = record_takeover_transition(
                             control_root=arguments.control_root,
                             takeover_key=arguments.takeover_key,
@@ -754,8 +862,37 @@ def main(argv: Sequence[str] | None = None) -> int:
                         )
                         result["record"] = completed["record"]
                         result["transitions"] = completed["transitions"]
-                    elif action["state"] == "resume_delivery" and (arguments.brief or arguments.config):
+                    elif action["state"] == "resume_delivery" and bool(arguments.brief) != bool(arguments.config):
                         raise RunnerError("takeover_inputs_incomplete", "takeover continuation requires both --brief and --config")
+
+                    runner = result.get("runner")
+                    if (
+                        active_step is not None
+                        and active_step.kind == "resume"
+                        and active_step.target == "remaining_acceptance"
+                        and isinstance(runner, dict)
+                    ):
+                        run_projection = runner.get("run")
+                        if isinstance(run_projection, dict) and run_projection.get("state") == "completed":
+                            verify_event_key, verify_payload = frontier_step_transition(
+                                active_step,
+                                state="frontier_step_verified",
+                                payload={"runner": runner},
+                            )
+                            verified_step = record_takeover_transition(
+                                control_root=arguments.control_root,
+                                takeover_key=arguments.takeover_key,
+                                state="frontier_step_verified",
+                                event_key=f"{arguments.takeover_key}:{verify_event_key}",
+                                payload=verify_payload,
+                            )
+                            result["record"] = verified_step["record"]
+                            result["transitions"] = verified_step["transitions"]
+                            remaining_steps = frontier_execution_steps(frontier, result["transitions"])
+                            result["execution"] = {
+                                "state": "verified" if not remaining_steps else "partial",
+                                "steps": [step.public() for step in remaining_steps],
+                            }
                 else:
                     result = {
                         "report": report,

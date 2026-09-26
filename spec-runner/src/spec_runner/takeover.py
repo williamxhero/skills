@@ -6,6 +6,7 @@ import hashlib
 import math
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,25 @@ from .errors import RunnerError
 from .config import DEFAULT_GIT_TIMEOUT_SECONDS
 from .plans import digest
 from .store import Store
+
+
+@dataclass(frozen=True)
+class FrontierExecutionStep:
+    """One durable action selected from an observed takeover frontier."""
+
+    step_id: str
+    kind: str
+    target: str
+    reason: str
+
+    def public(self, *, status: str = "pending") -> dict[str, object]:
+        return {
+            "step_id": self.step_id,
+            "kind": self.kind,
+            "target": self.target,
+            "reason": self.reason,
+            "status": status,
+        }
 
 
 def _validated_timeout(value: float) -> float:
@@ -577,6 +597,114 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
     return {"schema_version": "spec-runner-frontier/v1", "state": state, "categories": categories, "steps": steps, "digest": digest({"report": report.get("digest"), "steps": steps})}
 
 
+def frontier_execution_steps(
+    frontier: dict[str, Any],
+    transitions: list[dict[str, Any]] | None = None,
+) -> list[FrontierExecutionStep]:
+    """Return the unverified executable steps for one frontier revision.
+
+    Planning remains pure, while applying a takeover needs a stable unit of
+    durable progress.  The transition log is the source of truth for steps
+    already verified; a changed frontier digest intentionally creates a new
+    step identity and requires fresh evidence.
+    """
+    if frontier.get("schema_version") != "spec-runner-frontier/v1":
+        raise RunnerError("invalid_takeover_frontier", "frontier execution requires a takeover frontier")
+    if frontier.get("state") != "planned":
+        return []
+    raw_steps = frontier.get("steps")
+    frontier_digest = frontier.get("digest")
+    if not isinstance(raw_steps, list) or not isinstance(frontier_digest, str) or not frontier_digest:
+        raise RunnerError("invalid_takeover_frontier", "frontier execution requires keyed steps and a digest")
+    verified: set[str] = set()
+    for transition in transitions or []:
+        if not isinstance(transition, dict) or transition.get("state") != "frontier_step_verified":
+            continue
+        payload = transition.get("payload")
+        if isinstance(payload, dict) and isinstance(payload.get("step_id"), str):
+            verified.add(payload["step_id"])
+
+    result: list[FrontierExecutionStep] = []
+    seen: set[str] = set()
+    allowed_kinds = {"adopt", "backfill", "reconcile", "reverify", "resume"}
+    for raw in raw_steps:
+        if not isinstance(raw, dict):
+            raise RunnerError("invalid_takeover_frontier", "frontier steps must be objects")
+        kind = raw.get("kind")
+        target = raw.get("target")
+        reason = raw.get("reason")
+        if not all(isinstance(value, str) and value.strip() for value in (kind, target, reason)):
+            raise RunnerError("invalid_takeover_frontier", "frontier steps need kind, target, and reason")
+        if kind not in allowed_kinds:
+            raise RunnerError("invalid_takeover_frontier", f"frontier step kind is not executable: {kind}")
+        step_id = digest({"frontier_digest": frontier_digest, "kind": kind, "target": target})
+        if step_id in seen:
+            raise RunnerError("invalid_takeover_frontier", "frontier contains duplicate executable steps")
+        seen.add(step_id)
+        if step_id not in verified:
+            result.append(FrontierExecutionStep(step_id=step_id, kind=kind, target=target, reason=reason))
+    return result
+
+
+def frontier_step_transition(
+    step: FrontierExecutionStep,
+    *,
+    state: str,
+    payload: dict[str, object] | None = None,
+) -> tuple[str, dict[str, object]]:
+    """Build the stable transition identity and public payload for one step."""
+    if state not in {"frontier_step_started", "frontier_step_verified"}:
+        raise RunnerError("invalid_takeover_frontier", "frontier step transition state is not supported")
+    event_key = f"frontier:{step.step_id}:{state}"
+    return event_key, {
+        "step_id": step.step_id,
+        "kind": step.kind,
+        "target": step.target,
+        "reason": step.reason,
+        **(payload or {}),
+    }
+
+
+def verify_frontier_step(report: dict[str, Any], step: FrontierExecutionStep) -> dict[str, object] | None:
+    """Verify the one frontier action whose evidence is available locally.
+
+    A generic Runner completion is not evidence that adopted files were used,
+    a candidate passed, or tracker work was backfilled.  The working-tree
+    adoption step can be verified by an exact repository snapshot readback;
+    other step kinds remain pending until their owning delivery handler emits
+    the corresponding durable evidence.
+    """
+    facts = report.get("historical_facts")
+    snapshot = report.get("repository_snapshot")
+    if (
+        step.kind != "adopt"
+        or step.target != "working_tree"
+        or not isinstance(facts, dict)
+        or not isinstance(snapshot, dict)
+        or not isinstance(facts.get("working_tree"), dict)
+    ):
+        return None
+    expected = snapshot.get("snapshot_digest")
+    repository = report.get("repository")
+    if (
+        not isinstance(expected, str)
+        or facts["working_tree"].get("snapshot_digest") != expected
+        or not snapshot.get("changed_paths")
+        or snapshot.get("redacted_path_count")
+        or not isinstance(repository, str)
+    ):
+        return None
+    observed = _working_tree_snapshot(Path(repository))
+    if observed.get("snapshot_digest") != expected:
+        return None
+    return {
+        "repository_snapshot_digest": expected,
+        "readback_snapshot_digest": observed["snapshot_digest"],
+        "changed_paths": snapshot.get("changed_paths", []),
+        "verified": True,
+    }
+
+
 def write_takeover_record(*, control_root: Path, takeover_key: str, report: dict[str, Any], frontier: dict[str, Any]) -> dict[str, object]:
     """Persist takeover intent and observation before any later mutable action."""
     if not takeover_key or any(character.isspace() for character in takeover_key):
@@ -584,7 +712,9 @@ def write_takeover_record(*, control_root: Path, takeover_key: str, report: dict
     control_root = control_root.expanduser().resolve()
     store = Store.open(control_root, create=True)
     try:
-        return store.record_takeover(takeover_key=takeover_key, report=report, frontier=frontier)
+        result = store.record_takeover(takeover_key=takeover_key, report=report, frontier=frontier)
+        result["transitions"] = store.takeover_transitions(takeover_key)
+        return result
     finally:
         store.close()
 
