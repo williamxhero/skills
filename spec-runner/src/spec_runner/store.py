@@ -136,10 +136,18 @@ class Store:
                 # A detached child creates the SQLite file before its schema
                 # transaction commits. Treat that short window as not-ready so a
                 # launcher can retry instead of surfacing a raw sqlite error.
-                table = connection.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runs'"
+                metadata_table = connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata'"
                 ).fetchone()
-                if table is None:
+                ready = (
+                    connection.execute(
+                        "SELECT 1 FROM metadata WHERE key = 'schema_version' AND value = ?",
+                        (SCHEMA_VERSION,),
+                    ).fetchone()
+                    if metadata_table is not None
+                    else None
+                )
+                if ready is None:
                     raise RunnerError("control_not_ready", "Spec Runner control database schema is not ready")
         except sqlite3.OperationalError as exc:
             connection.close()

@@ -14,6 +14,21 @@ from spec_runner.store import Store, RunRecord, now
 
 
 class StoreLeaseTests(unittest.TestCase):
+    def test_read_open_rejects_a_partially_initialized_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "control"
+            root.mkdir()
+            connection = sqlite3.connect(root / "spec-runner.sqlite3")
+            try:
+                connection.execute("CREATE TABLE runs (run_id TEXT)")
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaises(RunnerError) as raised:
+                Store.open(root, create=False)
+            self.assertEqual(raised.exception.code, "control_not_ready")
+
     def test_control_db_busy_write_is_reported_as_recoverable_runner_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "control"

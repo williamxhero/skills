@@ -28,7 +28,7 @@ from .store import _process_alive
 from .continuation import ContinuationBundle, read_bundle, write_bundle_atomic
 from .recovery_runtime import RecoveryRuntime
 from .recovery_evidence import latest_worker, read_turn_evidence
-from .production_runtime import ProductionWorkflow
+from .production_runtime import ProductionPorts, ProductionWorkflow
 from .stage_progression import StageProgression
 from .recovery import (
     RecoveryAction,
@@ -4387,16 +4387,18 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
         brief_digest=brief_digest,
         run=run,
         store=store,
-        artifact_directory=_safe_artifact_directory,
-        load_json=load_json,
-        write_json_atomic=_write_json_atomic,
-        execute_tickets=_execute_codex_tickets,
-        execute_implementation=_execute_codex_implementation,
-        cleanup_workspace=cleanup_managed_workspace,
-        close_ticket_plan=_close_published_ticket_plan,
-        execute_github_delivery=_execute_github_delivery,
-        recover_github_candidate=_recover_failed_github_candidate,
-        definitive_failed_checks=_definitive_failed_github_checks,
+        ports=ProductionPorts(
+            artifact_directory=_safe_artifact_directory,
+            load_json=load_json,
+            write_json_atomic=_write_json_atomic,
+            execute_tickets=_execute_codex_tickets,
+            execute_implementation=_execute_codex_implementation,
+            cleanup_workspace=cleanup_managed_workspace,
+            close_ticket_plan=_close_published_ticket_plan,
+            execute_github_delivery=_execute_github_delivery,
+            recover_github_candidate=_recover_failed_github_candidate,
+            definitive_failed_checks=_definitive_failed_github_checks,
+        ),
     )
 
 
