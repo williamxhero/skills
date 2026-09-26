@@ -1,3 +1,32 @@
+## RCV-01.2 shared route circuit coordination (2026-09-26)
+
+The control Store now persists an explicit, bounded `route_scope` circuit with
+`closed`, `open`, and `half_open` states. A route failure records the scope and
+cooldown in SQLite. After cooldown, `acquire_route_probe` claims the half-open
+owner in one `BEGIN IMMEDIATE` transaction, so two independent Store
+connections cannot both reserve the same probe. The same owner may replay its
+reservation, an expired owner lease may be reclaimed, and different scopes are
+isolated. Closing the circuit requires explicit `business_progress:` or
+`route_success:` evidence; an ordinary HTTP success cannot close it. Unknown
+route scopes are rejected and are never merged into the shared circuit.
+
+The Runner recovery boundary records route-not-found observations into this
+shared state, adds the circuit state and half-open ownership precondition to the
+durable recovery decision, and exposes the route circuits in public status.
+The candidate source revision is `0b1b206`.
+
+The focused Store and recovery selection passed 35 tests. The complete source
+and acceptance selection passed 289 tests with 1 authentication-dependent test
+skipped on 2026-09-26 using
+`PYTHONPATH=spec-runner/src python -m pytest spec-runner/tests spec-runner/acceptance --ignore=spec-runner/acceptance/fixture-app -q`.
+`compileall` and `git diff --check` also passed.
+
+This is an incremental RCV-01.2 correction. It proves durable cross-process
+reservation and scope isolation at the SQLite boundary. It does not prove a
+real provider route probe, live capacity/404 recovery, SDK timer scheduling,
+source-thread migration, or project-level L3-L5 gates. Those remain
+`not_verified`; #294 and its parent remain open.
+
 ## RCV-01.2 atomic recovery budget reservation (2026-09-26)
 
 Recovery episode counters now use an idempotent SQLite reservation row keyed by the provider request or turn identity. The reservation and counter increment commit in one transaction, so replaying the same attempt cannot consume budget twice and a crash cannot lose a reservation. Episode upserts preserve the maximum persisted counter instead of allowing a stale snapshot to reduce it. Workflow recovery now persists route probe, clean-context probe, and clean migration consumption after their corresponding action has been attempted, bounding those paths across retries and restarts.

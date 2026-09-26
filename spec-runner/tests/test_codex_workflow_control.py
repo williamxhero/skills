@@ -1872,5 +1872,56 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 store.close()
 
 
+class RouteCircuitWorkflowTests(unittest.TestCase):
+    def test_route_failure_records_shared_circuit_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            control_root = root / "control"
+            store = Store.open(control_root, create=True)
+            try:
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-route-circuit",
+                    launch_key="route-circuit",
+                    input_digest="input",
+                    config_digest="config",
+                    repository_path=str(root),
+                    target_ref="HEAD",
+                    artifact_root="artifacts",
+                    backend_kind="codex_sdk",
+                    state="starting",
+                    current_step="codex_example",
+                    log_path="logs/run-route-circuit.jsonl",
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-route-circuit")
+                decision = workflow._record_recovery_failure(
+                    run=run,
+                    store=store,
+                    operation_id="start:run-route-circuit",
+                    error=RunnerError(
+                        "codex_worker_failed",
+                        "route missing",
+                        details={
+                            "fault_observation": {
+                                "structured": True,
+                                "http_status": 404,
+                                "message": "model not found",
+                                "route_scope": "model:gpt-test|tier:default",
+                                "execution_outcome": "failed",
+                            }
+                        },
+                    ),
+                )
+                self.assertEqual(decision.action.value, "use_approved_route")
+                self.assertIn("route_circuit:open", decision.evidence)
+                status = store.public_status(run.run_id)
+                self.assertEqual(status["route_circuits"][0]["state"], "open")
+                self.assertIn("route_circuit_updated", [event["event_type"] for event in status["events"]])
+            finally:
+                store.close()
+
+
 if __name__ == "__main__":
     unittest.main()

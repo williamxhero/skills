@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -346,6 +347,19 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         turn_id=(str(fault.get("turn_id")) if isinstance(fault, dict) and fault.get("turn_id") else (str(error.details.get("turn_id")) if error.details.get("turn_id") else None)),
         last_verified_progress=None,
     )
+    route_circuit: dict[str, object] | None = None
+    if observation.family == FaultFamily.ROUTE_NOT_FOUND.value and observation.route_scope != "unknown":
+        cooldown = observation.retry_after_seconds
+        try:
+            cooldown_seconds = max(30.0, float(cooldown)) if cooldown is not None else 30.0
+        except (TypeError, ValueError):
+            cooldown_seconds = 30.0
+        route_circuit = store.record_route_failure(
+            route_scope=observation.route_scope,
+            failure_fingerprint=observation.fingerprint,
+            cooldown_seconds=cooldown_seconds,
+            owner_token=f"recovery:{run.run_id}",
+        )
     counters = {
         key: int(existing.get(key) or 0)
         for key in (
@@ -400,6 +414,12 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         turn_id=observation.turn_id or (str(worker.get("external_turn_id")) if worker.get("external_turn_id") else None),
     )
     decision = decide_recovery(snapshot, [observation], now=datetime.now(timezone.utc))
+    if route_circuit is not None:
+        decision = replace(
+            decision,
+            evidence=decision.evidence + (f"route_circuit:{route_circuit['state']}",),
+            preconditions=decision.preconditions + ("route_probe_requires_atomic_half_open_lease",),
+        )
     state = decision.action.value
     store.upsert_recovery_episode(
         episode_id=episode_id, run_id=run.run_id, operation_kind=operation_kind,
@@ -430,6 +450,19 @@ def _record_recovery_failure(*, run: RunRecord, store: Store, operation_id: str,
         event_type="recovery_decision_recorded",
         payload={"operation_id": operation_id, "episode_id": episode_id, "decision": decision.public()},
     )
+    if route_circuit is not None:
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{operation_id}:route-circuit:{observation.fingerprint}",
+            event_type="route_circuit_updated",
+            payload={
+                "operation_id": operation_id,
+                "route_scope": observation.route_scope,
+                "state": route_circuit.get("state"),
+                "reason": route_circuit.get("reason"),
+                "failure_fingerprint": observation.fingerprint,
+            },
+        )
     action_events = {
         RecoveryAction.OBSERVE: "reconcile_started",
         RecoveryAction.WAIT_RETRY: "retry_scheduled",

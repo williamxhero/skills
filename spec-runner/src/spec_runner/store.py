@@ -8,7 +8,7 @@ import socket
 import ctypes
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
@@ -64,6 +64,34 @@ def _lease_age_seconds(value: str) -> float | None:
     except (TypeError, ValueError):
         return None
     return max(0.0, (datetime.now(UTC) - observed).total_seconds())
+
+
+def _route_scope_key(value: str) -> str:
+    scope = str(value or "").strip()
+    if not scope or scope.lower() in {"unknown", "none", "null"} or len(scope) > 256:
+        raise RunnerError(
+            "route_scope_invalid",
+            "shared route circuit requires an explicit, bounded route scope",
+        )
+    if any(ord(character) < 32 for character in scope):
+        raise RunnerError("route_scope_invalid", "route scope contains a control character")
+    return scope
+
+
+def _route_time(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise RunnerError("route_time_invalid", "route circuit timestamp is invalid") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _route_timestamp(value: str | None) -> str:
+    if value is None:
+        return now()
+    return _route_time(value).isoformat()
 
 
 @dataclass(frozen=True)
@@ -205,6 +233,17 @@ class Store:
                     host TEXT NOT NULL,
                     acquired_at TEXT NOT NULL,
                     heartbeat_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS route_circuits (
+                    route_scope TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    cooldown_until TEXT,
+                    half_open_owner TEXT,
+                    half_open_expires_at TEXT,
+                    last_failure_fingerprint TEXT,
+                    last_success_evidence TEXT,
+                    updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS events (
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -976,6 +1015,7 @@ class Store:
             "thread_migrations": self.thread_migrations_for_run(run_id),
             "migration_milestones": self.migration_milestones_for_run(run_id),
             "writer_leases": [dict(row) for row in self.connection.execute("SELECT * FROM runner_leases WHERE run_id = ?", (run_id,))],
+            "route_circuits": self.route_circuits(),
         }
 
     def list_status(self) -> list[dict[str, str]]:
@@ -1020,6 +1060,163 @@ class Store:
     def lease(self, scope: str) -> dict[str, object] | None:
         row = self.connection.execute("SELECT * FROM runner_leases WHERE scope = ?", (scope,)).fetchone()
         return dict(row) if row else None
+
+    def route_circuit(self, route_scope: str) -> dict[str, object] | None:
+        """Read the durable circuit state for one explicitly scoped route."""
+        scope = _route_scope_key(route_scope)
+        row = self.connection.execute(
+            "SELECT * FROM route_circuits WHERE route_scope = ?", (scope,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def route_circuits(self) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM route_circuits ORDER BY route_scope"
+            )
+        ]
+
+    def record_route_failure(
+        self,
+        *,
+        route_scope: str,
+        failure_fingerprint: str,
+        cooldown_seconds: float,
+        owner_token: str | None = None,
+        observed_at: str | None = None,
+    ) -> dict[str, object]:
+        """Open a shared route circuit while preserving half-open ownership."""
+        scope = _route_scope_key(route_scope)
+        fingerprint = str(failure_fingerprint or "").strip()
+        if not fingerprint:
+            raise RunnerError("route_failure_invalid", "route failure requires a fingerprint")
+        if isinstance(cooldown_seconds, bool) or cooldown_seconds < 0:
+            raise RunnerError("route_cooldown_invalid", "route cooldown must be non-negative")
+        timestamp = _route_timestamp(observed_at)
+        observed = _route_time(timestamp)
+        cooldown_until = (observed + timedelta(seconds=float(cooldown_seconds))).isoformat()
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT * FROM route_circuits WHERE route_scope = ?", (scope,)
+            ).fetchone()
+            if existing is not None and existing["state"] == "half_open":
+                current_owner = existing["half_open_owner"]
+                if current_owner and current_owner != owner_token:
+                    result = dict(existing)
+                    result.update({"accepted": False, "reason": "half_open_owned"})
+                    return result
+            failure_count = int(existing["failure_count"]) + 1 if existing else 1
+            if existing and existing["cooldown_until"]:
+                try:
+                    cooldown_until = max(
+                        _route_time(str(existing["cooldown_until"])),
+                        _route_time(cooldown_until),
+                    ).isoformat()
+                except RunnerError:
+                    pass
+            self.connection.execute(
+                """INSERT INTO route_circuits(
+                    route_scope, state, failure_count, cooldown_until,
+                    half_open_owner, half_open_expires_at, last_failure_fingerprint,
+                    last_success_evidence, updated_at
+                ) VALUES (?, 'open', ?, ?, NULL, NULL, ?, NULL, ?)
+                ON CONFLICT(route_scope) DO UPDATE SET
+                    state='open', failure_count=excluded.failure_count,
+                    cooldown_until=excluded.cooldown_until, half_open_owner=NULL,
+                    half_open_expires_at=NULL,
+                    last_failure_fingerprint=excluded.last_failure_fingerprint,
+                    last_success_evidence=NULL, updated_at=excluded.updated_at""",
+                (scope, failure_count, cooldown_until, fingerprint, timestamp),
+            )
+        result = self.route_circuit(scope) or {}
+        result.update({"accepted": True, "reason": "circuit_opened"})
+        return result
+
+    def acquire_route_probe(
+        self,
+        *,
+        route_scope: str,
+        owner_token: str,
+        lease_seconds: float,
+        observed_at: str | None = None,
+    ) -> dict[str, object]:
+        """Atomically claim the only half-open probe after cooldown expiry."""
+        scope = _route_scope_key(route_scope)
+        owner = str(owner_token or "").strip()
+        if not owner:
+            raise RunnerError("route_probe_owner_invalid", "route probe requires an owner token")
+        if isinstance(lease_seconds, bool) or lease_seconds <= 0:
+            raise RunnerError("route_probe_lease_invalid", "route probe lease must be positive")
+        timestamp = _route_timestamp(observed_at)
+        observed = _route_time(timestamp)
+        with self.transaction():
+            row = self.connection.execute(
+                "SELECT * FROM route_circuits WHERE route_scope = ?", (scope,)
+            ).fetchone()
+            if row is None:
+                return {"route_scope": scope, "state": "closed", "acquired": False, "reason": "circuit_closed"}
+            state = str(row["state"])
+            if state == "closed":
+                return {**dict(row), "acquired": False, "reason": "circuit_closed"}
+            if state == "open":
+                cooldown = row["cooldown_until"]
+                if cooldown and _route_time(str(cooldown)) > observed:
+                    return {**dict(row), "acquired": False, "reason": "cooldown_active"}
+            elif state == "half_open":
+                expires = row["half_open_expires_at"]
+                current_owner = row["half_open_owner"]
+                if current_owner == owner and expires and _route_time(str(expires)) > observed:
+                    return {**dict(row), "acquired": True, "reason": "owner_replay"}
+                if expires and _route_time(str(expires)) > observed:
+                    return {**dict(row), "acquired": False, "reason": "half_open_owned"}
+            else:
+                raise RunnerError("route_circuit_invalid", "route circuit has an unknown state")
+            expires_at = (observed + timedelta(seconds=float(lease_seconds))).isoformat()
+            self.connection.execute(
+                """UPDATE route_circuits SET state='half_open', half_open_owner = ?,
+                   half_open_expires_at = ?, updated_at = ? WHERE route_scope = ?""",
+                (owner, expires_at, timestamp, scope),
+            )
+        result = self.route_circuit(scope) or {}
+        result.update({"acquired": True, "reason": "half_open_acquired"})
+        return result
+
+    def complete_route_probe(
+        self,
+        *,
+        route_scope: str,
+        owner_token: str,
+        success_evidence: str,
+        observed_at: str | None = None,
+    ) -> dict[str, object]:
+        """Close a circuit only with explicit route or business success evidence."""
+        scope = _route_scope_key(route_scope)
+        owner = str(owner_token or "").strip()
+        evidence = str(success_evidence or "").strip()
+        if not evidence or not any(
+            evidence.startswith(prefix) for prefix in ("business_progress:", "route_success:")
+        ):
+            raise RunnerError(
+                "route_probe_evidence_required",
+                "a route probe cannot close its circuit without verified success evidence",
+            )
+        timestamp = _route_timestamp(observed_at)
+        with self.transaction():
+            row = self.connection.execute(
+                "SELECT * FROM route_circuits WHERE route_scope = ?", (scope,)
+            ).fetchone()
+            if row is None or row["state"] != "half_open" or row["half_open_owner"] != owner:
+                raise RunnerError("route_probe_not_owner", "route probe is not the half-open circuit owner")
+            self.connection.execute(
+                """UPDATE route_circuits SET state='closed', failure_count=0,
+                   cooldown_until=NULL, half_open_owner=NULL, half_open_expires_at=NULL,
+                   last_success_evidence=?, updated_at=? WHERE route_scope=?""",
+                (evidence, timestamp, scope),
+            )
+        result = self.route_circuit(scope) or {}
+        result.update({"closed": True, "reason": "verified_success"})
+        return result
 
     def _insert_event(self, *, run_id: str, event_key: str, event_type: str, payload: dict[str, object]) -> bool:
         cursor = self.connection.execute(

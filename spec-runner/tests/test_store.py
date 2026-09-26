@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 import hashlib
 import json
@@ -364,6 +365,145 @@ class StoreLeaseTests(unittest.TestCase):
                 self.assertEqual(first["capacity_attempts"], 1)
                 self.assertEqual(duplicate["capacity_attempts"], 1)
                 self.assertEqual(second["capacity_attempts"], 2)
+            finally:
+                store.close()
+
+    def test_route_probe_has_single_half_open_owner_across_store_connections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "control"
+            seed = Store.open(root, create=True)
+            try:
+                seed.record_route_failure(
+                    route_scope="model:gpt-test|tier:default",
+                    failure_fingerprint="route-failure-1",
+                    cooldown_seconds=0,
+                    observed_at="2026-09-26T00:00:00+00:00",
+                )
+            finally:
+                seed.close()
+
+            barrier = threading.Barrier(2)
+            results: dict[str, dict[str, object]] = {}
+
+            def acquire(owner_token: str) -> None:
+                store = Store.open(root, create=False)
+                try:
+                    barrier.wait()
+                    results[owner_token] = store.acquire_route_probe(
+                        route_scope="model:gpt-test|tier:default",
+                        owner_token=owner_token,
+                        lease_seconds=60,
+                        observed_at="2026-09-26T00:00:01+00:00",
+                    )
+                finally:
+                    store.close()
+
+            first = threading.Thread(target=acquire, args=("runner-a",))
+            second = threading.Thread(target=acquire, args=("runner-b",))
+            first.start()
+            second.start()
+            first.join()
+            second.join()
+
+            self.assertEqual({result["acquired"] for result in results.values()}, {True, False})
+            held = next(result for result in results.values() if result["acquired"] is False)
+            self.assertEqual(held["reason"], "half_open_owned")
+
+    def test_route_circuit_cooldown_scope_isolation_and_verified_close(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                scope = "model:gpt-test|tier:fast"
+                store.record_route_failure(
+                    route_scope=scope,
+                    failure_fingerprint="route-failure-2",
+                    cooldown_seconds=60,
+                    observed_at="2026-09-26T00:00:00+00:00",
+                )
+                cooling = store.acquire_route_probe(
+                    route_scope=scope,
+                    owner_token="runner-a",
+                    lease_seconds=30,
+                    observed_at="2026-09-26T00:00:30+00:00",
+                )
+                self.assertFalse(cooling["acquired"])
+                self.assertEqual(cooling["reason"], "cooldown_active")
+                isolated = store.acquire_route_probe(
+                    route_scope="model:gpt-test|tier:default",
+                    owner_token="runner-a",
+                    lease_seconds=30,
+                    observed_at="2026-09-26T00:00:30+00:00",
+                )
+                self.assertFalse(isolated["acquired"])
+                self.assertEqual(isolated["reason"], "circuit_closed")
+
+                acquired = store.acquire_route_probe(
+                    route_scope=scope,
+                    owner_token="runner-a",
+                    lease_seconds=30,
+                    observed_at="2026-09-26T00:01:01+00:00",
+                )
+                self.assertTrue(acquired["acquired"])
+                replay = store.acquire_route_probe(
+                    route_scope=scope,
+                    owner_token="runner-a",
+                    lease_seconds=30,
+                    observed_at="2026-09-26T00:01:02+00:00",
+                )
+                self.assertTrue(replay["acquired"])
+                self.assertEqual(replay["reason"], "owner_replay")
+                with self.assertRaisesRegex(RunnerError, "success evidence"):
+                    store.complete_route_probe(
+                        route_scope=scope,
+                        owner_token="runner-a",
+                        success_evidence="ordinary_http_200",
+                        observed_at="2026-09-26T00:01:03+00:00",
+                    )
+                closed = store.complete_route_probe(
+                    route_scope=scope,
+                    owner_token="runner-a",
+                    success_evidence="business_progress:verified-artifact",
+                    observed_at="2026-09-26T00:01:04+00:00",
+                )
+                self.assertTrue(closed["closed"])
+                self.assertEqual(closed["state"], "closed")
+                self.assertFalse(
+                    store.acquire_route_probe(
+                        route_scope=scope,
+                        owner_token="runner-b",
+                        lease_seconds=30,
+                        observed_at="2026-09-26T00:01:05+00:00",
+                    )["acquired"]
+                )
+            finally:
+                store.close()
+
+    def test_route_probe_expired_owner_can_be_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                scope = "model:gpt-test|tier:default"
+                store.record_route_failure(
+                    route_scope=scope,
+                    failure_fingerprint="route-failure-3",
+                    cooldown_seconds=0,
+                    observed_at="2026-09-26T00:00:00+00:00",
+                )
+                first = store.acquire_route_probe(
+                    route_scope=scope,
+                    owner_token="runner-a",
+                    lease_seconds=10,
+                    observed_at="2026-09-26T00:00:01+00:00",
+                )
+                self.assertTrue(first["acquired"])
+                reclaimed = store.acquire_route_probe(
+                    route_scope=scope,
+                    owner_token="runner-b",
+                    lease_seconds=10,
+                    observed_at="2026-09-26T00:00:12+00:00",
+                )
+                self.assertTrue(reclaimed["acquired"])
+                self.assertEqual(reclaimed["half_open_owner"], "runner-b")
             finally:
                 store.close()
 
