@@ -994,3 +994,23 @@ wheel passed package inspection and two deterministic 10-case fault replays
 with identical digest `e97931787be888eb6ccea1b4c3cc477dd21dd023aeb87201965d62b0fe069efe`.
 Evidence is
 `acceptance/reports/SRAC-20260927-46b22d9-installed-wheel.json`.
+
+## Production planning seam and current live retry (2026-09-27)
+
+Commit `929dff4` moved the initial production planning transition behind
+`ProductionWorkflow.plan()` and kept `workflow.py` as the compatibility
+adapter. Its focused planning and Runner interface selection passed `63
+passed`; the complete source and acceptance selection remained green at
+`355 passed, 1 skipped` before the merge-only fixture addition.
+
+The run marker `SRAC-20260927-c0de1234abcd` was started through the public
+single-SPEC production entrypoint from commit `de26e63`. The first SDK Grill
+turn was accepted and then exhausted on HTTP 429, with execution outcome
+`unknown`; the exact thread and turn identities were recorded. No issue, PR,
+branch, or other GitHub resource was created. Evidence is
+`acceptance/reports/SRAC-20260927-c0de1234abcd-production.json` and remains
+`not_verified`.
+
+The 429 is an external capacity blocker for live production qualification. It
+does not change deterministic implementation status and does not close SF-02,
+SF-03, SF-04, SF-05, SF-06, RCV-01, RCV-02, or SF-00.
