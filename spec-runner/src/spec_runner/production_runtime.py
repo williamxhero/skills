@@ -182,7 +182,7 @@ class ProductionWorkflow:
                 ticket_plan=self.load_json(ticket_files[-1]),
                 finalize_run=False,
             )
-            if delivered.get("state") in {"waiting_ci", "cleanup_pending"}:
+            if delivered.get("state") in {"waiting_ci", "waiting_merge_queue", "cleanup_pending"}:
                 return delivered
             if delivered.get("state") == "spec_completed" and str(delivered.get("spec_key")) == spec_key:
                 self.record_spec(spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
@@ -219,7 +219,7 @@ class ProductionWorkflow:
             document
             for path in github_files
             for document in [self.load_json(path)]
-            if document.get("state") == "waiting_ci"
+            if document.get("state") in {"waiting_ci", "waiting_merge_queue"}
             and document.get("spec_key") not in completed_specs
         ]
         if len(waiting) != 1:
@@ -280,6 +280,10 @@ class ProductionWorkflow:
             candidate_receipt=candidate,
             review=review_projection,
             push=False,
+            queue_entry=(github.get("merge", {}).get("queue")
+                         if isinstance(github.get("merge"), dict)
+                         and isinstance(github.get("merge", {}).get("queue"), dict)
+                         else None),
         )
         if self.definitive_failed_checks(checks=result.get("checks"), candidate_sha=candidate_sha):
             result = self.recover_github_candidate(
@@ -302,9 +306,9 @@ class ProductionWorkflow:
             manifest = self.load_json(manifest_path)
             manifests.append((manifest_path, manifest))
         if result["state"] != "github_completed":
-            if result.get("state") == "waiting_ci":
+            if result.get("state") in {"waiting_ci", "waiting_merge_queue"}:
                 self.write_json_atomic(artifact / f"github-{spec_key}.json", result)
-                store.set_run_state(run.run_id, "waiting_ci")
+                store.set_run_state(run.run_id, str(result["state"]))
             return result
         merge = result.get("merge")
         if not isinstance(merge, dict) or merge.get("merged") is not True:

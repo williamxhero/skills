@@ -106,9 +106,9 @@ class GitHubDeliveryTests(unittest.TestCase):
                 return json.dumps({"sha": "abc", "state": "success", "statuses": []})
             if args[-1] == "repos/owner/repo/pulls/12":
                 if len([call for call in calls if call[-1] == args[-1]]) == 1:
-                    return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}}, "merged_at": None})
-                return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
-                                   "merged_at": "2026-09-22T00:00:00Z", "merge_commit_sha": "merge123"})
+                    return json.dumps({"number": 12, "head": {"sha": "abc", "repo": {"full_name": "owner/repo"}}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}}, "merged": False, "merged_at": None})
+                return json.dumps({"number": 12, "head": {"sha": "abc", "repo": {"full_name": "owner/repo"}}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                                   "merged": True, "merged_at": "2026-09-22T00:00:00Z", "merge_commit_sha": "merge123"})
             return json.dumps({"merged": True, "sha": "merge123"})
 
         result = GitHubDelivery(runner=runner).merge(
@@ -127,7 +127,7 @@ class GitHubDeliveryTests(unittest.TestCase):
             if "status" in args[-1]:
                 return json.dumps({"sha": "abc", "state": "success", "statuses": []})
             if args[-1] == "repos/owner/repo/pulls/12":
-                return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}}, "merged_at": None})
+                return json.dumps({"number": 12, "head": {"sha": "abc", "repo": {"full_name": "owner/repo"}}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}}, "merged_at": None})
             return json.dumps({"merged": False, "message": "not mergeable"})
 
         with self.assertRaisesRegex(RunnerError, "not confirmed"):
@@ -136,6 +136,173 @@ class GitHubDeliveryTests(unittest.TestCase):
                 candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
                 review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
                 checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True)
+
+    def test_merge_queue_is_waiting_until_exact_pr_readback_is_merged(self):
+        calls: list[list[str]] = []
+
+        def runner(args: list[str]) -> str:
+            calls.append(args)
+            endpoint = args[-1]
+            if "check-runs" in endpoint:
+                return json.dumps({"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}]})
+            if endpoint.endswith("/status"):
+                return json.dumps({"sha": "abc", "state": "success", "statuses": []})
+            if endpoint == "repos/owner/repo/pulls/12":
+                return json.dumps({
+                    "number": 12,
+                    "node_id": "PR_node_12",
+                    "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+                    "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                    "merged": False, "merged_at": None, "merge_commit_sha": None,
+                })
+            if any("/merge" in arg for arg in args):
+                return json.dumps({"merged": False, "message": "pull request is queued"})
+            if "graphql" in args:
+                return json.dumps({"data": {"enqueuePullRequest": {
+                    "mergeQueueEntry": {"id": "MQ_12", "position": 3, "state": "QUEUED"}
+                }}})
+            raise AssertionError(args)
+
+        result = GitHubDelivery(runner=runner).merge(
+            repository="owner/repo", number=12, expected_head="abc", expected_base="main",
+            candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
+            review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+            checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True,
+            expected_head_ref="branch",
+        )
+
+        self.assertFalse(result["merged"])
+        self.assertTrue(result["waiting"])
+        self.assertEqual(result["queue"]["id"], "MQ_12")
+        self.assertEqual(sum(any("/merge" in arg for arg in call) for call in calls), 1)
+
+    def test_lost_merge_response_does_not_enqueue_unmerged_pull_request(self):
+        def runner(args: list[str]) -> str:
+            endpoint = args[-1]
+            if "check-runs" in endpoint:
+                return json.dumps({"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}]})
+            if endpoint.endswith("/status"):
+                return json.dumps({"sha": "abc", "state": "success", "statuses": []})
+            if endpoint == "repos/owner/repo/pulls/12":
+                return json.dumps({
+                    "number": 12, "node_id": "PR_node_12",
+                    "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+                    "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                    "merged": False, "merged_at": None, "merge_commit_sha": None,
+                })
+            if any("/merge" in arg for arg in args):
+                raise RunnerError("github_server_error", "response lost after merge")
+            raise AssertionError(args)
+
+        with self.assertRaisesRegex(RunnerError, "not confirmed merged") as context:
+            GitHubDelivery(runner=runner).merge(
+                repository="owner/repo", number=12, expected_head="abc", expected_base="main",
+                candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
+                review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+                checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True,
+                expected_head_ref="branch",
+            )
+        assert context.exception.code == "github_merge_unknown"
+
+    def test_merge_reconciles_lost_merge_response_from_exact_pr_readback(self):
+        calls: list[list[str]] = []
+
+        def runner(args: list[str]) -> str:
+            calls.append(args)
+            endpoint = args[-1]
+            if "check-runs" in endpoint:
+                return json.dumps({"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}]})
+            if endpoint.endswith("/status"):
+                return json.dumps({"sha": "abc", "state": "success", "statuses": []})
+            if endpoint == "repos/owner/repo/pulls/12":
+                pull_reads = sum(call[-1] == endpoint for call in calls)
+                return json.dumps({
+                    "number": 12,
+                    "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+                    "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                    "body": "run marker", "merged": pull_reads > 1,
+                    "merged_at": "2026-09-23T00:00:00Z" if pull_reads > 1 else None,
+                    "merge_commit_sha": "merge123" if pull_reads > 1 else None,
+                })
+            if "/merge" in endpoint:
+                raise RunnerError("github_server_error", "response lost after merge")
+            raise AssertionError(args)
+
+        result = GitHubDelivery(runner=runner).merge(
+            repository="owner/repo", number=12, expected_head="abc", expected_base="main",
+            candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
+            review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+            checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True,
+            expected_head_ref="branch",
+        )
+
+        self.assertTrue(result["merged"])
+        self.assertEqual(result["sha"], "merge123")
+        self.assertEqual(sum("/merge" in arg for call in calls for arg in call), 1)
+
+    def test_merge_requires_latest_approved_review_when_configured(self):
+        calls: list[list[str]] = []
+
+        def runner(args: list[str]) -> str:
+            calls.append(args)
+            endpoint = args[-1]
+            if endpoint.endswith("/pulls/12"):
+                pull_reads = sum(call[-1] == endpoint for call in calls)
+                return json.dumps({
+                    "number": 12,
+                    "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+                    "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                    "body": "run marker", "merged": pull_reads > 1,
+                    "mergeable_state": "clean",
+                    "merged_at": "2026-09-23T00:00:03Z" if pull_reads > 1 else None,
+                    "merge_commit_sha": "merge123" if pull_reads > 1 else None,
+                })
+            if endpoint.endswith("/reviews"):
+                return json.dumps([[{
+                    "id": 1, "user": {"login": "reviewer"}, "state": "CHANGES_REQUESTED",
+                    "submitted_at": "2026-09-23T00:00:01Z",
+                }, {
+                    "id": 2, "user": {"login": "reviewer"}, "state": "APPROVED",
+                    "submitted_at": "2026-09-23T00:00:02Z",
+                }]])
+            if "check-runs" in endpoint:
+                return json.dumps({"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}]})
+            if endpoint.endswith("/status"):
+                return json.dumps({"sha": "abc", "state": "success", "statuses": []})
+            if any("/merge" in arg for arg in args):
+                return json.dumps({"merged": True, "sha": "merge123"})
+            raise AssertionError(args)
+
+        result = GitHubDelivery(runner=runner).merge(
+            repository="owner/repo", number=12, expected_head="abc", expected_base="main",
+            candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
+            review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+            checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True,
+            expected_head_ref="branch", required_approvals=1,
+        )
+
+        self.assertTrue(result["merged"])
+        self.assertEqual(sum(endpoint.endswith("/reviews") for call in calls for endpoint in call), 1)
+
+    def test_draft_pull_request_is_blocked_before_merge(self):
+        def runner(args: list[str]) -> str:
+            if args[-1] == "repos/owner/repo/pulls/12":
+                return json.dumps({
+                    "number": 12,
+                    "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+                    "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                    "body": "run marker", "draft": True, "merged": False,
+                })
+            raise AssertionError(args)
+
+        with self.assertRaisesRegex(RunnerError, "draft") as context:
+            GitHubDelivery(runner=runner).merge(
+                repository="owner/repo", number=12, expected_head="abc", expected_base="main",
+                candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
+                review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+                checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True,
+            )
+        self.assertEqual(context.exception.code, "github_merge_blocked")
 
     def test_merge_requires_independent_receipts_even_when_authorized(self):
         with self.assertRaisesRegex(RunnerError, "candidate, review, and checks"):
@@ -163,7 +330,7 @@ class GitHubDeliveryTests(unittest.TestCase):
                 return json.dumps({"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}]})
             if "status" in args[-1]:
                 return json.dumps({"sha": "abc", "state": "success", "statuses": []})
-            return json.dumps({"number": 12, "head": {"sha": "abc"}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+            return json.dumps({"number": 12, "head": {"sha": "abc", "repo": {"full_name": "owner/repo"}}, "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                "merged": True, "merged_at": "2026-09-23T00:00:00Z",
                                "merge_commit_sha": "merge123"})
 

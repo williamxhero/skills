@@ -1262,7 +1262,8 @@ def _resume_after_repair_candidate(*, control_root: Path, config: RunnerConfig,
 def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: RunRecord,
                              spec_key: str, candidate_sha: str, branch: str,
                              candidate_receipt: dict[str, object], review: dict[str, object],
-                             push: bool = True) -> dict[str, object]:
+                             push: bool = True,
+                             queue_entry: dict[str, object] | None = None) -> dict[str, object]:
     """Publish one already verified candidate through the explicit GitHub gate."""
     if not config.github_repository or not config.github_required_checks or not config.github_receipt_root or not config.github_base:
         raise RunnerError("github_config_incomplete", "GitHub delivery requires repository, base, receipt root and required checks")
@@ -1293,7 +1294,15 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
         raise RunnerError("github_merge_not_authorized", "GitHub checks passed but merge authorization is not configured")
     merged = delivery.merge(repository=repository, number=int(pr_receipt["number"]),
         expected_head=candidate_sha, expected_base=base,
-        candidate_receipt=candidate_receipt, review=review, checks=checks, allow=True)
+        candidate_receipt=candidate_receipt, review=review, checks=checks, allow=True,
+        expected_head_ref=branch,
+        required_approvals=config.github_required_approvals,
+        require_branch_protection=config.github_require_branch_protection,
+        queue_entry=queue_entry)
+    if merged.get("waiting") is True:
+        return {"state": "waiting_merge_queue", "spec_key": spec_key, "branch": branch,
+                "pr": pr_receipt, "checks": checks, "merge": merged,
+                "candidate": candidate_receipt, "review": review}
     merged["base_sync"] = _reconcile_github_base(repository=config.repository_path,
                                                   target_ref=config.target_ref, base=base)
     return {"state": "github_completed", "spec_key": spec_key, "branch": branch, "pr": pr_receipt, "checks": checks,
@@ -1706,10 +1715,10 @@ def _finish_codex_implementation(
             candidate_receipt=candidate_receipt, review=review_projection)
         artifact_directory.joinpath(f"github-{spec_key}.json").write_text(
             json.dumps(github_result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        if github_result["state"] == "waiting_ci":
-            store.set_run_state(run.run_id, "waiting_ci")
+        if github_result["state"] in {"waiting_ci", "waiting_merge_queue"}:
+            store.set_run_state(run.run_id, github_result["state"])
             store.append_event(run_id=run.run_id, event_key=f"github:{run.run_id}:{spec_key}:waiting",
-                event_type="github_checks_pending", payload=github_result)
+                event_type="github_delivery_waiting", payload=github_result)
             return github_result
         _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
                                    spec_key=spec_key, delivery=github_result)
@@ -4650,7 +4659,7 @@ def _start_legacy(*, brief_file: Path, config_file: Path, control_root: Path, la
                 return {"created": False, **_run_production_queue(
                     control_root=control_root, config=config, brief_digest=brief_digest, run=existing,
                     store=store, spec_plan=load_json(plan_path))}
-            if existing.state == "waiting_ci" and config.workflow_mode == "production":
+            if existing.state in {"waiting_ci", "waiting_merge_queue"} and config.workflow_mode == "production":
                 resumed = _resume_waiting_github(control_root=control_root, config=config, run=existing, store=store, finalize_run=False)
                 if resumed.get("state") == "spec_completed":
                     plan_path = _safe_artifact_directory(control_root, config, existing.run_id) / "spec-plan.json"
@@ -4905,6 +4914,7 @@ def _acceptance_upgrade_compatible(existing: RunRecord, config: RunnerConfig) ->
         and existing.config_digest in {
             config.legacy_acceptance_digest,
             config.acceptance_timeout_compatible_digest,
+            config.legacy_github_policy_digest if config.github_policy_compatible else "",
         }
     )
 
