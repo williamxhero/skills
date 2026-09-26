@@ -50,10 +50,13 @@ OS families; it runs the tests, builds the wheel, installs that wheel without
 source `PYTHONPATH`, and executes the public fault matrix.
 
 Release subjects now bind the qualification contract dimensions: build, SDK
-package/version, Matt lock, prompt/schema/validator digests, configuration,
-OS, trust mode, and scenario version. Their canonical digest is verified on
-readback. A required evidence kind that is `not_verified` or `skipped` now
-returns `eligible: false`; it cannot be represented as a release pass.
+package/version, current Skill observation, prompt/schema/validator digests,
+configuration, OS, trust mode, and scenario version. The historical Skill lock
+is available only through the explicit compatibility render command; no Skill
+hash or commit is a production start or resume admission gate. The canonical
+subject digest is verified on readback. A required evidence kind that is
+`not_verified` or `skipped` now returns `eligible: false`; it cannot be
+represented as a release pass.
 
 The multi-SPEC loop, SR-08 handoff isolation tests, live-turn identity
 boundary, and active-control workflow contract raise the combined deterministic
@@ -111,9 +114,12 @@ invocation, and the broader native Windows file-lock cleanup matrix. These are
 explicitly `not_verified`; no deterministic receipt is promoted to live
 evidence.
 
-## Remaining qualification inputs
+## Remaining live qualification inputs
 
-The next steps require inputs that are intentionally outside this repository:
+The following inputs are needed only to produce additional live qualification
+evidence. They are not prerequisites for starting or resuming a local run, and
+their absence must not be converted into a Matt hash, new sandbox, or
+re-authentication blocker:
 
 - A dedicated, explicitly authorized GitHub sandbox repository and credential
   scope for three disposable SPECs with a unique Runner marker. Existing

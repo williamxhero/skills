@@ -137,9 +137,13 @@ does not reset or overwrite a dirty user checkout. GitHub publication uses an
 operation receipt and is explicit about body-link versus native relation mode.
 
 The SDK adapter manifest is `dependencies.lock.json`; it records the SDK/runtime
-combination, not a Matt Skill version gate. Live GitHub, live SDK, Windows-native and
-provider-specific capabilities are reported as `not_verified` unless they have
-their own real evidence; deterministic tests never fill those gaps.
+combination, not a Matt Skill version gate. The packaged Skill lock is a
+historical, explicitly selected input for `skill render --lock`; production
+`start`, `drive`, and SDK resume resolve the current authorized local Skill on
+each turn and do not require a Skill hash, commit, new sandbox, or re-
+authentication. Live GitHub, live SDK, Windows-native and provider-specific
+capabilities are reported as `not_verified` unless they have their own real
+evidence; deterministic tests never fill those gaps.
 
 `legacy inspect` opens the old database read-only and emits a common takeover
 inventory. It does not migrate, repair, or delete the old database. The

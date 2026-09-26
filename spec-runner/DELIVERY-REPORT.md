@@ -141,8 +141,10 @@ These are explicit gaps, not simulated passes:
   restart or host/process failure (single-file, managed-worktree cleanup/retry,
   direct SQLite/log/artifact-directory locks, and a detached artifact-lock
   process are verified);
-- real production Matt Skill invocation and three-SPEC acceptance against the
-  current local Skill installation;
+- real production three-SPEC acceptance against the current local Skill
+  installation. The runtime reads the current authorized local Skill without a
+  Matt hash or commit admission gate; upstream Matt invocation remains an
+  unverified evidence category rather than a startup prerequisite;
 - real source-thread takeover, owner handoff, and thread cleanup across the
   Codex host boundary.
 - SDK user-input turn paths; the pinned SDK exposes no public request callback
