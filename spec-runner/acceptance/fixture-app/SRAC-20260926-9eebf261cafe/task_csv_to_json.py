@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import os
 import sys
@@ -25,57 +26,105 @@ class ConversionError(Exception):
     """An expected, user-facing conversion failure."""
 
 
+def _validate_csv_quotes(text: str) -> None:
+    """Reject quote characters that cannot occur in RFC-style CSV fields."""
+    in_quotes = False
+    field_start = True
+    after_closing_quote = False
+    index = 0
+
+    while index < len(text):
+        character = text[index]
+        if in_quotes:
+            if character == '"':
+                if index + 1 < len(text) and text[index + 1] == '"':
+                    index += 2
+                    continue
+                in_quotes = False
+                after_closing_quote = True
+            index += 1
+            continue
+
+        if character == '"':
+            if not field_start:
+                raise ConversionError("malformed CSV: quote in an unquoted field")
+            in_quotes = True
+            field_start = False
+        elif character == ",":
+            field_start = True
+            after_closing_quote = False
+        elif character in "\r\n":
+            field_start = True
+            after_closing_quote = False
+        elif after_closing_quote:
+            if character not in " \t":
+                raise ConversionError(
+                    "malformed CSV: characters after a closing quote"
+                )
+        elif not (field_start and character in " \t"):
+            field_start = False
+        index += 1
+
+    if in_quotes:
+        raise ConversionError("malformed CSV: unterminated quoted field")
+
+
 def _read_tasks(input_path: Path) -> list[dict[str, str]]:
     try:
-        source = input_path.open("r", encoding="utf-8", newline="")
-    except (OSError, UnicodeError) as exc:
+        with input_path.open("r", encoding="utf-8", newline="") as source:
+            text = source.read()
+    except UnicodeDecodeError as exc:
+        raise ConversionError(f"input CSV is not valid UTF-8: {exc}") from exc
+    except OSError as exc:
         raise ConversionError(f"cannot read input CSV '{input_path}': {exc}") from exc
 
-    with source:
-        reader = csv.reader(source, strict=True)
-        try:
-            try:
-                header = next(reader)
-            except StopIteration as exc:
-                raise ConversionError("input CSV is empty") from exc
+    if not text:
+        raise ConversionError("input CSV is empty")
 
-            if header != EXPECTED_HEADER:
+    _validate_csv_quotes(text)
+    # The explicit quote scan rejects malformed embedded quotes. The standard
+    # reader then parses valid quoted fields while allowing surrounding
+    # whitespace that the command trims from every value.
+    reader = csv.reader(io.StringIO(text), strict=False, skipinitialspace=True)
+    try:
+        try:
+            header = next(reader)
+        except StopIteration as exc:
+            raise ConversionError("input CSV is empty") from exc
+
+        if header != EXPECTED_HEADER:
+            raise ConversionError(
+                "CSV header must be exactly: id,title,status"
+            )
+
+        tasks: list[dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for row_number, row in enumerate(reader, start=2):
+            if not row or all(not value.strip() for value in row):
+                raise ConversionError(f"blank data row at line {row_number}")
+            if len(row) != len(EXPECTED_HEADER):
                 raise ConversionError(
-                    "CSV header must be exactly: id,title,status"
+                    f"row {row_number} must contain exactly 3 fields"
                 )
 
-            tasks: list[dict[str, str]] = []
-            seen_ids: set[str] = set()
-            for row_number, row in enumerate(reader, start=2):
-                if not row or all(not value.strip() for value in row):
-                    raise ConversionError(f"blank data row at line {row_number}")
-                if len(row) != len(EXPECTED_HEADER):
-                    raise ConversionError(
-                        f"row {row_number} must contain exactly 3 fields"
-                    )
+            task_id, title, status = (value.strip() for value in row)
+            if not task_id:
+                raise ConversionError(f"row {row_number} has an empty id")
+            if not title:
+                raise ConversionError(f"row {row_number} has an empty title")
+            if status not in VALID_STATUSES:
+                raise ConversionError(
+                    f"row {row_number} has invalid status '{status}'"
+                )
+            if task_id in seen_ids:
+                raise ConversionError(
+                    f"duplicate id '{task_id}' at row {row_number}"
+                )
 
-                task_id, title, status = (value.strip() for value in row)
-                if not task_id:
-                    raise ConversionError(f"row {row_number} has an empty id")
-                if not title:
-                    raise ConversionError(f"row {row_number} has an empty title")
-                if status not in VALID_STATUSES:
-                    raise ConversionError(
-                        f"row {row_number} has invalid status '{status}'"
-                    )
-                if task_id in seen_ids:
-                    raise ConversionError(
-                        f"duplicate id '{task_id}' at row {row_number}"
-                    )
-
-                seen_ids.add(task_id)
-                tasks.append({"id": task_id, "title": title, "status": status})
-        except UnicodeDecodeError as exc:
-            raise ConversionError(f"input CSV is not valid UTF-8: {exc}") from exc
-        except csv.Error as exc:
-            raise ConversionError(f"malformed CSV: {exc}") from exc
-        except OSError as exc:
-            raise ConversionError(f"cannot read input CSV '{input_path}': {exc}") from exc
+            seen_ids.add(task_id)
+            tasks.append({"id": task_id, "title": title, "status": status})
+    except csv.Error as exc:
+        raise ConversionError(f"malformed CSV: {exc}") from exc
 
     return tasks
 
