@@ -3230,15 +3230,15 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
     findings_document = load_json(review_files[-1]) if review_files else None
     if findings_document is None and repair_findings_files:
         findings_document = load_json(repair_findings_files[-1])
-    if findings_document is None:
-        raise RunnerError("recovery_blocked", "failed repair turn has no persisted repair findings")
-    findings = (
-        findings_document.get("blocking")
-        if "blocking" in findings_document
-        else findings_document.get("findings")
-    )
-    if not isinstance(findings, list) or not findings:
-        raise RunnerError("recovery_blocked", "failed repair turn has no persisted repair findings")
+    findings = None
+    if findings_document is not None:
+        findings = (
+            findings_document.get("blocking")
+            if "blocking" in findings_document
+            else findings_document.get("findings")
+        )
+        if not isinstance(findings, list) or not findings:
+            raise RunnerError("recovery_blocked", "failed repair turn has no persisted repair findings")
     ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
     if not ticket_path.is_file():
         raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
@@ -3246,6 +3246,40 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
         load_json(ticket_path), expected_spec_key=spec_key,
         expected_base_sha=git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds),
     )
+    if findings is None:
+        # Older repair attempts did not persist their input before opening the
+        # SDK turn. Rebuild it from the same durable workspace and trusted
+        # candidate gate; a successful check is evidence that the old failure
+        # cannot be safely explained by the current state.
+        try:
+            verify_candidate(
+                workspace=workspace,
+                candidate_sha=git_sha(workspace, timeout_seconds=config.git_timeout_seconds),
+                acceptance_version=str(ticket_plan["digest"]),
+                checks=list(config.acceptance_checks),
+                acceptance=list(config.acceptance_ids),
+                base_sha=str(ticket_plan["base_sha"]),
+                allowed_paths=config.acceptance_paths,
+                git_timeout_seconds=config.git_timeout_seconds,
+            )
+        except RunnerError as exc:
+            if exc.code != "candidate_verification_failed":
+                raise RunnerError("recovery_blocked", "failed repair turn has no persisted repair findings", details={"verification_error": exc.code}) from exc
+            findings = [_candidate_verification_finding(exc)]
+            findings_digest = digest(findings)
+            _write_json_atomic(
+                artifact_directory / f"repair-findings-{spec_key}-{findings_digest[:12]}.json",
+                {
+                    "schema_version": "spec-runner-repair-findings/v1",
+                    "run_id": run.run_id,
+                    "spec_key": spec_key,
+                    "findings_digest": findings_digest,
+                    "findings": findings,
+                    "reconstructed_from": "trusted_candidate_verification",
+                },
+            )
+        else:
+            raise RunnerError("recovery_blocked", "failed repair turn has no persisted repair findings and current candidate passes verification")
     repair_prefix = f"codex_sdk:{run.run_id}:codex_repair:{spec_key}"
     if turn_status != "completed":
         start_new_thread = failed_repair_turns >= 2
