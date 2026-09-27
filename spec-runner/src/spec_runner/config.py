@@ -115,9 +115,11 @@ class RunnerConfig:
     # resumed through the public CLI after the required checks are supplied.
     legacy_acceptance_digest: str = ""
     acceptance_timeout_compatible_digest: str = ""
+    acceptance_scope_compatible_digest: str = ""
     legacy_github_policy_digest: str = ""
     github_policy_compatible: bool = False
     acceptance_paths: tuple[str, ...] = ()
+    candidate_only_checks: tuple[int, ...] = ()
     git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS
     prepared_spec_plan: Path | None = None
     prepared_ticket_plans: tuple[tuple[str, Path], ...] = ()
@@ -256,9 +258,15 @@ class RunnerConfig:
                 acceptance_paths.append(normalized_path)
         if workflow_mode == "production" and backend == "codex_sdk" and len(acceptance_paths) != 1:
             raise RunnerError("invalid_config", "production workflow requires exactly one workflow.acceptance.write_scope root")
-        for check in checks:
+        candidate_only_checks: list[int] = []
+        for index, check in enumerate(checks):
             command = check.get("command")
             mapped = check.get("acceptance")
+            scope = check.get("scope", "both")
+            if scope not in {"both", "candidate"}:
+                raise RunnerError("invalid_config", "workflow acceptance check scope must be both or candidate")
+            if scope == "candidate":
+                candidate_only_checks.append(index)
             if not isinstance(command, list) or not command or any(not isinstance(part, str) or not part for part in command):
                 raise RunnerError("invalid_config", "workflow acceptance checks need command arrays")
             if not isinstance(mapped, list) or not mapped or any(item not in acceptance_ids for item in mapped):
@@ -332,6 +340,9 @@ class RunnerConfig:
         timeout_compatible_normalized = json.loads(_canonical_json(normalized))
         for check in timeout_compatible_normalized["workflow"]["acceptance"]["checks"]:
             check.pop("timeout_seconds", None)
+        scope_compatible_normalized = json.loads(_canonical_json(normalized))
+        for check in scope_compatible_normalized["workflow"]["acceptance"]["checks"]:
+            check.pop("scope", None)
         return cls(
             repository_path=repository_path,
             target_ref=target_ref,
@@ -345,18 +356,22 @@ class RunnerConfig:
             skill_config=(control_root / skill_config).resolve() if skill_config else None,
             skill_roots=skill_roots,
             workflow_mode=workflow_mode,
-            acceptance_checks=tuple(dict(item) for item in checks),
+            acceptance_checks=tuple({key: value for key, value in item.items() if key != "scope"} for item in checks),
             acceptance_ids=tuple(acceptance_ids),
             digest=digest_bytes(_canonical_json(normalized).encode("utf-8")),
             legacy_acceptance_digest=digest_bytes(_canonical_json(compatibility_normalized).encode("utf-8")),
             acceptance_timeout_compatible_digest=digest_bytes(
                 _canonical_json(timeout_compatible_normalized).encode("utf-8")
             ),
+            acceptance_scope_compatible_digest=digest_bytes(
+                _canonical_json(scope_compatible_normalized).encode("utf-8")
+            ),
             legacy_github_policy_digest=digest_bytes(
                 _canonical_json(legacy_github_normalized).encode("utf-8")
             ),
             github_policy_compatible=(github_required_approvals == 0 and not github_require_branch_protection),
             acceptance_paths=tuple(acceptance_paths),
+            candidate_only_checks=tuple(candidate_only_checks),
             github_repository=github_repository,
             github_required_checks=tuple(github_checks),
             github_receipt_root=(control_root / github_receipt).resolve() if github_receipt else None,

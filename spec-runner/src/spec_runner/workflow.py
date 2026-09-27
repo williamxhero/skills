@@ -1853,6 +1853,33 @@ def _resume_reviewed_delivery(*, control_root: Path, config: RunnerConfig,
     )
 
 
+def _integration_checks_for_candidate(
+    config: RunnerConfig, candidate_receipt: dict[str, object],
+) -> tuple[list[dict[str, object]], list[str], list[dict[str, object]]]:
+    checks = list(config.acceptance_checks)
+    receipts = candidate_receipt.get("checks")
+    if (candidate_receipt.get("outcome") != "verified"
+            or candidate_receipt.get("test_plan_digest") != digest(checks)
+            or not isinstance(receipts, list) or len(receipts) != len(checks)):
+        raise RunnerError("candidate_receipt_invalid", "integration checks need the original verified candidate plan")
+    integration: list[dict[str, object]] = []
+    carried: list[dict[str, object]] = []
+    for index, check in enumerate(checks):
+        receipt = receipts[index]
+        if (not isinstance(receipt, dict) or receipt.get("passed") is not True
+                or receipt.get("command") != check.get("command")
+                or receipt.get("acceptance") != check.get("acceptance")):
+            raise RunnerError("candidate_receipt_invalid", "candidate check evidence changed before integration")
+        if index in config.candidate_only_checks:
+            carried.append({"check_index": index, "receipt": receipt})
+        else:
+            integration.append(check)
+    ids = sorted({item for check in integration for item in check["acceptance"]})
+    if not ids:
+        raise RunnerError("integration_checks_missing", "an advanced target requires at least one integration check")
+    return integration, ids, carried
+
+
 def _finish_codex_implementation(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     ticket_plan: dict[str, object], workspace_info: dict[str, object], result: CodexWorkerResult,
@@ -2047,6 +2074,8 @@ def _finish_codex_implementation(
         timeout_seconds=config.git_timeout_seconds,
     )
     integration_checks = None
+    integration_ids: list[str] | None = None
+    carried_checks: list[dict[str, object]] = []
     if current_target_sha != expected_target_sha:
         _git_checked(
             config.repository_path, "merge-base", "--is-ancestor",
@@ -2054,7 +2083,9 @@ def _finish_codex_implementation(
             timeout_seconds=config.git_timeout_seconds,
         )
         expected_target_sha = current_target_sha
-        integration_checks = list(config.acceptance_checks)
+        integration_checks, integration_ids, carried_checks = _integration_checks_for_candidate(
+            config, candidate_receipt,
+        )
     merged = merge_local(
         repository=config.repository_path,
         candidate_branch=str(workspace_info["branch"]),
@@ -2064,10 +2095,16 @@ def _finish_codex_implementation(
         run_id=run.run_id,
         git_timeout_seconds=config.git_timeout_seconds,
         integration_checks=integration_checks,
-        integration_acceptance=list(config.acceptance_ids) if integration_checks is not None else None,
+        integration_acceptance=integration_ids,
         integration_version=str(ticket_plan["digest"]) if integration_checks is not None else None,
         integration_paths=config.acceptance_paths if integration_checks is not None else (),
     )
+    if carried_checks:
+        merged["candidate_only_evidence"] = {
+            "candidate_sha": candidate_sha,
+            "test_plan_digest": candidate_receipt["test_plan_digest"],
+            "checks": carried_checks,
+        }
     _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
         spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review, "merge": merged})
     cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=control_root / "delivery-workspaces", workspace=workspace, manifest=Path(str(workspace_info["manifest"])))
@@ -4273,6 +4310,7 @@ def _acceptance_upgrade_compatible(existing: RunRecord, config: RunnerConfig) ->
         and existing.config_digest in {
             config.legacy_acceptance_digest,
             config.acceptance_timeout_compatible_digest,
+            config.acceptance_scope_compatible_digest,
             config.legacy_github_policy_digest if config.github_policy_compatible else "",
         }
     )

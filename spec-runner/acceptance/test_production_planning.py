@@ -18,7 +18,7 @@ from spec_runner.config import RunnerConfig, read_brief
 from spec_runner.errors import RunnerError
 from spec_runner.store import RunRecord, Store, now
 from spec_runner.tracker import read_local
-from spec_runner.plans import validate_spec_plan, validate_ticket_plan
+from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
 from spec_runner.production_gates import implementation_artifacts
 from spec_runner.models import RunContext
 from spec_runner.stage_executor import execute_stage
@@ -770,6 +770,27 @@ def test_implementation_artifact_paths_stay_inside_write_root(tmp_path, artifact
                     "blockers": [], "questions": []}), 1, 1, 2)
     with pytest.raises(RunnerError, match="inside the assigned workspace"):
         implementation_artifacts(rejected, workspace, artifact_root=write_root)
+
+
+def test_integration_carries_only_verified_candidate_scoped_check(context):
+    _, config, _, _ = context
+    checks = [
+        {"command": ["test", "feature"], "acceptance": ["FEATURE"]},
+        {"command": ["check", "scope"], "acceptance": ["SCOPE"]},
+    ]
+    config = replace(config, acceptance_checks=tuple(checks),
+        acceptance_ids=("FEATURE", "SCOPE"), candidate_only_checks=(1,))
+    receipt = {"outcome": "verified", "test_plan_digest": digest(checks),
+        "checks": [{"command": check["command"], "acceptance": check["acceptance"],
+                    "passed": True} for check in checks]}
+    integration, ids, carried = workflow._integration_checks_for_candidate(config, receipt)
+    assert integration == [checks[0]]
+    assert ids == ["FEATURE"]
+    assert carried == [{"check_index": 1, "receipt": receipt["checks"][1]}]
+    receipt["checks"][1]["passed"] = False
+    with pytest.raises(RunnerError) as error:
+        workflow._integration_checks_for_candidate(config, receipt)
+    assert error.value.code == "candidate_receipt_invalid"
 
 
 @pytest.mark.parametrize("control_state, expected_resume", [

@@ -173,6 +173,21 @@ class CodexWorkflowControlTests(unittest.TestCase):
             existing_with_acceptance = replace(existing, config_digest=config.digest)
             self.assertTrue(workflow._acceptance_upgrade_compatible(existing_with_acceptance, timed))
 
+            scoped_config = json.loads(json.dumps(original_config))
+            scoped_config["workflow"]["acceptance"]["checks"][0]["scope"] = "candidate"
+            scoped_file = root / "runner-scoped.json"
+            scoped_file.write_text(json.dumps(scoped_config), encoding="utf-8")
+            scoped = RunnerConfig.from_file(scoped_file, root / "control")
+            self.assertEqual(scoped.acceptance_scope_compatible_digest, config.digest)
+            self.assertEqual(scoped.acceptance_checks, config.acceptance_checks)
+            self.assertEqual(scoped.candidate_only_checks, (0,))
+            self.assertTrue(workflow._acceptance_upgrade_compatible(existing_with_acceptance, scoped))
+
+            scoped_config["workflow"]["acceptance"]["checks"][0]["command"][-1] = "raise SystemExit(1)"
+            scoped_file.write_text(json.dumps(scoped_config), encoding="utf-8")
+            changed_command = RunnerConfig.from_file(scoped_file, root / "control")
+            self.assertFalse(workflow._acceptance_upgrade_compatible(existing_with_acceptance, changed_command))
+
             incompatible_config = json.loads(json.dumps(timed_config))
             incompatible_config["model"]["name"] = "different-model"
             incompatible_file = root / "runner-incompatible.json"

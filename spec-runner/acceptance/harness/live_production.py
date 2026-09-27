@@ -73,7 +73,7 @@ def prepare_inputs(*, manifest_path: Path, scenario: Path, github: bool) -> tupl
                 "ids": ["FIXTURE_TESTS", "FIXTURE_SCOPE"],
                 "checks": [
                     {"command": [sys.executable, "-m", "pytest", fixture, "-q"], "acceptance": ["FIXTURE_TESTS"], "timeout_seconds": 180},
-                    {"command": [sys.executable, "-c", "import subprocess; base='" + str(manifest["base_sha"]) + "'; prefix='" + fixture + "/'; paths=set(); paths.update(subprocess.check_output(['git','diff','--name-only','-z',base,'HEAD']).decode().split('\\0')); paths.update(subprocess.check_output(['git','diff','--name-only','-z','HEAD']).decode().split('\\0')); paths.update(subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z']).decode().split('\\0')); paths={p for p in paths if p}; assert all(p.startswith(prefix) for p in paths), sorted(paths)"] , "acceptance": ["FIXTURE_SCOPE"], "timeout_seconds": 60},
+                    {"command": [sys.executable, "-c", "import subprocess; base='" + str(manifest["base_sha"]) + "'; prefix='" + fixture + "/'; paths=set(); paths.update(subprocess.check_output(['git','diff','--name-only','-z',base,'HEAD']).decode().split('\\0')); paths.update(subprocess.check_output(['git','diff','--name-only','-z','HEAD']).decode().split('\\0')); paths.update(subprocess.check_output(['git','ls-files','--others','--exclude-standard','-z']).decode().split('\\0')); paths={p for p in paths if p}; assert all(p.startswith(prefix) for p in paths), sorted(paths)"] , "acceptance": ["FIXTURE_SCOPE"], "timeout_seconds": 60, "scope": "candidate"},
                 ],
                 "write_scope": [fixture],
             },
