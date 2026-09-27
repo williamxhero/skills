@@ -1156,6 +1156,109 @@ class CodexWorkflowControlTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_grill_resume_places_durable_answers_in_the_model_prompt(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-grill-answer-prompt-") as temp:
+            root = Path(temp)
+            repository = root / "repo"
+            repository.mkdir()
+            config = RunnerConfig(
+                repository, "HEAD", Path("artifacts"), "codex_sdk", ("grill",),
+                "fake", "high", (Path("artifacts"),), None, None, (), "test", "config",
+            )
+            run_id = "44444444-4444-4444-4444-444444444444"
+            run = RunRecord(
+                run_id=run_id,
+                launch_key="grill-answer-prompt",
+                input_digest="brief",
+                config_digest="config",
+                repository_path=str(repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="codex_sdk",
+                state="starting",
+                current_step="codex_grill",
+                log_path=f"logs/{run_id}.jsonl",
+                created_at=now(),
+                updated_at=now(),
+            )
+            store = Store.open(root / "control", create=True)
+            prompts: list[str] = []
+
+            class PromptRecordingAdapter:
+                calls = 0
+
+                def run(self, *, prompt: str, **kwargs: object) -> CodexWorkerResult:
+                    prompts.append(prompt)
+                    type(self).calls += 1
+                    if type(self).calls == 1:
+                        response = {
+                            "outcome": "needs_input",
+                            "scope": "",
+                            "constraints": [],
+                            "acceptance": [],
+                            "questions": [{
+                                "id": "validation_rules",
+                                "question": "Which validation rules apply?",
+                                "options": ["strict", "minimal"],
+                            }],
+                        }
+                    else:
+                        response = {
+                            "outcome": "planned",
+                            "scope": "answer-aware scope",
+                            "constraints": ["strict"],
+                            "acceptance": ["the answer is honored"],
+                            "questions": [],
+                        }
+                    return CodexWorkerResult(
+                        thread_id="grill-thread",
+                        turn_id=f"grill-turn-{type(self).calls}",
+                        status="completed",
+                        error=None,
+                        final_response=json.dumps(response),
+                        item_count=1,
+                        started_at=1,
+                        completed_at=2,
+                    )
+
+                def archive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                    return {"thread_id": thread_id, "archived": True, "pages_read": 1}
+
+            try:
+                store.create_run(run, f"start:{run_id}")
+                with patch.object(workflow, "CodexAdapter", PromptRecordingAdapter):
+                    waiting = workflow._execute_codex_grill(
+                        control_root=root / "control", config=config, brief="brief",
+                        brief_digest="brief", run=run, store=store,
+                    )
+                    self.assertEqual(waiting.state, "needs_input")
+                    store.submit_answer_and_wake(
+                        run_id=run_id,
+                        question_id="validation_rules",
+                        value="strict",
+                        question={
+                            "id": "validation_rules",
+                            "question": "Which validation rules apply?",
+                            "options": ["strict", "minimal"],
+                        },
+                        expected_input_digest="brief",
+                    )
+                    current = store.find_by_run_id(run_id)
+                    assert current is not None
+                    clarified = workflow._execute_codex_grill(
+                        control_root=root / "control", config=config, brief="brief",
+                        brief_digest="brief", run=current, store=store,
+                        thread_id="grill-thread",
+                    )
+
+                self.assertEqual(clarified.state, "clarified")
+                self.assertEqual(len(prompts), 2)
+                self.assertIn('"question_id": "validation_rules"', prompts[1])
+                self.assertIn('"value": "strict"', prompts[1])
+                self.assertNotIn("Which validation rules apply?", prompts[1])
+            finally:
+                store.close()
+
     def test_process_exit_reconciles_completed_running_implementation_turn(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-running-implementation-recovery-") as temp:
             root = Path(temp)

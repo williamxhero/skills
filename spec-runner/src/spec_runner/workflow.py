@@ -379,6 +379,23 @@ def _record_codex_turn_started(
     )
 
 
+def _append_recorded_answers(*, prompt: str, answers: list[dict[str, object]]) -> str:
+    """Make durable input answers part of the worker's actual prompt.
+
+    ``trusted`` metadata is available to the live adapter for provenance, but
+    it is not a substitute for the model-facing prompt.  Keeping this
+    projection in one place makes every resumable planning stage consume the
+    same answer contract and prevents a resumed worker from asking a question
+    whose answer is already durably recorded.
+    """
+    if not answers:
+        return prompt
+    return prompt + (
+        "\n\nRunner-recorded business answers (use as facts, do not ask again):\n"
+        + json.dumps(answers, ensure_ascii=False, sort_keys=True)
+    )
+
+
 def _planning_response(*, result: CodexWorkerResult, control_root: Path, config: RunnerConfig,
                        run: RunRecord, store: Store, operation_id: str, step_name: str,
                        worker_id: str, brief_digest: str, persist_result: bool = True,
@@ -630,9 +647,11 @@ def _execute_codex_grill(*, control_root: Path, config: RunnerConfig, brief: str
             "do not treat historical claims as completed work:\n" +
             json.dumps(takeover, ensure_ascii=False, sort_keys=True)
         )
+    answers = store.answers_for_run(run.run_id)
+    grill_prompt = _append_recorded_answers(prompt=grill_prompt, answers=answers)
     result = _run_worker(adapter=CodexAdapter(), phase="grill", config=config,
         prompt=grill_prompt,
-        trusted={"stage": step, "brief_digest": brief_digest, "answers": store.answers_for_run(run.run_id)},
+        trusted={"stage": step, "brief_digest": brief_digest, "answers": answers},
         repository_path=config.repository_path, model=config.model_name, effort=config.effort,
         thread_id=thread_id, schema=schema,
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id),
@@ -710,8 +729,7 @@ def _execute_codex_planning(
             "\n\nThis is a retry after the previous planning receipt was rejected. "
             "Rebuild the covers arrays from exact requirement strings and do not copy acceptance prose into them."
         )
-    if answers:
-        prompt += "\n\nRunner-recorded business answers (use as facts, do not ask again):\n" + json.dumps(answers, ensure_ascii=False, sort_keys=True)
+    prompt = _append_recorded_answers(prompt=prompt, answers=answers)
     takeover = _takeover_context(control_root=control_root, config=config, run=run)
     if takeover is not None:
         prompt += (
