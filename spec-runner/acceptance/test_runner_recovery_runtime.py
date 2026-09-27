@@ -67,6 +67,7 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
         assert first.action.value == "wait_retry"
         assert second.action.value == "service_wait"
         assert duplicate.action.value == "service_wait"
+        assert duplicate.next_check_at == second.next_check_at
         status = store.public_status(run.run_id)
         episode = status["recovery"]["episodes"][0]
         assert episode["capacity_attempts"] == 2

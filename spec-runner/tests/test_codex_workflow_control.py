@@ -16,6 +16,7 @@ from spec_runner import workflow
 from spec_runner.codex_adapter import CodexWorkerResult
 from spec_runner.config import RunnerConfig, read_brief
 from spec_runner.errors import RunnerError
+from spec_runner.recovery_runtime import RecoveryRuntime
 from spec_runner.store import RunRecord, Store, now
 
 
@@ -1006,6 +1007,151 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     "interrupted_sdk_turn_reconciled",
                     [event["event_type"] for event in store.events_for_run(failed.run_id)],
                 )
+            finally:
+                store.close()
+
+    def test_reconciled_capacity_turn_obeys_durable_wait_budget(self) -> None:
+        for attempts, expected in ((1, "wait_retry"), (2, "service_wait")):
+            with self.subTest(attempts=attempts), tempfile.TemporaryDirectory(
+                prefix="spec-runner-capacity-reconciliation-"
+            ) as temp:
+                root = Path(temp)
+                config, failed, store = self._failed_sdk_run(root)
+                try:
+                    for index in range(attempts):
+                        turn_id = "turn-failed" if index == attempts - 1 else "turn-previous"
+                        decision = workflow._record_recovery_failure(
+                            run=failed, store=store, operation_id=f"start:{failed.run_id}",
+                            error=RunnerError("sdk_rate_limited", "capacity temporarily unavailable", details={
+                                "fault_observation": {
+                                    "message": "capacity temporarily unavailable", "source": "sdk_result",
+                                    "structured": True, "request_admission": "accepted",
+                                    "execution_outcome": "unknown", "thread_id": "thread-failed",
+                                    "turn_id": turn_id,
+                                },
+                            }),
+                        )
+                        self.assertEqual(decision.action.value, "observe")
+                    store.set_run_state(failed.run_id, "blocked")
+                    blocked = store.find_by_run_id(failed.run_id)
+                    assert blocked is not None
+
+                    class ReadOnlyAdapter:
+                        def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                            return CodexWorkflowControlTests._failed_turn_inspection()
+
+                    with (
+                        patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                        patch.object(workflow, "_resume_codex_stage") as resume,
+                    ):
+                        recovered = workflow._recover_after_process_exit(
+                            control_root=root / "control", config=config, run=blocked,
+                            brief="brief", brief_digest="brief", store=store,
+                        )
+                    resume.assert_not_called()
+                    self.assertEqual(recovered["run"]["state"], expected)
+                    episode = recovered["recovery"]["episodes"][0]
+                    self.assertEqual(episode["capacity_attempts"], attempts)
+                    self.assertEqual(episode["decisions"][-1]["decision"]["action"], expected)
+                    self.assertEqual(episode["observations"][-1]["observation"]["execution_outcome"], "failed")
+                    deadline = episode["retry_deadline" if expected == "wait_retry" else "wait_deadline"]
+                    store.close()
+                    store = Store.open(root / "control", create=False)
+                    waiting = store.find_by_run_id(failed.run_id)
+                    assert waiting is not None
+                    replay = RecoveryRuntime(run=waiting, store=store).reconcile_failed_turn(
+                        operation_id=f"start:{failed.run_id}",
+                        thread_id="thread-failed", turn_id="turn-failed",
+                    )
+                    self.assertEqual(replay.state, expected)
+                    persisted = store.recovery_for_run(failed.run_id)["episodes"][0]
+                    self.assertEqual(persisted["capacity_attempts"], attempts)
+                    self.assertEqual(persisted["retry_deadline" if expected == "wait_retry" else "wait_deadline"], deadline)
+                    self.assertEqual(len(persisted["decisions"]), attempts + 1)
+                finally:
+                    store.close()
+
+    def test_reconciled_capacity_decision_survives_crash_before_terminal_observation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-capacity-crash-") as temp:
+            root = Path(temp)
+            _, failed, store = self._failed_sdk_run(root)
+            try:
+                workflow._record_recovery_failure(
+                    run=failed, store=store, operation_id=f"start:{failed.run_id}",
+                    error=RunnerError("sdk_rate_limited", "capacity temporarily unavailable", details={
+                        "fault_observation": {
+                            "message": "capacity temporarily unavailable", "structured": True,
+                            "request_admission": "accepted", "execution_outcome": "unknown",
+                            "thread_id": "thread-failed", "turn_id": "turn-failed",
+                        },
+                    }),
+                )
+                with patch.object(store, "record_recovery_observation", side_effect=RuntimeError("crash")):
+                    with self.assertRaisesRegex(RuntimeError, "crash"):
+                        RecoveryRuntime(run=failed, store=store).reconcile_failed_turn(
+                            operation_id=f"start:{failed.run_id}",
+                            thread_id="thread-failed", turn_id="turn-failed",
+                        )
+                store.close()
+                store = Store.open(root / "control", create=False)
+                replay = RecoveryRuntime(run=failed, store=store).reconcile_failed_turn(
+                    operation_id=f"start:{failed.run_id}",
+                    thread_id="thread-failed", turn_id="turn-failed",
+                )
+                self.assertEqual(replay.state, "wait_retry")
+                episode = store.recovery_for_run(failed.run_id)["episodes"][0]
+                self.assertEqual(episode["capacity_attempts"], 1)
+                self.assertEqual(len(episode["decisions"]), 2)
+                self.assertEqual(episode["observations"][-1]["observation"]["execution_outcome"], "failed")
+            finally:
+                store.close()
+
+    def test_blocked_implementation_capacity_wait_does_not_start_writer(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-implementation-capacity-") as temp:
+            root = Path(temp)
+            config, planning, store = self._failed_sdk_run(root)
+            try:
+                worker_id = f"codex_sdk:{planning.run_id}:codex_implementation:SPEC-1"
+                operation_id = f"implementation:{planning.run_id}:SPEC-1"
+                store.begin_stage(
+                    planning.run_id, step_name="codex_implementation",
+                    operation_id=operation_id, backend_kind="codex_sdk", worker_id=worker_id,
+                )
+                store.record_codex_turn_started(
+                    planning.run_id, operation_id, thread_id="thread-failed",
+                    turn_id="turn-failed", step_name="codex_implementation", worker_id=worker_id,
+                )
+                current = store.find_by_run_id(planning.run_id)
+                assert current is not None
+                workflow._record_recovery_failure(
+                    run=current, store=store, operation_id=f"start:{current.run_id}",
+                    error=RunnerError("sdk_rate_limited", "capacity temporarily unavailable", details={
+                        "fault_observation": {
+                            "message": "capacity temporarily unavailable", "structured": True,
+                            "request_admission": "accepted", "execution_outcome": "unknown",
+                            "thread_id": "thread-failed", "turn_id": "turn-failed",
+                        },
+                    }),
+                )
+                store.set_run_state(current.run_id, "blocked")
+                blocked = store.find_by_run_id(current.run_id)
+                assert blocked is not None
+
+                class ReadOnlyAdapter:
+                    def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                        return CodexWorkflowControlTests._failed_turn_inspection()
+
+                with (
+                    patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                    patch.object(workflow, "_implementation_workspace_path", return_value=config.repository_path),
+                    patch.object(workflow, "_resume_codex_stage") as resume,
+                ):
+                    recovered = workflow._recover_after_process_exit(
+                        control_root=root / "control", config=config, run=blocked,
+                        brief="brief", brief_digest="brief", store=store,
+                    )
+                resume.assert_not_called()
+                self.assertEqual(recovered["run"]["state"], "wait_retry")
             finally:
                 store.close()
 

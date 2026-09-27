@@ -144,6 +144,19 @@ class RecoveryEpisode:
             turn_id=observation.turn_id or (str(worker.get("external_turn_id")) if worker.get("external_turn_id") else None),
         )
         decision = decide_recovery(snapshot, [observation], now=datetime.now(timezone.utc))
+        prior_observations = prior.get("observations", []) if isinstance(prior, dict) else []
+        prior_observation = (prior_observations[-1].get("observation", {})
+                             if prior_observations else {})
+        prior_identity = prior_observation.get("request_id") or prior_observation.get("turn_id")
+        if (
+            attempt_identity and attempt_identity == prior_identity
+            and existing.get("state") == decision.action.value
+            and decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}
+        ):
+            deadline = (existing.get("retry_deadline") if decision.action == RecoveryAction.WAIT_RETRY
+                        else existing.get("wait_deadline"))
+            if deadline:
+                decision = replace(decision, next_check_at=str(deadline))
         # A new provider attempt must have an identity that survives a process
         # restart. Without one, retrying could evade the durable budget or
         # replay a request whose outcome has not been reconciled.
@@ -358,6 +371,85 @@ class RecoveryRuntime:
                 event_type="recovery_blocked",
                 payload={"code": error.code, "message": error.message},
             )
+        return RecoveryTransition(decision=decision, state=state)
+
+    def reconcile_failed_turn(self, *, operation_id: str, thread_id: str,
+                              turn_id: str) -> RecoveryTransition | None:
+        """Apply the recorded fault policy after readback proves a turn failed.
+
+        Older runs without a fault observation retain their existing recovery
+        path. A recorded unknown outcome must be settled before another turn.
+        """
+        episode_id = RecoveryEpisode.episode_identity(
+            run_id=self.run.run_id, operation_kind="codex_turn",
+            stage=self.run.current_step,
+        )
+        episode = next((item for item in self.store.recovery_for_run(self.run.run_id)["episodes"]
+                        if item["episode_id"] == episode_id), None)
+        if episode is None:
+            return None
+        observations = episode["observations"]
+        if not observations:
+            return None
+        latest = observations[-1]["observation"]
+        if latest.get("thread_id") != thread_id or latest.get("turn_id") != turn_id:
+            return None
+        decisions = episode["decisions"]
+        prior = decisions[-1]["decision"] if decisions else {}
+        prior_action = prior.get("action")
+        if latest.get("execution_outcome") not in {"unknown", "failed"}:
+            return None
+        fault = dict(latest)
+        fault["execution_outcome"] = "failed"
+        fault["request_admission"] = "accepted"
+        if prior_action == RecoveryAction.OBSERVE.value:
+            decision = RecoveryEpisode(run=self.run, store=self.store).record_failure(
+                operation_id=operation_id,
+                error=RunnerError("sdk_turn_failed", str(fault.get("message") or "SDK turn failed"),
+                                  details={"fault_observation": fault}),
+            )
+        elif prior_action in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
+            decision = RecoveryDecision(
+                action=RecoveryAction(str(prior_action)), reason=str(prior.get("reason") or ""),
+                evidence=tuple(str(item) for item in prior.get("evidence", [])),
+                preconditions=tuple(str(item) for item in prior.get("preconditions", [])),
+                next_check_at=prior.get("next_check_at"),
+                remaining_budget=dict(prior.get("remaining_budget") or {}),
+                family=str(prior.get("family") or "unknown"),
+            )
+        else:
+            return None
+        if latest.get("execution_outcome") == "unknown":
+            observation_id = f"{episode_id}:terminal:{turn_id}:failed"
+            self.store.record_recovery_observation(
+                observation_id=observation_id, episode_id=episode_id, observation=fault,
+            )
+            self.store.append_event(
+                run_id=self.run.run_id,
+                event_key=f"recovery:{operation_id}:{observation_id}",
+                event_type="fault_outcome_reconciled",
+                payload={"episode_id": episode_id, "thread_id": thread_id,
+                         "turn_id": turn_id, "execution_outcome": "failed"},
+            )
+        if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
+            prior_action = decision.action.value
+            episode = self.store.recovery_episode(episode_id) or {}
+            deadline = (episode["retry_deadline"] if prior_action == RecoveryAction.WAIT_RETRY.value
+                        else episode["wait_deadline"])
+            if not deadline:
+                raise RunnerError("recovery_deadline_missing", "persisted recovery wait has no deadline")
+            parsed = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed <= datetime.now(timezone.utc):
+                return None
+            self.store.fail_run(self.run.run_id, operation_id, state=str(prior_action))
+            return RecoveryTransition(decision=decision, state=str(prior_action))
+        if decision.action == RecoveryAction.RESUME_SAME_THREAD:
+            state = decision.action.value
+        else:
+            state = "blocked"
+            self.store.set_run_state(self.run.run_id, state)
         return RecoveryTransition(decision=decision, state=state)
 
     @staticmethod

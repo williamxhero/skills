@@ -10,6 +10,7 @@ from __future__ import annotations
 def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run: RunRecord, brief: str, brief_digest: str, store: Store) -> dict[str, object] | None:
     """Reconcile only evidence that can be proven locally; never replay an unknown SDK call."""
     from . import workflow
+    from .recovery_runtime import RecoveryRuntime
     CodexAdapter = workflow.CodexAdapter
     CodexWorkerResult = workflow.CodexWorkerResult
     Path = workflow.Path
@@ -44,6 +45,14 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
     load_json = workflow.load_json
     read_turn_evidence = workflow.read_turn_evidence
     validate_ticket_plan = workflow.validate_ticket_plan
+
+    def settled_failure(thread_id: str, turn_id: str) -> dict[str, object] | None:
+        transition = RecoveryRuntime(run=run, store=store).reconcile_failed_turn(
+            operation_id=f"start:{run.run_id}", thread_id=thread_id, turn_id=turn_id,
+        )
+        if transition is not None and transition.state != "resume_same_thread":
+            return {"created": False, **store.public_status(run.run_id)}
+        return None
     if config.delivery_plan is not None:
         store.append_event(
             run_id=run.run_id,
@@ -196,6 +205,9 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
             )
             if not reconciled:
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
+            settled = settled_failure(thread_id, turn_id)
+            if settled is not None:
+                return settled
             reconciled_status = str(turn_status)
             store.append_event(
                 run_id=run.run_id,
@@ -587,6 +599,9 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
                 and turns[-1].get("status") in {"failed", "interrupted"}
             )
             if terminal_retry:
+                settled = settled_failure(thread_id, turn_id)
+                if settled is not None:
+                    return settled
                 store.append_event(
                     run_id=run.run_id,
                     event_key=f"recovery:{run.run_id}:implementation-turn-retry:{turn_id}:{worker['updated_at']}",
@@ -690,6 +705,9 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
                 and turns[-1].get("status") == "failed"
             )
             if interrupted or failed:
+                settled = settled_failure(thread_id, turn_id)
+                if settled is not None:
+                    return settled
                 turn_status = "interrupted" if interrupted else "failed"
                 store.append_event(
                     run_id=run.run_id,
