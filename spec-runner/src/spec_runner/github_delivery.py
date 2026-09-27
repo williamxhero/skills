@@ -107,12 +107,13 @@ class GitHubDelivery:
         base_value = value.get("base")
         if not isinstance(head_value, dict) or not isinstance(base_value, dict):
             raise RunnerError("github_pr_readback_incomplete", "pull request readback has incomplete ref identity")
+        head_repo = head_value.get("repo")
         base_repo = base_value.get("repo")
-        repository_url = base_repo.get("full_name") if isinstance(base_repo, dict) else None
-        if not isinstance(repository_url, str) or not repository_url.strip():
-            raise RunnerError("github_identity_mismatch", "pull request readback has no repository identity")
-        if repository_url != repository:
-            raise RunnerError("github_identity_mismatch", "pull request belongs to another repository")
+        if (
+            not isinstance(head_repo, dict) or head_repo.get("full_name") != repository
+            or not isinstance(base_repo, dict) or base_repo.get("full_name") != repository
+        ):
+            raise RunnerError("github_identity_mismatch", "pull request refs do not belong to the configured repository")
         if (str(head_value.get("sha", "")) != candidate_sha
                 or str(head_value.get("ref", "")) != head
                 or str(base_value.get("ref", "")) != base

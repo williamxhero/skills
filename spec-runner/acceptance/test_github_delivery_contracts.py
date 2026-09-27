@@ -75,6 +75,30 @@ def test_pr_listing_with_non_object_entry_fails_before_create(tmp_path):
     assert "POST" not in calls[0]
 
 
+def test_pr_adoption_rejects_matching_sha_from_another_head_repository(tmp_path):
+    calls: list[list[str]] = []
+    pull = {
+        "number": 12,
+        "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "other/repo"}},
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+        "body": "<!-- spec-runner-pr:op candidate:abc -->",
+    }
+
+    def runner(args: list[str]) -> str:
+        calls.append(args)
+        return json.dumps([pull] if "--paginate" in args else pull)
+
+    with pytest.raises(RunnerError) as error:
+        GitHubDelivery(runner=runner).create_or_adopt_pr(
+            repository="owner/repo", head="branch", base="main", candidate_sha="abc",
+            body="body", operation_id="op", receipt_root=tmp_path,
+        )
+    assert error.value.code == "github_identity_mismatch"
+    assert len(calls) == 2
+    assert not any("POST" in call for call in calls)
+    assert not (tmp_path / ".spec-runner-pr-receipts.json").exists()
+
+
 @pytest.mark.parametrize("code", [
     "github_auth",
     "github_forbidden",

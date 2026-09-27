@@ -13,7 +13,7 @@ class GitHubDeliveryTests(unittest.TestCase):
     def test_pr_is_created_once_and_retry_adopts_receipt(self):
         calls: list[list[str]] = []
         readback = json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12",
-                               "head": {"sha": "abc1234", "ref": "branch"},
+                               "head": {"sha": "abc1234", "ref": "branch", "repo": {"full_name": "owner/repo"}},
                                "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->",
                                "state": "open", "merged": False})
@@ -43,10 +43,10 @@ class GitHubDeliveryTests(unittest.TestCase):
             if any(arg == "repos/owner/repo/pulls" for arg in args) and "POST" in args:
                 return json.dumps({"number": 12, "html_url": "https://example.invalid/pr/12"})
             if calls == 3:
-                return json.dumps({"number": 12, "head": {"sha": "abc1234", "ref": "branch"},
+                return json.dumps({"number": 12, "head": {"sha": "abc1234", "ref": "branch", "repo": {"full_name": "owner/repo"}},
                                    "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                    "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->"})
-            return json.dumps({"number": 12, "head": {"sha": "new-sha", "ref": "branch"},
+            return json.dumps({"number": 12, "head": {"sha": "new-sha", "ref": "branch", "repo": {"full_name": "owner/repo"}},
                                "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
                                "body": "<!-- spec-runner-pr:op-1 candidate:abc1234 -->"})
 
