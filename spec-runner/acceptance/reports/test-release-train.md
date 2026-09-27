@@ -1146,3 +1146,22 @@ implementation worktree is missing; the last continuation snapshot described
 that worktree as dirty. Neither run proves a completed production SPEC. GitHub
 three-SPEC delivery, source takeover, full Windows recovery, and project-level
 L3-L5 remain `not_verified` where their separate reports require live evidence.
+
+## Failed-turn capacity reconciliation (2026-09-27)
+
+Commit `4dd3577` makes process-exit recovery apply the persisted fault policy
+after readback proves an accepted SDK turn failed. The same attempt retains its
+budget reservation and wait deadline across replays. Source and acceptance
+tests passed `387 passed, 1 skipped`; `compileall`, `git diff --check`, and
+Ubuntu/Windows contract CI `36295322422` passed.
+
+The existing run `56335d20-5e36-4be8-bc15-875eedb42743` was resumed once
+from its original launch key. Readback settled the second 429 turn as failed,
+kept the capacity count at two, and entered durable `service_wait` without an
+immediate third SDK turn. After that wait expired, one bounded same-thread
+attempt returned another HTTP 429. Its turn
+`01a0e134-141f-79a2-8b34-fa3b4432ebe2` was reconciled, capacity count became
+three, and the run returned to `service_wait`. No verified candidate, review,
+PR, or merge was produced. The live business continuation, bounded long-term
+service probing, remaining Windows and takeover cases, and project L3-L5 gates
+remain `not_verified`; #295 remains open.
