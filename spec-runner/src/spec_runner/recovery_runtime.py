@@ -299,6 +299,17 @@ class RecoveryEpisode:
             RecoveryAction.RECONNECT_RUNTIME.value,
         }:
             return False
+        if (run.state == "blocked"
+                and action == RecoveryAction.BLOCKED.value
+                and decision.get("reason") == "external_result_unreconciled"
+                and run.current_step == "codex_review"):
+            reviewers = [worker for worker in store.workers_for_run(run.run_id)
+                         if worker.get("backend_kind") == "codex_sdk"
+                         and worker.get("state") == "paused"
+                         and str(worker.get("worker_id") or "").startswith(
+                             f"codex_sdk:{run.run_id}:codex_review:")]
+            if len(reviewers) == 1 and reviewers[0].get("external_thread_id") and reviewers[0].get("external_turn_id"):
+                return False
         if run.state == "paused":
             control = store.control_for_run(run.run_id)
             if control and control.get("requested_state") in {"pause_requested", "cancel_requested"}:

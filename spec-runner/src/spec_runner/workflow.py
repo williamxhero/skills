@@ -596,6 +596,30 @@ def _apply_implementation_control(
     return {"state": state, **store.public_status(run.run_id)}
 
 
+def _apply_review_control(
+    *, run: RunRecord, store: Store, spec_key: str, candidate_sha: str,
+    thread_id: str, turn_id: str,
+) -> dict[str, object] | None:
+    control = store.control_for_run(run.run_id)
+    if not control or control["requested_state"] not in {"pause_requested", "cancel_requested"}:
+        return None
+    state = "paused" if control["requested_state"] == "pause_requested" else "cancelled"
+    store.complete_codex_stage(
+        run.run_id, f"review:{run.run_id}:{spec_key}:{candidate_sha}",
+        thread_id=thread_id, turn_id=turn_id, state=state,
+        step_name="codex_review",
+        worker_id=f"codex_sdk:{run.run_id}:codex_review:{spec_key}:{candidate_sha[:12]}",
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"control:{run.run_id}:{control['generation']}:applied",
+        event_type="control_applied",
+        payload={"requested_state": control["requested_state"],
+                 "generation": control["generation"], "turn_id": turn_id},
+    )
+    return {"state": state, **store.public_status(run.run_id)}
+
+
 def _persist_ticket_plan(*, control_root: Path, config: RunnerConfig,
                          run: RunRecord, store: Store, document: dict[str, object],
                          spec: dict[str, object], base_sha: str, operation_id: str,
@@ -1179,7 +1203,8 @@ def _reconcile_github_base(*, repository: Path, target_ref: str, base: str,
 def _execute_independent_review(*, control_root: Path, config: RunnerConfig, brief_digest: str,
                                  run: RunRecord, store: Store, ticket_plan: dict[str, object],
                                  workspace: Path, candidate_sha: str, candidate_receipt: dict[str, object],
-                                 implementation_thread: str, artifact_directory: Path) -> tuple[dict[str, object], CodexWorkerResult]:
+                                 implementation_thread: str, artifact_directory: Path,
+                                 thread_id: str | None = None) -> tuple[dict[str, object], CodexWorkerResult]:
     spec_key = str(ticket_plan["spec_key"])
     review_operation = f"review:{run.run_id}:{spec_key}:{candidate_sha}"
     review_step = "codex_review"
@@ -1191,12 +1216,19 @@ def _execute_independent_review(*, control_root: Path, config: RunnerConfig, bri
         prompt=("Review the candidate in this read-only workspace against the SPEC and the attached real check receipt. "
                 "Return schema_version spec-runner-review-result/v1, candidate_sha, acceptance_version and findings. "
                 "Do not edit files, publish, or merge.\n\n" + json.dumps({"spec": ticket_plan, "candidate": candidate_receipt}, ensure_ascii=False, sort_keys=True)),
-        model=config.model_name, effort=config.effort, thread_id=None, repository_path=workspace,
+        model=config.model_name, effort=config.effort, thread_id=thread_id, repository_path=workspace,
         trusted={"brief_digest": brief_digest, "stage": review_step, "spec_key": spec_key, "candidate_sha": candidate_sha, "acceptance_version": ticket_plan["digest"]},
         on_turn_started=lambda thread_id, turn_id: _record_codex_turn_started(store, run_id=run.run_id, operation_id=review_operation, step_name=review_step, worker_id=review_worker, thread_id=thread_id, turn_id=turn_id),
         control_state=lambda: _read_control_state(control_root=control_root, run_id=run.run_id), schema=review_schema,
     )
     (artifact_directory / f"review-worker-{spec_key}-{candidate_sha[:12]}.json").write_text(json.dumps(review_result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if review_result.status == "interrupted":
+        controlled = _apply_review_control(
+            run=run, store=store, spec_key=spec_key, candidate_sha=candidate_sha,
+            thread_id=review_result.thread_id, turn_id=review_result.turn_id,
+        )
+        if controlled is not None:
+            return controlled, review_result
     try:
         validated = independent_review(review_result, implementation_thread=implementation_thread, candidate_sha=candidate_sha, acceptance_version=str(ticket_plan["digest"]))
     except RunnerError as exc:
@@ -1742,6 +1774,8 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
             candidate_receipt=recovery_candidate, implementation_thread=implementation_thread,
             artifact_directory=artifact,
         )
+        if recovery_review.get("state") in {"paused", "cancelled"}:
+            return recovery_review
         if recovery_review.get("approved") is not True:
             raise RunnerError("review_blocked", "fresh recovery review has blocking findings",
                               details={"findings": recovery_review.get("blocking")})
@@ -1908,11 +1942,15 @@ def _finish_codex_implementation(
     (artifact_directory / f"candidate-{spec_key}.json").write_text(json.dumps(candidate_receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     if validated_review is None:
         validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
+        if validated_review.get("state") in {"paused", "cancelled"}:
+            return validated_review
     repair_round = 0
     while not validated_review["approved"] and repair_round < 2:
         repair_round += 1
         candidate_sha, candidate_receipt = _repair_candidate(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, findings=list(validated_review["blocking"]), implementation_thread=result.thread_id, artifact_directory=artifact_directory)
         validated_review, _ = _execute_independent_review(control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store, ticket_plan=ticket_plan, workspace=workspace, candidate_sha=candidate_sha, candidate_receipt=candidate_receipt, implementation_thread=result.thread_id, artifact_directory=artifact_directory)
+        if validated_review.get("state") in {"paused", "cancelled"}:
+            return validated_review
     if not validated_review["approved"]:
         raise RunnerError("review_blocked", "independent review remained blocked after bounded repair rounds", details={"findings": validated_review["blocking"], "repair_rounds": repair_round})
     # Keep the implementation thread available throughout bounded repair;
@@ -2491,6 +2529,13 @@ def _resume_codex_stage(
             if str(worker.get("worker_id") or "").startswith(implementation_prefix)
             and (spec_key is None or str(worker.get("worker_id"))[len(implementation_prefix):] == spec_key)
         ]
+    elif run.current_step == "codex_review":
+        review_prefix = f"{worker_prefix}:codex_review:"
+        worker_matches = [
+            worker for worker in workers
+            if str(worker.get("worker_id") or "").startswith(review_prefix)
+            and (spec_key is None or str(worker.get("worker_id"))[len(review_prefix):].startswith(spec_key + ":"))
+        ]
     else:
         expected_worker = f"{worker_prefix}:{run.current_step}"
         worker_matches = [worker for worker in workers if worker.get("worker_id") == expected_worker]
@@ -2611,6 +2656,55 @@ def _resume_codex_stage(
             control_root=control_root, config=config, brief_digest=brief_digest, run=run, store=store,
             ticket_plan=load_json(ticket_path), thread_id=thread_id,
         )
+    if run.current_step == "codex_review":
+        review_prefix = f"{worker_prefix}:codex_review:"
+        identity = str(worker["worker_id"])[len(review_prefix):].rsplit(":", 1)
+        if len(identity) != 2 or not identity[0] or len(identity[1]) != 12:
+            raise RunnerError("review_candidate_missing", "paused review has no unique SPEC and candidate identity")
+        spec_key, candidate_short = identity
+        artifacts = _safe_artifact_directory(control_root, config, run.run_id)
+        ticket_plan = load_json(artifacts / f"ticket-plan-{spec_key}.json")
+        candidate = load_json(artifacts / f"candidate-{spec_key}.json")
+        candidate_sha = candidate.get("candidate_sha")
+        if (ticket_plan.get("spec_key") != spec_key
+                or not isinstance(ticket_plan.get("digest"), str)
+                or candidate.get("outcome") != "verified"
+                or not isinstance(candidate_sha, str)
+                or len(candidate_sha) != 40
+                or candidate_sha[:12] != candidate_short
+                or candidate.get("acceptance_version", ticket_plan["digest"]) != ticket_plan["digest"]):
+            raise RunnerError("review_candidate_missing", "paused review candidate does not match its durable receipt")
+        workspace_info = _candidate_workspace_info(
+            control_root=control_root, config=config, run=run,
+            spec_key=spec_key, candidate_sha=candidate_sha,
+        )
+        implementation_id = f"{worker_prefix}:codex_implementation:{spec_key}"
+        implementation = next((item for item in workers
+            if item.get("worker_id") == implementation_id and item.get("external_thread_id")), None)
+        if implementation is None:
+            raise RunnerError("review_owner_missing", "paused review has no implementation owner")
+        validated, _ = _execute_independent_review(
+            control_root=control_root, config=config, brief_digest=brief_digest,
+            run=run, store=store, ticket_plan=ticket_plan,
+            workspace=Path(str(workspace_info["workspace"])), candidate_sha=candidate_sha,
+            candidate_receipt=candidate, implementation_thread=str(implementation["external_thread_id"]),
+            artifact_directory=artifacts, thread_id=thread_id,
+        )
+        if validated.get("state") in {"paused", "cancelled"}:
+            return validated
+        review_worker = next((item for item in store.workers_for_run(run.run_id)
+            if item.get("worker_id") == worker["worker_id"]), None)
+        if review_worker is None:
+            raise RunnerError("review_worker_missing", "resumed review lost its durable worker")
+        if validated.get("approved") is True:
+            return _reconcile_approved_review(
+                control_root=control_root, config=config, run=run, store=store,
+                worker=review_worker, brief_digest=brief_digest,
+            )
+        return _reconcile_blocked_review(
+            control_root=control_root, config=config, run=run, store=store,
+            worker=review_worker, brief_digest=brief_digest,
+        )
     if run.current_step == "codex_second":
         resumed = _execute_second_codex(
             control_root=control_root,
@@ -2694,6 +2788,8 @@ def _reconcile_blocked_review(*, control_root: Path, config: RunnerConfig,
             candidate_sha=candidate_sha, candidate_receipt=candidate_receipt,
             implementation_thread=implementation_thread, artifact_directory=artifact_directory,
         )
+        if validated_review.get("state") in {"paused", "cancelled"}:
+            return validated_review
     if not validated_review["approved"]:
         raise RunnerError("review_blocked", "independent review remained blocked after bounded repair rounds", details={"findings": validated_review["blocking"], "repair_rounds": repair_round})
     implementation_path = artifact_directory / f"implementation-{spec_key}.json"
@@ -2947,6 +3043,8 @@ def _reconcile_rejected_review(*, control_root: Path, config: RunnerConfig,
         artifact_directory=artifact_directory,
     )
     validated, _ = refreshed
+    if validated.get("state") in {"paused", "cancelled"}:
+        return validated
     if not validated["approved"]:
         raise RunnerError("review_blocked", "recovered review still has blocking findings", details={"findings": validated["blocking"]})
     implementation_result_path = artifact_directory / f"implementation-{spec_key}.json"

@@ -25,6 +25,7 @@ from spec_runner.stage_executor import execute_stage
 from spec_runner.stage_progression import StageRoute
 from spec_runner.runner import Runner
 from spec_runner.models import RunnerRequest
+from spec_runner.recovery_runtime import RecoveryRuntime
 
 
 @pytest.fixture
@@ -628,6 +629,203 @@ def test_process_exit_reconciles_interrupted_implementation_control(context, mon
         if worker["worker_id"] == worker_id)["state"] == "paused"
     assert next(step for step in store.steps_for_run(run.run_id)
         if step["step_name"] == "codex_implementation")["state"] == "paused"
+
+
+def test_interrupted_review_applies_pause_before_review_validation(context, monkeypatch):
+    root, config, store, run = context
+    candidate_sha = "a" * 40
+    workspace = root / "workspace"
+    workspace.mkdir()
+    artifacts = root / "artifacts" / run.run_id
+    artifacts.mkdir(parents=True)
+
+    def interrupted_worker(**kwargs):
+        kwargs["on_turn_started"]("review-thread", "review-turn")
+        store.request_control(run.run_id, "pause_requested")
+        return CodexWorkerResult("review-thread", "review-turn", "interrupted", None, None, 0, 1, 2)
+
+    monkeypatch.setattr(workflow, "_run_worker", interrupted_worker)
+    monkeypatch.setattr(workflow, "independent_review",
+        lambda *_args, **_kwargs: pytest.fail("interrupted review cannot authorize delivery"))
+    validated, result = workflow._execute_independent_review(
+        control_root=root, config=config, brief_digest="brief", run=run, store=store,
+        ticket_plan={"spec_key": "S1", "digest": "ticket-digest"},
+        workspace=workspace, candidate_sha=candidate_sha,
+        candidate_receipt={"candidate_sha": candidate_sha},
+        implementation_thread="implementation-thread", artifact_directory=artifacts,
+    )
+    assert validated["state"] == "paused"
+    assert result.turn_id == "review-turn"
+    assert store.find_by_run_id(run.run_id).state == "paused"
+    assert store.workers_for_run(run.run_id)[-1]["state"] == "paused"
+    assert sum(event["event_type"] == "control_applied"
+        for event in store.events_for_run(run.run_id)) == 1
+
+
+def test_process_exit_reconciles_rejected_interrupted_review_control(context, monkeypatch):
+    root, config, store, run = context
+    candidate_sha = "a" * 40
+    operation = f"review:{run.run_id}:S1:{candidate_sha}"
+    worker_id = f"codex_sdk:{run.run_id}:codex_review:S1:{candidate_sha[:12]}"
+    store.begin_stage(run.run_id, step_name="codex_review", operation_id=operation,
+        backend_kind="codex_sdk", worker_id=worker_id)
+    store.record_codex_turn_started(run.run_id, operation, thread_id="review-thread",
+        turn_id="review-turn", step_name="codex_review", worker_id=worker_id)
+    store.reject_codex_stage(run.run_id, operation, thread_id="review-thread",
+        turn_id="review-turn", step_name="codex_review", worker_id=worker_id,
+        code="worker_not_successful")
+    store.request_control(run.run_id, "pause_requested")
+    workspace = root / "workspace"
+    workspace.mkdir()
+    artifacts = root / "artifacts" / run.run_id
+    artifacts.mkdir(parents=True)
+    (artifacts / "candidate-S1.json").write_text(
+        json.dumps({"candidate_sha": candidate_sha, "outcome": "verified"}), encoding="utf-8")
+    monkeypatch.setattr(workflow, "_implementation_workspace_path", lambda **_kwargs: workspace)
+
+    class InterruptedThread:
+        def read_thread(self, **_kwargs):
+            return {"thread_id": "review-thread", "thread_status": "idle",
+                "started_turn": False, "active_flags": [], "turn_count": 1,
+                "turns": [{"turn_id": "review-turn", "status": "interrupted"}]}
+
+    monkeypatch.setattr(workflow, "CodexAdapter", InterruptedThread)
+    monkeypatch.setattr(workflow, "_reconcile_rejected_review",
+        lambda **_kwargs: pytest.fail("pause cannot create another reviewer"))
+    current = store.find_by_run_id(run.run_id)
+    result = workflow._recover_after_process_exit(
+        control_root=root, config=config, run=current, brief="brief", brief_digest="brief", store=store,
+    )
+    assert result["run"]["state"] == "paused"
+    assert store.workers_for_run(run.run_id)[-1]["state"] == "paused"
+    assert store.steps_for_run(run.run_id)[-1]["state"] == "paused"
+
+
+def test_paused_review_resumes_original_thread_and_existing_candidate(context, monkeypatch):
+    root, config, store, run = context
+    candidate_sha = "a" * 40
+    operation = f"review:{run.run_id}:S1:{candidate_sha}"
+    worker_id = f"codex_sdk:{run.run_id}:codex_review:S1:{candidate_sha[:12]}"
+    store.begin_stage(run.run_id, step_name="codex_review", operation_id=operation,
+        backend_kind="codex_sdk", worker_id=worker_id)
+    store.record_codex_turn_started(run.run_id, operation, thread_id="review-thread",
+        turn_id="interrupted-turn", step_name="codex_review", worker_id=worker_id)
+    store.complete_codex_stage(run.run_id, operation, thread_id="review-thread",
+        turn_id="interrupted-turn", state="paused", step_name="codex_review", worker_id=worker_id)
+    implementation_worker = {
+        "worker_id": f"codex_sdk:{run.run_id}:codex_implementation:S1",
+        "external_thread_id": "implementation-thread",
+    }
+    original_workers = store.workers_for_run
+    monkeypatch.setattr(store, "workers_for_run",
+        lambda run_id: [implementation_worker, *original_workers(run_id)])
+    artifacts = root / "artifacts" / run.run_id
+    artifacts.mkdir(parents=True)
+    (artifacts / "ticket-plan-S1.json").write_text(
+        json.dumps({"spec_key": "S1", "digest": "ticket-digest"}), encoding="utf-8")
+    (artifacts / "candidate-S1.json").write_text(
+        json.dumps({"candidate_sha": candidate_sha, "outcome": "verified"}), encoding="utf-8")
+    workspace = root / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(workflow, "_candidate_workspace_info",
+        lambda **_kwargs: {"workspace": str(workspace)})
+    calls = []
+
+    def resumed_review(**kwargs):
+        calls.append(kwargs)
+        return {"approved": True, "candidate_sha": candidate_sha}, CodexWorkerResult(
+            "review-thread", "resumed-turn", "completed", None, "{}", 1, 1, 2)
+
+    monkeypatch.setattr(workflow, "_execute_independent_review", resumed_review)
+    monkeypatch.setattr(workflow, "_reconcile_approved_review",
+        lambda **_kwargs: {"state": "spec_completed"})
+    monkeypatch.setattr(workflow, "_execute_codex_implementation",
+        lambda **_kwargs: pytest.fail("review resume cannot restart implementation"))
+    paused = store.find_by_run_id(run.run_id)
+    result = workflow._resume_codex_stage(
+        control_root=root, config=config, run=paused, brief="brief",
+        brief_digest="brief", store=store,
+    )
+    assert result["state"] == "spec_completed"
+    assert len(calls) == 1
+    assert calls[0]["thread_id"] == "review-thread"
+    assert calls[0]["candidate_sha"] == candidate_sha
+    assert calls[0]["implementation_thread"] == "implementation-thread"
+
+
+@pytest.mark.parametrize("control_state, expected_resume", [
+    (None, True), ("pause_requested", False), ("cancel_requested", False),
+])
+def test_public_start_reconciles_blocked_paused_review_on_original_thread(
+    monkeypatch, control_state, expected_resume,
+):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="paused-review-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+
+        def stop_after_tickets(*, run, store, **_kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return store.public_status(run.run_id)
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        first = Runner().start(request)
+        run_id = first["run"]["run_id"]
+        candidate_sha = "a" * 40
+        operation = f"review:{run_id}:S1:{candidate_sha}"
+        worker_id = f"codex_sdk:{run_id}:codex_review:S1:{candidate_sha[:12]}"
+        store = Store.open(request.control_root, create=False)
+        try:
+            store.begin_stage(run_id, step_name="codex_review", operation_id=operation,
+                backend_kind="codex_sdk", worker_id=worker_id)
+            store.record_codex_turn_started(run_id, operation, thread_id="review-thread",
+                turn_id="interrupted-turn", step_name="codex_review", worker_id=worker_id)
+            store.complete_codex_stage(run_id, operation, thread_id="review-thread",
+                turn_id="interrupted-turn", state="paused", step_name="codex_review",
+                worker_id=worker_id)
+            blocked = store.find_by_run_id(run_id)
+            assert blocked is not None
+            transition = RecoveryRuntime(run=blocked, store=store).transition_failure(
+                operation_id=f"start:{run_id}",
+                error=RunnerError("recovery_blocked", "candidate workspace could not be reconciled"),
+            )
+            assert transition.decision.reason == "external_result_unreconciled"
+            if control_state:
+                store.request_control(run_id, control_state)
+        finally:
+            store.close()
+        artifacts = request.control_root / "artifacts" / run_id
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "candidate-S1.json").write_text(
+            json.dumps({"candidate_sha": candidate_sha, "outcome": "verified"}), encoding="utf-8")
+        workspace = Path(directory) / "workspace"
+        workspace.mkdir()
+        monkeypatch.setattr(workflow, "_implementation_workspace_path", lambda **_kwargs: workspace)
+
+        class InterruptedThread:
+            def read_thread(self, **_kwargs):
+                return {"thread_id": "review-thread", "thread_status": "idle",
+                    "started_turn": False, "active_flags": [], "turn_count": 1,
+                    "turns": [{"turn_id": "interrupted-turn", "status": "interrupted"}]}
+
+        monkeypatch.setattr(workflow, "CodexAdapter", InterruptedThread)
+        resumed = []
+
+        def resume_review(**kwargs):
+            resumed.append(kwargs)
+            return kwargs["store"].public_status(run_id)
+
+        monkeypatch.setattr(workflow, "_resume_codex_stage", resume_review)
+        result = Runner().start(request)
+        assert result["created"] is False
+        assert len(resumed) == int(expected_resume)
+        if expected_resume:
+            assert resumed[0]["thread_id"] == "review-thread"
+            assert resumed[0]["spec_key"] == "S1"
+        else:
+            expected_state = "paused" if control_state == "pause_requested" else "cancelled"
+            assert result["run"]["state"] == expected_state
+            assert result["workers"][-1]["state"] == expected_state
 
 
 @pytest.mark.parametrize("status, error, expected_code", [

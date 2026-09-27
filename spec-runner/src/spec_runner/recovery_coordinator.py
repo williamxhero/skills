@@ -20,6 +20,7 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
     Store = workflow.Store
     _adopt_existing_ticket_plan = workflow._adopt_existing_ticket_plan
     _apply_implementation_control = workflow._apply_implementation_control
+    _apply_review_control = workflow._apply_review_control
     _advance_second_stage = workflow._advance_second_stage
     _archive_worker_readback = workflow._archive_worker_readback
     _execute_deterministic_example = workflow._execute_deterministic_example
@@ -253,7 +254,7 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
             review_workers = [
                 worker for worker in store.workers_for_run(run.run_id)
                 if worker.get("backend_kind") == "codex_sdk"
-                and worker.get("state") in {"running", "failed", "rejected", "reviewed"}
+                and worker.get("state") in {"running", "failed", "rejected", "reviewed", "paused"}
                 and str(worker.get("worker_id") or "").startswith(review_prefix)
             ]
             worker = review_workers[-1] if review_workers else None
@@ -340,8 +341,31 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
                         break
             if candidate_receipt is None:
                 raise RunnerError("recovery_blocked", "review stage has no matching candidate receipt")
+            if worker.get("state") == "paused":
+                if turn_status != "interrupted":
+                    raise RunnerError("recovery_blocked", "paused review turn has an inconsistent terminal result")
+                controlled = _apply_review_control(
+                    run=run, store=store, spec_key=spec_key,
+                    candidate_sha=str(candidate_receipt["candidate_sha"]),
+                    thread_id=thread_id, turn_id=turn_id,
+                )
+                if controlled is not None:
+                    return {"created": False, **controlled}
+                return {"created": False, **_resume_codex_stage(
+                    control_root=control_root, config=config, run=run,
+                    brief=brief, brief_digest=brief_digest, store=store,
+                    thread_id=thread_id, spec_key=spec_key,
+                )}
             if turn_status in {"failed", "interrupted"}:
                 operation_id = f"review:{run.run_id}:{spec_key}:{candidate_receipt['candidate_sha']}"
+                if turn_status == "interrupted":
+                    controlled = _apply_review_control(
+                        run=run, store=store, spec_key=spec_key,
+                        candidate_sha=str(candidate_receipt["candidate_sha"]),
+                        thread_id=thread_id, turn_id=turn_id,
+                    )
+                    if controlled is not None:
+                        return {"created": False, **controlled}
                 if worker.get("state") != "rejected":
                     store.reject_codex_stage(
                         run.run_id,
