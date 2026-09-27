@@ -26,6 +26,21 @@ from .store import RunRecord, Store
 
 
 @dataclass(frozen=True)
+class RecoveryTransition:
+    """Durable result of observing one failure at a lifecycle seam."""
+
+    decision: RecoveryDecision
+    state: str
+
+    @property
+    def waits(self) -> bool:
+        return self.decision.action in {
+            RecoveryAction.WAIT_RETRY,
+            RecoveryAction.SERVICE_WAIT,
+        }
+
+
+@dataclass(frozen=True)
 class RecoveryEpisode:
     """Coordinate durable recovery for one run through a narrow interface."""
 
@@ -300,7 +315,50 @@ class RecoveryEpisode:
 
 
 class RecoveryRuntime:
-    """Compatibility façade for callers that still use static recovery calls."""
+    """Coordinate durable failure transitions and legacy recovery calls."""
+
+    def __init__(self, *, run: RunRecord, store: Store) -> None:
+        self.run = run
+        self.store = store
+
+    def transition_failure(
+        self,
+        *,
+        operation_id: str,
+        error: RunnerError,
+        allow_wait_for_config: bool = False,
+        terminal_state: str = "blocked",
+    ) -> RecoveryTransition:
+        """Record a failure and persist the lifecycle state it permits.
+
+        The initial stage may remain in ``wait_for_config`` while an existing
+        run fails closed to ``blocked`` for the same decision.  Keeping that
+        distinction here prevents each caller from implementing its own copy
+        of the recovery state machine.
+        """
+        decision = RecoveryEpisode(run=self.run, store=self.store).record_failure(
+            operation_id=operation_id,
+            error=error,
+        )
+        waiting_actions = {
+            RecoveryAction.WAIT_RETRY,
+            RecoveryAction.SERVICE_WAIT,
+        }
+        if allow_wait_for_config:
+            waiting_actions.add(RecoveryAction.WAIT_FOR_CONFIG)
+        if decision.action in waiting_actions:
+            state = decision.action.value
+            self.store.fail_run(self.run.run_id, operation_id, state=state)
+        else:
+            state = terminal_state
+            self.store.set_run_state(self.run.run_id, state)
+            self.store.append_event(
+                run_id=self.run.run_id,
+                event_key=f"recovery:{self.run.run_id}:blocked",
+                event_type="recovery_blocked",
+                payload={"code": error.code, "message": error.message},
+            )
+        return RecoveryTransition(decision=decision, state=state)
 
     @staticmethod
     def episode_identity(*, run_id: str, operation_kind: str, stage: str, generation: int = 0) -> str:

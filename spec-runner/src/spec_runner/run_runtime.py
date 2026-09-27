@@ -19,7 +19,7 @@ from .config import RunnerConfig, read_brief
 from .errors import RunnerError
 from .models import RunContext
 from .recovery import RecoveryAction
-from .recovery_runtime import RecoveryEpisode
+from .recovery_runtime import RecoveryEpisode, RecoveryRuntime
 from .scope_lock import ScopeLock
 from .store import RunRecord, Store, now
 from .stage_progression import StageProgression
@@ -202,24 +202,13 @@ class RunRuntime:
                     )
                 except RunnerError as exc:
                     recovery_run = port.latest_durable_run(store=store, run=existing)
-                    decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
+                    transition = RecoveryRuntime(run=recovery_run, store=store).transition_failure(
                         operation_id=f"start:{recovery_run.run_id}",
                         error=exc,
+                        terminal_state="blocked",
                     )
-                    if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
-                        store.fail_run(
-                            recovery_run.run_id,
-                            f"start:{recovery_run.run_id}",
-                            state=decision.action.value,
-                        )
+                    if transition.waits:
                         return {"created": False, **store.public_status(recovery_run.run_id)}
-                    store.set_run_state(recovery_run.run_id, "blocked")
-                    store.append_event(
-                        run_id=recovery_run.run_id,
-                        event_key=f"recovery:{recovery_run.run_id}:blocked",
-                        event_type="recovery_blocked",
-                        payload={"code": exc.code, "message": exc.message},
-                    )
                     raise
                 if stage_result is not None:
                     return {"created": False, **stage_result.public()}
@@ -272,24 +261,13 @@ class RunRuntime:
                     )
                 except RunnerError as exc:
                     recovery_run = port.latest_durable_run(store=store, run=existing)
-                    decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
+                    transition = RecoveryRuntime(run=recovery_run, store=store).transition_failure(
                         operation_id=f"start:{recovery_run.run_id}",
                         error=exc,
+                        terminal_state="blocked",
                     )
-                    if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
-                        store.fail_run(
-                            recovery_run.run_id,
-                            f"start:{recovery_run.run_id}",
-                            state=decision.action.value,
-                        )
+                    if transition.waits:
                         return {"created": False, **store.public_status(recovery_run.run_id)}
-                    store.set_run_state(recovery_run.run_id, "blocked")
-                    store.append_event(
-                        run_id=recovery_run.run_id,
-                        event_key=f"recovery:{recovery_run.run_id}:blocked",
-                        event_type="recovery_blocked",
-                        payload={"code": exc.code, "message": exc.message},
-                    )
                     raise
                 if recovered_status is not None:
                     return {"created": False, **recovered_status}
@@ -412,17 +390,13 @@ class RunRuntime:
                     )
             except RunnerError as exc:
                 recovery_run = port.latest_durable_run(store=store, run=record)
-                decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
+                transition = RecoveryRuntime(run=recovery_run, store=store).transition_failure(
                     operation_id=operation_id,
                     error=exc,
+                    allow_wait_for_config=True,
+                    terminal_state="failed",
                 )
-                state = decision.action.value if decision.action in {
-                    RecoveryAction.WAIT_RETRY,
-                    RecoveryAction.SERVICE_WAIT,
-                    RecoveryAction.WAIT_FOR_CONFIG,
-                } else "failed"
-                store.fail_run(recovery_run.run_id, operation_id, state=state)
-                if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
+                if transition.waits or transition.decision.action == RecoveryAction.WAIT_FOR_CONFIG:
                     return {"created": True, **store.public_status(recovery_run.run_id)}
                 raise
             if finished.state in {"paused", "cancelled"}:

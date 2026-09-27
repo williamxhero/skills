@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from spec_runner.errors import RunnerError
-from spec_runner.recovery_runtime import RecoveryEpisode
+from spec_runner.recovery_runtime import RecoveryEpisode, RecoveryRuntime
 from spec_runner.store import RunRecord, Store, now
 from spec_runner import workflow
 
@@ -82,6 +82,25 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
         assert diagnostic["current_action"] == "service_wait"
         assert diagnostic["budget"]["next_check_at"]
         assert diagnostic["next_recovery_condition"].startswith("wait until next_check_at")
+    finally:
+        store.close()
+
+
+def test_recovery_runtime_persists_transition_state_once(tmp_path: Path) -> None:
+    root = tmp_path / "control"
+    store = Store.open(root, create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        transition = RecoveryRuntime(run=run, store=store).transition_failure(
+            operation_id="planning:" + run.run_id,
+            error=_capacity_error("turn-transition"),
+        )
+
+        assert transition.waits is True
+        assert transition.state == "wait_retry"
+        assert store.find_by_run_id(run.run_id).state == "wait_retry"
+        assert not any(event["event_type"] == "recovery_blocked" for event in store.events_for_run(run.run_id))
     finally:
         store.close()
 
