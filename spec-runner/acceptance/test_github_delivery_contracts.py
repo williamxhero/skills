@@ -150,6 +150,61 @@ def test_pr_adoption_rejects_matching_sha_from_another_head_repository(tmp_path)
     assert not (tmp_path / ".spec-runner-pr-receipts.json").exists()
 
 
+def test_pr_operation_receipt_is_durable_before_local_projection_replay(tmp_path: Path):
+    calls: list[list[str]] = []
+    completed: list[dict[str, object]] = []
+    marker = "<!-- spec-runner-pr:op-durable candidate:abc -->"
+    pull = {
+        "number": 12,
+        "html_url": "https://github.com/owner/repo/pull/12",
+        "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+        "body": marker,
+        "state": "open",
+        "merged": False,
+        "merged_at": None,
+    }
+
+    def runner(args: list[str]) -> str:
+        calls.append(args)
+        if args[-1] == "repos/owner/repo/pulls/12":
+            return json.dumps(pull)
+        if "repos/owner/repo/pulls" in args and "POST" not in args:
+            return "[]"
+        if "POST" in args:
+            return json.dumps(pull)
+        raise AssertionError(args)
+
+    def intent(**_kwargs):
+        return {"state": "intent"}
+
+    def record(**kwargs):
+        completed.append(kwargs["receipt"])
+
+    first = GitHubDelivery(runner=runner).create_or_adopt_pr(
+        repository="owner/repo", head="branch", base="main", candidate_sha="abc",
+        body="body", operation_id="op-durable", receipt_root=tmp_path,
+        operation_intent=intent, operation_completed=record,
+    )
+    assert first["receipt"]["number"] == 12
+    assert len(completed) == 1
+    assert (tmp_path / ".spec-runner-pr-receipts.json").is_file()
+
+    (tmp_path / ".spec-runner-pr-receipts.json").unlink()
+    calls.clear()
+    durable = completed[0]
+    replay = GitHubDelivery(runner=runner).create_or_adopt_pr(
+        repository="owner/repo", head="branch", base="main", candidate_sha="abc",
+        body="body", operation_id="op-durable", receipt_root=tmp_path,
+        operation_intent=lambda **_kwargs: {"state": "completed", "receipt": durable},
+        operation_completed=record,
+    )
+    assert replay["created"] is False
+    assert replay["receipt"]["number"] == 12
+    assert len(completed) == 1
+    assert not any("POST" in call for call in calls)
+
+
 @pytest.mark.parametrize("code", [
     "github_auth",
     "github_forbidden",

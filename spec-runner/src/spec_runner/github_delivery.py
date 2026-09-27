@@ -138,10 +138,19 @@ class GitHubDelivery:
                              encoding="utf-8", newline="\n")
         temporary.replace(path)
 
-    def create_or_adopt_pr(self, *, repository: str, head: str, base: str, candidate_sha: str, body: str, operation_id: str, receipt_root: Path) -> dict[str, object]:
+    def create_or_adopt_pr(self, *, repository: str, head: str, base: str, candidate_sha: str,
+                           body: str, operation_id: str, receipt_root: Path,
+                           operation_intent: Callable[..., dict[str, object]] | None = None,
+                           operation_completed: Callable[..., None] | None = None) -> dict[str, object]:
         self._repo(repository)
         if not all(isinstance(value, str) and value.strip() for value in (head, base, candidate_sha, body, operation_id)):
             raise RunnerError("invalid_pull_request", "PR requires head, base, candidate SHA, body, and operation ID")
+        operation_state = operation_intent(
+            operation_id=operation_id,
+            operation_kind="github_pr_publication",
+            repository=repository,
+            input_digest=digest({"head": head, "base": base, "candidate_sha": candidate_sha, "body": body}),
+        ) if operation_intent is not None else None
         root = receipt_root.expanduser()
         if root.exists() and root.is_symlink():
             raise RunnerError("github_receipt_path_escape", "GitHub receipt root cannot be a symbolic link")
@@ -159,6 +168,12 @@ class GitHubDelivery:
         old = receipts.get(operation_id)
         if old is not None and not isinstance(old, dict):
             raise RunnerError("github_receipt_corrupt", "GitHub PR operation receipt must be an object")
+        if operation_state and operation_state.get("state") == "completed":
+            durable_receipt = operation_state.get("receipt")
+            if not isinstance(durable_receipt, dict):
+                raise RunnerError("github_receipt_corrupt", "completed PR operation has no receipt")
+            if old is None:
+                old = durable_receipt
         if old:
             if old.get("candidate_sha") != candidate_sha:
                 raise RunnerError("github_operation_conflict", "PR operation was reused for another candidate")
@@ -173,6 +188,10 @@ class GitHubDelivery:
                         "merged_at": readback.get("merged_at")}
             receipts[operation_id] = verified
             self._write_receipts(path, receipts)
+            if operation_state and operation_state.get("state") != "completed":
+                if operation_completed is None:
+                    raise RunnerError("github_operation_incomplete", "PR receipt cannot replace a missing durable operation completion")
+                operation_completed(operation_id=operation_id, receipt=verified)
             return {"created": False, "receipt": verified}
         marker = f"<!-- spec-runner-pr:{operation_id} candidate:{candidate_sha} -->"
         # The query is scoped to the configured repository, head and base. A
@@ -226,6 +245,8 @@ class GitHubDelivery:
                                                base=base, candidate_sha=candidate_sha, marker=marker)
             receipt = {"number": response["number"], "url": response.get("html_url"), "candidate_sha": candidate_sha, "head": head, "base": base, "adopted": adopted_after_reconcile, "marker": marker}
         receipts[operation_id] = receipt
+        if operation_completed is not None:
+            operation_completed(operation_id=operation_id, receipt=receipt)
         self._write_receipts(path, receipts)
         return {"created": not receipt.get("adopted", False), "receipt": receipt}
 

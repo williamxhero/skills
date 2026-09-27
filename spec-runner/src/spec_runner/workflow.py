@@ -1606,6 +1606,7 @@ def _resume_after_repair_candidate(*, control_root: Path, config: RunnerConfig,
 def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: RunRecord,
                              spec_key: str, candidate_sha: str, branch: str,
                              candidate_receipt: dict[str, object], review: dict[str, object],
+                             store: Store | None = None,
                              push: bool = True,
                              queue_entry: dict[str, object] | None = None) -> dict[str, object]:
     """Publish one already verified candidate through the explicit GitHub gate."""
@@ -1623,9 +1624,25 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
                        "review": review}, ensure_ascii=False, sort_keys=True)
     operation = f"github:{run.run_id}:{spec_key}:{candidate_sha}"
     delivery = GitHubDelivery(timeout_seconds=config.github_timeout_seconds)
+    def prepare_operation(*, operation_id: str, operation_kind: str, repository: str,
+                          input_digest: str) -> dict[str, object]:
+        if store is None:
+            return {"state": "intent"}
+        return store.prepare_external_operation(
+            operation_id=operation_id, run_id=run.run_id,
+            operation_kind=operation_kind, repository=repository,
+            input_digest=input_digest,
+        )
+
+    def complete_operation(*, operation_id: str, receipt: dict[str, object]) -> None:
+        if store is not None:
+            store.complete_external_operation(operation_id=operation_id, receipt=receipt)
+
     pr_result = delivery.create_or_adopt_pr(repository=repository, head=branch, base=base,
         candidate_sha=candidate_sha, body=body, operation_id=operation,
-        receipt_root=config.github_receipt_root)
+        receipt_root=config.github_receipt_root,
+        operation_intent=prepare_operation if store is not None else None,
+        operation_completed=complete_operation if store is not None else None)
     pr_receipt = pr_result.get("receipt")
     if not isinstance(pr_receipt, dict) or not isinstance(pr_receipt.get("number"), int):
         raise RunnerError("github_pr_unconfirmed", "GitHub PR receipt lacks a confirmed number")
@@ -1893,7 +1910,7 @@ def _recover_failed_github_candidate(*, control_root: Path, config: RunnerConfig
     recovered = _execute_github_delivery(
         control_root=control_root, config=config, run=run, spec_key=spec_key,
         candidate_sha=recovery_sha, branch=str(recovery_workspace["branch"]),
-        candidate_receipt=recovery_candidate, review=review_projection,
+        candidate_receipt=recovery_candidate, review=review_projection, store=store,
     )
     recovery_metadata = {
         "candidate_sha": old_candidate_sha,
@@ -2120,7 +2137,7 @@ def _finish_codex_implementation(
         }
         github_result = _execute_github_delivery(control_root=control_root, config=config, run=run,
             spec_key=spec_key, candidate_sha=candidate_sha, branch=str(workspace_info["branch"]),
-            candidate_receipt=candidate_receipt, review=review_projection)
+            candidate_receipt=candidate_receipt, review=review_projection, store=store)
         artifact_directory.joinpath(f"github-{spec_key}.json").write_text(
             json.dumps(github_result, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if github_result["state"] in {"waiting_ci", "waiting_merge_queue"}:

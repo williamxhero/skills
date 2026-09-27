@@ -1623,6 +1623,25 @@ provider fault continuation, service recovery after a real incident, native
 Windows detached ownership, or project-level L3-L5; #295 and its parent
 remain open.
 
+## SF-03.1 GitHub PR durable operation projection (2026-09-28)
+
+The production GitHub delivery boundary now records a SQLite
+`github_pr_publication` intent before listing or creating a PR, and completes
+that operation only after the exact PR identity, head/base refs, candidate SHA,
+and run marker have been read back. The local PR receipt file remains a
+projection for compatibility. If the process exits after GitHub accepts the PR
+and the SQLite receipt is complete but before the projection is written, replay
+uses the durable PR receipt and performs no second POST.
+
+The GitHub adapter, production boundary, and delivery tests passed `52 passed`;
+`compileall` and `git diff --check` passed. The change preserves existing CLI
+and receipt formats.
+
+This is deterministic plus adapter-boundary evidence; it does not prove a live
+GitHub transport loss or complete three-SPEC PR/CI/merge/closure delivery.
+SF-03/#256/#257/#258 and project-level L3-L5 remain open where live evidence is
+missing.
+
 ## RCV-02.2 concurrent migration claim (2026-09-28)
 
 Migration handover and successor registration now use conditional SQLite state
