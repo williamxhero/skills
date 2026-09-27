@@ -1843,6 +1843,8 @@ The complete source plus acceptance selection passed `492 passed, 1 skipped`;
 `compileall` and `git diff --check` passed.
 GitHub Actions run `36351199015` passed on both Ubuntu and Windows contract
 jobs.
+The Store persistence correction was verified by GitHub Actions run
+`36351781097`, with both Ubuntu and Windows contract jobs passing.
 
 This is deterministic observation input and strict JSON evidence only. It does
 not verify a live provider incident, same-thread business continuation,
