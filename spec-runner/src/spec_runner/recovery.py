@@ -60,13 +60,13 @@ def _redact(value: Any) -> str | None:
     if not text:
         return None
     text = re.sub(
-        r"(?i)(?:\bauthorization\s*:\s*)?\bbearer\s+[^\s,;]+",
+        r"(?i)(?:\bauthorization\s*:\s*)?\bbearer\s+(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
         "Bearer [redacted]",
         text,
     )
     text = re.sub(
-        r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)\b\s*[:=]\s*[^\s,;]+",
-        r"\1[redacted]",
+        r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)\b[\"']?(\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1\2[redacted]",
         text,
     )
     text = re.sub(r"(?i)\bsk-[A-Za-z0-9_-]{8,}\b", "sk-[redacted]", text)

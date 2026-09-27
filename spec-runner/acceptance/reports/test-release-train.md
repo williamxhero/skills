@@ -1740,3 +1740,13 @@ bounded diagnostic message is persisted. Regression coverage confirms the
 secret values do not survive in the public observation message. This is
 deterministic redaction evidence; live provider incidents, source-thread
 migration and project-level L3-L5 remain `not_verified`.
+
+## RCV-01.1 quoted credential redaction regression (2026-09-28)
+
+The same redaction boundary now covers JSON-style quoted authorization and API
+key values, as well as quoted token assignments. Regression coverage confirms
+that bearer, API key and token values in these common structured message forms
+are removed before persistence. The complete source plus acceptance selection
+passed `479 passed, 1 skipped`; `compileall` and `git diff --check` passed.
+This remains deterministic redaction evidence only; live provider incidents,
+source-thread migration and project-level L3-L5 remain `not_verified`.

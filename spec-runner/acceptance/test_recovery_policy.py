@@ -77,7 +77,10 @@ def test_structured_mapping_preserves_external_turn_identity():
     ("message", "secret"),
     [
         ("Authorization: Bearer bearer-secret", "bearer-secret"),
+        ('{"authorization": "Bearer bearer-json-secret"}', "bearer-json-secret"),
         ("api_key=api-secret", "api-secret"),
+        ('{"api_key": "api-json-secret"}', "api-json-secret"),
+        ("token: 'quoted-token-secret'", "quoted-token-secret"),
         ("access_token: access-secret", "access-secret"),
         ("provider rejected sk-proj-secret-value", "sk-proj-secret-value"),
     ],
