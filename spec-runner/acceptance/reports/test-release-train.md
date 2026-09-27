@@ -1366,3 +1366,31 @@ missing, pending, failed, or wrong-SHA result.
 This is a production CI gate correction, not live evidence of duplicate
 check-run recovery or a protected PR/merge queue. #257 and project-level
 gates remain open where those separate receipts are missing.
+
+## Historical control database status readback (2026-09-27)
+
+The public `status` command raised a raw SQLite `no such table:
+recovery_episodes` error for an older completed production run. That database
+predates the additive recovery, continuation, migration and route-circuit
+status tables, while retaining the same metadata schema version. The Store
+already handled the absent route-circuit table; its remaining optional status
+projections now use the same read-only table-existence boundary. An entirely
+absent feature table group yields empty evidence. The three core recovery
+tables arrived together and must be complete; budget reservations and migration
+milestones were added later and may legitimately be absent. A partial core
+recovery group or a milestone table without its migration parent raises
+`control_not_ready` instead of hiding corruption.
+
+The current public CLI read the original 2026-09-24 SQLite run
+`ceecb69c-6ccb-46c2-a633-93db1a6f8dfc` as `completed`, with six workers
+and 31 events. Recovery, continuation and migration projections were empty.
+The database SHA-256 was identical before and after the read:
+`8043ebd7c3f4244627c0af38dc55ee4a9e92dd5cde995bd0d8dc650eaaa3c457`.
+No migration or SDK turn was performed, and the original checkout's user edits
+were untouched. The focused Store/CLI selection passed `46 passed`; full
+source and acceptance passed `419 passed, 1 skipped`; source/test compileall
+and `git diff --check` passed.
+
+This corrects one #264 read-only compatibility defect. It does not verify the
+remaining live SDK, multi-process writer, full cancellation or project-level
+L3-L5 requirements.

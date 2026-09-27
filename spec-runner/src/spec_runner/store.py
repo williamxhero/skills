@@ -1525,6 +1525,14 @@ class Store:
         return result
 
     def recovery_for_run(self, run_id: str) -> dict[str, object]:
+        recovery_tables = (
+            "recovery_episodes", "recovery_observations", "recovery_decisions",
+        )
+        present = [self._table_exists(table) for table in recovery_tables]
+        if not any(present):
+            return {"episodes": []}
+        if not all(present):
+            raise RunnerError("control_not_ready", "recovery status tables are incomplete")
         episodes = [dict(row) for row in self.connection.execute("SELECT * FROM recovery_episodes WHERE run_id = ? ORDER BY updated_at", (run_id,))]
         for episode in episodes:
             observations = []
@@ -1677,6 +1685,8 @@ class Store:
             return dict(row)
 
     def continuation_receipts_for_run(self, run_id: str) -> list[dict[str, object]]:
+        if not self._table_exists("continuation_receipts"):
+            return []
         receipts: list[dict[str, object]] = []
         for row in self.connection.execute(
                 "SELECT * FROM continuation_receipts WHERE run_id = ? ORDER BY generation, spec_key, stage", (run_id,)):
@@ -1843,6 +1853,10 @@ class Store:
         return result
 
     def thread_migrations_for_run(self, run_id: str) -> list[dict[str, object]]:
+        if not self._table_exists("thread_migrations"):
+            if self._table_exists("migration_milestones"):
+                raise RunnerError("control_not_ready", "migration status tables are incomplete")
+            return []
         return [self.thread_migration(str(row[0])) for row in self.connection.execute(
             "SELECT migration_key FROM thread_migrations WHERE run_id = ? ORDER BY created_at, migration_key", (run_id,)
         ) if self.thread_migration(str(row[0])) is not None]
@@ -1890,6 +1904,10 @@ class Store:
         return result
 
     def migration_milestones_for_run(self, run_id: str) -> list[dict[str, object]]:
+        if not self._table_exists("migration_milestones"):
+            return []
+        if not self._table_exists("thread_migrations"):
+            raise RunnerError("control_not_ready", "migration status tables are incomplete")
         rows = self.connection.execute(
             """SELECT m.* FROM migration_milestones m
                JOIN thread_migrations t ON t.migration_key = m.migration_key

@@ -29,7 +29,7 @@ class StoreLeaseTests(unittest.TestCase):
                 Store.open(root, create=False)
             self.assertEqual(raised.exception.code, "control_not_ready")
 
-    def test_public_status_reads_a_database_before_route_circuit_table_was_added(self) -> None:
+    def test_public_status_reads_a_database_before_optional_status_tables_were_added(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "control"
             store = Store.open(root, create=True)
@@ -51,7 +51,12 @@ class StoreLeaseTests(unittest.TestCase):
             )
             try:
                 store.create_run(run, "start:pre-route-circuit")
-                store.connection.execute("DROP TABLE route_circuits")
+                for table in (
+                    "route_circuits", "recovery_episodes", "recovery_observations",
+                    "recovery_decisions", "recovery_budget_reservations",
+                    "continuation_receipts", "thread_migrations", "migration_milestones",
+                ):
+                    store.connection.execute(f"DROP TABLE {table}")
                 store.connection.commit()
             finally:
                 store.close()
@@ -61,6 +66,47 @@ class StoreLeaseTests(unittest.TestCase):
                 status = reopened.public_status(run.run_id)
                 self.assertEqual(status["run"]["run_id"], run.run_id)
                 self.assertEqual(status["route_circuits"], [])
+                self.assertEqual(status["recovery"], {"episodes": []})
+                self.assertEqual(status["continuation"], [])
+                self.assertEqual(status["thread_migrations"], [])
+                self.assertEqual(status["migration_milestones"], [])
+                self.assertFalse(reopened._table_exists("recovery_episodes"))
+                reopened.connection.execute("CREATE TABLE recovery_episodes (episode_id TEXT PRIMARY KEY)")
+                reopened.connection.commit()
+                with self.assertRaises(RunnerError) as incomplete:
+                    reopened.public_status(run.run_id)
+                self.assertEqual(incomplete.exception.code, "control_not_ready")
+            finally:
+                reopened.close()
+
+    def test_public_status_accepts_later_optional_tables_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "control"
+            store = Store.open(root, create=True)
+            timestamp = now()
+            run = RunRecord(
+                run_id="pre-later-tables", launch_key="pre-later-tables",
+                input_digest="input", config_digest="config", repository_path=temp,
+                target_ref="HEAD", artifact_root="artifacts",
+                backend_kind="deterministic_test", state="completed",
+                current_step="done", log_path="logs/pre-later-tables.jsonl",
+                created_at=timestamp, updated_at=timestamp,
+            )
+            try:
+                store.create_run(run, "start:pre-later-tables")
+                store.connection.execute("DROP TABLE recovery_budget_reservations")
+                store.connection.execute("DROP TABLE migration_milestones")
+                store.connection.commit()
+            finally:
+                store.close()
+
+            reopened = Store.open(root, create=False)
+            try:
+                status = reopened.public_status(run.run_id)
+                self.assertEqual(status["run"]["state"], "completed")
+                self.assertEqual(status["recovery"], {"episodes": []})
+                self.assertEqual(status["thread_migrations"], [])
+                self.assertEqual(status["migration_milestones"], [])
             finally:
                 reopened.close()
 
