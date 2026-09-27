@@ -70,12 +70,15 @@ def implementation_artifacts(result: CodexWorkerResult, workspace: Path, *, allo
     artifacts = document.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         raise RunnerError("implementation_artifacts_missing", "implementation must identify real artifacts")
+    workspace_root = workspace.resolve()
     root = (artifact_root or workspace).resolve()
     for item in artifacts:
         if not isinstance(item, str) or not item.strip():
             raise RunnerError("implementation_artifact_invalid", "artifact must be a relative path")
         relative = Path(item)
         path = root / relative
+        if not path.is_file() and artifact_root is not None:
+            path = workspace_root / relative
         if (relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts
             or root not in path.resolve().parents or not path.is_file()
             or any(part.is_symlink() for part in [path, *path.parents])):

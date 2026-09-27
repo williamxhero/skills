@@ -1938,6 +1938,13 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     }),
                     encoding="utf-8",
                 )
+                (repository / "later.txt").write_text("unrelated mainline change\n", encoding="utf-8")
+                subprocess.run(["git", "-C", str(repository), "add", "later.txt"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(repository), "-c", "user.name=Test",
+                     "-c", "user.email=test@example.com", "commit", "-qm", "later"],
+                    check=True,
+                )
 
                 class ReadOnlyAdapter:
                     def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:

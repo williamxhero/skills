@@ -753,6 +753,25 @@ def test_paused_review_resumes_original_thread_and_existing_candidate(context, m
     assert calls[0]["implementation_thread"] == "implementation-thread"
 
 
+@pytest.mark.parametrize("artifact", ["result.py", "fixture/result.py"])
+def test_implementation_artifact_paths_stay_inside_write_root(tmp_path, artifact):
+    workspace = tmp_path / "workspace"
+    write_root = workspace / "fixture"
+    write_root.mkdir(parents=True)
+    (write_root / "result.py").write_text("result = 1\n", encoding="utf-8")
+    result = CodexWorkerResult("thread", "turn", "completed", None,
+        json.dumps({"outcome": "completed", "artifacts": [artifact],
+                    "blockers": [], "questions": []}), 1, 1, 2)
+    assert implementation_artifacts(result, workspace, artifact_root=write_root)["artifacts"] == [artifact]
+    outside = workspace / "outside.py"
+    outside.write_text("outside = 1\n", encoding="utf-8")
+    rejected = CodexWorkerResult("thread", "turn", "completed", None,
+        json.dumps({"outcome": "completed", "artifacts": ["outside.py"],
+                    "blockers": [], "questions": []}), 1, 1, 2)
+    with pytest.raises(RunnerError, match="inside the assigned workspace"):
+        implementation_artifacts(rejected, workspace, artifact_root=write_root)
+
+
 @pytest.mark.parametrize("control_state, expected_resume", [
     (None, True), ("pause_requested", False), ("cancel_requested", False),
 ])

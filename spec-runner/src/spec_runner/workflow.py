@@ -3494,9 +3494,10 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
     ticket_path = artifact_directory / f"ticket-plan-{spec_key}.json"
     if not ticket_path.is_file():
         raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+    persisted_ticket = load_json(ticket_path)
     ticket_plan = validate_ticket_plan(
-        load_json(ticket_path), expected_spec_key=spec_key,
-        expected_base_sha=git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds),
+        persisted_ticket, expected_spec_key=spec_key,
+        expected_base_sha=persisted_ticket.get("base_sha"),
     )
     if findings is None:
         # Older repair attempts did not persist their input before opening the
@@ -3692,14 +3693,17 @@ def _reconcile_repair_turn(*, control_root: Path, config: RunnerConfig,
     if not isinstance(artifacts, list):
         missing_artifacts = ["<artifacts:not-a-list>"]
     else:
+        write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
         for item in artifacts:
             if not isinstance(item, str) or not item.strip():
                 missing_artifacts.append("<artifact:invalid>")
                 continue
             relative = Path(item)
-            path = workspace / relative
+            path = write_root / relative
+            if not path.is_file():
+                path = workspace / relative
             if (relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts
-                    or workspace.resolve() not in path.resolve().parents or not path.is_file()
+                    or write_root not in path.resolve().parents or not path.is_file()
                     or any(part.is_symlink() for part in [path, *path.parents])):
                 missing_artifacts.append(item)
     if missing_artifacts:
