@@ -1986,3 +1986,22 @@ This is deterministic migration and takeover safety evidence only. Real native
 SDK migration, OS/Windows old-writer termination, provider crash windows,
 business continuation, source-thread archive, and project-level L3-L5 remain
 `not_verified`; #297/#298/#299/#300 and their parent remain open.
+
+## RCV-02.3 migration evidence payload boundary (2026-09-28)
+
+Commit `fc64085` applies the shared safe JSON contract to migration successor
+receipts, successor creation details, uncertainty details, worker audit events,
+and durable milestone receipts. Hidden/encrypted history and non-finite JSON
+values now fail before SQLite mutation with `thread_migration_payload_invalid`;
+the existing migration states and receipt shapes remain unchanged.
+
+The migration, Store, takeover, and continuation selection passed `36 passed`.
+The complete source plus acceptance selection passed `539 passed, 1 skipped`;
+`compileall` and `git diff --check` passed. GitHub Actions run
+`36359000618` passed both Ubuntu and Windows contract jobs, including the
+installed-wheel public CLI checks.
+
+This is deterministic migration evidence integrity only. Live native SDK
+business continuation, source-thread archive/readback, provider crash windows,
+Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
+remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
