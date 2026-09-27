@@ -300,15 +300,10 @@ class ProductionWorkflow:
             )
             if delivered.get("state") in {"waiting_ci", "waiting_merge_queue", "cleanup_pending"}:
                 return delivered
-            if delivered.get("state") == "spec_completed" and str(delivered.get("spec_key")) == spec_key:
-                self.record_spec(spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
-                completed.add(spec_key)
-                run = store.find_by_run_id(run.run_id)
-                if run is None:
-                    raise RunnerError("run_missing", "production queue run disappeared during continuation")
-                continue
             if delivered.get("state") != "spec_completed":
                 return delivered
+            if delivered.get("spec_key") != spec_key:
+                raise RunnerError("production_spec_mismatch", "completed delivery belongs to another SPEC")
             self.record_spec(spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
             completed.add(spec_key)
             run = store.find_by_run_id(run.run_id)

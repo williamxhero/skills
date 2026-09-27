@@ -486,6 +486,35 @@ def test_production_queue_drives_dependency_ordered_specs_without_parent_dispatc
     assert store.production_completed_specs(run.run_id) == {"S1", "S2", "S3"}
 
 
+def test_production_queue_rejects_completion_for_another_spec(context, monkeypatch):
+    root, config, store, run = context
+    config = replace(config, workflow_mode="production")
+    plan = {"digest": "plan-1", "specs": [{"key": "S1", "blocked_by": []}]}
+    artifact = root / "artifacts" / run.run_id
+    artifact.mkdir(parents=True, exist_ok=True)
+    (artifact / "ticket-plan-S1.json").write_text(json.dumps({"spec_key": "S1"}), encoding="utf-8")
+    (artifact / "delivery-S1.json").write_text(json.dumps({
+        "run_id": run.run_id, "spec_key": "S1", "plan_digest": "plan-1",
+    }), encoding="utf-8")
+
+    def tickets(**kwargs):
+        store.set_run_state(run.run_id, "tickets_ready")
+        return store.find_by_run_id(run.run_id)
+
+    monkeypatch.setattr(workflow, "_execute_codex_tickets", tickets)
+    monkeypatch.setattr(workflow, "_execute_codex_implementation", lambda **kwargs: {
+        "state": "spec_completed", "spec_key": "S2",
+    })
+
+    with pytest.raises(RunnerError) as error:
+        workflow._run_production_queue(
+            control_root=root, config=config, brief_digest="brief", run=run, store=store, spec_plan=plan,
+        )
+    assert error.value.code == "production_spec_mismatch"
+    assert store.production_completed_specs(run.run_id) == set()
+    assert not (artifact / "completed-specs.json").exists()
+
+
 def test_production_queue_failure_closes_run_before_returning_error(context, monkeypatch):
     root, config, store, run = context
     plan = {"digest": "plan-1", "specs": [{"key": "S1", "title": "First", "body": "one", "blocked_by": []}]}
