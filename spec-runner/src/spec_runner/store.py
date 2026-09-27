@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .errors import RunnerError
+from .migration_contract import valid_handover_evidence
 from .recovery import recovery_diagnostic
 
 SCHEMA_VERSION = "spec-runner-store/v1"
@@ -1784,8 +1785,8 @@ class Store:
             raise RunnerError("thread_migration_state_conflict", "handover cannot advance this migration state")
         source = str(handover.get("thread_id") or "")
         handover_digest = hashlib.sha256(json.dumps(handover, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-        if source != migration["source_thread_id"] or handover.get("accepted") is not True:
-            raise RunnerError("thread_handover_unconfirmed", "successor creation requires confirmed source handover")
+        if source != migration["source_thread_id"] or not valid_handover_evidence(source, handover):
+            raise RunnerError("thread_handover_unconfirmed", "successor creation requires complete source stop and dispatcher handover evidence")
         if handover_digest != migration["handover_digest"]:
             raise RunnerError("thread_migration_identity_conflict", "handover evidence does not match the migration intent")
         timestamp = now()

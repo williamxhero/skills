@@ -29,22 +29,39 @@ def _run(root: Path) -> RunRecord:
     )
 
 
+def _handover() -> dict[str, object]:
+    return {
+        "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+        "thread_id": "source-thread",
+        "accepted": True,
+        "source_writer_state": "stopped",
+        "dispatcher_state": "quiesced",
+        "readback": {"source_thread_id": "source-thread", "observed_status": "completed"},
+        "evidence_limits": {
+            "source_stop_confirmed": True,
+            "dispatcher_quiesced": True,
+            "ownership_transferred": True,
+        },
+    }
+
+
 def test_clean_migration_acceptance_covers_receipts_and_stale_generation(tmp_path: Path) -> None:
     store = Store.open(tmp_path / "control", create=True)
     try:
         run = _run(tmp_path)
         store.create_run(run, "start:acceptance-migration-run")
         key = "acceptance:clean-migration"
+        handover = _handover()
         store.prepare_thread_migration(
             migration_key=key, run_id=run.run_id, stage="codex_example",
-            source_thread_id="source-thread", handover_digest=hashlib.sha256(json.dumps({"thread_id": "source-thread", "accepted": True}, sort_keys=True).encode("utf-8")).hexdigest(),
+            source_thread_id="source-thread", handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(),
             input_revision="brief-v1",
         )
         with pytest.raises(RunnerError, match="handover"):
             store.record_migration_successor(migration_key=key, successor_thread_id="successor-thread")
         store.record_migration_handover(
             migration_key=key,
-            handover={"thread_id": "source-thread", "accepted": True},
+            handover=handover,
         )
         store.record_migration_successor(
             migration_key=key, successor_thread_id="successor-thread",
@@ -75,10 +92,33 @@ def test_clean_migration_acceptance_covers_receipts_and_stale_generation(tmp_pat
         store.close()
 
 
+def test_store_rejects_accepted_handover_without_stop_readback(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        handover = _handover()
+        key = "acceptance:incomplete-handover"
+        store.prepare_thread_migration(
+            migration_key=key, run_id=run.run_id, stage="codex_example",
+            source_thread_id="source-thread",
+            handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(),
+            input_revision="brief-v1",
+        )
+        incomplete = {"schema_version": handover["schema_version"], "thread_id": "source-thread", "accepted": True}
+        with pytest.raises(RunnerError, match="complete source stop"):
+            store.record_migration_handover(migration_key=key, handover=incomplete)
+        persisted = store.thread_migration(key)
+        assert persisted is not None
+        assert persisted["state"] == "intent"
+    finally:
+        store.close()
+
+
 
 
 def _prepare_migration(store: Store, run: RunRecord, key: str) -> None:
-    handover = {"thread_id": "source-thread", "accepted": True}
+    handover = _handover()
     store.prepare_thread_migration(
         migration_key=key, run_id=run.run_id, stage="codex_example",
         source_thread_id="source-thread", handover_digest=hashlib.sha256(
@@ -101,7 +141,7 @@ def test_business_progress_and_source_archive_are_separate_resumable_milestones(
         run = _run(tmp_path)
         store.create_run(run, "start:acceptance-migration-run")
         key = "acceptance:business-progress"
-        handover = {"thread_id": "source-thread", "accepted": True}
+        handover = _handover()
         store.prepare_thread_migration(
             migration_key=key, run_id=run.run_id, stage="codex_example",
             source_thread_id="source-thread", handover_digest=hashlib.sha256(

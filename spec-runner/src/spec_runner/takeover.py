@@ -14,6 +14,7 @@ from .errors import RunnerError
 from .config import DEFAULT_GIT_TIMEOUT_SECONDS
 from .plans import digest
 from .store import Store
+from .migration_contract import valid_handover_evidence
 
 
 @dataclass(frozen=True)
@@ -363,25 +364,8 @@ def inspect_takeover(inventory: dict[str, Any], *, git_timeout_seconds: float = 
 
 
 def _valid_handover_evidence(thread_id: str, evidence: object) -> bool:
-    """Accept only a complete SDK handover readback, never caller booleans."""
-    if not isinstance(evidence, dict):
-        return False
-    limits = evidence.get("evidence_limits")
-    readback = evidence.get("readback")
-    return (
-        evidence.get("schema_version") == "spec-runner-sdk-thread-interrupt/v1"
-        and evidence.get("accepted") is True
-        and evidence.get("thread_id") == thread_id
-        and evidence.get("source_writer_state") == "stopped"
-        and evidence.get("dispatcher_state") == "quiesced"
-        and isinstance(limits, dict)
-        and limits.get("source_stop_confirmed") is True
-        and limits.get("dispatcher_quiesced") is True
-        and limits.get("ownership_transferred") is True
-        and isinstance(readback, dict)
-        and readback.get("source_thread_id") == thread_id
-        and readback.get("observed_status") in {"completed", "idle", "archived"}
-    )
+    """Compatibility wrapper for the shared migration contract."""
+    return valid_handover_evidence(thread_id, evidence)
 
 
 def completion_action(report: dict[str, Any], *, git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:

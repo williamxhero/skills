@@ -304,13 +304,22 @@ class StoreLeaseTests(unittest.TestCase):
                     created_at=timestamp, updated_at=timestamp,
                 )
                 store.create_run(run, "start:run-migration")
+                handover = {
+                    "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+                    "thread_id": "source-thread", "accepted": True,
+                    "source_writer_state": "stopped", "dispatcher_state": "quiesced",
+                    "readback": {"source_thread_id": "source-thread", "observed_status": "completed"},
+                    "evidence_limits": {
+                        "source_stop_confirmed": True, "dispatcher_quiesced": True,
+                        "ownership_transferred": True,
+                    },
+                }
                 intent = store.prepare_thread_migration(
                     migration_key="takeover:1:thread-migration", run_id=run.run_id,
                     stage="codex_planning", source_thread_id="source-thread",
-                    handover_digest=hashlib.sha256(json.dumps({"schema_version": "spec-runner-sdk-thread-interrupt/v1", "thread_id": "source-thread", "accepted": True}, sort_keys=True).encode("utf-8")).hexdigest(), input_revision="brief-v1",
+                    handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(), input_revision="brief-v1",
                 )
                 self.assertEqual(intent["state"], "intent")
-                handover = {"schema_version": "spec-runner-sdk-thread-interrupt/v1", "thread_id": "source-thread", "accepted": True}
                 with self.assertRaisesRegex(RunnerError, "handover"):
                     store.record_migration_successor(migration_key="takeover:1:thread-migration", successor_thread_id="successor-thread")
                 store.record_migration_handover(migration_key="takeover:1:thread-migration", handover=handover)

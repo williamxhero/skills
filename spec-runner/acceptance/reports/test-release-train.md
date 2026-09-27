@@ -1566,3 +1566,22 @@ This is deterministic durable accounting evidence only. Real provider fault
 injection, successful SDK continuation, clean source-thread migration, GitHub
 three-SPEC delivery, Windows full-path recovery and project-level L3-L5 remain
 `not_verified`; #293, #294 and their parent EPICs remain OPEN.
+
+## RCV-02.2 handover evidence enforcement (2026-09-28)
+
+The clean migration Store now shares the takeover handover contract. A migration
+cannot be advanced from `intent` to `handover_confirmed` unless the persisted
+evidence identifies the source thread and proves source writer stopped,
+dispatcher quiescence, ownership transfer, and a completed/idle/archived source
+readback. This prevents a lower-level recovery path from accepting the former
+`accepted=true` flag alone and then registering a successor or transferring the
+owner. Existing SQLite tables, CLI projections, and migration receipt shapes are
+unchanged.
+
+Focused Store, clean migration, takeover, CLI and delivery selections passed
+`26 passed` and `67 passed`; the complete source plus acceptance selection passed
+`456 passed, 1 skipped`. `compileall` and `git diff --check` passed.
+
+This is deterministic handover safety evidence only. Real native SDK migration,
+OS/Windows old-writer termination, provider crash windows, business continuation
+and project-level L3-L5 remain `not_verified`; #297, #298 and #292 remain open.
