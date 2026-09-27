@@ -4630,6 +4630,20 @@ def resume(*, brief_file: Path, config_file: Path, control_root: Path, launch_ke
     ))
 
 
+def answer(*, control_root: Path, run_id: str, question_id: str, value: object,
+           brief_file: Path | None = None, config_file: Path | None = None) -> dict[str, object]:
+    from .runner import Runner
+
+    return Runner().answer(
+        control_root=control_root,
+        run_id=run_id,
+        question_id=question_id,
+        value=value,
+        brief_file=brief_file,
+        config_file=config_file,
+    )
+
+
 def control(*, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:
     from .runner import Runner
     return Runner().control(control_root=control_root, run_id=run_id, requested_state=requested_state)

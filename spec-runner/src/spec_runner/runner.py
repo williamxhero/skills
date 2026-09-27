@@ -8,6 +8,7 @@ implementations move behind it without changing the CLI contract.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from .lifecycle import LifecycleCoordinator, LifecyclePort
 from .models import RunnerRequest, StageResult
@@ -30,6 +31,25 @@ class Runner:
 
     def resume(self, request: RunnerRequest) -> dict[str, object]:
         return self._lifecycle.resume(request).public()
+
+    def answer(
+        self,
+        *,
+        control_root: Path,
+        run_id: str,
+        question_id: str,
+        value: Any,
+        brief_file: Path | None = None,
+        config_file: Path | None = None,
+    ) -> dict[str, object]:
+        return dict(self._lifecycle.answer(
+            control_root=control_root,
+            run_id=run_id,
+            question_id=question_id,
+            value=value,
+            brief_file=brief_file,
+            config_file=config_file,
+        ))
 
     def control(self, *, control_root: Path, run_id: str, requested_state: str) -> dict[str, object]:
         return dict(self._lifecycle.control(

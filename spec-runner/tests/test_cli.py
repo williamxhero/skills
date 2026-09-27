@@ -121,6 +121,7 @@ class SpecRunnerCliTests(unittest.TestCase):
 
     def test_waiting_answer_uses_durable_request_context_for_same_run_resume(self) -> None:
         from spec_runner import cli as cli_module
+        from spec_runner.lifecycle import LegacyWorkflowAdapter
         from spec_runner.request_context import RequestContext, context_path, write_context
         from spec_runner.store import RunRecord, Store, now
 
@@ -170,12 +171,14 @@ class SpecRunnerCliTests(unittest.TestCase):
         )
         observed: dict[str, object] = {}
 
-        def fake_resume(**kwargs: object) -> dict[str, object]:
-            observed.update(kwargs)
+        def fake_resume(_self: object, request: object) -> dict[str, object]:
+            observed["launch_key"] = request.launch_key
+            observed["brief_file"] = request.brief_file
+            observed["config_file"] = request.config_file
             return {"created": False, "run": {"run_id": run_id, "state": "needs_input"}}
 
         output = io.StringIO()
-        with patch.object(cli_module, "resume", fake_resume), redirect_stdout(output):
+        with patch.object(LegacyWorkflowAdapter, "resume", fake_resume), redirect_stdout(output):
             exit_code = cli_module.main([
                 "answer", "--control-root", str(self.control_root), "--run-id", run_id,
                 "--question-id", "format", "--value", "json",

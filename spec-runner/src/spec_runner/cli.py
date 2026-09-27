@@ -29,9 +29,8 @@ from .takeover import (
 from .takeover_runtime import TakeoverExecutionRequest, TakeoverRuntime
 from .tracker import publish_local, read_local
 from .store import Store, _process_alive
-from .workflow import control, doctor, drive, launch, resume, start, status
+from .workflow import answer, control, doctor, drive, launch, resume, start, status
 from .codex_adapter import CodexAdapter
-from .request_context import context_path, read_context
 
 CLI_SCHEMA_VERSION = "spec-runner-cli/v1"
 
@@ -311,59 +310,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 answer_value = json.loads(arguments.value)
             except json.JSONDecodeError:
                 answer_value = arguments.value
-            store = Store.open(arguments.control_root.expanduser().resolve(), create=False)
-            waiting_for_input = False
-            continuation_launch_key: str | None = None
-            request_context = None
-            try:
-                current = store.find_by_run_id(arguments.run_id)
-                if current and current.state == "needs_input":
-                    waiting_for_input = True
-                    question = _pending_question(
-                        control_root=arguments.control_root.expanduser().resolve(),
-                        run=current,
-                        question_id=arguments.question_id,
-                    )
-                    if not arguments.brief and not arguments.config:
-                        try:
-                            request_context = read_context(
-                                context_path(
-                                    arguments.control_root.expanduser().resolve()
-                                    / current.artifact_root
-                                    / arguments.run_id,
-                                ),
-                                run_id=arguments.run_id,
-                            )
-                        except RunnerError as exc:
-                            if exc.code != "answer_continuation_missing":
-                                raise
-                    answer = store.submit_answer_and_wake(
-                        run_id=arguments.run_id,
-                        question_id=arguments.question_id,
-                        value=answer_value,
-                        question=question,
-                        expected_input_digest=current.input_digest,
-                    )
-                else:
-                    # Preserve the historical answer-only CLI contract for
-                    # non-interactive runs; only a waiting run gains a wake intent.
-                    answer = store.submit_answer(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value)
-                if current is not None:
-                    continuation_launch_key = current.launch_key
-                result = {"accepted": True, "answer": answer, **store.public_status(arguments.run_id)}
-            finally:
-                store.close()
-            if waiting_for_input and request_context is not None:
-                result["continuation"] = resume(
-                    brief_file=request_context.brief_file,
-                    config_file=request_context.config_file,
-                    control_root=arguments.control_root,
-                    launch_key=request_context.launch_key,
-                )
-            elif arguments.brief or arguments.config:
-                if not arguments.brief or not arguments.config:
-                    raise RunnerError("answer_inputs_incomplete", "answer continuation requires both --brief and --config")
-                result["continuation"] = resume(brief_file=arguments.brief, config_file=arguments.config, control_root=arguments.control_root, launch_key=continuation_launch_key or str(result["run"]["launch_key"]))
+            result = answer(
+                control_root=arguments.control_root,
+                run_id=arguments.run_id,
+                question_id=arguments.question_id,
+                value=answer_value,
+                brief_file=arguments.brief,
+                config_file=arguments.config,
+            )
         elif arguments.command == "launch":
             result = launch(
                 brief_file=arguments.brief,
@@ -551,48 +505,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _pending_question(*, control_root: Path, run: object, question_id: str) -> dict[str, object]:
-    """Read the durable worker question before accepting a public answer.
-
-    The answer table intentionally remains schema compatible with earlier
-    Runner databases.  The worker receipt is the durable question authority;
-    the Store then validates its identity, input revision, and choices in the
-    same answer-and-wake transaction.
-    """
-    artifact_root = Path(str(getattr(run, "artifact_root", "artifacts")))
-    artifact = artifact_root if artifact_root.is_absolute() else control_root / artifact_root
-    path = artifact / str(getattr(run, "run_id")) / "worker-result.json"
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RunnerError(
-            "answer_questions_missing",
-            "the waiting run has no readable durable question receipt",
-            details={"run_id": str(getattr(run, "run_id"))},
-        ) from exc
-    if not isinstance(document, dict) or document.get("schema_version") != "spec-runner-worker-result/v1":
-        raise RunnerError("answer_questions_invalid", "the durable question receipt has an unsupported schema")
-    run_digest = str(getattr(run, "input_digest", ""))
-    if not run_digest or document.get("input_digest") != run_digest:
-        raise RunnerError(
-            "answer_input_stale",
-            "the durable question receipt belongs to a different requirement revision",
-            details={"run_id": str(getattr(run, "run_id"))},
-        )
-    questions = document.get("questions")
-    if not isinstance(questions, list):
-        raise RunnerError("answer_questions_invalid", "the durable question receipt has no question list")
-    matches = [
-        question for question in questions
-        if isinstance(question, dict) and question.get("id") == question_id
-    ]
-    if len(matches) != 1:
-        raise RunnerError(
-            "answer_question_unknown",
-            "the question is not pending for this run",
-            details={"run_id": str(getattr(run, "run_id")), "question_id": question_id},
-        )
-    return matches[0]
 
 
 if __name__ == "__main__":
