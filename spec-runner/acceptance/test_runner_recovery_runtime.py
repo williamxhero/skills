@@ -733,6 +733,75 @@ def test_drive_wakes_once_after_persisted_retry_deadline(tmp_path: Path, monkeyp
     assert sum(event["event_type"] == "recovery_timer_woke" for event in result["events"]) == 1
 
 
+@pytest.mark.parametrize(
+    ("deadline_field", "deadline_value", "expected_reason"),
+    [
+        ("retry_deadline", None, "missing_persisted_deadline"),
+        ("retry_deadline", "not-a-timestamp", "invalid_persisted_deadline"),
+    ],
+)
+def test_public_drive_fails_closed_on_corrupt_persisted_wait(
+    tmp_path: Path,
+    monkeypatch,
+    deadline_field: str,
+    deadline_value: str | None,
+    expected_reason: str,
+) -> None:
+    root = tmp_path / "control"
+    store = Store.open(root, create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    workflow._record_recovery_failure(
+        run=run,
+        store=store,
+        operation_id="start:" + run.run_id,
+        error=_capacity_error("turn-corrupt-wait"),
+    )
+    episode = store.recovery_for_run(run.run_id)["episodes"][0]
+    store.upsert_recovery_episode(
+        episode_id=episode["episode_id"],
+        run_id=run.run_id,
+        operation_kind=episode["operation_kind"],
+        stage=episode["stage"],
+        generation=episode["generation"],
+        state="wait_retry",
+        counters={key: episode[key] for key in (
+            "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
+            "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
+        )},
+        retry_deadline=deadline_value if deadline_field == "retry_deadline" else None,
+        wait_deadline=deadline_value if deadline_field == "wait_deadline" else None,
+    )
+    store.fail_run(run.run_id, "start:" + run.run_id, state="wait_retry")
+    status = store.public_status(run.run_id)
+    store.close()
+
+    calls = []
+
+    def start_once(**kwargs):
+        calls.append(kwargs["run_id"])
+        return {"created": False, **status}
+
+    monkeypatch.setattr(workflow, "start", start_once)
+    result = workflow.drive(
+        brief_file=tmp_path / "brief.md",
+        config_file=tmp_path / "config.json",
+        control_root=root,
+        launch_key=run.launch_key,
+        run_id=run.run_id,
+    )
+
+    assert calls == [run.run_id]
+    assert result["run"]["state"] == "blocked"
+    invalid_events = [
+        event for event in result["events"]
+        if event["event_type"] == "recovery_wait_invalid"
+    ]
+    assert invalid_events[-1]["payload"] == {
+        "action": "wait_retry", "reason": expected_reason,
+    }
+
+
 def test_drive_wait_observes_pause_and_cancel_without_starting_another_check(tmp_path: Path, monkeypatch) -> None:
     for requested_state, expected_state in (("pause_requested", "paused"), ("cancel_requested", "cancelled")):
         root = tmp_path / expected_state

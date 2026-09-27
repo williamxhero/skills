@@ -18,7 +18,7 @@ from typing import Callable, Mapping, Protocol
 from .errors import RunnerError
 from .models import RunnerRequest, StageResult
 from .recovery import RecoveryAction
-from .recovery_runtime import RecoveryEpisode
+from .recovery_runtime import RecoveryEpisode, RecoveryRuntime
 from .store import Store
 
 
@@ -87,7 +87,25 @@ class RunCoordinator:
             current = store.find_by_run_id(run_id)
             if current is None:
                 raise RunnerError("unknown_run", "recovery wait run disappeared from the control database")
-            wait_record = RecoveryEpisode(run=current, store=store).wait_record()
+            try:
+                wait_record = RecoveryEpisode(run=current, store=store).wait_record()
+            except RunnerError as exc:
+                if exc.code not in {"recovery_deadline_missing", "recovery_deadline_invalid"}:
+                    raise
+                action = exc.details.get("action")
+                if not isinstance(action, str):
+                    raise
+                RecoveryRuntime.fail_closed_wait(
+                    store=store,
+                    run_id=run_id,
+                    action=action,
+                    reason=(
+                        "missing_persisted_deadline"
+                        if exc.code == "recovery_deadline_missing"
+                        else "invalid_persisted_deadline"
+                    ),
+                )
+                return 0.0, {**result, **store.public_status(run_id)}, False
             if wait_record is None:
                 if current.state in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
                     raise RunnerError("recovery_record_missing", "waiting run has no persisted recovery decision")

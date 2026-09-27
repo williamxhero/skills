@@ -1783,3 +1783,18 @@ complete source plus acceptance selection passed `482 passed, 1 skipped`;
 `compileall` and `git diff --check` passed. This deterministic persistence
 boundary does not verify live SDK recovery, source-thread migration, Windows
 detached recovery, or project-level L3-L5 gates, which remain `not_verified`.
+
+## RCV-01.4 public drive wait admission (2026-09-28)
+
+The public `workflow.drive` recovery seam now handles the same missing or
+malformed persisted `retry_deadline` values as direct start and terminal-turn
+reconciliation. A restarted wait with unusable timer data is durably moved to
+`blocked`, records `recovery_wait_invalid`, and returns the historical public
+status instead of leaking the parser error from `RunCoordinator`.
+
+The public recovery runtime selection passed `25 passed`; the affected
+workflow, policy, continuation and migration selection passed `141 passed`;
+the complete source plus acceptance selection passed `484 passed, 1 skipped`;
+`compileall` and `git diff --check` passed. This is deterministic persisted
+wait integrity evidence only; live SDK recovery, source-thread migration,
+Windows detached recovery and project-level L3-L5 remain `not_verified`.

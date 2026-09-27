@@ -628,6 +628,21 @@ class RecoveryRuntime:
         return RecoveryEpisode(run=run, store=store).waits()
 
     @staticmethod
+    def fail_closed_wait(*, store: Store, run_id: str, action: str, reason: str) -> None:
+        """Persist the terminal state for an unusable timer-backed wait."""
+        if action not in {
+            RecoveryAction.WAIT_RETRY.value,
+            RecoveryAction.SERVICE_WAIT.value,
+        }:
+            raise RunnerError("recovery_wait_invalid", "invalid recovery wait action")
+        _block_invalid_recovery_wait(
+            store=store,
+            run_id=run_id,
+            action=action,
+            reason=reason,
+        )
+
+    @staticmethod
     def wait_record(*, store: Store, run_id: str) -> tuple[str, str] | None:
         run = store.find_by_run_id(run_id)
         if run is None:
