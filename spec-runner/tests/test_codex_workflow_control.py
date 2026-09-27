@@ -1661,6 +1661,10 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     def archive_and_readback(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
                         return {"thread_id": thread_id, "archived": True, "pages_read": 1}
 
+                def cleanup_after_intent(**kwargs):
+                    self.assertEqual(store.find_by_run_id(run_id).state, "cleanup_pending")
+                    return {"outcome": "cleaned"}
+
                 with (
                     patch.object(workflow, "verify_candidate", return_value=candidate_receipt) as verify,
                     patch.object(store, "complete_codex_stage"),
@@ -1669,7 +1673,8 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     patch.object(workflow, "merge_local", return_value={"candidate_sha": existing_candidate_sha}),
                     patch.object(workflow, "_persist_delivery_evidence"),
                     patch.object(workflow, "_record_production_spec"),
-                    patch.object(workflow, "cleanup_managed_workspace", return_value={"outcome": "cleaned"}),
+                    patch.object(workflow, "_close_published_ticket_plan", return_value={"complete": True}),
+                    patch.object(workflow, "cleanup_managed_workspace", side_effect=cleanup_after_intent),
                 ):
                     with self.assertRaisesRegex(RunnerError, "persisted review does not approve"):
                         workflow._finish_codex_implementation(

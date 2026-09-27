@@ -185,7 +185,7 @@ def _validate_graph(records: tuple[IssueRecord, ...]) -> None:
         visit(key)
 
 
-def read_local(root: Path) -> PlanSnapshot:
+def read_local(root: Path, *, keys: set[str] | None = None) -> PlanSnapshot:
     root = _safe_root(root)
     files: list[Path] = []
     seen_casefold: set[str] = set()
@@ -201,6 +201,10 @@ def read_local(root: Path) -> PlanSnapshot:
         seen_casefold.add(folded)
         files.append(path)
     records = tuple(sorted((_record(root, path) for path in files), key=lambda record: record.key))
+    if keys is not None:
+        records = tuple(record for record in records if record.key in keys)
+        if {record.key for record in records} != keys:
+            raise RunnerError("tracker_close_evidence_missing", "publication source records are missing")
     _validate_graph(records)
     digest = _digest("\n".join(f"{record.key}:{record.digest}" for record in records).encode("utf-8"))
     return PlanSnapshot(TRACKER_SCHEMA, "local", os.fspath(root), "local", records, digest)
@@ -292,3 +296,98 @@ def publish_local(
     receipts[operation_id] = receipt
     _atomic_write(receipt_path, (json.dumps(receipts, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     return {"created": True, "operation_id": operation_id, "receipt": receipt, "relation_mode": "local"}
+
+
+def read_local_states(target_root: Path) -> dict[str, dict[str, object]]:
+    """Read lifecycle state without changing immutable published plan files."""
+    target_root = target_root.expanduser()
+    if target_root.is_symlink():
+        raise RunnerError("tracker_path_escape", "state target cannot be a symbolic link")
+    target_root = _safe_root(target_root)
+    path = target_root / ".spec-runner-tracker-states.json"
+    document = _local_state_document(path)
+    states = document["states"]
+    for key, state in states.items():
+        if (not isinstance(state, dict) or state.get("key") != key
+                or state.get("state") not in {"open", "closed"}
+                or not isinstance(state.get("path"), str)
+                or not state["path"] or Path(state["path"]).name != state["path"]):
+            raise RunnerError("tracker_state_corrupt", "local issue state has invalid identity")
+        try:
+            record = _record(target_root, target_root / state["path"])
+        except OSError as exc:
+            raise RunnerError("tracker_revision_conflict", f"closed record is unreadable: {key}") from exc
+        if record.key != key or record.digest != state.get("digest") or record.revision != state.get("revision"):
+            raise RunnerError("tracker_revision_conflict", f"issue state no longer matches published record: {key}")
+    return states
+
+
+def _local_state_document(path: Path) -> dict[str, Any]:
+    if path.is_symlink():
+        raise RunnerError("tracker_path_escape", "local state file cannot be a symbolic link")
+    if not path.exists():
+        return {"schema_version": "spec-runner-local-states/v1", "states": {}, "operations": {}}
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerError("tracker_state_corrupt", "local state file is not readable JSON") from exc
+    if (not isinstance(document, dict) or document.get("schema_version") != "spec-runner-local-states/v1"
+            or not isinstance(document.get("states"), dict) or not isinstance(document.get("operations"), dict)):
+        raise RunnerError("tracker_state_corrupt", "local state file has an invalid schema")
+    return document
+
+
+def close_local(snapshot: PlanSnapshot, target_root: Path, *, publication_operation_id: str,
+                operation_id: str, delivery_digest: str, keys: set[str] | None = None) -> dict[str, object]:
+    """Atomically close one published SPEC and its tickets, then read it back."""
+    if not snapshot.records or not operation_id or not delivery_digest:
+        raise RunnerError("tracker_close_evidence_missing", "local closure requires published records and delivery identity")
+    target_root = target_root.expanduser()
+    if target_root.is_symlink():
+        raise RunnerError("tracker_path_escape", "closure target cannot be a symbolic link")
+    target_root = _safe_root(target_root)
+    publication_path = target_root / ".spec-runner-tracker-receipts.json"
+    if publication_path.is_symlink():
+        raise RunnerError("tracker_path_escape", "publication receipt cannot be a symbolic link")
+    try:
+        publications = json.loads(publication_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunnerError("tracker_close_evidence_missing", "local closure has no readable publication receipt") from exc
+    if not isinstance(publications, dict) or publication_operation_id not in publications:
+        raise RunnerError("tracker_close_evidence_missing", "local closure has no matching publication operation")
+    publication = publish_local(snapshot, target_root, operation_id=publication_operation_id)["receipt"]
+    if keys is not None and (not keys or not keys <= {record.key for record in snapshot.records}):
+        raise RunnerError("tracker_close_evidence_missing", "closure scope is not part of the published plan")
+    records = [
+        {"key": record.key, "path": item["path"], "digest": item["digest"],
+         "revision": record.revision, "state": "closed"}
+        for record, item in zip(snapshot.records, publication["records"])
+        if keys is None or record.key in keys
+    ]
+    receipt = {"complete": True, "relation_mode": "local", "operation_id": operation_id,
+               "publication_operation_id": publication_operation_id,
+               "snapshot_digest": snapshot.digest, "delivery_digest": delivery_digest, "records": records}
+    state_path = target_root / ".spec-runner-tracker-states.json"
+    document = _local_state_document(state_path)
+    previous = document["operations"].get(operation_id)
+    if previous is not None and previous != receipt:
+        raise RunnerError("tracker_operation_conflict", "local closure operation was reused with different evidence")
+    states = read_local_states(target_root)
+    for record in records:
+        existing = states.get(record["key"])
+        if existing is not None and existing != record:
+            raise RunnerError("tracker_state_conflict", "published issue state changed before closure readback")
+        if previous is not None and existing is None:
+            raise RunnerError("tracker_state_conflict", "completed closure lost its issue state")
+    if previous is None:
+        document["operations"][operation_id] = receipt
+        document["states"].update({record["key"]: record for record in records})
+        try:
+            _atomic_write(state_path, (json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+        except OSError as exc:
+            raise RunnerError("tracker_close_unconfirmed", "local closure state could not be persisted") from exc
+    readback = _local_state_document(state_path)
+    states = read_local_states(target_root)
+    if readback["operations"].get(operation_id) != receipt or any(states.get(record["key"]) != record for record in records):
+        raise RunnerError("tracker_close_unconfirmed", "local closure did not return matching state readbacks")
+    return receipt

@@ -67,9 +67,12 @@ class StageProgression:
         has_control: bool = False,
         migration_requested: bool = False,
         migration_archive_pending: bool = False,
+        local_issue_closure_pending: bool = False,
     ) -> StageRoute:
         state = run.state
         production = config.workflow_mode == "production"
+        if state == "completed" and production and local_issue_closure_pending:
+            return StageRoute("cleanup_production", state, production)
         if state in {"completed", "cancelled", "blocked_writer_busy"}:
             return StageRoute("terminal", state, production)
         if state == "blocked" and config.execution_backend == "codex_sdk":

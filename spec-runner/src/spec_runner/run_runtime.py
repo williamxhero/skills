@@ -133,6 +133,9 @@ class RunRuntime:
                         if existing.state == "cleanup_pending"
                         else False
                     ),
+                    local_issue_closure_pending=port.local_issue_closure_pending(
+                        control_root=control_root, config=config, run=existing, store=store,
+                    ),
                 )
                 if route.kind == "terminal":
                     if launch_token:
@@ -185,6 +188,9 @@ class RunRuntime:
                         )
                         if existing.state == "cleanup_pending"
                         else False
+                    ),
+                    local_issue_closure_pending=port.local_issue_closure_pending(
+                        control_root=control_root, config=config, run=existing, store=store,
                     ),
                 )
                 try:

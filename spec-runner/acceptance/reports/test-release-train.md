@@ -1455,3 +1455,53 @@ was reset. This increment does not prove local ticket closure, the complete
 SF-02.2 rejection/cleanup matrix, three-SPEC GitHub delivery, protected merge,
 source takeover, or project L3-L5. #253, #264 and their parents remain OPEN;
 independent review remains pending.
+
+## SF-02.2 local tracker closure and replay (2026-09-27)
+
+The local production path now closes the published SPEC and ticket only after
+verified candidate, independent approved review, merge, archive and workspace
+cleanup evidence have been reconciled. The immutable published Markdown stays
+unchanged; an atomic tracker state file and a Store external-operation receipt
+record the close intent, exact publication identity and readback. A failed close
+leaves `cleanup_pending`, and replay performs closure without starting another
+implementation or review worker. An already completed historical run keeps its
+recorded delivery receipt and completion digest unchanged.
+The normal local path records `cleanup_pending` before deleting its workspace,
+so a process exit during cleanup returns to this same replay frontier. The
+workflow-control regression asserts that ordering before invoking cleanup.
+
+Public Runner acceptance cases cover ordinary closure, terminal replay,
+historical completion, legacy ticket-source layout, close failure, exit after
+tracker state write, a locked cleanup retry, state tampering, and multi-SPEC ticket isolation. The
+legacy publication replay preserves the original cumulative snapshot and
+receipt even when earlier SPEC records share the source directory.
+The tracker test covers two SPECs closed independently against one published
+snapshot, idempotent replay and unchanged published bytes. The affected
+planning, tracker and workflow-control selection passed `122 passed`. The
+complete source plus acceptance selection passed `445 passed, 1 skipped` in 109.81 seconds;
+source/test `compileall` and `git diff --check` passed.
+
+The original live run `56335d20-5e36-4be8-bc15-875eedb42743` was resumed
+with launch key `SRAC-20260927-f1a2b3c4d5e6-prepared`. Public `start` returned
+`created=false`, `completed` on the same run. Tracker state readback shows
+`SRAC-20260927-f1a2b3c4d5e6` and its `.1` ticket closed; the Store close
+operation is `completed`. The run still has six workers and no writer lease.
+Its original Store completion digest remains
+`a01ffa9227b10076943966412b4353260f877a08722154f4e72691a8045ace99`.
+No new run, SDK turn or recovery-budget reset was used.
+
+Independent fixed-commit review session
+`01a0e2ef-22bd-73d2-a216-231079511f9b` found one P2: a locked workspace's
+`production_cleanup_pending` escaped cleanup replay and could turn the run
+`blocked`. Replay now persists and returns `cleanup_pending` for that exact
+condition, while other evidence errors propagate. Its new public Runner
+regression passed. The reviewer inspected the two-file correction and confirmed
+the finding resolved with no remaining actionable defects in that diff; it did
+not rerun tests. The earlier long-running review session
+`01a0e2d1-d4d0-7683-822b-c7b228bba73d` was stopped after being superseded;
+it has no completed approval result.
+
+This is one local fixture delivery, not the three-SPEC GitHub PR/CI/closure
+acceptance. The full SF-02.2 rejection and cleanup matrix,
+source takeover, and project-level L3-L5 remain `not_verified` where
+durable evidence is absent. #253, #264 and their parents remain OPEN.

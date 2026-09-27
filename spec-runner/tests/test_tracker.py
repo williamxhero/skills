@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from spec_runner.errors import RunnerError
-from spec_runner.tracker import publish_local, read_local
+from spec_runner.tracker import close_local, publish_local, read_local, read_local_states
 
 
 def issue(key: str, title: str, *, parent: str | None = None, blocked_by: list[str] | None = None) -> str:
@@ -31,6 +31,30 @@ def issue(key: str, title: str, *, parent: str | None = None, blocked_by: list[s
 
 
 class TrackerTests(unittest.TestCase):
+    def test_closure_scopes_and_replay_preserve_other_specs_and_published_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "drafts"
+            target = Path(temporary) / "published"
+            root.mkdir()
+            for key, parent in [("A", None), ("A.1", "A"), ("B", None), ("B.1", "B")]:
+                (root / f"{key}.md").write_text(issue(key, key, parent=parent), encoding="utf-8")
+            snapshot = read_local(root)
+            publish_local(snapshot, target, operation_id="publish")
+            before = {path.name: path.read_bytes() for path in target.glob("*.md")}
+            first = close_local(snapshot, target, publication_operation_id="publish", operation_id="close-A",
+                                delivery_digest="delivery-A", keys={"A", "A.1"})
+            self.assertEqual(set(read_local_states(target)), {"A", "A.1"})
+            close_local(snapshot, target, publication_operation_id="publish", operation_id="close-B",
+                        delivery_digest="delivery-B", keys={"B", "B.1"})
+            self.assertEqual(first, close_local(snapshot, target, publication_operation_id="publish",
+                operation_id="close-A", delivery_digest="delivery-A", keys={"A", "A.1"}))
+            self.assertEqual(set(read_local_states(target)), {"A", "A.1", "B", "B.1"})
+            self.assertEqual(before, {path.name: path.read_bytes() for path in target.glob("*.md")})
+            with self.assertRaises(RunnerError) as error:
+                close_local(snapshot, target, publication_operation_id="publish", operation_id="close-A",
+                            delivery_digest="changed", keys={"A", "A.1"})
+            self.assertEqual(error.exception.code, "tracker_operation_conflict")
+
     def test_read_publish_readback_and_idempotent_retry(self) -> None:
         with tempfile.TemporaryDirectory(prefix="tracker 中文 ") as temporary:
             root = Path(temporary) / "drafts"

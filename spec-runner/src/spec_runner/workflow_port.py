@@ -39,6 +39,9 @@ class LegacyWorkflowPort:
     def migration_source_archive_retry_pending(self, **kwargs: Any) -> bool:
         return self._workflow()._migration_source_archive_retry_pending(**kwargs)
 
+    def local_issue_closure_pending(self, **kwargs: Any) -> bool:
+        return self._workflow()._local_issue_closure_pending(**kwargs)
+
     def acquire_global_lease(self, **kwargs: Any) -> Any:
         return self._workflow()._acquire_global_lease(**kwargs)
 

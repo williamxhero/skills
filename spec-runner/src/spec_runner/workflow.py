@@ -19,7 +19,7 @@ from .verification import verify_run
 from .plans import digest, load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
 from .delivery import cleanup_managed_workspace, git_sha, merge_local, prepare_workspace, validate_candidate_write_scope, validate_review, verify_candidate
-from .tracker import read_local, publish_local
+from .tracker import PlanSnapshot, read_local, publish_local, close_local, read_local_states
 from .github_tracker import GitHubTracker
 from .scope_lock import ScopeLock
 from .production_gates import IMPLEMENTATION_SCHEMA, implementation_artifacts, independent_review
@@ -637,7 +637,8 @@ def _persist_ticket_plan(*, control_root: Path, config: RunnerConfig,
         encoding="utf-8", newline="\n"
     )
     source = _ticket_plan_source(artifact_directory=artifact_directory, plan=validated, run_id=run.run_id)
-    published = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
+    published = publish_local(_local_ticket_snapshot(control_root, source, operation_id),
+                              control_root / "tracker", operation_id=operation_id)
     tracker_receipts: dict[str, object] = {"local": published}
     external_receipt: tuple[str, dict[str, object]] | None = None
     if config.github_repository is not None:
@@ -824,9 +825,11 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
     document with its own stable frontmatter and later publishes it through
     the idempotent local tracker adapter.
     """
-    source = artifact_directory / "ticket-source"
-    source.mkdir(parents=True, exist_ok=True)
     spec_key = str(plan["spec_key"])
+    source_key = "".join(character if character.isalnum() or character in "._-" else "-" for character in spec_key)
+    legacy_source = artifact_directory / "ticket-source"
+    source = legacy_source if (legacy_source / f"{source_key}.md").is_file() else legacy_source / source_key
+    source.mkdir(parents=True, exist_ok=True)
     spec_metadata = {
         "key": spec_key,
         "kind": "spec",
@@ -861,6 +864,22 @@ def _ticket_plan_source(*, artifact_directory: Path, plan: dict[str, object], ru
         ) + "\n---\n"
         (source / filename).write_text(frontmatter + body.rstrip() + "\n", encoding="utf-8", newline="\n")
     return source
+
+
+def _local_ticket_snapshot(control_root: Path, source: Path, operation_id: str) -> PlanSnapshot:
+    """Replay the original publication scope of legacy shared source folders."""
+    receipts = control_root / "tracker" / ".spec-runner-tracker-receipts.json"
+    if not receipts.is_file():
+        return read_local(source)
+    publication = load_json(receipts).get(operation_id)
+    if publication is None:
+        return read_local(source)
+    if (not isinstance(publication, dict) or not isinstance(publication.get("records"), list)
+            or not publication["records"]
+            or any(not isinstance(record, dict) or not isinstance(record.get("key"), str)
+                   for record in publication["records"])):
+        raise RunnerError("tracker_receipt_corrupt", "local ticket publication has invalid records")
+    return read_local(source, keys={record["key"] for record in publication["records"]})
 
 
 def _archive_worker_readback(
@@ -970,10 +989,54 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
     return result
 
 
-def _close_published_ticket_plan(*, config: RunnerConfig, plan: dict[str, object],
-                                 run_id: str, store: Store) -> dict[str, object] | None:
+def _close_published_ticket_plan(*, control_root: Path, config: RunnerConfig, plan: dict[str, object],
+                                 run_id: str, store: Store,
+                                 delivery_evidence: dict[str, object] | None = None) -> dict[str, object] | None:
     if config.github_repository is None:
-        return None
+        spec_key = str(plan.get("spec_key") or "")
+        artifact = _safe_artifact_directory(control_root, config, run_id)
+        delivery = delivery_evidence or load_json(artifact / f"delivery-{spec_key}.json")
+        candidate = delivery.get("candidate")
+        review = delivery.get("review")
+        merged = delivery.get("merge")
+        if (delivery.get("run_id") != run_id or delivery.get("spec_key") != spec_key
+                or delivery.get("ticket_plan_digest") != plan.get("digest")
+                or not isinstance(candidate, dict) or candidate.get("outcome") != "verified"
+                or not isinstance(review, dict) or review.get("approved") is not True
+                or review.get("candidate_sha") != candidate.get("candidate_sha")
+                or not isinstance(merged, dict) or merged.get("outcome") != "merged"
+                or merged.get("tested_head") != candidate.get("candidate_sha")
+                or not isinstance(delivery.get("cleanup"), dict)
+                or delivery["cleanup"].get("outcome") != "cleaned"):
+            raise RunnerError("local_close_evidence_missing", "local closure requires verified, reviewed and cleaned delivery")
+        identity = {"run_id": run_id, "spec_key": spec_key, "ticket_plan_digest": plan["digest"],
+                    "candidate_sha": candidate["candidate_sha"], "merge_sha": merged.get("merge_sha")}
+        delivery_digest = digest(identity)
+        publication_id = f"tickets:{run_id}:{spec_key}"
+        operation_id = f"close:{run_id}:{spec_key}"
+        tracker_root = control_root / "tracker"
+        publications = load_json(tracker_root / ".spec-runner-tracker-receipts.json")
+        publication = publications.get(publication_id)
+        if (not isinstance(publication, dict) or not isinstance(publication.get("records"), list)
+                or any(not isinstance(item, dict) or not isinstance(item.get("key"), str)
+                       for item in publication["records"])):
+            raise RunnerError("tracker_close_evidence_missing", "local closure has no matching publication")
+        published_keys = {item["key"] for item in publication["records"]}
+        source_key = "".join(character if character.isalnum() or character in "._-" else "-" for character in spec_key)
+        source = artifact / "ticket-source" / source_key
+        if not source.is_dir():
+            source = artifact / "ticket-source"
+        snapshot = read_local(source, keys=published_keys)
+        keys = {spec_key, *(str(ticket["key"]) for ticket in plan["tickets"])}
+        if not keys <= published_keys or any(record.revision != plan["digest"] for record in snapshot.records if record.key in keys):
+            raise RunnerError("tracker_close_evidence_missing", "local closure source revision differs from its TicketPlan")
+        store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
+            operation_kind="local_issue_closure", repository=os.fspath(tracker_root.resolve()),
+            input_digest=delivery_digest)
+        receipt = close_local(snapshot, tracker_root, publication_operation_id=publication_id,
+                              operation_id=operation_id, delivery_digest=delivery_digest, keys=keys)
+        store.complete_external_operation(operation_id=operation_id, receipt=receipt)
+        return receipt
     spec_key = str(plan.get("spec_key") or "")
     if not spec_key or not config.github_receipt_root:
         raise RunnerError("github_close_config_incomplete", "closing published tickets requires repository, SPEC identity and receipt root")
@@ -1029,7 +1092,7 @@ def _adopt_prepared_ticket_plan(
     _write_json_atomic(path, validated)
     source = _ticket_plan_source(artifact_directory=artifact_directory,
                                  plan=validated, run_id=run.run_id)
-    local = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id,
+    local = publish_local(_local_ticket_snapshot(control_root, source, operation_id), control_root / "tracker", operation_id=operation_id,
                           adopt_matching_revision=True)
     receipts: dict[str, object] = {"local": local}
     external_receipt: tuple[str, dict[str, object]] | None = None
@@ -2035,7 +2098,7 @@ def _finish_codex_implementation(
                                    spec_key=spec_key, delivery=github_result)
         try:
             github_result["issue_closure"] = _close_published_ticket_plan(
-                config=config, plan=ticket_plan, run_id=run.run_id, store=store,
+                control_root=control_root, config=config, plan=ticket_plan, run_id=run.run_id, store=store,
             )
         except RunnerError as exc:
             github_result["issue_closure"] = {"state": "pending", "error_code": exc.code}
@@ -2107,6 +2170,7 @@ def _finish_codex_implementation(
         }
     _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
         spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review, "merge": merged})
+    store.mark_cleanup_pending(run.run_id)
     cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=control_root / "delivery-workspaces", workspace=workspace, manifest=Path(str(workspace_info["manifest"])))
     if cleanup.get("outcome") != "cleaned":
         store.mark_cleanup_pending(run.run_id)
@@ -2114,6 +2178,16 @@ def _finish_codex_implementation(
     _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
         spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review,
                                    "merge": merged, "cleanup": cleanup})
+    try:
+        closure = _close_published_ticket_plan(control_root=control_root, config=config,
+            plan=ticket_plan, run_id=run.run_id, store=store)
+    except RunnerError as exc:
+        store.mark_cleanup_pending(run.run_id)
+        return {"state": "cleanup_pending", "spec_key": spec_key,
+                "issue_closure": {"state": "pending", "error_code": exc.code}}
+    _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
+        spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review,
+                                   "merge": merged, "cleanup": cleanup, "issue_closure": closure})
     if finalize_run:
         store.mark_archived(run.run_id, state="completed")
     else:
@@ -4006,7 +4080,7 @@ def _reconcile_completed_local_delivery(*, control_root: Path, config: RunnerCon
         or merged.get("target_ref") != config.target_ref
         or not isinstance(merged.get("merge_sha"), str) or not merged["merge_sha"]
     ):
-        raise RunnerError("production_recovery_evidence_invalid", "local delivery lacks matching verified candidate, review and merge evidence")
+        raise RunnerError("production_recovery_evidence_invalid", "persisted delivery evidence does not prove this SPEC was reviewed and merged")
     review_worker = review.get("worker")
     workers = store.workers_for_run(run.run_id)
     owner_prefix = f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}"
@@ -4015,7 +4089,7 @@ def _reconcile_completed_local_delivery(*, control_root: Path, config: RunnerCon
             or review_worker.get("status") != "completed"
             or review_worker.get("error")
             or review_worker.get("thread_id") == owner.get("external_thread_id")
-            or not any(worker.get("state") == "reviewed"
+            or not any(worker.get("state") in {"reviewed", "archived"}
                        and worker.get("external_thread_id") == review_worker.get("thread_id")
                        and worker.get("external_turn_id") == review_worker.get("turn_id")
                        for worker in workers)):
@@ -4067,6 +4141,27 @@ def _reconcile_completed_local_delivery(*, control_root: Path, config: RunnerCon
     return {**receipt, "cleanup": cleanup}
 
 
+def _local_issue_closure_pending(*, control_root: Path, config: RunnerConfig,
+                                 run: RunRecord, store: Store) -> bool:
+    if run.state != "completed" or config.workflow_mode != "production" or config.github_repository is not None:
+        return False
+    completed = store.production_completed_specs(run.run_id)
+    if not completed:
+        return False
+    states = read_local_states(control_root / "tracker")
+    for spec_key in completed:
+        operation = store.external_operation(f"close:{run.run_id}:{spec_key}")
+        if not operation or operation.get("state") != "completed":
+            return True
+        receipt = operation.get("receipt")
+        if (not isinstance(receipt, dict) or receipt.get("complete") is not True
+                or not isinstance(receipt.get("records"), list) or not receipt["records"]
+                or any(not isinstance(record, dict) or states.get(record.get("key")) != record
+                       for record in receipt["records"])):
+            return True
+    return False
+
+
 def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str | None = None,
                         store: Store | None = None, run: RunRecord | None = None,
                         brief: str = "", brief_digest: str = "") -> ProductionWorkflow:
@@ -4091,7 +4186,7 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
             execute_tickets=_execute_codex_tickets,
             execute_implementation=_execute_codex_implementation,
             cleanup_workspace=cleanup_managed_workspace,
-            close_ticket_plan=_close_published_ticket_plan,
+            close_ticket_plan=lambda **kwargs: _close_published_ticket_plan(control_root=control_root, **kwargs),
             execute_github_delivery=_execute_github_delivery,
             recover_github_candidate=_recover_failed_github_candidate,
             resume_reviewed_delivery=_resume_reviewed_delivery,

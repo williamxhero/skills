@@ -294,7 +294,7 @@ class ProductionWorkflow:
             for spec in specs:
                 spec_key = str(spec.get("key"))
                 receipt_path = self._artifact() / f"delivery-{spec_key}.json"
-                if spec_key in completed or not receipt_path.is_file():
+                if not receipt_path.is_file():
                     continue
                 if self.ports.reconcile_local_delivery is None:
                     raise RunnerError("production_recovery_missing", "local delivery reconciliation is not configured")
@@ -302,9 +302,20 @@ class ProductionWorkflow:
                     control_root=self.control_root, config=self.config, run=run,
                     store=store, spec_key=spec_key,
                 )
-                self.ports.write_json_atomic(receipt_path, receipt)
-                self.record_spec(spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
-                completed.add(spec_key)
+                try:
+                    receipt["issue_closure"] = self.ports.close_ticket_plan(
+                        config=self.config,
+                        plan=self.ports.load_json(self._artifact() / f"ticket-plan-{spec_key}.json"),
+                        run_id=run.run_id, store=store, delivery_evidence=receipt,
+                    )
+                except RunnerError as exc:
+                    store.mark_cleanup_pending(run.run_id)
+                    return {"state": "cleanup_pending", "spec_key": spec_key,
+                            "issue_closure": {"state": "pending", "error_code": exc.code}}
+                if spec_key not in completed:
+                    self.ports.write_json_atomic(receipt_path, receipt)
+                    self.record_spec(spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
+                    completed.add(spec_key)
         while len(completed) < len(specs):
             stopped = self._control_boundary()
             if stopped is not None:
@@ -549,6 +560,8 @@ class ProductionWorkflow:
 
     def retry_cleanup(self) -> dict[str, object]:
         """Replay only cleanup and issue closure after a production exit."""
+        if self.config.github_repository is None:
+            return self._retry_local_cleanup()
         run, store = self.run, self.store
         root = self.control_root / "delivery-workspaces"
         manifests: list[Path] = []
@@ -658,3 +671,50 @@ class ProductionWorkflow:
         else:
             completed["spec_keys"] = sorted(spec_keys)
         return completed
+
+    def _retry_local_cleanup(self) -> dict[str, object]:
+        run, store = self.run, self.store
+        artifact = self._artifact()
+        plan_path = artifact / "spec-plan.json"
+        if not plan_path.is_file():
+            raise RunnerError("production_cleanup_evidence_missing", "cleanup retry requires persisted delivery, plan and ticket evidence")
+        plan = self.ports.load_json(plan_path)
+        paths = sorted(artifact.glob("delivery-*.json"))
+        if not paths or self.ports.reconcile_local_delivery is None:
+            raise RunnerError("production_cleanup_evidence_missing", "local cleanup has no durable delivery evidence")
+        known = {str(spec["key"]) for spec in plan["specs"]}
+        reconciled: dict[str, dict[str, object]] = {}
+        for path in paths:
+            receipt = self.ports.load_json(path)
+            spec_key = receipt.get("spec_key")
+            if receipt.get("run_id") != run.run_id or spec_key not in known:
+                raise RunnerError("production_cleanup_evidence_invalid", "local cleanup delivery belongs to another plan")
+            if not (artifact / f"ticket-plan-{spec_key}.json").is_file():
+                raise RunnerError("production_cleanup_evidence_missing", "cleanup retry requires persisted delivery, plan and ticket evidence")
+            try:
+                reconciled[str(spec_key)] = self.ports.reconcile_local_delivery(
+                    control_root=self.control_root, config=self.config, run=run,
+                    store=store, spec_key=str(spec_key),
+                )
+            except RunnerError as exc:
+                if exc.code != "production_cleanup_pending":
+                    raise
+                store.mark_cleanup_pending(run.run_id)
+                return {"state": "cleanup_pending", "spec_key": str(spec_key),
+                        "cleanup": {"outcome": "pending", "error_code": exc.code}}
+        completed = self.completed_specs()
+        closures = []
+        for spec_key, receipt in reconciled.items():
+            try:
+                closure = self.ports.close_ticket_plan(config=self.config,
+                    plan=self.ports.load_json(artifact / f"ticket-plan-{spec_key}.json"),
+                    run_id=run.run_id, store=store, delivery_evidence=receipt)
+            except RunnerError as exc:
+                store.mark_cleanup_pending(run.run_id)
+                return {"state": "cleanup_pending", "issue_closure": {"spec_key": spec_key, "error_code": exc.code}}
+            closures.append(closure)
+            if spec_key not in completed:
+                self.ports.write_json_atomic(artifact / f"delivery-{spec_key}.json", {**receipt, "issue_closure": closure})
+                self.record_spec(spec_key=spec_key, plan_digest=str(plan["digest"]))
+        store.set_run_state(run.run_id, "spec_completed")
+        return {"state": "spec_completed", "spec_keys": sorted(reconciled), "issue_closures": closures}

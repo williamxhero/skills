@@ -18,7 +18,7 @@ from spec_runner.codex_adapter import CodexWorkerResult
 from spec_runner.config import RunnerConfig, read_brief
 from spec_runner.errors import RunnerError
 from spec_runner.store import RunRecord, Store, now
-from spec_runner.tracker import read_local
+from spec_runner.tracker import publish_local, read_local, read_local_states
 from spec_runner.plans import digest, validate_spec_plan, validate_ticket_plan
 from spec_runner.production_gates import implementation_artifacts
 from spec_runner.models import RunContext
@@ -159,7 +159,7 @@ def test_public_start_adopts_prepared_plan_and_tickets_without_planning_sdk(monk
 @pytest.mark.parametrize("recover_process_exit", [False, True])
 @pytest.mark.parametrize("invalid_evidence", [None, "missing_archive", "wrong_review_sha", "unowned_workspace"])
 @pytest.mark.parametrize("remaining_spec", [False, True])
-def test_public_runner_finishes_merged_local_frontier_without_new_workers(monkeypatch, recover_process_exit, invalid_evidence, remaining_spec):
+def test_public_runner_finishes_merged_local_frontier_without_new_workers(monkeypatch, recover_process_exit, invalid_evidence, remaining_spec, closure_case="normal"):
     runtime = Path(__file__).parent / ".runtime"
     runtime.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="local-frontier-", dir=runtime) as directory:
@@ -212,6 +212,32 @@ def test_public_runner_finishes_merged_local_frontier_without_new_workers(monkey
                        "worker": {"status": "completed", "thread_id": "review-thread", "turn_id": "review-turn"}},
             "merge": {"outcome": "merged", "tested_head": sha, "merge_sha": sha, "target_ref": "HEAD"},
         }), encoding="utf-8")
+        original_delivery = (artifact / "delivery-S1.json").read_bytes()
+        if closure_case == "historical":
+            with closing(Store.open(request.control_root, create=False)) as store:
+                store.complete_production_spec(run_id=run_id, spec_key="S1", plan_digest=plan_digest,
+                    delivery_digest=hashlib.sha256(json.dumps(json.loads(original_delivery), ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest())
+                store.mark_archived(run_id, state="completed")
+        if closure_case == "legacy":
+            source = artifact / "ticket-source" / "S1"
+            for path in source.glob("*.md"):
+                path.replace(source.parent / path.name)
+            source.rmdir()
+            old = source.parent
+            (old / "S0.md").write_text("---\nkey: S0\nkind: spec\ntitle: Older\nrevision: prior\nblocked_by: []\ncomments: []\n---\nOlder\n", encoding="utf-8")
+            (old / "S0.1.md").write_text("---\nkey: S0.1\nkind: ticket\ntitle: Older ticket\nrevision: prior\nparent: S0\nblocked_by: []\ncomments: []\n---\nOlder\n", encoding="utf-8")
+        close = workflow.close_local
+        failed = []
+        if closure_case in {"failure", "crash", "cleanup_lock"}:
+            def fail_once(*args, **kwargs):
+                if not failed:
+                    failed.append(True)
+                    if closure_case == "crash":
+                        close(*args, **kwargs)
+                        raise SystemExit("exit after tracker state write")
+                    raise RunnerError("tracker_close_unconfirmed", "injected closure failure")
+                return close(*args, **kwargs)
+            monkeypatch.setattr(workflow, "close_local", fail_once)
         if invalid_evidence == "unowned_workspace":
             workspace = request.control_root / "delivery-workspaces" / f"S1-{run_id[:8]}"
             workspace.mkdir(parents=True)
@@ -239,15 +265,104 @@ def test_public_runner_finishes_merged_local_frontier_without_new_workers(monkey
             if invalid_evidence == "unowned_workspace":
                 assert (workspace / "preserve.txt").read_text(encoding="utf-8") == "unowned"
             return
+        if closure_case == "crash":
+            with pytest.raises(SystemExit, match="exit after tracker state write"):
+                Runner().start(request)
+            with closing(Store.open(request.control_root, create=False)) as store:
+                assert store.external_operation(f"close:{run_id}:S1")["state"] == "intent"
+                assert store.production_completed_specs(run_id) == set()
+            assert read_local_states(request.control_root / "tracker")["S1"]["state"] == "closed"
         result = Runner().start(request)
+        if closure_case == "failure":
+            assert result["state"] == "cleanup_pending"
+            with closing(Store.open(request.control_root, create=False)) as store:
+                assert store.production_completed_specs(run_id) == set()
+            result = Runner().start(request)
+        if closure_case == "cleanup_lock":
+            assert result["state"] == "cleanup_pending"
+            reconcile = workflow._reconcile_completed_local_delivery
+            pending = []
+            def locked_once(**kwargs):
+                if not pending:
+                    pending.append(True)
+                    raise RunnerError("production_cleanup_pending", "workspace is locked")
+                return reconcile(**kwargs)
+            monkeypatch.setattr(workflow, "_reconcile_completed_local_delivery", locked_once)
+            result = Runner().start(request)
+            assert result["state"] == "cleanup_pending"
+            with closing(Store.open(request.control_root, create=False)) as store:
+                assert store.find_by_run_id(run_id).state == "cleanup_pending"
+                assert store.production_completed_specs(run_id) == set()
+                assert store.external_operation(f"close:{run_id}:S1")["state"] == "intent"
+            result = Runner().start(request)
         assert result["run"]["state"] == ("needs_input" if remaining_spec else "completed")
         assert next_specs == (["S2"] if remaining_spec else [])
         assert len(result["workers"]) == 4
         with closing(Store.open(request.control_root, create=False)) as store:
             assert store.production_completed_specs(run_id) == {"S1"}
+            assert store.external_operation(f"close:{run_id}:S1")["state"] == "completed"
+        assert {key for key, state in read_local_states(request.control_root / "tracker").items()
+                if state["state"] == "closed"} == {"S1", "S1.1"}
         receipt = json.loads((artifact / "delivery-S1.json").read_text(encoding="utf-8"))
-        assert receipt["cleanup"]["outcome"] == "cleaned"
+        if closure_case == "historical":
+            assert (artifact / "delivery-S1.json").read_bytes() == original_delivery
+        else:
+            assert receipt["cleanup"]["outcome"] == "cleaned"
         assert Runner().start(request)["run"]["state"] == ("needs_input" if remaining_spec else "completed")
+        if closure_case == "legacy":
+            replayed = workflow._ticket_plan_source(artifact_directory=artifact, plan=ticket, run_id=run_id)
+            assert replayed == artifact / "ticket-source"
+            assert {record.key for record in workflow._local_ticket_snapshot(request.control_root,
+                replayed, f"tickets:{run_id}:S1").records} == {"S1", "S1.1"}
+        if closure_case == "tamper":
+            state_path = request.control_root / "tracker" / ".spec-runner-tracker-states.json"
+            states = json.loads(state_path.read_text(encoding="utf-8"))
+            states["states"]["S1"]["state"] = "open"
+            state_path.write_text(json.dumps(states), encoding="utf-8")
+            replay = Runner().start(request)
+            assert replay["state"] == "cleanup_pending"
+            assert json.loads(state_path.read_text(encoding="utf-8"))["states"]["S1"]["state"] == "open"
+
+
+@pytest.mark.parametrize("closure_case", ["historical", "legacy", "failure", "cleanup_lock", "crash", "tamper"])
+def test_public_runner_local_closure_replay_boundaries(monkeypatch, closure_case):
+    test_public_runner_finishes_merged_local_frontier_without_new_workers(
+        monkeypatch, False, None, False, closure_case,
+    )
+
+
+def test_public_runner_republishes_legacy_cumulative_ticket_snapshot(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    with tempfile.TemporaryDirectory(prefix="legacy-publication-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("publication replay needs no SDK"))
+
+        def stop_after_tickets(*, run, store, **kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return {"state": "needs_input", **store.public_status(run.run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        run_id = Runner().start(request)["run"]["run_id"]
+        source = request.control_root / "artifacts" / run_id / "ticket-source"
+        for path in (source / "S1").glob("*.md"):
+            path.replace(source / path.name)
+        (source / "S1").rmdir()
+        (source / "S0.md").write_text("---\nkey: S0\nkind: spec\ntitle: Older\nrevision: prior\n---\nOlder\n", encoding="utf-8")
+        target = request.control_root / "tracker"
+        receipt_path = target / ".spec-runner-tracker-receipts.json"
+        operation_id = f"tickets:{run_id}:S1"
+        # Recreate the historical cumulative publication; its readback is
+        # bound to both the older SPEC and the current SPEC's tickets.
+        receipt_path.write_text("{}", encoding="utf-8")
+        publish_local(read_local(source), target, operation_id=operation_id)
+        original = receipt_path.read_bytes()
+        with closing(Store.open(request.control_root, create=False)) as store:
+            store.set_run_state(run_id, "failed")
+        result = Runner().start(request)
+        assert result["run"]["run_id"] == run_id
+        assert result["run"]["state"] == "needs_input"
+        assert receipt_path.read_bytes() == original
+        assert not (source / "S1").exists()
 
 
 def test_prepared_ticket_adopts_matching_existing_local_issues_across_runs(monkeypatch):
