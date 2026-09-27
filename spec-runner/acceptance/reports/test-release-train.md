@@ -1309,3 +1309,39 @@ Candidate branch `spec-runner/SRAC-20260927-f1a2b3c4d5e6-56335d20` remains
 unmerged and attached to this run. An acceptance contract revision or an
 equivalent durable integration gate is still needed before delivery can be
 claimed. No SPEC completion or project-level L3-L5 result is inferred.
+
+## Live candidate integration and local delivery (2026-09-27)
+
+Commit `58b947f` marks the original-base `FIXTURE_SCOPE` check as candidate-only.
+The revised acceptance configuration retains the run's original config digest
+under the explicitly checked compatibility rule. Integration still runs the
+other required check and the built-in changed-path scope gate. The original
+candidate-only check receipt is verified and carried in the merge receipt;
+it is not represented as a check rerun on the merge commit. CI `36307034844`
+passed Ubuntu and Windows contract jobs for this change.
+
+Public `start` on the original launch key and run
+`56335d20-5e36-4be8-bc15-875eedb42743` recorded `spec_completed`. The
+delivery receipt binds independently approved candidate `7317869`, verified
+integration SHA `554007bbe864a9cea95bb03945c1e3c3f2ccdecd`, the
+candidate-only check evidence, and a clean disposable merge workspace. The
+integration check ran the fixture oracle (`9 passed`) and confirmed the
+candidate's two changed paths are within its trusted write scope. The local
+`master` ref advanced from `58b947f` to `554007b` and was pushed to
+`origin/master`; the merged candidate branch was deleted.
+
+Because local merge updates the target ref without resetting the checked-out
+user workspace, the two newly merged fixture files initially appeared as
+staged deletions in that checkout. The checkout was clean before this run;
+both paths were restored exactly from the verified merge commit. No user
+changes in the separate original checkout were touched. The resulting worktree
+is clean. Full source and acceptance tests passed `415 passed, 1 skipped`;
+the merged fixture's own oracle passed `9 passed`; `git diff --check` passed.
+CI run `36307449876` passed Ubuntu and Windows contract jobs, including
+installed-wheel public CLI verification.
+
+This is one real, locally merged fixture SPEC. It does not meet #258's
+three-SPEC GitHub PR, CI, issue closure, archive, cleanup and next-base
+acceptance. The full #264 and #295 fault matrices, remaining open SPECs, and
+project-level L3-L5 gates remain `not_verified` where their separate live
+receipts are missing.
