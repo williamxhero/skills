@@ -1103,3 +1103,11 @@ accepted request admission and unknown execution outcome. No second run,
 thread, ticket, PR, branch, or merge was created. The durable run remains
 `blocked` at `codex_ticket_planning` and the live production, GitHub,
 takeover, Windows, L4, and L5 gates remain `not_verified`.
+
+The current candidate wheel was replayed from commit `ec1752c` in a fresh
+isolated environment with source imports unavailable. Package inspection
+returned `verified`; both public deterministic fault replays passed all 10
+cases with identical report digest
+`ee2030144ba2de23203579f55925d3db6dbf56e83ee187ffbb0af9c23cf5bca0`.
+Evidence: `acceptance/reports/SRAC-20260927-bf9ee0008d4f-installed-wheel.json`.
+This remains installed-artifact and deterministic evidence only.
