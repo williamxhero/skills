@@ -305,7 +305,7 @@ class RecoveryEpisode:
                 and run.current_step == "codex_review"):
             reviewers = [worker for worker in store.workers_for_run(run.run_id)
                          if worker.get("backend_kind") == "codex_sdk"
-                         and worker.get("state") == "paused"
+                         and worker.get("state") in {"paused", "reviewed"}
                          and str(worker.get("worker_id") or "").startswith(
                              f"codex_sdk:{run.run_id}:codex_review:")]
             if len(reviewers) == 1 and reviewers[0].get("external_thread_id") and reviewers[0].get("external_turn_id"):

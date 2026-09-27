@@ -847,6 +847,55 @@ def test_public_start_reconciles_blocked_paused_review_on_original_thread(
             assert result["workers"][-1]["state"] == expected_state
 
 
+def test_public_start_rechecks_approved_review_after_blocked_target_change(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="reviewed-target-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+
+        def stop_after_tickets(*, run, store, **_kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return store.public_status(run.run_id)
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        run_id = Runner().start(request)["run"]["run_id"]
+        candidate_sha = "a" * 40
+        operation = f"review:{run_id}:S1:{candidate_sha}"
+        worker_id = f"codex_sdk:{run_id}:codex_review:S1:{candidate_sha[:12]}"
+        store = Store.open(request.control_root, create=False)
+        try:
+            store.begin_stage(run_id, step_name="codex_review", operation_id=operation,
+                backend_kind="codex_sdk", worker_id=worker_id)
+            store.record_codex_turn_started(run_id, operation, thread_id="review-thread",
+                turn_id="review-turn", step_name="codex_review", worker_id=worker_id)
+            store.complete_codex_stage(run_id, operation, thread_id="review-thread",
+                turn_id="review-turn", state="reviewed", step_name="codex_review",
+                worker_id=worker_id)
+            reviewed = store.find_by_run_id(run_id)
+            assert reviewed is not None
+            RecoveryRuntime(run=reviewed, store=store).transition_failure(
+                operation_id=f"start:{run_id}",
+                error=RunnerError("recovery_blocked", "target ref moved before local merge"),
+            )
+        finally:
+            store.close()
+        artifacts = request.control_root / "artifacts" / run_id
+        artifacts.mkdir(parents=True, exist_ok=True)
+        (artifacts / "review-S1-aaaaaaaaaaaa.json").write_text(
+            json.dumps({"approved": True, "candidate_sha": candidate_sha}), encoding="utf-8")
+        calls = []
+
+        def reconcile_review(**kwargs):
+            calls.append(kwargs)
+            return kwargs["store"].public_status(run_id)
+
+        monkeypatch.setattr(workflow, "_reconcile_approved_review", reconcile_review)
+        result = Runner().start(request)
+        assert result["run"]["run_id"] == run_id
+        assert len(calls) == 1
+        assert calls[0]["worker"]["external_turn_id"] == "review-turn"
+
+
 @pytest.mark.parametrize("status, error, expected_code", [
     ("failed", "429 Too Many Requests", "codex_worker_failed"),
     ("interrupted", None, "unexpected_sdk_interrupt"),
