@@ -30,6 +30,11 @@ def _safe_handover_value(value: object) -> bool:
     return isinstance(value, (str, int, bool)) or value is None
 
 
+def valid_migration_payload(value: object) -> bool:
+    """Check JSON payloads persisted as migration evidence or audit data."""
+    return _safe_handover_value(value)
+
+
 def valid_handover_evidence(thread_id: str, evidence: object) -> bool:
     """Require proof that the source stopped before ownership can move."""
     if not isinstance(evidence, dict) or not _safe_handover_value(evidence):

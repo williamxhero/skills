@@ -139,6 +139,31 @@ def test_store_rejects_handover_that_contains_hidden_history(tmp_path: Path) -> 
         store.close()
 
 
+def test_store_rejects_unsafe_migration_receipts(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        key = "acceptance:unsafe-milestone"
+        _prepare_migration(store, run, key)
+        with pytest.raises(RunnerError, match="safe JSON"):
+            store.record_migration_milestone(
+                migration_key=key,
+                milestone="business_progress_verified",
+                receipt={"response_chain": {"encrypted_content": "opaque"}},
+            )
+        with pytest.raises(RunnerError, match="safe JSON"):
+            store.record_migration_milestone(
+                migration_key=key,
+                milestone="source_archived",
+                receipt={"pages_read": float("nan")},
+            )
+        assert store.migration_milestone(key, "business_progress_verified") is None
+        assert store.migration_milestone(key, "source_archived") is None
+    finally:
+        store.close()
+
+
 def test_successor_creation_intent_replay_fails_closed_before_provider_call(tmp_path: Path) -> None:
     store = Store.open(tmp_path / "control", create=True)
     try:

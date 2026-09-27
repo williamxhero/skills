@@ -14,7 +14,7 @@ from typing import Iterator
 
 from .continuation import build_bundle, read_bundle
 from .errors import RunnerError
-from .migration_contract import valid_handover_evidence
+from .migration_contract import valid_handover_evidence, valid_migration_payload
 from .recovery import recovery_diagnostic
 
 SCHEMA_VERSION = "spec-runner-store/v1"
@@ -29,6 +29,19 @@ def _encode_strict_json(value: object, *, code: str, message: str) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise RunnerError(code, message) from exc
+
+
+def _encode_migration_payload(value: object) -> str:
+    if not valid_migration_payload(value):
+        raise RunnerError(
+            "thread_migration_payload_invalid",
+            "migration evidence must be safe JSON without hidden history",
+        )
+    return _encode_strict_json(
+        value,
+        code="thread_migration_payload_invalid",
+        message="migration evidence must be strict JSON",
+    )
 
 
 def _strict_recovery_counter(value: object, *, field: str, default: int = 0) -> int:
@@ -1929,7 +1942,8 @@ class Store:
         prior = migration.get("successor_thread_id")
         if prior and prior != successor_thread_id:
             raise RunnerError("thread_successor_conflict", "migration already has a different successor identity")
-        payload = json.dumps(successor or {"thread_id": successor_thread_id}, ensure_ascii=False, sort_keys=True)
+        successor_payload = successor or {"thread_id": successor_thread_id}
+        payload = _encode_migration_payload(successor_payload)
         timestamp = now()
         with self.transaction():
             updated = self.connection.execute(
@@ -1954,7 +1968,8 @@ class Store:
         accepted the request even when the caller never received or persisted
         its identity, so retrying the creation would risk duplicate threads.
         """
-        payload = json.dumps(details or {}, ensure_ascii=False, sort_keys=True)
+        details_payload = details or {}
+        payload = _encode_migration_payload(details_payload)
         timestamp = now()
         with self.transaction():
             migration = self.thread_migration(migration_key)
@@ -1977,7 +1992,7 @@ class Store:
                 run_id=str(migration["run_id"]),
                 event_key=f"migration:{migration_key}:successor_creation_intent",
                 event_type="thread_migration_successor_creation_intent",
-                payload={"migration_key": migration_key, "details": details or {}},
+                payload={"migration_key": migration_key, "details": details_payload},
             )
         return self.thread_migration(migration_key) or {}
 
@@ -1990,7 +2005,7 @@ class Store:
         if migration["state"] == "uncertain" and migration.get("uncertainty") == details:
             return migration
         timestamp = now()
-        payload = json.dumps(details, ensure_ascii=False, sort_keys=True)
+        payload = _encode_migration_payload(details)
         with self.transaction():
             updated = self.connection.execute(
                 """UPDATE thread_migrations SET state = 'uncertain', uncertainty_json = ?, updated_at = ?
@@ -2036,6 +2051,7 @@ class Store:
     def record_migration_event(self, *, migration_key: str, generation: int, event_key: str,
                                payload: dict[str, object]) -> dict[str, object]:
         """Audit a worker event and reject stale generations from advancing state."""
+        _encode_migration_payload(payload)
         migration = self.thread_migration(migration_key)
         if migration is None:
             raise RunnerError("thread_migration_missing", "migration event requires a durable migration")
@@ -2078,7 +2094,7 @@ class Store:
         if migration is None:
             raise RunnerError("thread_migration_missing", "migration milestone requires a durable migration")
         timestamp = now()
-        encoded = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+        encoded = _encode_migration_payload(receipt)
         with self.transaction():
             existing = self.connection.execute(
                 "SELECT receipt_json FROM migration_milestones WHERE migration_key = ? AND milestone = ?",
