@@ -31,6 +31,7 @@ from .tracker import publish_local, read_local
 from .store import Store, _process_alive
 from .workflow import control, doctor, drive, launch, resume, start, status
 from .codex_adapter import CodexAdapter
+from .request_context import context_path, read_context
 
 CLI_SCHEMA_VERSION = "spec-runner-cli/v1"
 
@@ -311,14 +312,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             except json.JSONDecodeError:
                 answer_value = arguments.value
             store = Store.open(arguments.control_root.expanduser().resolve(), create=False)
+            waiting_for_input = False
+            continuation_launch_key: str | None = None
+            request_context = None
             try:
                 current = store.find_by_run_id(arguments.run_id)
                 if current and current.state == "needs_input":
+                    waiting_for_input = True
                     question = _pending_question(
                         control_root=arguments.control_root.expanduser().resolve(),
                         run=current,
                         question_id=arguments.question_id,
                     )
+                    if not arguments.brief and not arguments.config:
+                        try:
+                            request_context = read_context(
+                                context_path(
+                                    arguments.control_root.expanduser().resolve()
+                                    / current.artifact_root
+                                    / arguments.run_id,
+                                ),
+                                run_id=arguments.run_id,
+                            )
+                        except RunnerError as exc:
+                            if exc.code != "answer_continuation_missing":
+                                raise
                     answer = store.submit_answer_and_wake(
                         run_id=arguments.run_id,
                         question_id=arguments.question_id,
@@ -330,13 +348,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # Preserve the historical answer-only CLI contract for
                     # non-interactive runs; only a waiting run gains a wake intent.
                     answer = store.submit_answer(run_id=arguments.run_id, question_id=arguments.question_id, value=answer_value)
+                if current is not None:
+                    continuation_launch_key = current.launch_key
                 result = {"accepted": True, "answer": answer, **store.public_status(arguments.run_id)}
             finally:
                 store.close()
-            if arguments.brief or arguments.config:
+            if waiting_for_input and request_context is not None:
+                result["continuation"] = resume(
+                    brief_file=request_context.brief_file,
+                    config_file=request_context.config_file,
+                    control_root=arguments.control_root,
+                    launch_key=request_context.launch_key,
+                )
+            elif arguments.brief or arguments.config:
                 if not arguments.brief or not arguments.config:
                     raise RunnerError("answer_inputs_incomplete", "answer continuation requires both --brief and --config")
-                result["continuation"] = resume(brief_file=arguments.brief, config_file=arguments.config, control_root=arguments.control_root, launch_key=str(result["run"]["launch_key"]))
+                result["continuation"] = resume(brief_file=arguments.brief, config_file=arguments.config, control_root=arguments.control_root, launch_key=continuation_launch_key or str(result["run"]["launch_key"]))
         elif arguments.command == "launch":
             result = launch(
                 brief_file=arguments.brief,

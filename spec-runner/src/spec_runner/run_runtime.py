@@ -24,6 +24,7 @@ from .scope_lock import ScopeLock
 from .store import RunRecord, Store, now
 from .stage_progression import StageProgression
 from .workflow_port import LegacyWorkflowPort
+from .request_context import RequestContext, context_path, write_context
 
 
 class RunRuntime:
@@ -307,6 +308,17 @@ class RunRuntime:
             )
             operation_id = f"start:{requested_run_id}"
             store.create_run(record, operation_id)
+            write_context(
+                context_path(port.safe_artifact_directory(control_root, config, requested_run_id)),
+                RequestContext(
+                    run_id=requested_run_id,
+                    launch_key=launch_key,
+                    brief_file=brief_file.expanduser().resolve(),
+                    config_file=config_file.expanduser().resolve(),
+                    brief_digest=brief_digest,
+                    config_digest=config.digest,
+                ),
+            )
             if takeover_record is not None:
                 port.write_json_atomic(
                     port.safe_artifact_directory(control_root, config, requested_run_id) / "takeover-context.json",

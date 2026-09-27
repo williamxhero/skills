@@ -107,16 +107,86 @@ class SpecRunnerCliTests(unittest.TestCase):
         artifact = self.control_root / "artifacts" / run["run_id"] / "handoff.json"
         self.assertTrue(artifact.is_file())
         self.assertEqual(json.loads(artifact.read_text(encoding="utf-8"))["backend_kind"], "deterministic_test")
+        request_context = self.control_root / "artifacts" / run["run_id"] / "run-request.json"
+        self.assertEqual(json.loads(request_context.read_text(encoding="utf-8"))["launch_key"], "launch-001")
 
         code, second = self.start()
         self.assertEqual(code, 0)
         self.assertFalse(second["created"])
         self.assertEqual(second["run"]["run_id"], run["run_id"])
-
         code, status = self.invoke("status", "--control-root", str(self.control_root), "--run-id", run["run_id"])
         self.assertEqual(code, 0)
         self.assertEqual(status["run"]["state"], "completed")
         self.assertEqual(status["verification"], first["verification"])
+
+    def test_waiting_answer_uses_durable_request_context_for_same_run_resume(self) -> None:
+        from spec_runner import cli as cli_module
+        from spec_runner.request_context import RequestContext, context_path, write_context
+        from spec_runner.store import RunRecord, Store, now
+
+        run_id = "answer-context-run"
+        timestamp = now()
+        self.control_root.mkdir(parents=True)
+        store = Store.open(self.control_root, create=True)
+        try:
+            run = RunRecord(
+                run_id=run_id,
+                launch_key="answer-context-launch",
+                input_digest="brief-v2",
+                config_digest="config-v2",
+                repository_path=str(self.repository),
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="codex_sdk",
+                state="needs_input",
+                current_step="codex_planning",
+                log_path="logs/answer-context.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            store.create_run(run, "start:answer-context-run")
+        finally:
+            store.close()
+        artifact = self.control_root / "artifacts" / run_id
+        artifact.mkdir(parents=True)
+        (artifact / "worker-result.json").write_text(
+            json.dumps({
+                "schema_version": "spec-runner-worker-result/v1",
+                "input_digest": "brief-v2",
+                "questions": [{"id": "format", "question": "Which format?", "options": ["json"]}],
+            }),
+            encoding="utf-8",
+        )
+        write_context(
+            context_path(artifact),
+            RequestContext(
+                run_id=run_id,
+                launch_key="answer-context-launch",
+                brief_file=self.brief.resolve(),
+                config_file=self.config.resolve(),
+                brief_digest="brief-v2",
+                config_digest="config-v2",
+            ),
+        )
+        observed: dict[str, object] = {}
+
+        def fake_resume(**kwargs: object) -> dict[str, object]:
+            observed.update(kwargs)
+            return {"created": False, "run": {"run_id": run_id, "state": "needs_input"}}
+
+        output = io.StringIO()
+        with patch.object(cli_module, "resume", fake_resume), redirect_stdout(output):
+            exit_code = cli_module.main([
+                "answer", "--control-root", str(self.control_root), "--run-id", run_id,
+                "--question-id", "format", "--value", "json",
+            ])
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["continuation"]["run"]["run_id"], run_id)
+        self.assertEqual(observed["launch_key"], "answer-context-launch")
+        self.assertEqual(observed["brief_file"], self.brief.resolve())
+        self.assertEqual(observed["config_file"], self.config.resolve())
 
     def test_same_launch_key_with_changed_input_is_rejected_and_new_key_is_allowed(self) -> None:
         self.assertEqual(self.start()[0], 0)
