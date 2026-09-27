@@ -205,6 +205,63 @@ def test_pr_operation_receipt_is_durable_before_local_projection_replay(tmp_path
     assert not any("POST" in call for call in calls)
 
 
+def test_merge_queue_checkpoint_is_reused_after_ambiguous_enqueue(tmp_path: Path):
+    calls: list[list[str]] = []
+    progress: list[dict[str, object]] = []
+
+    def runner(args: list[str]) -> str:
+        calls.append(args)
+        endpoint = args[-1]
+        if "check-runs" in endpoint:
+            return json.dumps({"check_runs": [{"name": "ci", "status": "completed",
+                                                "conclusion": "success", "head_sha": "abc"}]})
+        if endpoint.endswith("/status"):
+            return json.dumps({"sha": "abc", "state": "success", "statuses": []})
+        if endpoint == "repos/owner/repo/pulls/12":
+            return json.dumps({
+                "number": 12, "node_id": "PR_node_12",
+                "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+                "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                "merged": False, "merged_at": None, "merge_commit_sha": None,
+                "mergeable_state": "blocked",
+            })
+        if "graphql" in args:
+            query = next(item for item in args if item.startswith("query="))
+            if "enqueuePullRequest" in query:
+                return json.dumps({"errors": [{"message": "queue response lost"}]})
+            return json.dumps({"data": {"node": {"mergeQueueEntry": {
+                "id": "MQ-12", "position": 1, "state": "QUEUED"
+            }}}})
+        raise AssertionError(args)
+
+    common = {
+        "repository": "owner/repo", "number": 12, "expected_head": "abc",
+        "expected_base": "main",
+        "candidate_receipt": {"candidate_sha": "abc", "outcome": "verified"},
+        "review": {"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+        "checks": {"candidate_sha": "abc", "required": ["ci"], "ready": True},
+        "allow": True, "expected_head_ref": "branch", "operation_id": "merge-op",
+    }
+
+    first = GitHubDelivery(runner=runner).merge(
+        **common,
+        operation_intent=lambda **_kwargs: {"state": "intent"},
+        operation_progress=lambda **kwargs: progress.append(kwargs),
+    )
+    assert first["waiting"] is True
+    assert first["queue"]["id"] == "MQ-12"
+    assert len(progress) == 1
+
+    replay = GitHubDelivery(runner=runner).merge(
+        **common,
+        operation_intent=lambda **_kwargs: {"state": "waiting_merge_queue", "receipt": first},
+        operation_progress=lambda **kwargs: progress.append(kwargs),
+    )
+    assert replay["waiting"] is True
+    assert replay["queue"]["id"] == "MQ-12"
+    assert not any("/merge" in arg for call in calls for arg in call)
+
+
 @pytest.mark.parametrize("code", [
     "github_auth",
     "github_forbidden",

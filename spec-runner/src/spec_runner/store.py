@@ -723,6 +723,46 @@ class Store:
             result["receipt"] = json.loads(str(result.pop("receipt_json")))
             return result
 
+    def record_external_operation_progress(self, *, operation_id: str,
+                                           state: str,
+                                           receipt: dict[str, object]) -> dict[str, object]:
+        """Persist a non-terminal external operation checkpoint."""
+        if not state or state == "completed":
+            raise RunnerError("external_operation_state_invalid", "progress state must be non-terminal")
+        timestamp = now()
+        receipt_json = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+        with self.transaction():
+            existing = self.connection.execute(
+                "SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if existing is None:
+                raise RunnerError("external_operation_missing", "external operation intent was not persisted")
+            if existing["state"] == "completed":
+                if existing["receipt_json"] != receipt_json:
+                    raise RunnerError("external_receipt_conflict", "completed external operation receipt changed")
+            else:
+                self.connection.execute(
+                    "UPDATE external_operations SET state = ?, receipt_json = ?, updated_at = ? WHERE operation_id = ? AND state != 'completed'",
+                    (state, receipt_json, timestamp, operation_id),
+                )
+                self._insert_event(
+                    run_id=existing["run_id"],
+                    event_key=f"external:{operation_id}:{state}",
+                    event_type="external_operation_progress",
+                    payload={"operation_id": operation_id, "state": state,
+                             "receipt_digest": hashlib.sha256(receipt_json.encode("utf-8")).hexdigest()},
+                )
+            row = self.connection.execute(
+                "SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            assert row is not None
+            result = dict(row)
+            if result.get("receipt_json"):
+                result["receipt"] = json.loads(str(result.pop("receipt_json")))
+            else:
+                result.pop("receipt_json", None)
+            return result
+
     def external_operation(self, operation_id: str) -> dict[str, object] | None:
         row = self.connection.execute("SELECT * FROM external_operations WHERE operation_id = ?", (operation_id,)).fetchone()
         if row is None:

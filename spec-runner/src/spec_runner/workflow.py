@@ -1659,7 +1659,15 @@ def _execute_github_delivery(*, control_root: Path, config: RunnerConfig, run: R
         expected_head_ref=branch,
         required_approvals=config.github_required_approvals,
         require_branch_protection=config.github_require_branch_protection,
-        queue_entry=queue_entry)
+        queue_entry=queue_entry,
+        operation_id=f"github-merge:{run.run_id}:{spec_key}:{candidate_sha}",
+        operation_intent=prepare_operation if store is not None else None,
+        operation_progress=(
+            (lambda *, operation_id, state, receipt: store.record_external_operation_progress(
+                operation_id=operation_id, state=state, receipt=receipt
+            )) if store is not None else None
+        ),
+        operation_completed=complete_operation if store is not None else None)
     if merged.get("waiting") is True:
         return {"state": "waiting_merge_queue", "spec_key": spec_key, "branch": branch,
                 "pr": pr_receipt, "checks": checks, "merge": merged,

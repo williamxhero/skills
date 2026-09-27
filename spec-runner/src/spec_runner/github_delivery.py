@@ -445,6 +445,26 @@ class GitHubDelivery:
             return None
         return {key: entry.get(key) for key in ("id", "position", "state")}
 
+    def _read_merge_queue(self, *, pull_request_id: str) -> dict[str, object] | None:
+        """Read an existing queue entry after an ambiguous enqueue response."""
+        query = (
+            "query($pullRequestId: ID!) { node(id: $pullRequestId) { "
+            "... on PullRequest { mergeQueueEntry { id position state } } } }"
+        )
+        try:
+            raw = self.runner(["api", "graphql", "-f", f"query={query}", "-F", f"pullRequestId={pull_request_id}"])
+            document = json.loads(raw)
+        except (RunnerError, json.JSONDecodeError):
+            return None
+        if not isinstance(document, dict) or document.get("errors"):
+            return None
+        data = document.get("data")
+        node = data.get("node") if isinstance(data, dict) else None
+        entry = node.get("mergeQueueEntry") if isinstance(node, dict) else None
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            return None
+        return {key: entry.get(key) for key in ("id", "position", "state")}
+
     def merge(self, *, repository: str, number: int, expected_head: str,
               expected_base: str | None = None,
               candidate_receipt: dict[str, object] | None = None,
@@ -454,7 +474,11 @@ class GitHubDelivery:
               expected_head_ref: str | None = None,
               required_approvals: int = 0,
               require_branch_protection: bool = False,
-              queue_entry: dict[str, object] | None = None) -> dict[str, object]:
+              queue_entry: dict[str, object] | None = None,
+              operation_id: str | None = None,
+              operation_intent: Callable[..., dict[str, object]] | None = None,
+              operation_progress: Callable[..., None] | None = None,
+              operation_completed: Callable[..., None] | None = None) -> dict[str, object]:
         self._repo(repository)
         if not allow:
             raise RunnerError("merge_not_authorized", "merge requires an explicit Runner authorization")
@@ -475,6 +499,26 @@ class GitHubDelivery:
             raise RunnerError("review_not_verified", "merge requires an independent review bound to the expected head")
         if checks.get("candidate_sha") != expected_head or checks.get("ready") is not True:
             raise RunnerError("checks_not_verified", "merge requires checks verified for the expected head")
+        operation_state = None
+        if operation_intent is not None:
+            if not operation_id:
+                raise RunnerError("github_operation_invalid", "durable merge operation requires an operation ID")
+            operation_state = operation_intent(
+                operation_id=operation_id,
+                operation_kind="github_merge",
+                repository=repository,
+                input_digest=digest({"number": number, "expected_head": expected_head,
+                                     "expected_base": expected_base,
+                                     "candidate_receipt": candidate_receipt,
+                                     "review": review, "checks": checks}),
+            )
+            if isinstance(operation_state, dict) and queue_entry is None:
+                durable_receipt = operation_state.get("receipt")
+                if isinstance(durable_receipt, dict) and isinstance(durable_receipt.get("queue"), dict):
+                    queue_entry = durable_receipt["queue"]
+        operation_was_completed = (
+            isinstance(operation_state, dict) and operation_state.get("state") == "completed"
+        )
         try:
             pr = json.loads(self.runner(["api", f"repos/{repository}/pulls/{number}"]))
         except json.JSONDecodeError as exc:
@@ -516,22 +560,35 @@ class GitHubDelivery:
             evidence = {"pr_readback": pr, "candidate_receipt": candidate_receipt,
                         "review": review, "checks_before": checks, "checks_at_merge": latest_checks,
                         "approvals": approvals, "protection": protection}
-            return {"number": number, "expected_head": expected_head, "expected_base": expected_base,
+            result = {"number": number, "expected_head": expected_head, "expected_base": expected_base,
                     "merged": True, "adopted": True, "sha": pr.get("merge_commit_sha"),
                     "message": "pull request was already merged", "merged_at": pr.get("merged_at"),
                     "evidence_digest": digest(evidence)}
+            if operation_was_completed:
+                durable_receipt = operation_state.get("receipt") if isinstance(operation_state, dict) else None
+                if (not isinstance(durable_receipt, dict)
+                        or durable_receipt.get("sha") != pr.get("merge_commit_sha")):
+                    raise RunnerError("github_merge_receipt_conflict", "completed merge receipt disagrees with PR readback")
+                return durable_receipt
+            if operation_completed is not None:
+                operation_completed(operation_id=operation_id, receipt=result)
+            return result
         if queue_entry is None and queue_required:
-            queue_entry = self._enqueue_merge_queue(
-                pull_request_id=str(pr.get("node_id"))
-            ) if isinstance(pr.get("node_id"), str) and pr.get("node_id") else None
+            pull_request_id = str(pr.get("node_id")) if isinstance(pr.get("node_id"), str) else ""
+            queue_entry = self._enqueue_merge_queue(pull_request_id=pull_request_id) if pull_request_id else None
+            if queue_entry is None and pull_request_id:
+                queue_entry = self._read_merge_queue(pull_request_id=pull_request_id)
             if queue_entry is None:
                 raise RunnerError("github_merge_blocked", "GitHub reports that the pull request cannot be merged")
         if queue_entry is not None:
-            return {
+            result = {
                 "number": number, "expected_head": expected_head, "expected_base": expected_base,
                 "merged": False, "waiting": True, "queue": queue_entry,
                 "message": "pull request remains in the GitHub merge queue",
             }
+            if operation_progress is not None:
+                operation_progress(operation_id=operation_id, state="waiting_merge_queue", receipt=result)
+            return result
         merge_args = ["api", f"repos/{repository}/pulls/{number}/merge", "--method", "PUT", "-f", "sha=" + expected_head]
         merge_error: Exception | None = None
         try:
@@ -566,9 +623,10 @@ class GitHubDelivery:
                     "merge response was lost and the PR is not confirmed merged",
                     details={"number": number, "expected_head": expected_head},
                 ) from merge_error
-            queue_entry = self._enqueue_merge_queue(
-                pull_request_id=str(readback.get("node_id"))
-            ) if isinstance(readback.get("node_id"), str) and readback.get("node_id") else None
+            pull_request_id = str(readback.get("node_id")) if isinstance(readback.get("node_id"), str) else ""
+            queue_entry = self._enqueue_merge_queue(pull_request_id=pull_request_id) if pull_request_id else None
+            if queue_entry is None and pull_request_id:
+                queue_entry = self._read_merge_queue(pull_request_id=pull_request_id)
             if queue_entry is None:
                 raise RunnerError(
                     "github_merge_not_applied",
@@ -586,11 +644,14 @@ class GitHubDelivery:
                 expected_head_ref=expected_head_ref, expected_base=expected_base,
             )
             if queued.get("merged") is not True:
-                return {
+                result = {
                     "number": number, "expected_head": expected_head, "expected_base": expected_base,
                     "merged": False, "waiting": True, "queue": queue_entry,
                     "message": "pull request is waiting in the GitHub merge queue",
                 }
+                if operation_progress is not None:
+                    operation_progress(operation_id=operation_id, state="waiting_merge_queue", receipt=result)
+                return result
             readback = queued
             result = {"merged": True, "sha": readback.get("merge_commit_sha"), "reconciled": True}
         if not readback.get("merged_at") or not readback.get("merge_commit_sha"):
@@ -602,6 +663,9 @@ class GitHubDelivery:
         evidence = {"merge_response": result, "pr_readback": readback, "candidate_receipt": candidate_receipt,
                     "review": review, "checks_before": checks, "checks_at_merge": latest_checks,
                     "approvals": approvals, "protection": protection}
-        return {"number": number, "expected_head": expected_head, "expected_base": expected_base,
+        result = {"number": number, "expected_head": expected_head, "expected_base": expected_base,
                 "merged": True, "sha": merge_sha, "message": result.get("message"),
                 "merged_at": merged_at, "evidence_digest": digest(evidence)}
+        if operation_completed is not None:
+            operation_completed(operation_id=operation_id, receipt=result)
+        return result
