@@ -795,6 +795,17 @@ def test_public_start_reconciles_blocked_paused_review_on_original_thread(
         worker_id = f"codex_sdk:{run_id}:codex_review:S1:{candidate_sha[:12]}"
         store = Store.open(request.control_root, create=False)
         try:
+            previous_sha = "b" * 40
+            previous_operation = f"review:{run_id}:S1:{previous_sha}"
+            previous_worker = f"codex_sdk:{run_id}:codex_review:S1:{previous_sha[:12]}"
+            store.begin_stage(run_id, step_name="codex_review", operation_id=previous_operation,
+                backend_kind="codex_sdk", worker_id=previous_worker)
+            store.record_codex_turn_started(run_id, previous_operation,
+                thread_id="previous-review-thread", turn_id="previous-review-turn",
+                step_name="codex_review", worker_id=previous_worker)
+            store.complete_codex_stage(run_id, previous_operation,
+                thread_id="previous-review-thread", turn_id="previous-review-turn",
+                state="reviewed", step_name="codex_review", worker_id=previous_worker)
             store.begin_stage(run_id, step_name="codex_review", operation_id=operation,
                 backend_kind="codex_sdk", worker_id=worker_id)
             store.record_codex_turn_started(run_id, operation, thread_id="review-thread",
@@ -864,6 +875,17 @@ def test_public_start_rechecks_approved_review_after_blocked_target_change(monke
         worker_id = f"codex_sdk:{run_id}:codex_review:S1:{candidate_sha[:12]}"
         store = Store.open(request.control_root, create=False)
         try:
+            previous_sha = "b" * 40
+            previous_operation = f"review:{run_id}:S1:{previous_sha}"
+            previous_worker = f"codex_sdk:{run_id}:codex_review:S1:{previous_sha[:12]}"
+            store.begin_stage(run_id, step_name="codex_review", operation_id=previous_operation,
+                backend_kind="codex_sdk", worker_id=previous_worker)
+            store.record_codex_turn_started(run_id, previous_operation,
+                thread_id="previous-review-thread", turn_id="previous-review-turn",
+                step_name="codex_review", worker_id=previous_worker)
+            store.complete_codex_stage(run_id, previous_operation,
+                thread_id="previous-review-thread", turn_id="previous-review-turn",
+                state="reviewed", step_name="codex_review", worker_id=previous_worker)
             store.begin_stage(run_id, step_name="codex_review", operation_id=operation,
                 backend_kind="codex_sdk", worker_id=worker_id)
             store.record_codex_turn_started(run_id, operation, thread_id="review-thread",
