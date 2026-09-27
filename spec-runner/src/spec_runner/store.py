@@ -44,6 +44,22 @@ def _encode_migration_payload(value: object) -> str:
     )
 
 
+def _decode_migration_payload(value: object) -> object:
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError) as exc:
+        raise RunnerError(
+            "thread_migration_payload_invalid",
+            "persisted migration evidence is not valid JSON",
+        ) from exc
+    if not valid_migration_payload(decoded):
+        raise RunnerError(
+            "thread_migration_payload_invalid",
+            "persisted migration evidence contains hidden history or non-finite JSON",
+        )
+    return decoded
+
+
 def _strict_recovery_counter(value: object, *, field: str, default: int = 0) -> int:
     if value is None:
         return default
@@ -2073,7 +2089,7 @@ class Store:
         result = dict(row)
         for key in ("handover_json", "successor_json", "uncertainty_json"):
             value = result.pop(key)
-            result[key.removesuffix("_json")] = json.loads(value) if value else None
+            result[key.removesuffix("_json")] = _decode_migration_payload(value) if value else None
         return result
 
     def thread_migrations_for_run(self, run_id: str) -> list[dict[str, object]]:
@@ -2124,7 +2140,7 @@ class Store:
         if row is None:
             return None
         result = dict(row)
-        result["receipt"] = json.loads(str(result.pop("receipt_json")))
+        result["receipt"] = _decode_migration_payload(result.pop("receipt_json"))
         return result
 
     def migration_milestones_for_run(self, run_id: str) -> list[dict[str, object]]:
@@ -2141,7 +2157,7 @@ class Store:
         result: list[dict[str, object]] = []
         for row in rows:
             item = dict(row)
-            item["receipt"] = json.loads(str(item.pop("receipt_json")))
+            item["receipt"] = _decode_migration_payload(item.pop("receipt_json"))
             result.append(item)
         return result
 

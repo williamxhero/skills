@@ -164,6 +164,35 @@ def test_store_rejects_unsafe_migration_receipts(tmp_path: Path) -> None:
         store.close()
 
 
+def test_store_fails_closed_on_unsafe_persisted_migration_payloads(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        key = "acceptance:corrupt-persisted-evidence"
+        _prepare_migration(store, run, key)
+        store.record_migration_milestone(
+            migration_key=key,
+            milestone="business_progress_verified",
+            receipt={"verified": True},
+        )
+        store.connection.execute(
+            "UPDATE migration_milestones SET receipt_json = ? WHERE migration_key = ?",
+            (json.dumps({"response_chain": {"encrypted_content": "opaque"}}), key),
+        )
+        with pytest.raises(RunnerError, match="persisted migration evidence"):
+            store.migration_milestone(key, "business_progress_verified")
+
+        store.connection.execute(
+            "UPDATE thread_migrations SET handover_json = ? WHERE migration_key = ?",
+            (json.dumps({"response_chain": {"encrypted_content": "opaque"}}), key),
+        )
+        with pytest.raises(RunnerError, match="persisted migration evidence"):
+            store.thread_migration(key)
+    finally:
+        store.close()
+
+
 def test_successor_creation_intent_replay_fails_closed_before_provider_call(tmp_path: Path) -> None:
     store = Store.open(tmp_path / "control", create=True)
     try:
