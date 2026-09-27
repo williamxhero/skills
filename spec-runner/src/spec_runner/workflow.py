@@ -1014,7 +1014,7 @@ def _close_published_ticket_plan(*, control_root: Path, config: RunnerConfig, pl
         delivery_digest = digest(identity)
         publication_id = f"tickets:{run_id}:{spec_key}"
         operation_id = f"close:{run_id}:{spec_key}"
-        tracker_root = control_root / "tracker"
+        tracker_root = config.intake_root or (control_root / "tracker")
         publications = load_json(tracker_root / ".spec-runner-tracker-receipts.json")
         publication = publications.get(publication_id)
         if (not isinstance(publication, dict) or not isinstance(publication.get("records"), list)
@@ -1022,14 +1022,33 @@ def _close_published_ticket_plan(*, control_root: Path, config: RunnerConfig, pl
                        for item in publication["records"])):
             raise RunnerError("tracker_close_evidence_missing", "local closure has no matching publication")
         published_keys = {item["key"] for item in publication["records"]}
-        source_key = "".join(character if character.isalnum() or character in "._-" else "-" for character in spec_key)
-        source = artifact / "ticket-source" / source_key
-        if not source.is_dir():
-            source = artifact / "ticket-source"
-        snapshot = read_local(source, keys=published_keys)
+        if config.intake_root is not None:
+            source = read_local(tracker_root)
+            selected = tuple(record for record in source.records if record.key in published_keys)
+            snapshot = PlanSnapshot(
+                schema_version=source.schema_version, source=source.source, root=source.root,
+                relation_mode=source.relation_mode, records=selected,
+                digest=hashlib.sha256(
+                    "\n".join(f"{record.key}:{record.digest}" for record in selected).encode("utf-8")
+                ).hexdigest(),
+            )
+        else:
+            source_key = "".join(character if character.isalnum() or character in "._-" else "-" for character in spec_key)
+            source = artifact / "ticket-source" / source_key
+            if not source.is_dir():
+                source = artifact / "ticket-source"
+            snapshot = read_local(source, keys=published_keys)
         keys = {spec_key, *(str(ticket["key"]) for ticket in plan["tickets"])}
-        if not keys <= published_keys or any(record.revision != plan["digest"] for record in snapshot.records if record.key in keys):
+        if not keys <= published_keys:
             raise RunnerError("tracker_close_evidence_missing", "local closure source revision differs from its TicketPlan")
+        records = {record.key: record for record in snapshot.records}
+        for ticket in plan["tickets"]:
+            record = records.get(str(ticket["key"]))
+            if (record is None or record.title != str(ticket.get("title") or ticket["key"])
+                    or record.body.rstrip("\r\n") != str(ticket.get("body") or "").rstrip("\r\n")
+                    or record.parent != spec_key
+                    or tuple(record.blocked_by) != tuple(ticket.get("blocked_by", []))):
+                raise RunnerError("tracker_close_evidence_missing", "tracker records differ from the adopted TicketPlan")
         store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
             operation_kind="local_issue_closure", repository=os.fspath(tracker_root.resolve()),
             input_digest=delivery_digest)
@@ -4148,7 +4167,7 @@ def _local_issue_closure_pending(*, control_root: Path, config: RunnerConfig,
     completed = store.production_completed_specs(run.run_id)
     if not completed:
         return False
-    states = read_local_states(control_root / "tracker")
+    states = read_local_states(config.intake_root or (control_root / "tracker"))
     for spec_key in completed:
         operation = store.external_operation(f"close:{run.run_id}:{spec_key}")
         if not operation or operation.get("state") != "completed":
@@ -4192,6 +4211,7 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
             resume_reviewed_delivery=_resume_reviewed_delivery,
             definitive_failed_checks=_definitive_failed_github_checks,
             reconcile_local_delivery=_reconcile_completed_local_delivery,
+            base_revision=git_sha,
         ),
     )
 

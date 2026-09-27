@@ -123,6 +123,49 @@ def _prepared_inputs(root: Path, *, ticket_plan_digest: str | None = None) -> tu
                          launch_key="prepared-1"), plan["digest"]
 
 
+def test_public_start_adopts_complete_local_tracker_frontier_without_to_tickets(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="tracker-intake-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        config = json.loads(request.config_file.read_text(encoding="utf-8"))
+        config["workflow"].pop("prepared")
+        config["workflow"]["intake"] = {"root": "tracker", "entry": "S1"}
+        request.config_file.write_text(json.dumps(config), encoding="utf-8")
+        tracker = request.control_root / "tracker"
+        tracker.mkdir()
+        (tracker / "S1.md").write_text(
+            '---\nkey: S1\nkind: spec\ntitle: Existing SPEC\nrevision: r1\n'
+            'blocked_by: []\ncomments: []\n---\nImplement R1\n',
+            encoding="utf-8",
+        )
+        (tracker / "S1.1.md").write_text(
+            '---\nkey: S1.1\nkind: ticket\ntitle: Existing ticket\nrevision: r1\n'
+            'parent: S1\nblocked_by: []\ncomments: []\n---\nImplement R1\n',
+            encoding="utf-8",
+        )
+        calls: list[dict[str, object]] = []
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("tracker intake must not invoke planning SDK"))
+        monkeypatch.setattr(workflow, "_execute_codex_tickets", lambda **kwargs: pytest.fail("complete tracker intake must skip to-tickets"))
+
+        def stop_at_implementation(**kwargs):
+            calls.append(kwargs["ticket_plan"])
+            kwargs["store"].set_run_state(kwargs["run"].run_id, "needs_input")
+            return {"state": "needs_input", **kwargs["store"].public_status(kwargs["run"].run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_at_implementation)
+        result = Runner().start(request)
+
+        assert result["run"]["state"] == "needs_input"
+        assert [ticket["key"] for ticket in calls[0]["tickets"]] == ["S1.1"]
+        artifact = request.control_root / "artifacts" / result["run"]["run_id"]
+        assert json.loads((artifact / "spec-plan.json").read_text(encoding="utf-8"))["specs"][0]["key"] == "S1"
+        receipt = json.loads((tracker / ".spec-runner-tracker-receipts.json").read_text(encoding="utf-8"))
+        assert receipt[f"tickets:{result['run']['run_id']}:S1"]["records"]
+        with closing(Store.open(request.control_root, create=False)) as store:
+            assert any(event["event_type"] == "adopted_stage_completed" for event in store.events_for_run(result["run"]["run_id"]))
+
+
 def test_public_start_adopts_prepared_plan_and_tickets_without_planning_sdk(monkeypatch):
     runtime = Path(__file__).parent / ".runtime"
     runtime.mkdir(exist_ok=True)

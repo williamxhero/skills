@@ -16,10 +16,11 @@ from typing import Callable, Mapping
 from .config import RunnerConfig
 from .errors import RunnerError
 from .models import RunContext
-from .plans import validate_spec_plan
+from .plans import validate_spec_plan, validate_ticket_plan
 from .recovery import RecoveryAction
 from .recovery_runtime import RecoveryEpisode
 from .store import RunRecord, Store
+from .tracker import PlanSnapshot, publish_local, read_local
 
 
 JsonLoader = Callable[[Path], dict[str, object]]
@@ -53,6 +54,7 @@ class ProductionPorts:
     resume_reviewed_delivery: ReviewedDeliveryRunner | None = None
     definitive_failed_checks: FailedChecks | None = None
     reconcile_local_delivery: Callable[..., dict[str, object]] | None = None
+    base_revision: Callable[..., str] | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,153 @@ class ProductionWorkflow:
     def artifact_directory(self) -> Path:
         """Return the durable artifact directory for this production run."""
         return self._artifact()
+
+    def intake(self) -> RunRecord:
+        """Adopt an explicit local tracker frontier into this run.
+
+        The tracker is an input here: its records are read, validated, and
+        rebound to the current run through ordinary publication receipts.
+        No model planner or ticket planner is invoked for records that are
+        complete in the supplied frontier.
+        """
+        root = self.config.intake_root
+        entry_key = self.config.intake_entry
+        if root is None or not entry_key:
+            raise RunnerError("intake_config_missing", "tracker intake requires a root and entry key")
+        if not self.config.acceptance_ids:
+            raise RunnerError("intake_acceptance_missing", "tracker intake requires explicit acceptance IDs")
+        snapshot = read_local(root)
+        records = {record.key: record for record in snapshot.records}
+        if entry_key not in records:
+            raise RunnerError("unknown_plan_entry", f"entry key does not exist: {entry_key}")
+        direct_specs = [
+            record for record in snapshot.records
+            if record.parent == entry_key and record.kind.casefold() in {"spec", "issue"}
+        ]
+        selected_specs = direct_specs or [records[entry_key]]
+        if any(record.kind.casefold() not in {"spec", "issue"} for record in selected_specs):
+            raise RunnerError("invalid_plan_entry", "tracker intake entry must identify a SPEC or an umbrella with SPEC children")
+        selected_keys = {record.key for record in selected_specs}
+        by_key = {record.key: record for record in selected_specs}
+        ordered: list[object] = []
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(key: str) -> None:
+            if key in visiting:
+                raise RunnerError("plan_cycle", f"tracker intake dependency cycle contains {key}")
+            if key in visited:
+                return
+            visiting.add(key)
+            record = by_key[key]
+            for dependency in record.blocked_by:
+                if dependency not in selected_keys:
+                    raise RunnerError("unknown_plan_dependency", f"tracker intake references unknown SPEC dependency: {dependency}")
+                visit(dependency)
+            visiting.remove(key)
+            visited.add(key)
+            ordered.append(record)
+
+        for record in selected_specs:
+            visit(record.key)
+
+        requirements = list(self.config.acceptance_ids)
+        specs: list[dict[str, object]] = []
+        ticket_documents: list[tuple[str, dict[str, object], set[str]]] = []
+        for selected in ordered:
+            record = selected
+            children = [
+                candidate for candidate in snapshot.records
+                if candidate.parent == record.key and candidate.kind.casefold() in {"ticket", "issue"}
+            ]
+            child_keys = {candidate.key for candidate in children}
+            if any(dependency not in child_keys for candidate in children for dependency in candidate.blocked_by):
+                raise RunnerError("unknown_plan_dependency", f"tracker intake ticket dependency escapes SPEC {record.key}")
+            specs.append({
+                "key": record.key,
+                "title": record.title,
+                "body": record.body,
+                "blocked_by": list(record.blocked_by),
+                "covers": requirements,
+                "route": {"model": "adopted", "effort": "none", "reason": "validated local tracker intake"},
+            })
+            if children:
+                ticket_documents.append((record.key, {
+                    "schema_version": "spec-runner-ticket-plan/v1",
+                    "outcome": "planned",
+                    "questions": [],
+                    "spec_plan_digest": "",
+                    "spec_key": record.key,
+                    "spec_title": record.title,
+                    "spec_body": record.body,
+                    "tickets": [{
+                        "key": child.key,
+                        "title": child.title,
+                        "body": child.body,
+                        "blocked_by": list(child.blocked_by),
+                        "acceptance": requirements,
+                    } for child in children],
+                }, {record.key, *child_keys}))
+        plan = validate_spec_plan({
+            "schema_version": "spec-runner-spec-plan/v1",
+            "outcome": "planned",
+            "questions": [],
+            "requirement_digest": self.brief_digest,
+            "requirements": requirements,
+            "specs": specs,
+        })
+        artifact = self._artifact()
+        artifact.mkdir(parents=True, exist_ok=True)
+        plan_path = artifact / "spec-plan.json"
+        if plan_path.is_file() and self.ports.load_json(plan_path) != plan:
+            raise RunnerError("intake_plan_conflict", "tracker intake conflicts with the persisted SpecPlan")
+        self.ports.write_json_atomic(plan_path, plan)
+        current = self.store.complete_adopted_stage(
+            self.run.run_id, f"start:{self.run.run_id}", step_name="tracker_intake",
+            worker_id=f"tracker_intake:{self.run.run_id}", state="planned",
+            source_digest=str(plan["digest"]),
+        )
+        for spec_key, document, keys in ticket_documents:
+            document["spec_plan_digest"] = plan["digest"]
+            base_revision = self.ports.base_revision
+            if base_revision is None:
+                raise RunnerError("intake_git_missing", "tracker intake has no Git revision adapter")
+            document["base_sha"] = base_revision(
+                repository=self.config.repository_path,
+                ref=self.config.target_ref,
+                timeout_seconds=self.config.git_timeout_seconds,
+            )
+            ticket = validate_ticket_plan(document, expected_spec_key=spec_key, expected_base_sha=str(document["base_sha"]))
+            ticket_path = artifact / f"ticket-plan-{spec_key}.json"
+            if ticket_path.is_file() and self.ports.load_json(ticket_path) != ticket:
+                raise RunnerError("intake_ticket_conflict", f"tracker intake conflicts with TicketPlan {spec_key}")
+            self.ports.write_json_atomic(ticket_path, ticket)
+            selected_records = tuple(record for record in snapshot.records if record.key in keys)
+            adopted = PlanSnapshot(
+                schema_version=snapshot.schema_version,
+                source=snapshot.source,
+                root=snapshot.root,
+                relation_mode=snapshot.relation_mode,
+                records=selected_records,
+                digest=hashlib.sha256(
+                    "\n".join(f"{record.key}:{record.digest}" for record in selected_records).encode("utf-8")
+                ).hexdigest(),
+            )
+            publish_local(
+                adopted, root, operation_id=f"tickets:{self.run.run_id}:{spec_key}",
+                adopt_matching_revision=True,
+            )
+            operation_id = f"tickets:{self.run.run_id}:{spec_key}"
+            worker_id = f"tracker_intake:{self.run.run_id}:codex_ticket_planning:{spec_key}"
+            self.store.begin_stage(
+                self.run.run_id, step_name="codex_ticket_planning", operation_id=operation_id,
+                backend_kind="tracker_intake", worker_id=worker_id,
+            )
+            current = self.store.complete_adopted_stage(
+                self.run.run_id, operation_id, step_name="codex_ticket_planning",
+                worker_id=worker_id, state="tickets_ready", source_digest=str(ticket["digest"]),
+            )
+        return current
 
     def plan(self, *, thread_id: str | None = None) -> RunRecord:
         """Run the production planning stage through the production seam.
@@ -330,7 +479,11 @@ class ProductionWorkflow:
             spec = ready[0]
             spec_key = str(spec["key"])
             ticket_files = sorted(self._artifact().glob(f"ticket-plan-{spec_key}.json"))
-            if ticket_files and run.state == "tickets_ready":
+            adopted_ticket = bool(ticket_files) and (
+                run.state == "tickets_ready"
+                or (self.config.intake_root is not None and run.state in {"planned", "spec_completed"})
+            )
+            if adopted_ticket:
                 ticketed = run
             else:
                 ticketed = self.ports.execute_tickets(
@@ -341,7 +494,7 @@ class ProductionWorkflow:
                     store=store,
                     spec_plan={**spec_plan, "specs": [spec]},
                 )
-            if ticketed.state != "tickets_ready":
+            if ticketed.state != "tickets_ready" and not adopted_ticket:
                 current = store.find_by_run_id(run.run_id) or run
                 return {"state": current.state, **store.public_status(run.run_id)}
             stopped = self._control_boundary()

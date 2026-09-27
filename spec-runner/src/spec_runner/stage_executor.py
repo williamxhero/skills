@@ -58,6 +58,16 @@ class WorkflowStageExecutor:
                 raise RunnerError("spec_plan_missing", "prepared TicketPlan recovery needs the persisted SpecPlan")
             return StageResult.from_public(production.start_queue(port.load_json(plan_path)))
 
+        if route.kind == "tracker_intake":
+            production = self._production_workflow(context)
+            adopted = production.intake()
+            current = store.find_by_run_id(run.run_id) or adopted
+            plan_path = production.artifact_directory() / "spec-plan.json"
+            payload = self._production_workflow(context.with_run(current)).start_queue(
+                port.load_json(plan_path)
+            )
+            return StageResult.from_public(payload)
+
         if route.kind == "ready_for_next":
             payload = port.advance_second_stage(
                 control_root=control_root, config=config, run=run,

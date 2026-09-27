@@ -19,6 +19,7 @@ RouteKind = Literal[
     "terminal",
     "prepared_plan",
     "prepared_ticket",
+    "tracker_intake",
     "blocked_recovery",
     "ready_for_next",
     "planned",
@@ -54,6 +55,8 @@ class StageProgression:
         if config.execution_backend == "deterministic_test":
             return "deterministic_example"
         if config.workflow_mode == "production":
+            if getattr(config, "intake_root", None) is not None:
+                return "tracker_intake"
             if getattr(config, "prepared_spec_plan", None) is not None:
                 return "prepared_planning"
             return "codex_planning"
@@ -81,6 +84,10 @@ class StageProgression:
             return StageRoute("prepared_plan", state, production)
         if production and getattr(config, "prepared_ticket_plans", ()) and run.current_step == "codex_ticket_planning" and state in {"starting", "failed"}:
             return StageRoute("prepared_ticket", state, production)
+        if production and getattr(config, "intake_root", None) is not None and run.current_step == "tracker_intake" and state in {"starting", "failed", "planned"}:
+            return StageRoute("tracker_intake", state, production)
+        if production and getattr(config, "intake_root", None) is not None and run.current_step == "codex_ticket_planning" and state in {"starting", "failed"}:
+            return StageRoute("tracker_intake", state, production)
         if state == "ready_for_next":
             return StageRoute("ready_for_next", state, production)
         if state == "planned":

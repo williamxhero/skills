@@ -123,6 +123,8 @@ class RunnerConfig:
     git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS
     prepared_spec_plan: Path | None = None
     prepared_ticket_plans: tuple[tuple[str, Path], ...] = ()
+    intake_root: Path | None = None
+    intake_entry: str | None = None
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -232,6 +234,23 @@ class RunnerConfig:
                 if not _is_within(path, control_root):
                     raise RunnerError("invalid_config", f"prepared TicketPlan for {key} must stay below control_root")
                 prepared_ticket_plans[key] = path
+        intake = workflow.get("intake")
+        intake_root: Path | None = None
+        intake_entry: str | None = None
+        if intake is not None:
+            if prepared is not None:
+                raise RunnerError("invalid_config", "workflow.prepared and workflow.intake are mutually exclusive")
+            if workflow_mode != "production" or backend != "codex_sdk" or delivery_plan is not None:
+                raise RunnerError("invalid_config", "workflow.intake requires the Codex production workflow")
+            if not isinstance(intake, dict):
+                raise RunnerError("invalid_config", "workflow.intake must be an object")
+            intake_relative = _normalise_relative_path(intake.get("root"), "workflow.intake.root")
+            intake_root = (control_root / intake_relative).resolve()
+            if not _is_within(intake_root, control_root):
+                raise RunnerError("invalid_config", "workflow.intake.root must stay below control_root")
+            intake_entry = intake.get("entry")
+            if not isinstance(intake_entry, str) or not intake_entry.strip():
+                raise RunnerError("invalid_config", "workflow.intake.entry must be a non-empty tracker key")
         raw_acceptance = workflow.get("acceptance", {})
         if raw_acceptance is None:
             raw_acceptance = {}
@@ -326,6 +345,11 @@ class RunnerConfig:
                     for key, path in sorted(prepared_ticket_plans.items())
                 },
             }
+        if intake_root is not None:
+            normalized["workflow"]["intake"] = {
+                "root": intake_root.relative_to(control_root).as_posix(),
+                "entry": intake_entry,
+            }
         if "timeout_seconds" in github:
             normalized["github"]["timeout_seconds"] = github_timeout_seconds
         # Keep pre-timeout config digests stable so persisted runs remain
@@ -383,6 +407,8 @@ class RunnerConfig:
             git_timeout_seconds=git_timeout_seconds,
             prepared_spec_plan=prepared_spec_plan,
             prepared_ticket_plans=tuple(sorted(prepared_ticket_plans.items())),
+            intake_root=intake_root,
+            intake_entry=intake_entry,
         )
 
 

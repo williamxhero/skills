@@ -383,14 +383,28 @@ class RunRuntime:
                         store=store,
                     )
                 elif config.workflow_mode == "production":
-                    finished = port.production_runtime(
+                    production = port.production_runtime(
                         control_root=control_root,
                         config=config,
                         brief=brief,
                         brief_digest=brief_digest,
                         run=record,
                         store=store,
-                    ).plan(thread_id=successor_thread_id)
+                    )
+                    if stage_name == "tracker_intake":
+                        adopted = production.intake()
+                        plan_path = port.safe_artifact_directory(control_root, config, adopted.run_id) / "spec-plan.json"
+                        return {
+                            "created": True,
+                            **port.production_runtime(
+                                control_root=control_root,
+                                config=config,
+                                brief_digest=brief_digest,
+                                run=adopted,
+                                store=store,
+                            ).start_queue(port.load_json(plan_path)),
+                        }
+                    finished = production.plan(thread_id=successor_thread_id)
                 else:
                     finished = port.execute_codex_example(
                         control_root=control_root,

@@ -728,7 +728,11 @@ class Store:
         return result
 
     def create_run(self, run: RunRecord, operation_id: str) -> None:
-        initial_backend = "prepared_plan" if run.current_step == "prepared_planning" else run.backend_kind
+        initial_backend = (
+            "prepared_plan" if run.current_step == "prepared_planning"
+            else "tracker_intake" if run.current_step == "tracker_intake"
+            else run.backend_kind
+        )
         with self.transaction():
             self.connection.execute(
                 """INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -837,6 +841,45 @@ class Store:
                 event_key=f"prepared:{operation_id}:{source_digest}",
                 event_type="prepared_plan_adopted",
                 payload={"operation_id": operation_id, "step_name": step_name,
+                         "source_digest": source_digest},
+            )
+        record = self.find_by_run_id(run_id)
+        assert record is not None
+        return record
+
+    def complete_adopted_stage(
+        self, run_id: str, operation_id: str, *, step_name: str,
+        worker_id: str, state: str, source_digest: str,
+    ) -> RunRecord:
+        """Complete a non-model stage after adopting verified external data."""
+        if not step_name or not worker_id or not state or not source_digest:
+            raise RunnerError("adopted_stage_invalid", "adopted stage needs identity, state, and source digest")
+        timestamp = now()
+        with self.transaction():
+            operation = self.connection.execute(
+                "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ? AND run_id = ?",
+                (state, timestamp, operation_id, run_id),
+            ).rowcount
+            worker = self.connection.execute(
+                "UPDATE workers SET state = ?, updated_at = ? WHERE worker_id = ? AND run_id = ?",
+                (state, timestamp, worker_id, run_id),
+            ).rowcount
+            step = self.connection.execute(
+                "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
+                (state, timestamp, run_id, step_name),
+            ).rowcount
+            if (operation, worker, step) != (1, 1, 1):
+                raise RunnerError("adopted_stage_missing", "adopted stage has no matching durable intent")
+            self.connection.execute(
+                "UPDATE runs SET state = ?, current_step = ?, updated_at = ? WHERE run_id = ?",
+                (state, step_name, timestamp, run_id),
+            )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"adopted:{operation_id}:{source_digest}",
+                event_type="adopted_stage_completed",
+                payload={"operation_id": operation_id, "step_name": step_name,
+                         "worker_id": worker_id, "state": state,
                          "source_digest": source_digest},
             )
         record = self.find_by_run_id(run_id)
