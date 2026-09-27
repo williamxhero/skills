@@ -526,6 +526,10 @@ def test_production_stage_failure_records_recovery_before_returning_error(contex
     assert current is not None
 
     def fail_tickets(**kwargs):
+        store.begin_stage(
+            run.run_id, step_name="codex_ticket_planning", operation_id=f"tickets:{run.run_id}:S1",
+            backend_kind="codex_sdk", worker_id=f"codex_sdk:{run.run_id}:codex_ticket_planning:S1",
+        )
         raise RunnerError("planning_not_ready", "ticket worker returned an incomplete plan")
 
     monkeypatch.setattr(workflow, "_execute_codex_tickets", fail_tickets)
@@ -538,6 +542,7 @@ def test_production_stage_failure_records_recovery_before_returning_error(contex
     assert store.find_by_run_id(run.run_id).state == "failed"
     assert store.operations_for_run(run.run_id)[0]["state"] == "failed"
     assert any(item["event_type"] == "recovery_decision_recorded" for item in store.events_for_run(run.run_id))
+    assert [item["stage"] for item in store.recovery_for_run(run.run_id)["episodes"]] == ["codex_ticket_planning"]
 
 
 def test_production_completion_receipt_conflict_is_rejected_atomically(context):

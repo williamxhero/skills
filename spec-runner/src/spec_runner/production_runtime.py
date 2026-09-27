@@ -227,7 +227,8 @@ class ProductionWorkflow:
             return self.run_queue(spec_plan)
         except RunnerError as exc:
             run, store = self.run, self.store
-            decision = RecoveryEpisode(run=run, store=store).record_failure(
+            current = store.find_by_run_id(run.run_id) or run
+            decision = RecoveryEpisode(run=current, store=store).record_failure(
                 operation_id=f"start:{run.run_id}", error=exc,
             )
             state = decision.action.value if decision.action in {
