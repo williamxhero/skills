@@ -29,6 +29,41 @@ class StoreLeaseTests(unittest.TestCase):
                 Store.open(root, create=False)
             self.assertEqual(raised.exception.code, "control_not_ready")
 
+    def test_public_status_reads_a_database_before_route_circuit_table_was_added(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "control"
+            store = Store.open(root, create=True)
+            timestamp = now()
+            run = RunRecord(
+                run_id="pre-route-circuit",
+                launch_key="pre-route-circuit",
+                input_digest="input",
+                config_digest="config",
+                repository_path=temp,
+                target_ref="HEAD",
+                artifact_root="artifacts",
+                backend_kind="deterministic_test",
+                state="needs_input",
+                current_step="codex_grill",
+                log_path="logs/pre-route-circuit.jsonl",
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            try:
+                store.create_run(run, "start:pre-route-circuit")
+                store.connection.execute("DROP TABLE route_circuits")
+                store.connection.commit()
+            finally:
+                store.close()
+
+            reopened = Store.open(root, create=False)
+            try:
+                status = reopened.public_status(run.run_id)
+                self.assertEqual(status["run"]["run_id"], run.run_id)
+                self.assertEqual(status["route_circuits"], [])
+            finally:
+                reopened.close()
+
     def test_control_db_busy_write_is_reported_as_recoverable_runner_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "control"

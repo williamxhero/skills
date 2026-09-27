@@ -1136,8 +1136,23 @@ class Store:
         row = self.connection.execute("SELECT * FROM runner_leases WHERE scope = ?", (scope,)).fetchone()
         return dict(row) if row else None
 
+    def _table_exists(self, table_name: str) -> bool:
+        """Check optional status tables without changing an existing database.
+
+        The Store schema version remains compatible with pre-release databases
+        that were created before an additive status table existed.  Read-only
+        status and answer commands must still be able to project the durable
+        run; creation of the current schema remains owned by ``open(create=True)``.
+        """
+        return self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone() is not None
+
     def route_circuit(self, route_scope: str) -> dict[str, object] | None:
         """Read the durable circuit state for one explicitly scoped route."""
+        if not self._table_exists("route_circuits"):
+            return None
         scope = _route_scope_key(route_scope)
         row = self.connection.execute(
             "SELECT * FROM route_circuits WHERE route_scope = ?", (scope,)
@@ -1145,6 +1160,8 @@ class Store:
         return dict(row) if row else None
 
     def route_circuits(self) -> list[dict[str, object]]:
+        if not self._table_exists("route_circuits"):
+            return []
         return [
             dict(row)
             for row in self.connection.execute(
