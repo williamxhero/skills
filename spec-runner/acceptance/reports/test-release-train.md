@@ -2005,3 +2005,23 @@ This is deterministic migration evidence integrity only. Live native SDK
 business continuation, source-thread archive/readback, provider crash windows,
 Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
 remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
+
+## RCV-02.4 persisted migration evidence fail-closed readback (2026-09-28)
+
+Commit `cceb9bb` makes reads of historical migration handovers and milestone
+receipts revalidate the persisted JSON against the same safe migration payload
+contract used on writes. Corrupt JSON, hidden history such as encrypted or
+opaque response material, and non-finite values now fail closed before the
+record can be used as recovery evidence. The regression also proves that a
+corrupted handover cannot be consumed by a later clean migration decision.
+
+The focused migration and Store selection passed `37 passed`; the complete
+source plus acceptance selection passed `540 passed, 1 skipped`; `compileall`
+and `git diff --check` passed. GitHub Actions run `36359600534` passed both
+Ubuntu and Windows contract jobs, including the installed-wheel public CLI
+checks.
+
+This is deterministic persisted-evidence integrity only. Live native SDK
+business continuation, source-thread archive/readback, provider crash windows,
+Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
+remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
