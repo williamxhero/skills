@@ -1768,3 +1768,18 @@ complete source plus acceptance selection passed `481 passed, 1 skipped`;
 deterministic corruption handling evidence only; live SDK recovery, source
 thread migration, Windows detached recovery and project-level L3-L5 remain
 `not_verified`.
+
+## RCV-01.4 recovery reconciliation deadline fail-closed (2026-09-28)
+
+The failed-turn reconciliation seam now uses the same persisted deadline
+parser as lifecycle wait admission and public wait-record lookup. A missing or
+malformed `retry_deadline` or `wait_deadline` during terminal turn
+reconciliation is recorded as `recovery_wait_invalid`, moves the run to
+durable `blocked`, and returns the stable recovery deadline error instead of
+leaking `ValueError` or proceeding with an unbounded wait.
+
+The focused recovery runtime acceptance selection passed `23 passed`; the
+complete source plus acceptance selection passed `482 passed, 1 skipped`;
+`compileall` and `git diff --check` passed. This deterministic persistence
+boundary does not verify live SDK recovery, source-thread migration, Windows
+detached recovery, or project-level L3-L5 gates, which remain `not_verified`.

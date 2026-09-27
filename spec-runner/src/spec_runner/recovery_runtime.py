@@ -46,6 +46,21 @@ def _parse_recovery_deadline(value: object, *, run_id: str, action: str) -> date
     return parsed.astimezone(timezone.utc)
 
 
+def _block_invalid_recovery_wait(*, store: Store, run_id: str, action: str, reason: str) -> None:
+    """Fail closed when a persisted timer cannot be trusted."""
+    store.fail_run(
+        run_id,
+        f"recovery-wait:{run_id}:{action}",
+        state="blocked",
+    )
+    store.append_event(
+        run_id=run_id,
+        event_key=f"recovery:{run_id}:wait-invalid:{action}",
+        event_type="recovery_wait_invalid",
+        payload={"action": action, "reason": reason},
+    )
+
+
 @dataclass(frozen=True)
 class RecoveryTransition:
     """Durable result of observing one failure at a lifecycle seam."""
@@ -374,16 +389,9 @@ class RecoveryEpisode:
             return True
         deadline = episode.get("wait_deadline") if action == RecoveryAction.SERVICE_WAIT.value else episode.get("retry_deadline")
         if deadline is None or (isinstance(deadline, str) and not deadline.strip()):
-            self.store.fail_run(
-                run.run_id,
-                f"recovery-wait:{run.run_id}:{action}",
-                state="blocked",
-            )
-            self.store.append_event(
-                run_id=run.run_id,
-                event_key=f"recovery:{run.run_id}:wait-invalid:{action}",
-                event_type="recovery_wait_invalid",
-                payload={"action": action, "reason": "missing_persisted_deadline"},
+            _block_invalid_recovery_wait(
+                store=self.store, run_id=run.run_id, action=action,
+                reason="missing_persisted_deadline",
             )
             return False
         try:
@@ -391,16 +399,9 @@ class RecoveryEpisode:
                 deadline, run_id=run.run_id, action=action,
             )
         except RunnerError:
-            self.store.fail_run(
-                run.run_id,
-                f"recovery-wait:{run.run_id}:{action}",
-                state="blocked",
-            )
-            self.store.append_event(
-                run_id=run.run_id,
-                event_key=f"recovery:{run.run_id}:wait-invalid:{action}",
-                event_type="recovery_wait_invalid",
-                payload={"action": action, "reason": "invalid_persisted_deadline"},
+            _block_invalid_recovery_wait(
+                store=self.store, run_id=run.run_id, action=action,
+                reason="invalid_persisted_deadline",
             )
             return False
         if parsed_deadline > datetime.now(timezone.utc):
@@ -575,13 +576,24 @@ class RecoveryRuntime:
         if decision.action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}:
             prior_action = decision.action.value
             episode = self.store.recovery_episode(episode_id) or {}
-            deadline = (episode["retry_deadline"] if prior_action == RecoveryAction.WAIT_RETRY.value
-                        else episode["wait_deadline"])
-            if not deadline:
+            deadline = (episode.get("retry_deadline") if prior_action == RecoveryAction.WAIT_RETRY.value
+                        else episode.get("wait_deadline"))
+            if deadline is None or (isinstance(deadline, str) and not deadline.strip()):
+                _block_invalid_recovery_wait(
+                    store=self.store, run_id=self.run.run_id, action=prior_action,
+                    reason="missing_persisted_deadline",
+                )
                 raise RunnerError("recovery_deadline_missing", "persisted recovery wait has no deadline")
-            parsed = datetime.fromisoformat(str(deadline).replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+            try:
+                parsed = _parse_recovery_deadline(
+                    deadline, run_id=self.run.run_id, action=prior_action,
+                )
+            except RunnerError:
+                _block_invalid_recovery_wait(
+                    store=self.store, run_id=self.run.run_id, action=prior_action,
+                    reason="invalid_persisted_deadline",
+                )
+                raise
             if parsed <= datetime.now(timezone.utc):
                 return None
             self.store.fail_run(self.run.run_id, operation_id, state=str(prior_action))
