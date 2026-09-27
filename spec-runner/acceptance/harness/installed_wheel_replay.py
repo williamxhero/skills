@@ -179,7 +179,7 @@ def replay(repository: Path) -> dict[str, object]:
             "python": platform.python_version(),
             "cwd": os.fspath(outsider),
             "installed_import": os.fspath(installed_path),
-            "cwd_outside_source": not outsider.resolve().is_relative_to(repository),
+            "cwd_outside_source": not outsider.resolve().is_relative_to(source_tree),
             "sdk": f"openai-codex=={importlib.metadata.version('openai-codex')}",
         },
         "replays": replays,

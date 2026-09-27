@@ -1,0 +1,132 @@
+{
+  "candidate": {
+    "archive_digest": "b743bfa4a32caf897e1273d1defab3889c5f898aef5368271053bb75a5f6c5e1",
+    "commit": "fee269a2ca43678ce8047ceabdb78681814124ad",
+    "package_diagnostic": "verified",
+    "pythonpath_cleared": true,
+    "sha256": "442a37f929bf7bc9c047fb607a45acabb514bb275dc9ed1b4bd135f6103e6a00",
+    "source_unavailable": true,
+    "wheel": "spec_runner-0.1.0-py3-none-any.whl"
+  },
+  "environment": {
+    "cwd": "C:\\Users\\will\\.codex\\worktrees\\merge-all-branches\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260927-c28376d3ac90\\build\\non-source cwd with spaces",
+    "cwd_outside_source": true,
+    "installed_import": "C:\\Users\\will\\.codex\\worktrees\\merge-all-branches\\skills\\spec-runner\\acceptance\\.runtime\\SRAC-20260927-c28376d3ac90\\build\\venv\\Lib\\site-packages\\spec_runner\\__init__.py",
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.5",
+    "sdk": "openai-codex==0.155.1"
+  },
+  "outcome": "passed",
+  "replay_comparison": "identical report digest and per-case outcomes",
+  "replays": [
+    {
+      "case_outcomes": [
+        {
+          "id": "normal_two_stage",
+          "passed": true
+        },
+        {
+          "id": "process_restart_after_first_artifact",
+          "passed": true
+        },
+        {
+          "id": "process_restart_after_second_artifact",
+          "passed": true
+        },
+        {
+          "id": "takeover_blocks_unhandled_frontier",
+          "passed": true
+        },
+        {
+          "id": "repeated_takeover_block_is_idempotent",
+          "passed": true
+        },
+        {
+          "id": "cleanup_only_takeover_has_no_worker",
+          "passed": true
+        },
+        {
+          "id": "delivery_dependency_cycle_rejected",
+          "passed": true
+        },
+        {
+          "id": "completed_drive_is_idempotent",
+          "passed": true
+        },
+        {
+          "id": "input_drift_rejected",
+          "passed": true
+        },
+        {
+          "id": "completed_cancel_does_not_reopen",
+          "passed": true
+        }
+      ],
+      "cases": 10,
+      "number": 1,
+      "passed": true,
+      "report_digest": "0a43c3d1105a0de346ed347501b1334eddfc4d1e94bddf9bffdae0fc799e1469",
+      "schema_version": "spec-runner-fault-run/v1",
+      "seed": "SRAC-20260927-c28376d3ac90-fault-replay"
+    },
+    {
+      "case_outcomes": [
+        {
+          "id": "normal_two_stage",
+          "passed": true
+        },
+        {
+          "id": "process_restart_after_first_artifact",
+          "passed": true
+        },
+        {
+          "id": "process_restart_after_second_artifact",
+          "passed": true
+        },
+        {
+          "id": "takeover_blocks_unhandled_frontier",
+          "passed": true
+        },
+        {
+          "id": "repeated_takeover_block_is_idempotent",
+          "passed": true
+        },
+        {
+          "id": "cleanup_only_takeover_has_no_worker",
+          "passed": true
+        },
+        {
+          "id": "delivery_dependency_cycle_rejected",
+          "passed": true
+        },
+        {
+          "id": "completed_drive_is_idempotent",
+          "passed": true
+        },
+        {
+          "id": "input_drift_rejected",
+          "passed": true
+        },
+        {
+          "id": "completed_cancel_does_not_reopen",
+          "passed": true
+        }
+      ],
+      "cases": 10,
+      "number": 2,
+      "passed": true,
+      "report_digest": "0a43c3d1105a0de346ed347501b1334eddfc4d1e94bddf9bffdae0fc799e1469",
+      "schema_version": "spec-runner-fault-run/v1",
+      "seed": "SRAC-20260927-c28376d3ac90-fault-replay"
+    }
+  ],
+  "run_marker": "SRAC-20260927-c28376d3ac90",
+  "schema_version": "spec-runner-installed-wheel-replay/v1",
+  "unverified_scenarios": [
+    "live Codex production workflow",
+    "live GitHub publication and merge queue",
+    "source-thread takeover",
+    "six-SPEC release-train L4",
+    "final connected L5"
+  ]
+}
