@@ -388,6 +388,15 @@ class RecoveryDecision:
     family: str = FaultFamily.UNKNOWN.value
     policy_version: str = RECOVERY_POLICY_VERSION
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.remaining_budget, Mapping):
+            raise ValueError("remaining_budget must be a mapping")
+        for name, value in self.remaining_budget.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("remaining_budget keys must be non-empty strings")
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"remaining_budget[{name}] must be a non-negative integer")
+
     def public(self) -> dict[str, object]:
         return {"schema_version": "spec-runner-recovery-decision/v1", "policy_version": self.policy_version,
                 "action": self.action.value, "reason": self.reason, "evidence": list(self.evidence),

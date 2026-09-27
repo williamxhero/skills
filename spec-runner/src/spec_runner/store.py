@@ -38,6 +38,31 @@ def _strict_recovery_counter(value: object, *, field: str, default: int = 0) -> 
     return value
 
 
+def _validate_recovery_decision(decision: dict[str, object]) -> None:
+    """Reject malformed durable budget projections before SQLite mutation."""
+    if "remaining_budget" not in decision:
+        return
+    budget = decision["remaining_budget"]
+    if not isinstance(budget, dict):
+        raise RunnerError(
+            "recovery_decision_invalid",
+            "remaining_budget must be an object",
+        )
+    for name, value in budget.items():
+        if not isinstance(name, str) or not name.strip():
+            raise RunnerError(
+                "recovery_decision_invalid",
+                "remaining_budget keys must be non-empty strings",
+            )
+        try:
+            _strict_recovery_counter(value, field=f"remaining_budget[{name}]")
+        except RunnerError as exc:
+            raise RunnerError(
+                "recovery_decision_invalid",
+                str(exc),
+            ) from exc
+
+
 def _raise_if_control_database_busy(exc: sqlite3.OperationalError) -> None:
     message = str(exc)
     if "locked" in message.lower() or "busy" in message.lower():
@@ -1620,6 +1645,7 @@ class Store:
 
     def record_recovery_decision(self, *, decision_id: str, episode_id: str,
                                  decision: dict[str, object]) -> dict[str, object]:
+        _validate_recovery_decision(decision)
         decision_json = _encode_strict_json(
             decision,
             code="recovery_decision_invalid",

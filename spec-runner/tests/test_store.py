@@ -510,6 +510,39 @@ class StoreLeaseTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_recovery_decision_rejects_invalid_remaining_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-decision-budget", launch_key="decision-budget", input_digest="input",
+                    config_digest="config", repository_path=temp, target_ref="HEAD",
+                    artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                    current_step="implement", log_path="logs/run.jsonl",
+                    created_at=timestamp, updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-decision-budget")
+                store.upsert_recovery_episode(
+                    episode_id="episode-decision-budget", run_id=run.run_id,
+                    operation_kind="implementation", stage="implement", generation=0,
+                )
+
+                for value in (-1, True, 1.5, float("nan"), float("inf")):
+                    with self.subTest(value=value):
+                        with self.assertRaisesRegex(RunnerError, "remaining_budget"):
+                            store.record_recovery_decision(
+                                decision_id=f"decision-invalid-{repr(value)}",
+                                episode_id="episode-decision-budget",
+                                decision={"action": "service_wait", "remaining_budget": {"capacity_retries": value}},
+                            )
+                self.assertEqual(
+                    store.recovery_for_run(run.run_id)["episodes"][0]["decisions"],
+                    [],
+                )
+            finally:
+                store.close()
+
     def test_recovery_episode_rejects_invalid_budget_counters(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             store = Store.open(Path(temp) / "control", create=True)

@@ -61,6 +61,33 @@ def _block_invalid_recovery_wait(*, store: Store, run_id: str, action: str, reas
     )
 
 
+def _decision_from_persisted(*, run_id: str, payload: object) -> RecoveryDecision:
+    """Rebuild a stored decision without leaking malformed receipt errors."""
+    if not isinstance(payload, dict):
+        raise RunnerError(
+            "recovery_decision_invalid",
+            "persisted recovery decision must be an object",
+            details={"run_id": run_id},
+        )
+    try:
+        return RecoveryDecision(
+            action=RecoveryAction(str(payload.get("action") or "")),
+            reason=str(payload.get("reason") or ""),
+            evidence=tuple(str(item) for item in payload.get("evidence", [])),
+            preconditions=tuple(str(item) for item in payload.get("preconditions", [])),
+            next_check_at=payload.get("next_check_at"),
+            remaining_budget=payload.get("remaining_budget") or {},
+            family=str(payload.get("family") or "unknown"),
+            policy_version=str(payload.get("policy_version") or "spec-runner-recovery-policy/v2"),
+        )
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise RunnerError(
+            "recovery_decision_invalid",
+            "persisted recovery decision is invalid",
+            details={"run_id": run_id},
+        ) from exc
+
+
 @dataclass(frozen=True)
 class RecoveryTransition:
     """Durable result of observing one failure at a lifecycle seam."""
@@ -540,25 +567,9 @@ class RecoveryRuntime:
         elif prior_action in {
             RecoveryAction.WAIT_FOR_CONFIG.value, RecoveryAction.BLOCKED.value,
         }:
-            decision = RecoveryDecision(
-                action=RecoveryAction(str(prior_action)), reason=str(prior.get("reason") or ""),
-                evidence=tuple(str(item) for item in prior.get("evidence", [])),
-                preconditions=tuple(str(item) for item in prior.get("preconditions", [])),
-                next_check_at=prior.get("next_check_at"),
-                remaining_budget=dict(prior.get("remaining_budget") or {}),
-                family=str(prior.get("family") or "unknown"),
-                policy_version=str(prior.get("policy_version") or "spec-runner-recovery-policy/v2"),
-            )
+            decision = _decision_from_persisted(run_id=self.run.run_id, payload=prior)
         elif prior_action in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
-            decision = RecoveryDecision(
-                action=RecoveryAction(str(prior_action)), reason=str(prior.get("reason") or ""),
-                evidence=tuple(str(item) for item in prior.get("evidence", [])),
-                preconditions=tuple(str(item) for item in prior.get("preconditions", [])),
-                next_check_at=prior.get("next_check_at"),
-                remaining_budget=dict(prior.get("remaining_budget") or {}),
-                family=str(prior.get("family") or "unknown"),
-                policy_version=str(prior.get("policy_version") or "spec-runner-recovery-policy/v2"),
-            )
+            decision = _decision_from_persisted(run_id=self.run.run_id, payload=prior)
         else:
             return None
         if latest.get("execution_outcome") == "unknown":

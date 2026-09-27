@@ -8,6 +8,7 @@ import pytest
 from spec_runner.recovery import (
     FaultFamily,
     FaultObservation,
+    RecoveryDecision,
     RecoveryAction,
     RecoveryPolicy,
     RecoverySnapshot,
@@ -16,6 +17,27 @@ from spec_runner.recovery import (
     observation_from_error,
     recovery_diagnostic,
 )
+
+
+@pytest.mark.parametrize("value", [-1, True, 1.5, float("nan"), float("inf")])
+def test_recovery_decision_rejects_invalid_remaining_budget(value):
+    with pytest.raises(ValueError, match="remaining_budget"):
+        RecoveryDecision(
+            action=RecoveryAction.BLOCKED,
+            reason="invalid",
+            evidence=(),
+            remaining_budget={"capacity_retries": value},
+        )
+
+
+def test_recovery_decision_keeps_legacy_empty_budget_compatible():
+    decision = RecoveryDecision(
+        action=RecoveryAction.BLOCKED,
+        reason="legacy",
+        evidence=(),
+    )
+
+    assert decision.public()["remaining_budget"] == {}
 
 
 @pytest.mark.parametrize(
