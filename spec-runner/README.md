@@ -109,6 +109,9 @@ inputs, skips the corresponding planning workers, then uses the normal ticket
 publication, implementation, review, and delivery gates. SPECs without a
 supplied TicketPlan still use the `to-tickets` worker. Adopted plans remain in
 the run's durable artifacts for recovery after the source files are removed.
+Existing local tracker records with the same revision, title, body, kind, and
+relations are adopted across runs even when their run-marker comments differ.
+Conflicting records are rejected without modification.
 
 For an authenticated SDK run, `pause` and `cancel` are applied to the active
 `TurnHandle` through the SDK's `interrupt()` operation. A paused run persists

@@ -154,6 +154,33 @@ def test_public_start_adopts_prepared_plan_and_tickets_without_planning_sdk(monk
         assert len(observed) == 1
 
 
+def test_prepared_ticket_adopts_matching_existing_local_issues_across_runs(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("prepared inputs must skip planning SDK"))
+
+        def stop_after_tickets(*, run, store, **kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return {"state": "needs_input", **store.public_status(run.run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        first = Runner().start(request)
+        second = Runner().start(replace(request, launch_key="prepared-2"))
+        assert first["run"]["run_id"] != second["run"]["run_id"]
+        receipts = json.loads((request.control_root / "tracker" /
+                               ".spec-runner-tracker-receipts.json").read_text(encoding="utf-8"))
+        second_receipt = receipts[f"tickets:{second['run']['run_id']}:S1"]
+        assert {item["key"] for item in second_receipt["records"] if item["adopted"]} == {"S1", "S1.1"}
+
+        existing_ticket = request.control_root / "tracker" / "S1.1.md"
+        existing_ticket.write_text(existing_ticket.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+        with pytest.raises(RunnerError) as error:
+            Runner().start(replace(request, launch_key="prepared-3"))
+        assert error.value.code == "tracker_revision_conflict"
+
+
 def test_public_start_rejects_prepared_ticket_for_another_plan(monkeypatch):
     runtime = Path(__file__).parent / ".runtime"
     runtime.mkdir(exist_ok=True)

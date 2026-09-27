@@ -223,7 +223,10 @@ def _atomic_write(path: Path, content: bytes) -> None:
         raise
 
 
-def publish_local(snapshot: PlanSnapshot, target_root: Path, *, operation_id: str) -> dict[str, object]:
+def publish_local(
+    snapshot: PlanSnapshot, target_root: Path, *, operation_id: str,
+    adopt_matching_revision: bool = False,
+) -> dict[str, object]:
     target_root = target_root.expanduser()
     if target_root.exists() and target_root.is_symlink():
         raise RunnerError("tracker_path_escape", "publish target cannot be a symbolic link")
@@ -248,7 +251,16 @@ def publish_local(snapshot: PlanSnapshot, target_root: Path, *, operation_id: st
         destination = target_root / filename
         if destination.exists():
             existing = _record(target_root, destination)
-            if existing.key != record.key or existing.digest != record.digest:
+            matching_revision = adopt_matching_revision and all((
+                existing.key == record.key,
+                existing.kind == record.kind,
+                existing.title == record.title,
+                existing.body == record.body,
+                existing.parent == record.parent,
+                existing.blocked_by == record.blocked_by,
+                existing.revision == record.revision,
+            ))
+            if existing.digest != record.digest and not matching_revision:
                 raise RunnerError("tracker_revision_conflict", f"existing file conflicts with {record.key}")
             published.append({"key": record.key, "path": destination.name, "digest": existing.digest, "adopted": True})
             continue

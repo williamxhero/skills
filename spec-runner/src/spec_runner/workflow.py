@@ -982,7 +982,8 @@ def _adopt_prepared_ticket_plan(
     _write_json_atomic(path, validated)
     source = _ticket_plan_source(artifact_directory=artifact_directory,
                                  plan=validated, run_id=run.run_id)
-    local = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
+    local = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id,
+                          adopt_matching_revision=True)
     receipts: dict[str, object] = {"local": local}
     external_receipt: tuple[str, dict[str, object]] | None = None
     if config.github_repository is not None:

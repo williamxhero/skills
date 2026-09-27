@@ -73,6 +73,26 @@ class TrackerTests(unittest.TestCase):
             with self.assertRaises(RunnerError):
                 publish_local(snapshot, target, operation_id="op-2")
 
+    def test_comment_difference_requires_explicit_matching_revision_adoption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "drafts"
+            target = Path(temporary) / "target"
+            root.mkdir()
+            (root / "a.md").write_text(issue("A", "A"), encoding="utf-8")
+            snapshot = read_local(root)
+            target.mkdir()
+            (target / "A.md").write_text(
+                issue("A", "A").replace("comments: []", 'comments: ["prior-run"]'),
+                encoding="utf-8",
+            )
+            with self.assertRaises(RunnerError) as error:
+                publish_local(snapshot, target, operation_id="op-strict")
+            self.assertEqual(error.exception.code, "tracker_revision_conflict")
+            adopted = publish_local(snapshot, target, operation_id="op-prepared",
+                                    adopt_matching_revision=True)
+            self.assertTrue(adopted["receipt"]["records"][0]["adopted"])
+            self.assertEqual(read_local(target).records[0].comments, ("prior-run",))
+
 
 if __name__ == "__main__":
     unittest.main()
