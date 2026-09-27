@@ -129,6 +129,23 @@ class StoreLeaseTests(unittest.TestCase):
                 lock.close()
                 store.close()
 
+    def test_control_db_busy_read_is_reported_as_recoverable_runner_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "control"
+            store = Store.open(root, create=True)
+            store.connection.execute("PRAGMA busy_timeout = 10")
+            lock = sqlite3.connect(root / "spec-runner.sqlite3", timeout=0.01, isolation_level=None)
+            try:
+                lock.execute("BEGIN EXCLUSIVE")
+                with self.assertRaises(RunnerError) as raised:
+                    store.control_for_run("missing-run")
+                self.assertEqual(raised.exception.code, "control_database_busy")
+                self.assertEqual(raised.exception.details["database_error"], "database is locked")
+            finally:
+                lock.execute("ROLLBACK")
+                lock.close()
+                store.close()
+
     def test_live_writer_cannot_be_displaced(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             first = Store.open(Path(temp) / "control", create=True)

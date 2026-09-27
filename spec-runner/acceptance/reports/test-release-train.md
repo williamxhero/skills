@@ -1525,3 +1525,23 @@ and `git diff --check` passed.
 This is deterministic fail-closed evidence. Live SDK provider recovery,
 Windows detached multi-process ownership, complete cancellation and project
 L3-L5 remain `not_verified`; #264, #263 and the remaining SPECs stay OPEN.
+
+## SF-05.2 / SF-05.3 control database read fail-closed increment (2026-09-27)
+
+The Store control-plane read now converts a SQLite `database is locked` result
+from `run_controls` into the existing structured `control_database_busy`
+Runner error. This covers production queue control-boundary reads as well as
+the active SDK control watcher, so an exclusive control-database lock cannot
+escape as a raw SQLite exception or be mistaken for an absent control request.
+
+A real temporary SQLite database with an independent `BEGIN EXCLUSIVE` holder
+proves the read path returns the structured code and bounded diagnostic. The
+focused Store, GitHub production-boundary and Windows control-db selections
+passed `35 passed`; the complete source plus acceptance selection passed
+`450 passed, 1 skipped` in 140.13 seconds. `compileall` and
+`git diff --check` passed. No schema or CLI projection changed.
+
+This is local/deterministic lock evidence. Native Windows combined lock replay,
+live GitHub side-effect reconciliation, full SF-05.2/SF-05.3 production
+acceptance and project-level L3-L5 remain `not_verified`; #265 and #266 stay
+OPEN.

@@ -498,7 +498,11 @@ class Store:
         return {"run_id": run_id, "requested_state": requested_state, "generation": generation, "updated_at": timestamp}
 
     def control_for_run(self, run_id: str) -> dict[str, object] | None:
-        row = self.connection.execute("SELECT * FROM run_controls WHERE run_id = ?", (run_id,)).fetchone()
+        try:
+            row = self.connection.execute("SELECT * FROM run_controls WHERE run_id = ?", (run_id,)).fetchone()
+        except sqlite3.OperationalError as exc:
+            _raise_if_control_database_busy(exc)
+            raise
         return dict(row) if row else None
 
     def submit_answer(
