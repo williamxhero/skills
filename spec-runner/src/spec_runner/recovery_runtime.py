@@ -367,36 +367,52 @@ class RecoveryEpisode:
             if control and control.get("requested_state") in {"pause_requested", "cancel_requested"}:
                 return True
             store.set_run_state(run.run_id, action)
+        if action not in {
+            RecoveryAction.WAIT_RETRY.value,
+            RecoveryAction.SERVICE_WAIT.value,
+        }:
+            return True
         deadline = episode.get("wait_deadline") if action == RecoveryAction.SERVICE_WAIT.value else episode.get("retry_deadline")
-        if deadline:
-            try:
-                parsed_deadline = _parse_recovery_deadline(
-                    deadline, run_id=run.run_id, action=action,
-                )
-            except RunnerError:
-                self.store.fail_run(
-                    run.run_id,
-                    f"recovery-wait:{run.run_id}:{action}",
-                    state="blocked",
-                )
-                self.store.append_event(
-                    run_id=run.run_id,
-                    event_key=f"recovery:{run.run_id}:wait-invalid:{action}",
-                    event_type="recovery_wait_invalid",
-                    payload={"action": action, "reason": "invalid_persisted_deadline"},
-                )
-                return False
-            if parsed_deadline > datetime.now(timezone.utc):
-                return True
-            store.fail_run(run.run_id, f"start:{run.run_id}", state="failed")
-            store.append_event(
+        if deadline is None or (isinstance(deadline, str) and not deadline.strip()):
+            self.store.fail_run(
+                run.run_id,
+                f"recovery-wait:{run.run_id}:{action}",
+                state="blocked",
+            )
+            self.store.append_event(
                 run_id=run.run_id,
-                event_key=f"recovery:{run.run_id}:wait-expired:{action}",
-                event_type="recovery_wait_expired",
-                payload={"action": action, "deadline": deadline},
+                event_key=f"recovery:{run.run_id}:wait-invalid:{action}",
+                event_type="recovery_wait_invalid",
+                payload={"action": action, "reason": "missing_persisted_deadline"},
             )
             return False
-        return True
+        try:
+            parsed_deadline = _parse_recovery_deadline(
+                deadline, run_id=run.run_id, action=action,
+            )
+        except RunnerError:
+            self.store.fail_run(
+                run.run_id,
+                f"recovery-wait:{run.run_id}:{action}",
+                state="blocked",
+            )
+            self.store.append_event(
+                run_id=run.run_id,
+                event_key=f"recovery:{run.run_id}:wait-invalid:{action}",
+                event_type="recovery_wait_invalid",
+                payload={"action": action, "reason": "invalid_persisted_deadline"},
+            )
+            return False
+        if parsed_deadline > datetime.now(timezone.utc):
+            return True
+        store.fail_run(run.run_id, f"start:{run.run_id}", state="failed")
+        store.append_event(
+            run_id=run.run_id,
+            event_key=f"recovery:{run.run_id}:wait-expired:{action}",
+            event_type="recovery_wait_expired",
+            payload={"action": action, "deadline": deadline},
+        )
+        return False
 
     def wait_record(self) -> tuple[str, str] | None:
         store = self.store

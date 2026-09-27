@@ -1754,14 +1754,15 @@ source-thread migration and project-level L3-L5 remain `not_verified`.
 ## RCV-01.4 persisted recovery deadline fail-closed (2026-09-28)
 
 Recovery wait admission and the public wait-record lookup now share one
-deadline parser. A malformed persisted `retry_deadline` or `wait_deadline`
-raises the stable `recovery_deadline_invalid` error at the coordinator seam;
-the lifecycle wait check also moves the run to durable `blocked` and records
-`recovery_wait_invalid` instead of treating the malformed value as an
-indefinite wait. The SQLite schema and public status shape are unchanged.
+deadline parser. A missing or malformed persisted `retry_deadline` or
+`wait_deadline` raises the stable `recovery_deadline_invalid` or
+`recovery_deadline_missing` error at the appropriate seam; the lifecycle wait
+check also moves the run to durable `blocked` and records
+`recovery_wait_invalid` instead of treating the value as an indefinite wait.
+The SQLite schema and public status shape are unchanged.
 
-The focused recovery runtime acceptance selection passed `21 passed`; the
-complete source plus acceptance selection passed `480 passed, 1 skipped`;
+The focused recovery runtime acceptance selection passed `22 passed`; the
+complete source plus acceptance selection passed `481 passed, 1 skipped`;
 `compileall` and `git diff --check` passed; GitHub Actions
 `36343821243` passed its Ubuntu and Windows contract jobs. This is
 deterministic corruption handling evidence only; live SDK recovery, source
