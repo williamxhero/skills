@@ -91,6 +91,20 @@ def test_structured_numeric_observation_fields_are_strict_json_safe():
     json.dumps(observation.public(), allow_nan=False)
 
 
+def test_fault_observation_constructor_normalizes_numeric_fields():
+    observation = FaultObservation(
+        operation_kind="implementation",
+        http_status=float("nan"),
+        retry_after_seconds=float("inf"),
+        sdk_retry_count=-1,
+    )
+
+    assert observation.http_status is None
+    assert observation.retry_after_seconds is None
+    assert observation.sdk_retry_count is None
+    json.dumps(observation.public(), allow_nan=False)
+
+
 @pytest.mark.parametrize(
     ("message", "secret"),
     [

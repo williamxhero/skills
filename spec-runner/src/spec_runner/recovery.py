@@ -182,6 +182,9 @@ class FaultObservation:
     evidence: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "http_status", _optional_nonnegative_int(self.http_status))
+        object.__setattr__(self, "sdk_retry_count", _optional_nonnegative_int(self.sdk_retry_count))
+        object.__setattr__(self, "retry_after_seconds", _optional_retry_after(self.retry_after_seconds))
         if not self.fingerprint:
             object.__setattr__(self, "fingerprint", fault_fingerprint(self))
 

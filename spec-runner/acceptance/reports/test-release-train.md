@@ -1832,13 +1832,14 @@ L3-L5 remain `not_verified`.
 ## RCV-01.1 recovery observation finite numeric values (2026-09-28)
 
 The structured recovery observation boundary now admits only finite,
-non-negative retry hints and counters. Invalid Retry-After, SDK retry-count,
-or HTTP status values are treated as missing instead of being persisted as
-non-standard JSON numbers or negative counters. The policy continues to use
-its bounded local delay when a retry hint is missing or invalid.
+non-negative retry hints and counters. Both the error factory and direct
+FaultObservation construction treat invalid Retry-After, SDK retry-count, or
+HTTP status values as missing instead of persisting non-standard JSON numbers
+or negative counters. The policy continues to use its bounded local delay when
+a retry hint is missing or invalid.
 
-The focused recovery policy and SDK observation selection passed `53 passed`.
-The complete source plus acceptance selection passed `490 passed, 1 skipped`;
+The focused recovery policy and SDK observation selection passed `74 passed`.
+The complete source plus acceptance selection passed `491 passed, 1 skipped`;
 `compileall` and `git diff --check` passed.
 
 This is deterministic observation input and strict JSON evidence only. It does
