@@ -1082,3 +1082,24 @@ The focused recovery selection passed `11 passed`; the complete source and
 acceptance selection passed `357 passed, 1 skipped`. `compileall` and
 `git diff --check` passed. This corrects deterministic recovery accounting and
 does not promote the blocked live SDK run or any project-level live gate.
+
+## Runner architecture deepening and same-run ticket recovery (2026-09-27)
+
+The compatibility façade and typed Runner seam were deepened in three small
+commits: `4015a00` isolates the legacy workflow calls behind one injected
+adapter, `7aee657` centralizes durable failure state transitions in
+`RecoveryRuntime`, and `7c64c3c` routes stage execution through the same port.
+The public workflow entrypoints, CLI JSON, SQLite schema, and receipt formats
+remain unchanged. The targeted seam and recovery selections passed, and the
+complete source plus acceptance selection passed `365 passed, 1 skipped`.
+`compileall` and `git diff --check` passed.
+
+The existing live run
+`c6da8825-7a9c-4811-8b04-59fbffc8d316` was driven again with its original
+launch key after the refactor. Runner reused ticket-planning thread
+`01a0e07c-526a-7e41-b4aa-83e252d00972`, recorded the new turn
+`01a0e0af-c889-79f0-bca8-5bc39d70b57d`, and received another HTTP 429 with
+accepted request admission and unknown execution outcome. No second run,
+thread, ticket, PR, branch, or merge was created. The durable run remains
+`blocked` at `codex_ticket_planning` and the live production, GitHub,
+takeover, Windows, L4, and L5 gates remain `not_verified`.
