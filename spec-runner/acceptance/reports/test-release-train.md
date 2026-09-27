@@ -1228,3 +1228,35 @@ implementation turn. The reviewer did not finish before a public pause
 request; its interrupted result was recorded as rejected and the run is
 `blocked`. Review pause reconciliation, review approval, delivery, and all
 project-level completion gates remain open.
+
+## Paused reviewer recovery on the original thread (2026-09-27)
+
+Commit `74ddaf8` lets a controlled interrupted review persist `paused` or
+`cancelled` before review validation. A blocked run with a paused reviewer and
+an `external_result_unreconciled` episode may enter read-only reconciliation
+again. The coordinator requires the original idle thread, the exact
+interrupted turn, and the matching candidate receipt before continuing on the
+same thread. An outstanding pause/cancel request is applied before a new turn.
+Public `Runner.start` regressions cover the blocked episode and all three
+control states. Full source and acceptance tests passed `410 passed, 1
+skipped`; source/test `compileall` and `git diff --check` passed. CI run
+`36303976651` passed Ubuntu and Windows contract jobs, including installed
+wheel CLI checks.
+
+The live run `56335d20-5e36-4be8-bc15-875eedb42743` kept four workers and
+the original reviewer thread `01a0e1ab-2d05-7e50-87c2-b153e057209b`.
+Public `resume` started turn `01a0e1ca-70f5-7973-8c0a-8f114a067e4f` on
+that thread; the reviewer was still running at the time of this report. No
+review approval, PR, merge, or next SPEC is claimed. The run's earlier
+capacity budget was not reset.
+
+An initial attempt was blocked by two tracked `.pyc` files changed by this
+operator's broad `compileall acceptance` command, which traversed the live
+candidate worktree under `.runtime`. Both modified byte streams were copied
+and hash-checked in the run's `quarantine-compileall-pyc` artifact directory
+before restoring those two tracked cache paths. The candidate worktree was
+clean before the successful resume. Later compile checks exclude the runtime
+tree. This was local test contamination, not a confirmed SDK write.
+
+SF-05.1, RCV-01.3, the three-SPEC delivery, source takeover, and project-level
+L3-L5 gates remain open where their separate live evidence is missing.
