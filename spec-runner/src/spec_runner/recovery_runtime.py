@@ -52,7 +52,8 @@ class RecoveryEpisode:
         identity = f"{run_id}:{operation_kind}:{stage}:{generation}"
         return "episode-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
-    def record_failure(self, *, operation_id: str, error: RunnerError) -> RecoveryDecision:
+    def record_failure(self, *, operation_id: str, error: RunnerError,
+                       reconciliation_id: str | None = None) -> RecoveryDecision:
         """Persist one observed fault and its deterministic state transition."""
         run = self.run
         store = self.store
@@ -229,6 +230,8 @@ class RecoveryEpisode:
                      "observation": observation.public()},
         )
         decision_id = f"{episode_id}:decision:{decision.action.value}:{observation.fingerprint}:{counters['same_thread_attempts']}:{counters['capacity_attempts']}"
+        if reconciliation_id is not None:
+            decision_id += ":reconciled:" + hashlib.sha256(reconciliation_id.encode("utf-8")).hexdigest()
         store.record_recovery_decision(
             decision_id=decision_id, episode_id=episode_id, decision=decision.public(),
         )
@@ -412,22 +415,41 @@ class RecoveryRuntime:
         observations = episode["observations"]
         if not observations:
             return None
-        latest = observations[-1]["observation"]
-        if latest.get("thread_id") != thread_id or latest.get("turn_id") != turn_id:
-            return None
         decisions = episode["decisions"]
         prior = decisions[-1]["decision"] if decisions else {}
         prior_action = prior.get("action")
+        if prior_action == RecoveryAction.BLOCKED.value and prior.get("reason") == "external_result_unreconciled":
+            workers = self.store.workers_for_run(self.run.run_id)
+            owner = workers[-1] if workers else {}
+            if owner.get("external_thread_id") != thread_id or owner.get("external_turn_id") != turn_id:
+                return None
+            # The failed readback observation has no turn identity.  Only the
+            # previous observation for the exact persisted turn may be settled.
+            matched = next((item["observation"] for item in reversed(observations)
+                            if item["observation"].get("thread_id") == thread_id
+                            and item["observation"].get("turn_id") == turn_id), None)
+            if matched is None:
+                return None
+            latest = matched
+        else:
+            latest = observations[-1]["observation"]
+            if latest.get("thread_id") != thread_id or latest.get("turn_id") != turn_id:
+                return None
         if latest.get("execution_outcome") not in {"unknown", "failed"}:
             return None
         fault = dict(latest)
         fault["execution_outcome"] = "failed"
         fault["request_admission"] = "accepted"
-        if prior_action == RecoveryAction.OBSERVE.value:
+        if prior_action == RecoveryAction.OBSERVE.value or (
+            prior_action == RecoveryAction.BLOCKED.value
+            and prior.get("reason") == "external_result_unreconciled"
+        ):
             decision = RecoveryEpisode(run=self.run, store=self.store).record_failure(
                 operation_id=operation_id,
                 error=RunnerError("sdk_turn_failed", str(fault.get("message") or "SDK turn failed"),
                                   details={"fault_observation": fault}),
+                reconciliation_id=(f"{thread_id}:{turn_id}:failed"
+                                   if prior_action == RecoveryAction.BLOCKED.value else None),
             )
         elif prior_action in {
             RecoveryAction.WAIT_FOR_CONFIG.value, RecoveryAction.BLOCKED.value,

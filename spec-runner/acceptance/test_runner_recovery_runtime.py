@@ -222,6 +222,77 @@ def test_unreconciled_external_result_is_durable_block_and_never_retries(tmp_pat
         store.close()
 
 
+def test_exact_terminal_readback_reopens_blocked_capacity_episode_without_new_budget(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    operation = "planning:" + run.run_id
+    worker_id = "codex_sdk:" + run.run_id + ":codex_planning"
+    store.begin_stage(
+        run.run_id, step_name="codex_planning", operation_id=operation,
+        backend_kind="codex_sdk", worker_id=worker_id,
+    )
+    store.record_codex_turn_started(
+        run.run_id, operation, thread_id="thread-capacity", turn_id="turn-capacity-2",
+        step_name="codex_planning", worker_id=worker_id,
+    )
+    try:
+        for index in range(3):
+            RecoveryEpisode(run=run, store=store).record_failure(
+                operation_id="start:" + run.run_id,
+                error=RunnerError("sdk_rate_limited", "capacity temporarily unavailable", details={
+                    "fault_observation": {
+                        "message": "capacity temporarily unavailable",
+                        "source": "sdk_result", "structured": True,
+                        "request_admission": "accepted", "execution_outcome": "unknown",
+                        "thread_id": "thread-capacity", "turn_id": f"turn-capacity-{index}",
+                    },
+                }),
+            )
+        blocked = RecoveryRuntime(run=run, store=store).transition_failure(
+            operation_id="start:" + run.run_id,
+            error=RunnerError("recovery_blocked", "SDK thread was unreadable",
+                              details={"inspection_error": "sdk_thread_read_failed"}),
+        )
+        assert blocked.decision.reason == "external_result_unreconciled"
+        before = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert before["capacity_attempts"] == 3
+        assert RecoveryRuntime(run=run, store=store).reconcile_failed_turn(
+            operation_id="start:" + run.run_id,
+            thread_id="different-thread", turn_id="turn-capacity-2",
+        ) is None
+        assert RecoveryRuntime(run=run, store=store).reconcile_failed_turn(
+            operation_id="start:" + run.run_id,
+            thread_id="thread-capacity", turn_id="turn-capacity-1",
+        ) is None
+        assert store.recovery_for_run(run.run_id)["episodes"][0]["decisions"][-1]["decision"]["action"] == "blocked"
+
+        current = store.find_by_run_id(run.run_id)
+        assert current is not None
+        transition = RecoveryRuntime(run=current, store=store).reconcile_failed_turn(
+            operation_id="start:" + run.run_id,
+            thread_id="thread-capacity", turn_id="turn-capacity-2",
+        )
+        assert transition is not None and transition.state == "service_wait"
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["capacity_attempts"] == 3
+        assert episode["decisions"][-1]["decision"]["action"] == "service_wait"
+        deadline = episode["wait_deadline"]
+        assert deadline
+
+        replay = RecoveryRuntime(run=store.find_by_run_id(run.run_id), store=store).reconcile_failed_turn(
+            operation_id="start:" + run.run_id,
+            thread_id="thread-capacity", turn_id="turn-capacity-2",
+        )
+        assert replay is not None and replay.state == "service_wait"
+        replayed = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert replayed["capacity_attempts"] == 3
+        assert replayed["wait_deadline"] == deadline
+        assert len(replayed["decisions"]) == len(episode["decisions"])
+    finally:
+        store.close()
+
+
 def test_runner_observes_accepted_unknown_result_before_retry(tmp_path: Path) -> None:
     root = tmp_path / "control"
     store = Store.open(root, create=True)
