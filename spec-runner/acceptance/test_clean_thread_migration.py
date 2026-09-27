@@ -116,6 +116,29 @@ def test_store_rejects_accepted_handover_without_stop_readback(tmp_path: Path) -
         store.close()
 
 
+def test_store_rejects_handover_that_contains_hidden_history(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        handover = _handover()
+        handover["readback"] = {**handover["readback"], "response_chain": {"encrypted_content": "opaque"}}
+        key = "acceptance:hidden-handover"
+        store.prepare_thread_migration(
+            migration_key=key, run_id=run.run_id, stage="codex_example",
+            source_thread_id="source-thread",
+            handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(),
+            input_revision="brief-v1",
+        )
+        with pytest.raises(RunnerError, match="complete source stop"):
+            store.record_migration_handover(migration_key=key, handover=handover)
+        persisted = store.thread_migration(key)
+        assert persisted is not None
+        assert persisted["state"] == "intent"
+    finally:
+        store.close()
+
+
 def test_successor_creation_intent_replay_fails_closed_before_provider_call(tmp_path: Path) -> None:
     store = Store.open(tmp_path / "control", create=True)
     try:

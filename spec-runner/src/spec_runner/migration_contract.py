@@ -2,9 +2,37 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+
+
+_FORBIDDEN_KEYS = {
+    "encrypted_content",
+    "reasoning",
+    "opaque_compaction",
+    "response_chain",
+    "credentials",
+    "secrets",
+}
+
+
+def _safe_handover_value(value: object) -> bool:
+    """Reject hidden history and values that cannot survive strict JSON."""
+    if isinstance(value, Mapping):
+        return (
+            all(str(key).lower() not in _FORBIDDEN_KEYS for key in value)
+            and all(_safe_handover_value(item) for item in value.values())
+        )
+    if isinstance(value, list):
+        return all(_safe_handover_value(item) for item in value)
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return isinstance(value, (str, int, bool)) or value is None
+
+
 def valid_handover_evidence(thread_id: str, evidence: object) -> bool:
     """Require proof that the source stopped before ownership can move."""
-    if not isinstance(evidence, dict):
+    if not isinstance(evidence, dict) or not _safe_handover_value(evidence):
         return False
     limits = evidence.get("evidence_limits")
     readback = evidence.get("readback")

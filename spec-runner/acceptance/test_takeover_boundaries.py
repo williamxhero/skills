@@ -96,6 +96,41 @@ def test_durable_handover_readback_releases_a_complete_source_thread(tmp_path: P
     assert report["adopted_threads"][0]["state"] == "released"
 
 
+def test_takeover_does_not_adopt_handover_with_hidden_history(tmp_path: Path) -> None:
+    repository = _repo(tmp_path)
+    evidence = {
+        "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+        "thread_id": "source-thread",
+        "accepted": True,
+        "source_writer_state": "stopped",
+        "dispatcher_state": "quiesced",
+        "readback": {
+            "source_thread_id": "source-thread",
+            "observed_status": "completed",
+            "response_chain": {"encrypted_content": "opaque"},
+        },
+        "evidence_limits": {
+            "source_stop_confirmed": True,
+            "dispatcher_quiesced": True,
+            "ownership_transferred": True,
+        },
+    }
+    report = inspect_takeover({
+        "schema_version": "spec-runner-takeover-input/v1",
+        "repository_path": str(repository),
+        "source_threads": [{
+            "id": "source-thread", "ownership": "confirmed", "active": True,
+            "observation": _observation(), "handover_evidence": evidence,
+        }],
+        "artifacts": [],
+        "facts": {"requirements": ["finish the fixture"]},
+    })
+
+    assert report["next_state"] == "blocked"
+    assert report["adopted_threads"] == []
+    assert report["unresolved"] == [{"thread_id": "source-thread", "reason": "source_stop_unproven", "policy": "require_stop_confirmation"}]
+
+
 def test_authoritative_cleanup_archives_adopted_source_threads(tmp_path: Path) -> None:
     repository = _repo(tmp_path)
     head = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
