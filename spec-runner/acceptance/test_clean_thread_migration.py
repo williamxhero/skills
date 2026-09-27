@@ -214,9 +214,13 @@ def test_public_restart_keeps_ordinary_production_cleanup_on_its_own_route(tmp_p
         "spec_runner.workflow._retry_migration_source_archive",
         lambda **kwargs: archive_calls.append(kwargs) or pytest.fail("ordinary cleanup must not retry source archive"),
     )
+    class ProductionRuntime:
+        def retry_cleanup(self):
+            return {"state": "cleanup_pending", "cleanup": {"outcome": "pending"}}
+
     monkeypatch.setattr(
-        "spec_runner.workflow._retry_production_cleanup",
-        lambda **kwargs: {"state": "cleanup_pending", "cleanup": {"outcome": "pending"}},
+        "spec_runner.workflow._production_runtime",
+        lambda **kwargs: ProductionRuntime(),
     )
     result = workflow.start(
         brief_file=brief_file, config_file=config_file, control_root=control,

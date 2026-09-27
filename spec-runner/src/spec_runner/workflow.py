@@ -3751,6 +3751,7 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
             close_ticket_plan=_close_published_ticket_plan,
             execute_github_delivery=_execute_github_delivery,
             recover_github_candidate=_recover_failed_github_candidate,
+            resume_reviewed_delivery=_resume_reviewed_delivery,
             definitive_failed_checks=_definitive_failed_github_checks,
         ),
     )

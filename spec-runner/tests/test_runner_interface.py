@@ -71,6 +71,46 @@ def test_production_workflow_owns_initial_planning_transition() -> None:
     assert observed["run"] is run
 
 
+def test_production_workflow_owns_reviewed_delivery_transition() -> None:
+    observed: dict[str, object] = {}
+
+    class Store:
+        pass
+
+    run = SimpleNamespace(run_id="run-1")
+
+    def resume_reviewed_delivery(**kwargs):
+        observed.update(kwargs)
+        return {"state": "spec_completed", "spec_key": "S1"}
+
+    ports = ProductionPorts(
+        artifact_directory=lambda *_args: Path("artifacts"),
+        load_json=lambda _path: {},
+        execute_planning=lambda **_kwargs: run,
+        write_json_atomic=lambda *_args: None,
+        execute_tickets=lambda **_kwargs: run,
+        execute_implementation=lambda **_kwargs: {},
+        cleanup_workspace=lambda **_kwargs: {},
+        close_ticket_plan=lambda **_kwargs: {},
+        resume_reviewed_delivery=resume_reviewed_delivery,
+    )
+    workflow = ProductionWorkflow(
+        context=RunContext(
+            control_root=Path(".control"),
+            config=SimpleNamespace(),
+            brief="Requirement",
+            brief_digest="brief-digest",
+            run=run,
+            store=Store(),
+        ),
+        ports=ports,
+    )
+
+    assert workflow.resume_reviewed_delivery() == {"state": "spec_completed", "spec_key": "S1"}
+    assert observed["brief_digest"] == "brief-digest"
+    assert observed["run"] is run
+
+
 def test_runner_start_is_a_typed_compatibility_seam(monkeypatch) -> None:
     observed: dict[str, object] = {}
 
@@ -303,16 +343,19 @@ def test_stage_executor_continues_the_production_queue_after_reviewed_delivery(t
             assert run_id == "run-1"
             return SimpleNamespace(run_id=run_id, state="spec_completed")
 
-    def resume_reviewed_delivery(**kwargs):
-        observed["reviewed"] = kwargs
-        return {"state": "spec_completed", "spec_key": "S1"}
-
     class ProductionRuntime:
-        def continue_after_spec(self, payload):
-            observed["queue"] = payload
-            return {"state": "completed"}
+            def resume_reviewed_delivery(self):
+                observed["reviewed"] = {
+                    "brief_digest": "digest",
+                    "run": run,
+                    "store": Store(),
+                }
+                return {"state": "spec_completed", "spec_key": "S1"}
 
-    monkeypatch.setattr("spec_runner.workflow._resume_reviewed_delivery", resume_reviewed_delivery)
+            def continue_after_spec(self, payload):
+                observed["queue"] = payload
+                return {"state": "completed"}
+
     monkeypatch.setattr("spec_runner.workflow._safe_artifact_directory", lambda *args, **kwargs: tmp_path)
     monkeypatch.setattr("spec_runner.workflow._production_runtime", lambda **kwargs: ProductionRuntime())
 

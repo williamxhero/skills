@@ -417,14 +417,13 @@ class RunRuntime:
                 if config.workflow_mode == "production":
                     return {
                         "created": True,
-                        **port.run_production_queue(
+                        **port.production_runtime(
                             control_root=control_root,
                             config=config,
                             brief_digest=brief_digest,
                             run=finished,
                             store=store,
-                            spec_plan=port.load_json(plan_path),
-                        ),
+                        ).run_queue(port.load_json(plan_path)),
                     }
                 ticketed = port.execute_codex_tickets(
                     control_root=control_root,

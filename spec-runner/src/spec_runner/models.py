@@ -27,6 +27,18 @@ class RunContext:
     store: Store
     migration: dict[str, Any] | None = None
 
+    def with_run(self, run: RunRecord) -> "RunContext":
+        """Return this context with a freshly reloaded durable run."""
+        return RunContext(
+            control_root=self.control_root,
+            config=self.config,
+            brief=self.brief,
+            brief_digest=self.brief_digest,
+            run=run,
+            store=self.store,
+            migration=self.migration,
+        )
+
     def public_status(self) -> dict[str, object]:
         """Return the legacy status projection at the orchestration seam."""
         return self.store.public_status(self.run.run_id)

@@ -13,6 +13,7 @@ from typing import Protocol
 
 from .errors import RunnerError
 from .models import RunContext, StageResult
+from .production_runtime import ProductionWorkflow
 from .stage_progression import StageRoute
 from .workflow_port import LegacyWorkflowPort
 
@@ -52,32 +53,23 @@ class WorkflowStageExecutor:
         if route.kind in {"planned", "production_queue"} and (
             route.kind == "planned" or run.state in {"tickets_ready", "spec_completed"}
         ):
-            plan_path = port.safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
+            production = self._production_workflow(context)
+            plan_path = production.artifact_directory() / "spec-plan.json"
             if route.kind == "planned" and not plan_path.is_file():
                 raise RunnerError("spec_plan_missing", "planned run has no persisted SpecPlan")
-            payload = port.run_production_queue(
-                control_root=control_root, config=config, brief_digest=brief_digest,
-                run=run, store=store, spec_plan=port.load_json(plan_path),
-            )
+            payload = production.run_queue(port.load_json(plan_path))
             return StageResult.from_public(payload)
 
         if route.kind == "waiting_github":
-            payload = port.resume_waiting_github(
-                control_root=control_root, config=config, run=run, store=store,
-                finalize_run=False,
-            )
-            payload = self._continue_production_after_spec(context, payload)
+            production = self._production_workflow(context)
+            payload = production.resume_waiting_github(finalize_run=False)
+            payload = self._continue_production_after_spec(production, payload)
             return StageResult.from_public(payload)
 
         if route.kind == "reviewed":
-            payload = port.resume_reviewed_delivery(
-                control_root=control_root,
-                config=config,
-                run=run,
-                brief_digest=brief_digest,
-                store=store,
-            )
-            payload = self._continue_production_after_spec(context, payload)
+            production = self._production_workflow(context)
+            payload = production.resume_reviewed_delivery()
+            payload = self._continue_production_after_spec(production, payload)
             return StageResult.from_public(payload)
 
         if route.kind in {"cleanup_migration", "cleanup_production", "cleanup_status"}:
@@ -91,10 +83,8 @@ class WorkflowStageExecutor:
                         if config.workflow_mode == "production":
                             plan_path = port.safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
                             if plan_path.is_file():
-                                payload = port.run_production_queue(
-                                    control_root=control_root, config=config, brief_digest=brief_digest,
-                                    run=current, store=store, spec_plan=port.load_json(plan_path),
-                                )
+                                production = self._production_workflow(context.with_run(current))
+                                payload = production.run_queue(port.load_json(plan_path))
                                 return StageResult.from_public(payload)
                         payload = port.advance_second_stage(
                             control_root=control_root, config=config, run=current,
@@ -104,10 +94,9 @@ class WorkflowStageExecutor:
                     return StageResult.from_public(migration_cleanup)
             if route.kind == "cleanup_status":
                 return StageResult.from_public(store.public_status(run.run_id))
-            payload = port.retry_production_cleanup(
-                control_root=control_root, config=config, run=run, store=store,
-            )
-            payload = self._continue_production_after_spec(context, payload)
+            production = self._production_workflow(context)
+            payload = production.retry_cleanup()
+            payload = self._continue_production_after_spec(production, payload)
             return StageResult.from_public(payload)
 
         if route.kind == "needs_input":
@@ -172,18 +161,22 @@ class WorkflowStageExecutor:
 
         return None
 
-    def _continue_production_after_spec(self, context: RunContext, payload: dict[str, object]) -> dict[str, object]:
-        """Delegate post-SPEC queue continuation through the same port."""
-        if payload.get("state") != "spec_completed":
-            return payload
-        runtime = self._port.production_runtime(
+    def _production_workflow(self, context: RunContext) -> ProductionWorkflow:
+        """Build the deep production module at the production seam."""
+        return self._port.production_runtime(
             control_root=context.control_root,
             config=context.config,
+            brief=context.brief,
             brief_digest=context.brief_digest,
             run=context.run,
             store=context.store,
         )
-        return runtime.continue_after_spec(payload)
+
+    def _continue_production_after_spec(self, production, payload: dict[str, object]) -> dict[str, object]:
+        """Continue the queue through the production module."""
+        if payload.get("state") != "spec_completed":
+            return payload
+        return production.continue_after_spec(payload)
 
 
 def execute_stage(context: RunContext, route: StageRoute, executor: StageExecutor | None = None) -> StageResult | None:

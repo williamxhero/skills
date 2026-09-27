@@ -29,6 +29,7 @@ CleanupRunner = Callable[..., dict[str, object]]
 TicketCloser = Callable[..., dict[str, object]]
 GitHubDeliveryRunner = Callable[..., dict[str, object]]
 GitHubRecoveryRunner = Callable[..., dict[str, object]]
+ReviewedDeliveryRunner = Callable[..., dict[str, object]]
 FailedChecks = Callable[..., bool]
 
 
@@ -46,6 +47,7 @@ class ProductionPorts:
     close_ticket_plan: TicketCloser
     execute_github_delivery: GitHubDeliveryRunner | None = None
     recover_github_candidate: GitHubRecoveryRunner | None = None
+    resume_reviewed_delivery: ReviewedDeliveryRunner | None = None
     definitive_failed_checks: FailedChecks | None = None
 
 
@@ -78,6 +80,10 @@ class ProductionWorkflow:
 
     def _artifact(self) -> Path:
         return self.ports.artifact_directory(self.control_root, self.config, self.run.run_id)
+
+    def artifact_directory(self) -> Path:
+        """Return the durable artifact directory for this production run."""
+        return self._artifact()
 
     def plan(self, *, thread_id: str | None = None) -> RunRecord:
         """Run the production planning stage through the production seam.
@@ -181,6 +187,18 @@ class ProductionWorkflow:
         if not plan_path.is_file():
             raise RunnerError("spec_plan_missing", "completed production SPEC has no persisted SpecPlan")
         return replace(self, context=replace(self.context, run=current)).run_queue(self.ports.load_json(plan_path))
+
+    def resume_reviewed_delivery(self) -> dict[str, object]:
+        """Resume the delivery frontier after an independent review was approved."""
+        if self.ports.resume_reviewed_delivery is None:
+            raise RunnerError("review_runtime_missing", "production review recovery adapter is not configured")
+        return self.ports.resume_reviewed_delivery(
+            control_root=self.control_root,
+            config=self.config,
+            run=self.run,
+            brief_digest=self.brief_digest,
+            store=self.store,
+        )
 
     def _control_boundary(self) -> dict[str, object] | None:
         """Stop production before a new side effect when control is pending."""
