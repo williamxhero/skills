@@ -3745,17 +3745,17 @@ def _blocked_implementation_retry_identity(*, control_root: Path, config: Runner
             return None
         retry_required = (
             document.get("outcome") != "completed"
-            or document.get("blockers") != []
             or document.get("questions") != []
         )
         workspace = _implementation_workspace_path(
             control_root=control_root, config=config, run=run, spec_key=spec_key,
         )
+        write_root = _implementation_write_root(workspace=workspace, config=config, create=False)
         artifacts = document.get("artifacts")
         if not isinstance(artifacts, list) or not artifacts:
             retry_required = True
         else:
-            root = workspace.resolve()
+            root = write_root.resolve()
             for item in artifacts:
                 if not isinstance(item, str) or not item.strip():
                     retry_required = True

@@ -1204,3 +1204,27 @@ remains three, capacity attempts remain three, and no writer lease remains.
 This proves pause readback, not successful business continuation. No verified
 candidate, review, PR, merge, three-SPEC delivery, or project-level L3-L5
 acceptance is claimed; #264 and #295 remain open.
+
+## Completed implementation adoption after live resume (2026-09-27)
+
+The original live run resumed on the same implementation thread and completed
+turn `01a0e1a2-ca04-77c0-8822-ca01e99c369e`, producing two Python source
+files inside its trusted fixture write scope. Initial candidate validation
+rejected 274 out-of-scope `.pyc` paths. Of those, 272 ignored cache files
+were moved into the run's control-root quarantine; two tracked cache files
+were restored to the managed worktree HEAD. The first quarantine command had
+a PowerShell path-expression error, so the original modified bytes of those
+two tracked cache files were not retained. Product source files were not
+removed. After cleanup, the scope scan saw only four allowed paths.
+
+Process-exit recovery also exposed a duplicate-turn risk: it treated a
+completed worker's local-test blocker as a reason to retry and looked for
+write-scope-relative artifacts at the workspace root. The retry identity
+check now accepts a completed outcome with existing scoped artifacts, while
+still retrying when the artifact is missing. A focused regression passed.
+Public `start` then adopted the original completed implementation turn,
+verified the candidate, and started an independent reviewer without another
+implementation turn. The reviewer did not finish before a public pause
+request; its interrupted result was recorded as rejected and the run is
+`blocked`. Review pause reconciliation, review approval, delivery, and all
+project-level completion gates remain open.

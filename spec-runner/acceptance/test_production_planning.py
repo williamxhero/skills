@@ -690,8 +690,9 @@ def test_completed_worker_blocker_is_deferred_to_trusted_candidate_gate(tmp_path
         implementation_artifacts(result, workspace)
 
 
-def test_blocked_run_can_reconcile_completed_failed_implementation_worker(context, monkeypatch):
+def test_blocked_run_adopts_completed_worker_with_write_scope_artifact_and_check_blocker(context, monkeypatch):
     root, config, store, run = context
+    config = replace(config, acceptance_paths=("fixture-app/S1",))
     run = replace(run, state="blocked", current_step="codex_implementation")
     spec_key = "S1"
     thread_id = "implementation-thread"
@@ -704,8 +705,9 @@ def test_blocked_run_can_reconcile_completed_failed_implementation_worker(contex
         "external_turn_id": turn_id,
     }
     workspace = root / "workspace"
-    workspace.mkdir()
-    (workspace / "task.py").write_text("value = 1\n", encoding="utf-8")
+    write_root = workspace / "fixture-app" / "S1"
+    write_root.mkdir(parents=True)
+    (write_root / "task.py").write_text("value = 1\n", encoding="utf-8")
     artifact = root / "artifacts" / run.run_id
     artifact.mkdir(parents=True)
     (artifact / f"implementation-{spec_key}.json").write_text(json.dumps({
@@ -738,6 +740,10 @@ def test_blocked_run_can_reconcile_completed_failed_implementation_worker(contex
 
     monkeypatch.setattr(workflow, "CodexAdapter", CompletedThread)
 
+    assert workflow._blocked_implementation_retry_identity(
+        control_root=root, config=config, run=run, store=store,
+    ) is None
+    (write_root / "task.py").unlink()
     assert workflow._blocked_implementation_retry_identity(
         control_root=root, config=config, run=run, store=store,
     ) == (thread_id, spec_key)
