@@ -104,22 +104,25 @@ class RecoveryEpisode:
         prior = next((item for item in prior_episodes if item.get("episode_id") == episode_id), {})
         decisions = prior.get("decisions", []) if isinstance(prior, dict) else []
         prior_action = decisions[-1].get("decision", {}).get("action") if decisions else None
+        inspection_error = error.details.get("inspection_error") if isinstance(error.details, dict) else None
+        external_result_unreconciled = error.code == "recovery_blocked" or bool(inspection_error)
         counter_name: str | None = None
-        if observation.family == FaultFamily.CAPACITY.value:
-            counter_name = "capacity_attempts"
-        elif observation.family in {
-            FaultFamily.FAST_NOT_CONFIGURED.value,
-            FaultFamily.STREAM_DISCONNECTED.value,
-            FaultFamily.UNKNOWN.value,
-        }:
-            counter_name = "same_thread_attempts"
-        elif observation.family == FaultFamily.ROUTE_NOT_FOUND.value and prior_action == RecoveryAction.USE_APPROVED_ROUTE.value:
-            counter_name = "route_probe_attempts"
-        elif observation.family == FaultFamily.ENCRYPTED_ITEM_MISMATCH.value:
-            if prior_action == RecoveryAction.PROBE_CLEAN_CONTEXT.value:
-                counter_name = "clean_probe_attempts"
-            elif prior_action == RecoveryAction.REQUEST_CLEAN_MIGRATION.value:
-                counter_name = "migration_attempts"
+        if not external_result_unreconciled:
+            if observation.family == FaultFamily.CAPACITY.value:
+                counter_name = "capacity_attempts"
+            elif observation.family in {
+                FaultFamily.FAST_NOT_CONFIGURED.value,
+                FaultFamily.STREAM_DISCONNECTED.value,
+                FaultFamily.UNKNOWN.value,
+            }:
+                counter_name = "same_thread_attempts"
+            elif observation.family == FaultFamily.ROUTE_NOT_FOUND.value and prior_action == RecoveryAction.USE_APPROVED_ROUTE.value:
+                counter_name = "route_probe_attempts"
+            elif observation.family == FaultFamily.ENCRYPTED_ITEM_MISMATCH.value:
+                if prior_action == RecoveryAction.PROBE_CLEAN_CONTEXT.value:
+                    counter_name = "clean_probe_attempts"
+                elif prior_action == RecoveryAction.REQUEST_CLEAN_MIGRATION.value:
+                    counter_name = "migration_attempts"
         attempt_identity = observation.request_id or observation.turn_id
         if counter_name and attempt_identity:
             reserved = store.reserve_recovery_budget(
@@ -144,6 +147,24 @@ class RecoveryEpisode:
             turn_id=observation.turn_id or (str(worker.get("external_turn_id")) if worker.get("external_turn_id") else None),
         )
         decision = decide_recovery(snapshot, [observation], now=datetime.now(timezone.utc))
+        # A recovery_blocked error is raised when the Runner cannot prove the
+        # outcome of an existing external operation (for example, a read-only
+        # SDK thread inspection failed).  Feeding that error back into the
+        # generic unknown-fault policy would permit one same-thread retry,
+        # which could duplicate an unresolved provider side effect.  Preserve
+        # the policy's budget projection, but force the durable action closed.
+        if external_result_unreconciled:
+            evidence = list(decision.evidence)
+            if inspection_error:
+                evidence.append(f"inspection_error:{inspection_error}")
+            decision = replace(
+                decision,
+                action=RecoveryAction.BLOCKED,
+                reason="external_result_unreconciled",
+                evidence=tuple(dict.fromkeys(evidence)),
+                preconditions=("manual_reconciliation_required", "do_not_create_worker"),
+                next_check_at=None,
+            )
         prior_observations = prior.get("observations", []) if isinstance(prior, dict) else []
         prior_observation = (prior_observations[-1].get("observation", {})
                              if prior_observations else {})

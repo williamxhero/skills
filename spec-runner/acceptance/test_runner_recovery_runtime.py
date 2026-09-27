@@ -132,6 +132,96 @@ def test_recovery_runtime_persists_transition_state_once(tmp_path: Path) -> None
         store.close()
 
 
+def test_unreconciled_external_result_is_durable_block_and_never_retries(tmp_path: Path) -> None:
+    root = tmp_path / "control"
+    store = Store.open(root, create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    operation = "planning:" + run.run_id
+    worker_id = "codex_sdk:" + run.run_id + ":codex_planning"
+    store.begin_stage(
+        run.run_id, step_name="codex_planning", operation_id=operation,
+        backend_kind="codex_sdk", worker_id=worker_id,
+    )
+    store.record_codex_turn_started(
+        run.run_id, operation, thread_id="thread-unreadable", turn_id="turn-unreadable",
+        step_name="codex_planning", worker_id=worker_id,
+    )
+    try:
+        # Preserve the earlier accepted/unknown execution evidence that caused
+        # the read-only reconciliation attempt.
+        observed = workflow._record_recovery_failure(
+            run=run,
+            store=store,
+            operation_id=operation,
+            error=RunnerError(
+                "sdk_execution_failed", "response became unreadable",
+                details={"fault_observation": {
+                    "message": "stream disconnected", "source": "sdk_exception",
+                    "structured": True, "request_admission": "accepted",
+                    "execution_outcome": "unknown", "thread_id": "thread-unreadable",
+                    "turn_id": "turn-unreadable",
+                }},
+            ),
+        )
+        assert observed.action.value == "observe"
+        before_workers = len(store.workers_for_run(run.run_id))
+        before_same_thread_attempts = store.recovery_for_run(run.run_id)["episodes"][0]["same_thread_attempts"]
+        before_capacity_attempts = store.recovery_for_run(run.run_id)["episodes"][0]["capacity_attempts"]
+
+        transition = RecoveryRuntime(run=run, store=store).transition_failure(
+            operation_id="start:" + run.run_id,
+            error=RunnerError(
+                "recovery_blocked", "the persisted SDK thread could not be reconciled",
+                details={"inspection_error": "sdk_thread_read_failed",
+                         "thread_id": "thread-unreadable", "turn_id": "turn-unreadable"},
+            ),
+        )
+
+        assert transition.state == "blocked"
+        assert transition.decision.action.value == "blocked"
+        assert transition.decision.reason == "external_result_unreconciled"
+        assert transition.decision.preconditions == (
+            "manual_reconciliation_required", "do_not_create_worker",
+        )
+        status = store.public_status(run.run_id)
+        episode = status["recovery"]["episodes"][0]
+        assert episode["same_thread_attempts"] == before_same_thread_attempts
+        assert episode["capacity_attempts"] == before_capacity_attempts
+        assert episode["observations"][0]["observation"]["execution_outcome"] == "unknown"
+        assert episode["decisions"][-1]["decision"]["action"] == "blocked"
+        assert episode["decisions"][-1]["decision"]["reason"] == "external_result_unreconciled"
+        assert "manual_reconciliation_required" in episode["decisions"][-1]["decision"]["preconditions"]
+        assert "inspection_error:sdk_thread_read_failed" in episode["decisions"][-1]["decision"]["evidence"]
+        assert len(store.workers_for_run(run.run_id)) == before_workers
+
+        # Replaying the same start/recovery check remains blocked and does not
+        # turn the old unknown result into a new same-thread attempt.
+        reopened = Store.open(root, create=False)
+        try:
+            current = reopened.find_by_run_id(run.run_id)
+            assert current is not None
+            replay = RecoveryRuntime(run=current, store=reopened).transition_failure(
+                operation_id="start:" + run.run_id,
+                error=RunnerError(
+                    "recovery_blocked", "the persisted SDK thread could not be reconciled",
+                    details={"inspection_error": "sdk_thread_read_failed",
+                             "thread_id": "thread-unreadable", "turn_id": "turn-unreadable"},
+                ),
+            )
+            assert replay.state == "blocked"
+            assert replay.decision.action.value == "blocked"
+            persisted = reopened.recovery_for_run(run.run_id)["episodes"][0]
+            assert persisted["same_thread_attempts"] == before_same_thread_attempts
+            assert persisted["capacity_attempts"] == before_capacity_attempts
+            assert persisted["decisions"][-1]["decision"]["action"] == "blocked"
+            assert len(reopened.workers_for_run(run.run_id)) == before_workers
+        finally:
+            reopened.close()
+    finally:
+        store.close()
+
+
 def test_runner_observes_accepted_unknown_result_before_retry(tmp_path: Path) -> None:
     root = tmp_path / "control"
     store = Store.open(root, create=True)
