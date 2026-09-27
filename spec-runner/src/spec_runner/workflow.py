@@ -1856,7 +1856,7 @@ def _finish_codex_implementation(
             store.append_event(run_id=run.run_id, event_key=f"github:{run.run_id}:{spec_key}:waiting",
                 event_type="github_delivery_waiting", payload=github_result)
             return github_result
-        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+        _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
                                    spec_key=spec_key, delivery=github_result)
         cleanup = cleanup_managed_workspace(repository=config.repository_path,
             workspace_root=control_root / "delivery-workspaces", workspace=workspace,
@@ -1866,7 +1866,7 @@ def _finish_codex_implementation(
             github_result["cleanup"] = cleanup
             return {**github_result, "state": "cleanup_pending"}
         github_result["cleanup"] = cleanup
-        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+        _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
                                    spec_key=spec_key, delivery=github_result)
         try:
             github_result["issue_closure"] = _close_published_ticket_plan(
@@ -1874,11 +1874,11 @@ def _finish_codex_implementation(
             )
         except RunnerError as exc:
             github_result["issue_closure"] = {"state": "pending", "error_code": exc.code}
-            _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+            _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
                                        spec_key=spec_key, delivery=github_result)
             store.mark_cleanup_pending(run.run_id)
             return {**github_result, "state": "cleanup_pending"}
-        _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+        _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
                                    spec_key=spec_key, delivery=github_result)
         final_cleanup = cleanup_managed_workspace(repository=config.repository_path,
             workspace_root=control_root / "delivery-workspaces", workspace=workspace,
@@ -1913,7 +1913,7 @@ def _finish_codex_implementation(
         run_id=run.run_id,
         git_timeout_seconds=config.git_timeout_seconds,
     )
-    _persist_delivery_evidence(control_root=control_root, config=config, run_id=run.run_id,
+    _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
         spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review, "merge": merged})
     cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=control_root / "delivery-workspaces", workspace=workspace, manifest=Path(str(workspace_info["manifest"])))
     if cleanup.get("outcome") != "cleaned":
@@ -3686,35 +3686,42 @@ def _blocked_implementation_retry_identity(*, control_root: Path, config: Runner
 def _production_completed_specs(*, control_root: Path, config: RunnerConfig, run_id: str, store: Store) -> set[str]:
     return _production_runtime(
         control_root=control_root, config=config, run_id=run_id, store=store,
-    ).completed_specs(run_id)
+    ).completed_specs()
 
 
 def _record_production_spec(*, control_root: Path, config: RunnerConfig, run_id: str, spec_key: str,
                             plan_digest: str, store: Store) -> None:
     _production_runtime(
         control_root=control_root, config=config, run_id=run_id, store=store,
-    ).record_spec(spec_key=spec_key, plan_digest=plan_digest, run_id=run_id)
+    ).record_spec(spec_key=spec_key, plan_digest=plan_digest)
 
 
-def _persist_delivery_evidence(*, control_root: Path, config: RunnerConfig, run_id: str,
+def _persist_delivery_evidence(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                               store: Store,
                                spec_key: str, delivery: dict[str, object]) -> None:
     """Durably bind successful delivery to its exact plan before cleanup."""
     _production_runtime(
-        control_root=control_root, config=config, run_id=run_id,
-    ).persist_delivery_evidence(spec_key=spec_key, delivery=delivery, run_id=run_id)
+        control_root=control_root, config=config,
+        run=run, store=store,
+    ).persist_delivery_evidence(spec_key=spec_key, delivery=delivery)
 
 
 def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str | None = None,
                         store: Store | None = None, run: RunRecord | None = None,
-                        brief_digest: str = "") -> ProductionWorkflow:
+                        brief: str = "", brief_digest: str = "") -> ProductionWorkflow:
     if run is None:
         run = store.find_by_run_id(run_id) if store is not None else None
+    if run is None or store is None:
+        raise RunnerError("run_missing", "production workflow requires its durable run and Store")
     return ProductionWorkflow(
-        control_root=control_root,
-        config=config,
-        brief_digest=brief_digest,
-        run=run,
-        store=store,
+        context=RunContext(
+            control_root=control_root,
+            config=config,
+            brief=brief,
+            brief_digest=brief_digest,
+            run=run,
+            store=store,
+        ),
         ports=ProductionPorts(
             artifact_directory=_safe_artifact_directory,
             load_json=load_json,

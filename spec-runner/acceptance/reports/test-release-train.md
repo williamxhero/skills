@@ -1,3 +1,19 @@
+## Production workflow typed context (2026-09-27)
+
+`ProductionWorkflow` now receives the existing typed `RunContext` as one
+cohesive input instead of independently accepting the control directory,
+configuration, brief digest, run, and Store. Queue continuation replaces only
+the context's durable run after Store readback. The compatibility workflow
+factory translates its legacy arguments into that context, and delivery
+receipt writes now pass the run and Store already held by their caller.
+
+The focused production, GitHub recovery, cleanup, and Runner-interface
+selection passed 85 tests. The complete source and acceptance selection passed
+358 tests with 1 authentication-dependent test skipped. `compileall` and
+`git diff --check` passed. CLI JSON, SQLite, and receipt formats were not
+changed. This is structural source evidence only; live SDK, GitHub, takeover,
+and project-level L3-L5 gates remain `not_verified`.
+
 ## RCV-01.2 shared route circuit coordination (2026-09-26)
 
 The control Store now persists an explicit, bounded `route_scope` circuit with

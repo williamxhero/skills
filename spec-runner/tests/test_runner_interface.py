@@ -53,15 +53,18 @@ def test_production_workflow_owns_initial_planning_transition() -> None:
         close_ticket_plan=lambda **_kwargs: {},
     )
     workflow = ProductionWorkflow(
-        control_root=Path(".control"),
-        config=SimpleNamespace(),
-        brief_digest="brief-digest",
-        run=run,
-        store=Store(),
+        context=RunContext(
+            control_root=Path(".control"),
+            config=SimpleNamespace(),
+            brief="Requirement",
+            brief_digest="brief-digest",
+            run=run,
+            store=Store(),
+        ),
         ports=ports,
     )
 
-    assert workflow.plan(brief="Requirement", thread_id="successor-thread") is run
+    assert workflow.plan(thread_id="successor-thread") is run
     assert observed["brief"] == "Requirement"
     assert observed["brief_digest"] == "brief-digest"
     assert observed["thread_id"] == "successor-thread"
@@ -333,11 +336,14 @@ def test_production_workflow_continues_from_durable_spec_completion(tmp_path: Pa
         close_ticket_plan=lambda **kwargs: {"complete": True},
     )
     runtime = ProbeWorkflow(
-        control_root=tmp_path,
-        config=SimpleNamespace(),
-        brief_digest="brief",
-        run=initial,
-        store=Store(),
+        context=RunContext(
+            control_root=tmp_path,
+            config=SimpleNamespace(),
+            brief="brief",
+            brief_digest="brief",
+            run=initial,
+            store=Store(),
+        ),
         ports=ports,
     )
 

@@ -15,6 +15,7 @@ from typing import Callable, Mapping
 
 from .config import RunnerConfig
 from .errors import RunnerError
+from .models import RunContext
 from .store import RunRecord, Store
 
 
@@ -52,25 +53,33 @@ class ProductionPorts:
 class ProductionWorkflow:
     """Drive production SPECs and replay their durable cleanup evidence."""
 
-    control_root: Path
-    config: RunnerConfig
-    brief_digest: str
-    run: RunRecord | None
-    store: Store | None
+    context: RunContext
     ports: ProductionPorts
 
-    def _artifact(self, run_id: str | None = None) -> Path:
-        target_run_id = run_id or (self.run.run_id if self.run is not None else None)
-        if target_run_id is None:
-            raise RunnerError("run_missing", "production workflow requires its durable run")
-        return self.ports.artifact_directory(self.control_root, self.config, target_run_id)
+    @property
+    def control_root(self) -> Path:
+        return self.context.control_root
 
-    def _durable(self) -> tuple[RunRecord, Store]:
-        if self.run is None or self.store is None:
-            raise RunnerError("run_missing", "production workflow requires its durable run and Store")
-        return self.run, self.store
+    @property
+    def config(self) -> RunnerConfig:
+        return self.context.config
 
-    def plan(self, *, brief: str, thread_id: str | None = None) -> RunRecord:
+    @property
+    def brief_digest(self) -> str:
+        return self.context.brief_digest
+
+    @property
+    def run(self) -> RunRecord:
+        return self.context.run
+
+    @property
+    def store(self) -> Store:
+        return self.context.store
+
+    def _artifact(self) -> Path:
+        return self.ports.artifact_directory(self.control_root, self.config, self.run.run_id)
+
+    def plan(self, *, thread_id: str | None = None) -> RunRecord:
         """Run the production planning stage through the production seam.
 
         The compatibility workflow supplies the SDK adapter as a port.  This
@@ -78,25 +87,23 @@ class ProductionWorkflow:
         module owns the transition from a production brief to a persisted
         SpecPlan.
         """
-        run, store = self._durable()
+        run, store = self.run, self.store
         return self.ports.execute_planning(
             control_root=self.control_root,
             config=self.config,
-            brief=brief,
+            brief=self.context.brief,
             brief_digest=self.brief_digest,
             run=run,
             store=store,
             thread_id=thread_id,
         )
 
-    def completed_specs(self, run_id: str | None = None) -> set[str]:
+    def completed_specs(self) -> set[str]:
         """Read Store completion receipts; validate the JSON projection only."""
-        target_run_id = run_id or (self.run.run_id if self.run is not None else None)
-        if target_run_id is None:
-            raise RunnerError("run_missing", "production workflow requires its durable run")
-        _, store = self._durable()
+        target_run_id = self.run.run_id
+        store = self.store
         persisted = store.production_completed_specs(target_run_id)
-        path = self._artifact(target_run_id) / "completed-specs.json"
+        path = self._artifact() / "completed-specs.json"
         if not path.exists():
             return persisted
         document = self.ports.load_json(path)
@@ -107,13 +114,11 @@ class ProductionWorkflow:
         # receipts may advance the production queue.
         return persisted
 
-    def record_spec(self, *, spec_key: str, plan_digest: str, run_id: str | None = None) -> None:
-        target_run_id = run_id or (self.run.run_id if self.run is not None else None)
-        if target_run_id is None:
-            raise RunnerError("run_missing", "production workflow requires its durable run")
-        _, store = self._durable()
-        directory = self._artifact(target_run_id)
-        completed = self.completed_specs(target_run_id)
+    def record_spec(self, *, spec_key: str, plan_digest: str) -> None:
+        target_run_id = self.run.run_id
+        store = self.store
+        directory = self._artifact()
+        completed = self.completed_specs()
         completed.add(spec_key)
         receipt = self.ports.load_json(directory / f"delivery-{spec_key}.json")
         delivery_digest = hashlib.sha256(
@@ -143,11 +148,9 @@ class ProductionWorkflow:
         )
         temporary.replace(path)
 
-    def persist_delivery_evidence(self, *, spec_key: str, delivery: dict[str, object], run_id: str | None = None) -> None:
-        target_run_id = run_id or (self.run.run_id if self.run is not None else None)
-        if target_run_id is None:
-            raise RunnerError("run_missing", "production workflow requires its durable run")
-        artifact = self._artifact(target_run_id)
+    def persist_delivery_evidence(self, *, spec_key: str, delivery: dict[str, object]) -> None:
+        target_run_id = self.run.run_id
+        artifact = self._artifact()
         plan = self.ports.load_json(artifact / "spec-plan.json")
         ticket = self.ports.load_json(artifact / f"ticket-plan-{spec_key}.json")
         record = {
@@ -170,18 +173,18 @@ class ProductionWorkflow:
         """
         if result.get("state") != "spec_completed":
             return dict(result)
-        run, store = self._durable()
+        run, store = self.run, self.store
         current = store.find_by_run_id(run.run_id)
         if current is None:
             raise RunnerError("run_status_missing", "completed production SPEC lost its durable run")
-        plan_path = self._artifact(current.run_id) / "spec-plan.json"
+        plan_path = self._artifact() / "spec-plan.json"
         if not plan_path.is_file():
             raise RunnerError("spec_plan_missing", "completed production SPEC has no persisted SpecPlan")
-        return replace(self, run=current).run_queue(self.ports.load_json(plan_path))
+        return replace(self, context=replace(self.context, run=current)).run_queue(self.ports.load_json(plan_path))
 
     def _control_boundary(self) -> dict[str, object] | None:
         """Stop production before a new side effect when control is pending."""
-        run, store = self._durable()
+        run, store = self.run, self.store
         control = store.control_for_run(run.run_id)
         requested = str(control.get("requested_state")) if control else ""
         if requested not in {"pause_requested", "cancel_requested"}:
@@ -200,7 +203,7 @@ class ProductionWorkflow:
 
     def run_queue(self, spec_plan: dict[str, object]) -> dict[str, object]:
         """Select and complete dependency-ready SPECs in plan order."""
-        run, store = self._durable()
+        run, store = self.run, self.store
         if (
             self.ports.execute_github_delivery is None
             or self.ports.recover_github_candidate is None
@@ -224,7 +227,7 @@ class ProductionWorkflow:
                 raise RunnerError("production_queue_blocked", "no dependency-ready SPEC remains")
             spec = ready[0]
             spec_key = str(spec["key"])
-            ticket_files = sorted(self._artifact(run.run_id).glob(f"ticket-plan-{spec_key}.json"))
+            ticket_files = sorted(self._artifact().glob(f"ticket-plan-{spec_key}.json"))
             if ticket_files and run.state == "tickets_ready":
                 ticketed = run
             else:
@@ -242,7 +245,7 @@ class ProductionWorkflow:
             stopped = self._control_boundary()
             if stopped is not None:
                 return stopped
-            ticket_files = sorted(self._artifact(run.run_id).glob(f"ticket-plan-{spec_key}.json"))
+            ticket_files = sorted(self._artifact().glob(f"ticket-plan-{spec_key}.json"))
             if not ticket_files:
                 raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
             delivered = self.ports.execute_implementation(
@@ -275,7 +278,7 @@ class ProductionWorkflow:
 
     def resume_waiting_github(self, *, finalize_run: bool = True) -> dict[str, object]:
         """Reconcile one persisted CI wait, then finish delivery and cleanup."""
-        run, store = self._durable()
+        run, store = self.run, self.store
         stopped = self._control_boundary()
         if stopped is not None:
             return stopped
@@ -391,9 +394,7 @@ class ProductionWorkflow:
         merge = result.get("merge")
         if not isinstance(merge, dict) or merge.get("merged") is not True:
             raise RunnerError("github_merge_unconfirmed", "GitHub delivery cannot complete without a confirmed merge receipt")
-        self.persist_delivery_evidence(
-            spec_key=str(result["spec_key"]), delivery=result,
-        )
+        self.persist_delivery_evidence(spec_key=str(result["spec_key"]), delivery=result)
         spec_manifests = [item for item in manifests if item[1].get("spec_key") == spec_key]
         cleanups = [
             self.ports.cleanup_workspace(
@@ -456,7 +457,7 @@ class ProductionWorkflow:
 
     def retry_cleanup(self) -> dict[str, object]:
         """Replay only cleanup and issue closure after a production exit."""
-        run, store = self._durable()
+        run, store = self.run, self.store
         root = self.control_root / "delivery-workspaces"
         manifests: list[Path] = []
         for manifest in root.glob("*.manifest.json"):

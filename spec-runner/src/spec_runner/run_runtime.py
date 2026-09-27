@@ -393,10 +393,11 @@ class RunRuntime:
                     finished = workflow._production_runtime(
                         control_root=control_root,
                         config=config,
+                        brief=brief,
                         brief_digest=brief_digest,
                         run=record,
                         store=store,
-                    ).plan(brief=brief, thread_id=successor_thread_id)
+                    ).plan(thread_id=successor_thread_id)
                 else:
                     finished = workflow._execute_codex_example(
                         control_root=control_root,
