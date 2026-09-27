@@ -1761,8 +1761,9 @@ the lifecycle wait check also moves the run to durable `blocked` and records
 indefinite wait. The SQLite schema and public status shape are unchanged.
 
 The focused recovery runtime acceptance selection passed `21 passed`; the
-complete source plus acceptance selection, `compileall`, `git diff --check`,
-and Ubuntu/Windows contract CI are required for this increment. This is
+complete source plus acceptance selection passed `480 passed, 1 skipped`;
+`compileall` and `git diff --check` passed; GitHub Actions
+`36343821243` passed its Ubuntu and Windows contract jobs. This is
 deterministic corruption handling evidence only; live SDK recovery, source
 thread migration, Windows detached recovery and project-level L3-L5 remain
 `not_verified`.
