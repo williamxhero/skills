@@ -1165,3 +1165,20 @@ three, and the run returned to `service_wait`. No verified candidate, review,
 PR, or merge was produced. The live business continuation, bounded long-term
 service probing, remaining Windows and takeover cases, and project L3-L5 gates
 remain `not_verified`; #295 remains open.
+
+## Bounded capacity service probes (2026-09-27)
+
+The recovery policy is now `spec-runner-recovery-policy/v2`. After the two
+short same-thread capacity retries, it permits three persisted service-wait
+probes in total. A fifth capacity failure records
+`capacity_probe_budget_exhausted` and stays blocked; it cannot start an
+unbounded sixth business turn. A provider `Retry-After` beyond the one-hour
+policy limit becomes `wait_for_config` rather than scheduling an unbounded
+timer. Historical v1 decisions remain readable as evidence from the earlier
+policy contract.
+
+The focused recovery selection passed `69 passed`; the complete source and
+acceptance selection passed `396 passed, 1 skipped`; `compileall` and
+`git diff --check` passed. This is deterministic policy and replay evidence.
+The live provider capacity incident, successful business continuation, and
+project-level L3-L5 gates remain `not_verified`.

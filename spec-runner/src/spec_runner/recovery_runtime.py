@@ -408,6 +408,17 @@ class RecoveryRuntime:
                 error=RunnerError("sdk_turn_failed", str(fault.get("message") or "SDK turn failed"),
                                   details={"fault_observation": fault}),
             )
+        elif prior_action in {
+            RecoveryAction.WAIT_FOR_CONFIG.value, RecoveryAction.BLOCKED.value,
+        }:
+            decision = RecoveryDecision(
+                action=RecoveryAction(str(prior_action)), reason=str(prior.get("reason") or ""),
+                evidence=tuple(str(item) for item in prior.get("evidence", [])),
+                preconditions=tuple(str(item) for item in prior.get("preconditions", [])),
+                next_check_at=prior.get("next_check_at"),
+                remaining_budget=dict(prior.get("remaining_budget") or {}),
+                family=str(prior.get("family") or "unknown"),
+            )
         elif prior_action in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
             decision = RecoveryDecision(
                 action=RecoveryAction(str(prior_action)), reason=str(prior.get("reason") or ""),
@@ -449,7 +460,8 @@ class RecoveryRuntime:
             state = decision.action.value
         else:
             state = "blocked"
-            self.store.set_run_state(self.run.run_id, state)
+            if self.run.state != state:
+                self.store.set_run_state(self.run.run_id, state)
         return RecoveryTransition(decision=decision, state=state)
 
     @staticmethod

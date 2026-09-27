@@ -1106,6 +1106,39 @@ class CodexWorkflowControlTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_exhausted_capacity_decision_stays_blocked_on_replay(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-capacity-exhausted-replay-") as temp:
+            root = Path(temp)
+            _, run, store = self._failed_sdk_run(root)
+            try:
+                for attempt in range(5):
+                    error = RunnerError("sdk_rate_limited", "capacity temporarily unavailable", details={
+                        "fault_observation": {
+                            "message": "capacity temporarily unavailable", "structured": True,
+                            "request_admission": "accepted", "execution_outcome": "unknown",
+                            "thread_id": "thread-failed", "turn_id": f"turn-{attempt}",
+                        },
+                    })
+                    workflow._record_recovery_failure(
+                        run=run, store=store, operation_id=f"start:{run.run_id}", error=error,
+                    )
+                store.set_run_state(run.run_id, "blocked")
+                current = store.find_by_run_id(run.run_id)
+                assert current is not None
+                transition = RecoveryRuntime(run=current, store=store).reconcile_failed_turn(
+                    operation_id=f"start:{run.run_id}", thread_id="thread-failed", turn_id="turn-4",
+                )
+                self.assertEqual(transition.state, "blocked")
+                self.assertEqual(transition.decision.reason, "capacity_probe_budget_exhausted")
+                replay = RecoveryRuntime(run=current, store=store).reconcile_failed_turn(
+                    operation_id=f"start:{run.run_id}", thread_id="thread-failed", turn_id="turn-4",
+                )
+                self.assertEqual(replay.state, "blocked")
+                self.assertEqual(replay.decision.reason, "capacity_probe_budget_exhausted")
+                self.assertEqual(store.recovery_for_run(run.run_id)["episodes"][0]["capacity_attempts"], 5)
+            finally:
+                store.close()
+
     def test_blocked_implementation_capacity_wait_does_not_start_writer(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-implementation-capacity-") as temp:
             root = Path(temp)

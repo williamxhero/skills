@@ -87,6 +87,32 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
         store.close()
 
 
+def test_runner_blocks_after_bounded_capacity_service_probes(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        decisions = []
+        for attempt in range(5):
+            current = store.find_by_run_id(run.run_id)
+            assert current is not None
+            transition = RecoveryRuntime(run=current, store=store).transition_failure(
+                operation_id="start:" + run.run_id,
+                error=_capacity_error(f"turn-capacity-{attempt}"),
+            )
+            decisions.append(transition.decision.action.value)
+        assert decisions == ["wait_retry", "service_wait", "service_wait", "service_wait", "blocked"]
+        blocked = store.find_by_run_id(run.run_id)
+        assert blocked is not None and blocked.state == "blocked"
+        assert RecoveryEpisode(run=blocked, store=store).waits()
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["capacity_attempts"] == 5
+        assert episode["decisions"][-1]["decision"]["reason"] == "capacity_probe_budget_exhausted"
+        assert episode["wait_deadline"] is None
+    finally:
+        store.close()
+
+
 def test_recovery_runtime_persists_transition_state_once(tmp_path: Path) -> None:
     root = tmp_path / "control"
     store = Store.open(root, create=True)

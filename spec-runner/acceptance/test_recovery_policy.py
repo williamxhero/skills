@@ -101,6 +101,43 @@ def test_decision_is_pure_and_capacity_becomes_service_wait_after_budget():
 
 
 @pytest.mark.parametrize(
+    ("attempts", "expected", "remaining_probes"),
+    [
+        (1, RecoveryAction.WAIT_RETRY, 3),
+        (2, RecoveryAction.SERVICE_WAIT, 3),
+        (3, RecoveryAction.SERVICE_WAIT, 2),
+        (4, RecoveryAction.SERVICE_WAIT, 1),
+        (5, RecoveryAction.BLOCKED, 0),
+        (6, RecoveryAction.BLOCKED, 0),
+    ],
+)
+def test_capacity_service_probes_have_a_total_budget(attempts, expected, remaining_probes):
+    decision = decide_recovery(
+        RecoverySnapshot(run_id="run-1", operation_kind="codex_turn", stage="implementation",
+                         capacity_attempts=attempts),
+        [FaultObservation(operation_kind="codex_turn", stage="implementation",
+                          family=FaultFamily.CAPACITY.value)],
+        now=datetime(2026, 9, 27, tzinfo=timezone.utc),
+    )
+    assert decision.action is expected
+    assert decision.remaining_budget["capacity_service_probes"] == remaining_probes
+    assert (decision.next_check_at is None) == (expected is RecoveryAction.BLOCKED)
+
+
+def test_capacity_retry_after_beyond_wait_limit_requires_configuration():
+    decision = decide_recovery(
+        RecoverySnapshot(run_id="run-1", operation_kind="codex_turn", stage="implementation",
+                         capacity_attempts=2),
+        [FaultObservation(operation_kind="codex_turn", stage="implementation",
+                          family=FaultFamily.CAPACITY.value, retry_after_seconds=7200)],
+        now=datetime(2026, 9, 27, tzinfo=timezone.utc),
+    )
+    assert decision.action is RecoveryAction.WAIT_FOR_CONFIG
+    assert decision.reason == "capacity_wait_exceeds_limit"
+    assert decision.next_check_at is None
+
+
+@pytest.mark.parametrize(
     ("control", "active", "admission", "outcome", "expected"),
     [
         ("cancel_requested", False, "unknown", "unknown", RecoveryAction.BLOCKED),
@@ -211,13 +248,17 @@ def test_recovery_policy_rejects_invalid_budget_configuration_and_records_versio
         RecoveryPolicy(capacity_retries=-1)
     with pytest.raises(ValueError, match="non-negative integer"):
         RecoveryPolicy(capacity_retries=True)
+    with pytest.raises(ValueError, match="non-negative integer"):
+        RecoveryPolicy(capacity_service_probes=-1)
     with pytest.raises(ValueError, match="finite non-negative number"):
         RecoveryPolicy(retry_delay_seconds=float("nan"))
     with pytest.raises(ValueError, match="finite non-negative number"):
         RecoveryPolicy(service_wait_delay_seconds=float("inf"))
+    with pytest.raises(ValueError, match="finite non-negative number"):
+        RecoveryPolicy(max_wait_seconds=float("inf"))
 
     decision = decide_recovery(
         RecoverySnapshot(run_id="run-1", operation_kind="implementation", stage="implement"),
         [FaultObservation(operation_kind="implementation", stage="implement")],
     )
-    assert decision.public()["policy_version"] == "spec-runner-recovery-policy/v1"
+    assert decision.public()["policy_version"] == "spec-runner-recovery-policy/v2"

@@ -17,7 +17,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 
-RECOVERY_POLICY_VERSION = "spec-runner-recovery-policy/v1"
+RECOVERY_POLICY_VERSION = "spec-runner-recovery-policy/v2"
 
 
 class RecoveryAction(str, Enum):
@@ -271,23 +271,25 @@ def observation_from_worker_result(*, operation_kind: str, result: Mapping[str, 
 class RecoveryPolicy:
     same_thread_retries: int = 1
     capacity_retries: int = 2
+    capacity_service_probes: int = 3
     route_probes: int = 1
     clean_probes: int = 1
     migration_requests: int = 1
     max_no_progress: int = 3
     retry_delay_seconds: float = 5.0
     service_wait_delay_seconds: float = 60.0
+    max_wait_seconds: float = 3600.0
     version: str = RECOVERY_POLICY_VERSION
 
     def __post_init__(self) -> None:
         for name in (
-            "same_thread_retries", "capacity_retries", "route_probes",
+            "same_thread_retries", "capacity_retries", "capacity_service_probes", "route_probes",
             "clean_probes", "migration_requests", "max_no_progress",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
-        for name in ("retry_delay_seconds", "service_wait_delay_seconds"):
+        for name in ("retry_delay_seconds", "service_wait_delay_seconds", "max_wait_seconds"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be a finite non-negative number")
@@ -359,6 +361,10 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
     remaining = {
         "same_thread_retries": max(0, policy.same_thread_retries - snapshot.same_thread_attempts),
         "capacity_retries": max(0, policy.capacity_retries - snapshot.capacity_attempts),
+        "capacity_service_probes": max(
+            0, policy.capacity_retries + policy.capacity_service_probes
+            - max(policy.capacity_retries, snapshot.capacity_attempts),
+        ),
         "route_probes": max(0, policy.route_probes - snapshot.route_probe_attempts),
         "clean_probes": max(0, policy.clean_probes - snapshot.clean_probe_attempts),
         "migration_requests": max(0, policy.migration_requests - snapshot.migration_attempts),
@@ -383,7 +389,12 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
     elif family == FaultFamily.AUTHORIZATION.value or family == FaultFamily.BILLING.value:
         action = RecoveryAction.WAIT_FOR_CONFIG
     elif family == FaultFamily.CAPACITY.value:
-        action = RecoveryAction.WAIT_RETRY if remaining["capacity_retries"] else RecoveryAction.SERVICE_WAIT
+        if remaining["capacity_retries"]:
+            action = RecoveryAction.WAIT_RETRY
+        elif remaining["capacity_service_probes"]:
+            action = RecoveryAction.SERVICE_WAIT
+        else:
+            action = RecoveryAction.BLOCKED
     elif family == FaultFamily.FAST_NOT_CONFIGURED.value:
         action = RecoveryAction.RESUME_SAME_THREAD if remaining["same_thread_retries"] else RecoveryAction.WAIT_FOR_CONFIG
     elif family == FaultFamily.ROUTE_NOT_FOUND.value:
@@ -396,8 +407,19 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
         action = RecoveryAction.RESUME_SAME_THREAD if remaining["same_thread_retries"] and remaining["no_progress"] else RecoveryAction.BLOCKED
     fallback_delay = policy.service_wait_delay_seconds if action == RecoveryAction.SERVICE_WAIT else policy.retry_delay_seconds
     delay = _retry_delay(observation, fallback_delay) if family == FaultFamily.CAPACITY.value else fallback_delay
+    if (
+        family == FaultFamily.CAPACITY.value
+        and action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT}
+        and delay > policy.max_wait_seconds
+    ):
+        action = RecoveryAction.WAIT_FOR_CONFIG
     next_check = _future(current, delay) if action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT} else None
-    return RecoveryDecision(action, f"fault_family:{family}", (observation.fingerprint, observation.reason),
+    reason = ("capacity_probe_budget_exhausted"
+              if family == FaultFamily.CAPACITY.value and action == RecoveryAction.BLOCKED
+              else "capacity_wait_exceeds_limit"
+              if family == FaultFamily.CAPACITY.value and action == RecoveryAction.WAIT_FOR_CONFIG
+              else f"fault_family:{family}")
+    return RecoveryDecision(action, reason, (observation.fingerprint, observation.reason),
                             ("reconcile_external_side_effects", "preserve_stage_budget"), next_check,
                             remaining, family)
 
