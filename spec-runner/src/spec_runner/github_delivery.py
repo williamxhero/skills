@@ -172,8 +172,10 @@ class GitHubDelivery:
             durable_receipt = operation_state.get("receipt")
             if not isinstance(durable_receipt, dict):
                 raise RunnerError("github_receipt_corrupt", "completed PR operation has no receipt")
-            if old is None:
-                old = durable_receipt
+            # SQLite is the durable operation record; the JSON file is only a
+            # compatibility projection.  A stale projection must not shadow a
+            # completed receipt after a process-exit or partial file replay.
+            old = durable_receipt
         if old:
             if old.get("candidate_sha") != candidate_sha:
                 raise RunnerError("github_operation_conflict", "PR operation was reused for another candidate")

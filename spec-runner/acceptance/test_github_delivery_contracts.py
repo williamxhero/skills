@@ -210,6 +210,46 @@ def test_pr_operation_receipt_is_durable_before_local_projection_replay(tmp_path
     assert not any("POST" in call for call in calls)
 
 
+def test_completed_durable_pr_receipt_replaces_a_stale_local_projection(tmp_path: Path):
+    calls: list[list[str]] = []
+    marker = "<!-- spec-runner-pr:op-projection candidate:abc -->"
+    durable_pull = {
+        "number": 12,
+        "html_url": "https://github.com/owner/repo/pull/12",
+        "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+        "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+        "body": marker,
+        "state": "open",
+        "merged": False,
+        "merged_at": None,
+    }
+    stale_projection = {**durable_pull, "number": 99}
+
+    def runner(args: list[str]) -> str:
+        calls.append(args)
+        if args[-1] == "repos/owner/repo/pulls/12":
+            return json.dumps(durable_pull)
+        if args[-1] == "repos/owner/repo/pulls/99":
+            raise AssertionError("stale projection must not be read")
+        raise AssertionError(args)
+
+    receipt_path = tmp_path / ".spec-runner-pr-receipts.json"
+    receipt_path.write_text(json.dumps({"op-projection": stale_projection}), encoding="utf-8")
+    result = GitHubDelivery(runner=runner).create_or_adopt_pr(
+        repository="owner/repo", head="branch", base="main", candidate_sha="abc",
+        body="body", operation_id="op-projection", receipt_root=tmp_path,
+        operation_intent=lambda **_kwargs: {
+            "state": "completed", "receipt": {"number": 12, "candidate_sha": "abc", "marker": marker}
+        },
+    )
+
+    assert result["created"] is False
+    assert result["receipt"]["number"] == 12
+    projected = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert projected["op-projection"]["number"] == 12
+    assert len(calls) == 1
+
+
 def test_merge_queue_checkpoint_is_reused_after_ambiguous_enqueue(tmp_path: Path):
     calls: list[list[str]] = []
     progress: list[dict[str, object]] = []
