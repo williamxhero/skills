@@ -1925,3 +1925,23 @@ This is deterministic durable-operation evidence. It does not complete the
 remaining native Windows combined acceptance, live GitHub side-effect
 reconciliation, source-thread takeover, or project-level L3-L5 gates; #266
 and those dependent issues remain open.
+
+## SF-03.1 durable PR receipt precedence (2026-09-28)
+
+Commit `d9c5d73` fixes PR publication replay when the SQLite operation is
+already `completed` but the compatibility JSON projection is stale or points
+to a different PR number. Replay now treats the completed SQLite receipt as
+the authoritative identity, reads that exact PR, and rewrites the projection;
+it never follows the stale projection or posts another PR.
+
+The new acceptance regression proves the conflicting projection is replaced
+without a POST or a read of the stale PR. GitHub adapter and acceptance tests
+passed `40 passed`; complete source plus acceptance passed `534 passed, 1
+skipped`; `compileall` and `git diff --check` passed. GitHub Actions run
+`36356942516` passed both Ubuntu and Windows contract jobs, including the
+installed-wheel public CLI checks.
+
+This is deterministic durable-operation evidence. It does not prove live
+transport-loss injection or complete three-SPEC PR/CI/merge/closure delivery;
+SF-03/#256/#257/#258 and project-level L3-L5 remain open where live evidence
+is absent.
