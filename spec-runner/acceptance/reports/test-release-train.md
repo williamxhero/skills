@@ -1124,3 +1124,25 @@ The probe run is `c247b04e-d0b7-4dcb-8dd6-e9ccb4809403`; evidence is
 `acceptance/reports/SRAC-20260928-windows-control-db-launcher-logs-architecture.json`.
 This covers the exercised Windows combination and does not complete the
 remaining #266 or project-level L3-L5 acceptance gates.
+
+## Prepared production intake and live implementation limit (2026-09-27)
+
+Commits `d3e307b` and `f6bc7ca` add explicit prepared SpecPlan/TicketPlan
+intake to the public production `start` path and adopt matching local tracker
+records across runs. The prepared stages persist their source digests and
+receipts; a resumed run can replay from its artifacts after source removal.
+`af03f24` preserves completed Stage and worker states when a later Stage fails.
+The final focused recovery/planning selection passed 85 tests; the complete
+source plus acceptance selection passed `381 passed, 1 skipped`. `compileall`,
+`git diff --check`, and Ubuntu/Windows contract CI `36293368897` passed.
+
+A live prepared-plan run `56335d20-5e36-4be8-bc15-875eedb42743` reached a
+real `codex_implementation` SDK thread after adopting both plans and publishing
+the local SPEC/ticket. Its first turn and a subsequent same-thread drive each
+received SDK HTTP 429 after accepted request admission; the run is `blocked`
+without a verified candidate or delivery. The earlier live run
+`9d60c002-16ae-455d-b6df-93a47d4b9bbc` cannot resume because its recorded
+implementation worktree is missing; the last continuation snapshot described
+that worktree as dirty. Neither run proves a completed production SPEC. GitHub
+three-SPEC delivery, source takeover, full Windows recovery, and project-level
+L3-L5 remain `not_verified` where their separate reports require live evidence.
