@@ -510,6 +510,33 @@ class StoreLeaseTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_recovery_episode_rejects_invalid_budget_counters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                invalid_values = (-1, True, 1.5, float("nan"), float("inf"))
+                for value in invalid_values:
+                    with self.subTest(value=value):
+                        with self.assertRaisesRegex(RunnerError, "non-negative integer"):
+                            store.upsert_recovery_episode(
+                                episode_id=f"episode-invalid-{repr(value)}",
+                                run_id="run-invalid",
+                                operation_kind="implementation",
+                                stage="implement",
+                                generation=value,
+                            )
+                        with self.assertRaisesRegex(RunnerError, "non-negative integer"):
+                            store.upsert_recovery_episode(
+                                episode_id=f"episode-invalid-counter-{repr(value)}",
+                                run_id="run-invalid",
+                                operation_kind="implementation",
+                                stage="implement",
+                                generation=0,
+                                counters={"capacity_attempts": value},
+                            )
+            finally:
+                store.close()
+
     def test_recovery_budget_reservation_is_idempotent_and_monotonic(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             store = Store.open(Path(temp) / "control", create=True)

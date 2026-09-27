@@ -1862,10 +1862,14 @@ generation and attempt counters at RecoverySnapshot construction. Invalid
 values can no longer be coerced by budget arithmetic into an apparently unused
 retry allowance.
 
-The focused recovery policy and runtime selection passed `102 passed`; the
-complete source plus acceptance selection passed `520 passed, 1 skipped`.
+The focused recovery policy and runtime selection passed `122 passed`; the
+complete source plus acceptance selection passed `521 passed, 1 skipped`.
 `compileall` and `git diff --check` passed.
 
 This is deterministic policy input validation only. Live provider recovery,
 automatic service-wait wakeup, source-thread migration, native Windows
 detached ownership, and project-level L3-L5 remain `not_verified`.
+
+The Store episode persistence boundary applies the same strict non-negative
+integer contract to generation and all durable recovery counters, returning a
+stable `recovery_counter_invalid` error before SQLite mutation.

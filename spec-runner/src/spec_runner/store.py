@@ -30,6 +30,14 @@ def _encode_strict_json(value: object, *, code: str, message: str) -> str:
         raise RunnerError(code, message) from exc
 
 
+def _strict_recovery_counter(value: object, *, field: str, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RunnerError("recovery_counter_invalid", f"{field} must be a non-negative integer")
+    return value
+
+
 def _raise_if_control_database_busy(exc: sqlite3.OperationalError) -> None:
     message = str(exc)
     if "locked" in message.lower() or "busy" in message.lower():
@@ -1509,7 +1517,8 @@ class Store:
                                 last_verified_progress: str | None = None) -> dict[str, object]:
         """Persist recovery budgets so restarts and thread changes cannot reset them."""
         counters = counters or {}
-        values = {key: int(counters.get(key, 0)) for key in (
+        generation = _strict_recovery_counter(generation, field="generation")
+        values = {key: _strict_recovery_counter(counters.get(key), field=key) for key in (
             "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
             "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
         )}
