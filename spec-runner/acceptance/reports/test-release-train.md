@@ -14,6 +14,24 @@ selection passed 85 tests. The complete source and acceptance selection passed
 changed. This is structural source evidence only; live SDK, GitHub, takeover,
 and project-level L3-L5 gates remain `not_verified`.
 
+## SF-06.1 current candidate installed-wheel replay (2026-09-27)
+
+The current pushed candidate `e4357eac15a1d5eafc4d6f7916b121e97d9a316b`
+was built as `spec_runner-0.1.0-py3-none-any.whl` and installed into a fresh
+virtual environment from a non-source working directory. `PYTHONPATH` and
+`PYTHONHOME` were cleared, the imported package resolved from the isolated
+environment, and `diagnose package` returned `verified`. The wheel SHA-256 is
+`981061f107b2dd726036f6a2bf6e4e3bc9427a08c0918d062287fb2437046db9`.
+
+The public CLI fault matrix was replayed twice with the same run seed. Each
+replay passed all 10 cases and produced report digest
+`97627c900f832e6fac7fbdd270307c75fca4696c59b33868dd3389841350a636`; case
+outcomes were identical. Evidence is
+`acceptance/reports/SRAC-20260927-459206570e59-installed-wheel.json`.
+This discharges the current installed-artifact L3 contract only. Live SDK
+production, GitHub publication/merge queue, source-thread takeover, six-SPEC
+L4, and connected L5 remain `not_verified`.
+
 ## RCV-01.2 shared route circuit coordination (2026-09-26)
 
 The control Store now persists an explicit, bounded `route_scope` circuit with
