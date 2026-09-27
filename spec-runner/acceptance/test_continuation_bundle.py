@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -41,6 +42,48 @@ def test_bundle_rejects_hidden_or_encrypted_history():
     with pytest.raises(RunnerError) as error:
         build_bundle(document)
     assert error.value.code == "continuation_forbidden_material"
+
+
+def test_store_receipt_boundary_rejects_hidden_material(tmp_path):
+    control = tmp_path / "control"
+    store = Store.open(control, create=True)
+    run = _run_record(tmp_path)
+    store.create_run(run, "start:run-1")
+    path = control / "artifacts" / run.run_id / "continuation-S1.json"
+    valid = build_bundle(bundle_input())
+    document = write_bundle_atomic(path, valid)
+    forged = dict(document)
+    forged["requirements"] = [{"encrypted_content": "opaque"}]
+    forged_body = dict(forged)
+    forged_body.pop("bundle_digest")
+    forged["bundle_digest"] = hashlib.sha256(
+        json.dumps(forged_body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    try:
+        with pytest.raises(RunnerError) as error:
+            store.record_continuation_bundle(run_id=run.run_id, bundle_path=path, bundle=forged)
+        assert error.value.code == "continuation_forbidden_material"
+    finally:
+        store.close()
+
+
+def test_store_receipt_boundary_requires_file_and_argument_to_match(tmp_path):
+    control = tmp_path / "control"
+    store = Store.open(control, create=True)
+    run = _run_record(tmp_path)
+    store.create_run(run, "start:run-1")
+    path = control / "artifacts" / run.run_id / "continuation-S1.json"
+    first = build_bundle(bundle_input())
+    write_bundle_atomic(path, first)
+    changed = dict(bundle_input())
+    changed["workspace"] = {"path": "worktree", "branch": "runner/S1", "head": "different"}
+    second = build_bundle(changed).public()
+    try:
+        with pytest.raises(RunnerError) as error:
+            store.record_continuation_bundle(run_id=run.run_id, bundle_path=path, bundle=second)
+        assert error.value.code == "continuation_receipt_content_mismatch"
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
@@ -104,6 +147,7 @@ def test_continuation_receipt_digest_conflict_fails_closed(tmp_path):
     changed = dict(bundle_input())
     changed["remaining_items"] = [{"id": "different"}]
     second = build_bundle(changed).public()
+    write_bundle_atomic(path, build_bundle(changed))
     try:
         with pytest.raises(RunnerError, match="identity or digest changed"):
             store.record_continuation_bundle(run_id=run.run_id, bundle_path=path, bundle=second)

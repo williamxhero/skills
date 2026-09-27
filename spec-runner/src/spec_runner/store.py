@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
+from .continuation import build_bundle, read_bundle
 from .errors import RunnerError
 from .migration_contract import valid_handover_evidence
 from .recovery import recovery_diagnostic
@@ -1713,6 +1714,10 @@ class Store:
         identity and digest conflicts fail closed instead of silently replacing
         the last known handoff.
         """
+        # Keep the durable Store boundary as strict as the file reader.  This
+        # method is also used by recovery code and must not become a bypass for
+        # hidden history, oversized fields, or non-finite JSON values.
+        bundle = build_bundle(bundle).public()
         required = ("run_id", "spec_key", "stage", "input_revision", "bundle_digest", "generation")
         if bundle.get("run_id") != run_id or any(key not in bundle for key in required):
             raise RunnerError("continuation_receipt_identity_invalid", "continuation receipt identity does not match its run")
@@ -1725,6 +1730,15 @@ class Store:
         bundle_digest = str(bundle["bundle_digest"])
         if bundle_path.is_symlink() or not bundle_path.is_file():
             raise RunnerError("continuation_path_invalid", "continuation receipt must reference an existing regular file")
+        try:
+            persisted_bundle = read_bundle(bundle_path).public()
+        except RunnerError:
+            raise
+        if persisted_bundle != bundle:
+            raise RunnerError(
+                "continuation_receipt_content_mismatch",
+                "continuation receipt content does not match the atomically written bundle",
+            )
         digest_body = dict(bundle)
         digest_body.pop("bundle_digest", None)
         expected_digest = hashlib.sha256(json.dumps(
