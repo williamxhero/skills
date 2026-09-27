@@ -1655,5 +1655,25 @@ and deliberately stale pre-write observations.
 
 This closes a deterministic concurrency gap in the migration mechanism. It
 does not prove real SDK/OS writer shutdown, live provider fault injection,
-complete migration business continuation, or project-level L3-L5. #298 and
+complete migration business continuation, or project-level L3–L5. #298 and
 #300 remain open pending those gates.
+
+## SF-03 GitHub merge operation durability (2026-09-28)
+
+The production GitHub merge boundary now records a shared SQLite
+`github_merge` operation intent before merge side effects, persists confirmed
+merge-queue admission as `waiting_merge_queue`, and records completion only
+after exact PR readback. An ambiguous queue admission is reconciled by reading
+the existing queue entry before any further enqueue attempt. Replay reuses the
+durable queue identity and does not issue a second merge request. A completed
+merge receipt is accepted only when the current PR is still merged with the
+same number, candidate head, base and merge SHA; a conflict fails closed.
+
+Commits `e33377b`, `13268b0` and `02ace34` are on `origin/master`. The complete
+source plus acceptance selection passed `464 passed, 1 skipped`; `compileall`
+and `git diff --check` passed. GitHub Actions run `36337638012` passed on both
+Ubuntu and Windows contract jobs.
+
+This is deterministic and adapter-boundary evidence. Live transport-loss
+injection, a protected PR, a real merge queue, and the complete three-SPEC
+GitHub delivery remain `not_verified`; #256, #257 and #258 stay open.
