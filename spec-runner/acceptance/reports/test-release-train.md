@@ -1260,3 +1260,28 @@ tree. This was local test contamination, not a confirmed SDK write.
 
 SF-05.1, RCV-01.3, the three-SPEC delivery, source takeover, and project-level
 L3-L5 gates remain open where their separate live evidence is missing.
+
+## Repair-turn reconciliation after real review findings (2026-09-27)
+
+The original reviewer completed turn `01a0e1ca-70f5-7973-8c0a-8f114a067e4f`
+and rejected candidate `82b31ee`: Python's strict CSV reader still accepted a
+bare quote in an unquoted field. The existing implementation thread produced a
+repair turn and a contract-correct artifact receipt. Recovery initially could
+not adopt those completed turns because it compared their persisted TicketPlan
+base to a newer `master`, and interpreted write-scope-relative artifact paths
+differently from the formal candidate gate. Commit `526789f` validates the
+repair against its persisted base and accepts either relative path spelling
+only when the resolved file is within the trusted write root. Source and
+acceptance tests passed `412 passed, 1 skipped`; source/test `compileall` and
+`git diff --check` passed.
+
+CI run `36305020232` passed both Ubuntu and Windows contract jobs, including
+the installed-wheel CLI checks.
+
+The live repair validation rejected 274 ignored `.pyc` files outside the
+trusted write scope. All 274 were moved, preserving their bytes, to the run's
+`quarantine-repair-pyc` artifacts. The gate then admitted the existing repair
+as candidate `7317869` and started a fresh independent review. At this report
+the reviewer turn `01a0e1e0-5897-7111-9c16-9d87dbf7a061` is running and
+the candidate worktree is clean. Review approval, delivery, subsequent SPECs,
+and project-level L3-L5 are still `not_verified`.
