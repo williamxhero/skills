@@ -954,6 +954,57 @@ def _close_published_ticket_plan(*, config: RunnerConfig, plan: dict[str, object
         relation_mode="native", operation_intent=prepare, operation_completed=complete)
 
 
+def _adopt_prepared_ticket_plan(
+    *, control_root: Path, config: RunnerConfig, run: RunRecord, store: Store,
+    spec_plan: dict[str, object], spec: dict[str, object], base_sha: str,
+    source_path: Path,
+) -> RunRecord:
+    spec_key = str(spec["key"])
+    operation_id = f"tickets:{run.run_id}:{spec_key}"
+    step_name = "codex_ticket_planning"
+    worker_id = f"prepared_plan:{run.run_id}:{step_name}:{spec_key}"
+    store.begin_stage(run.run_id, step_name=step_name, operation_id=operation_id,
+                      backend_kind="prepared_plan", worker_id=worker_id)
+    artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
+    artifact_directory.mkdir(parents=True, exist_ok=True)
+    path = artifact_directory / f"ticket-plan-{spec_key}.json"
+    document = load_json(source_path if source_path.is_file() else path)
+    if (document.get("outcome") != "planned"
+            or document.get("questions") not in (None, [])
+            or document.get("spec_plan_digest") != spec_plan.get("digest")):
+        raise RunnerError("prepared_ticket_invalid", "prepared TicketPlan must match the current SpecPlan and have no open questions")
+    document.update(spec_title=str(spec.get("title") or spec_key),
+                    spec_body=str(spec.get("body") or ""))
+    validated = validate_ticket_plan(document, expected_spec_key=spec_key,
+                                     expected_base_sha=base_sha)
+    if path.is_file() and load_json(path) != validated:
+        raise RunnerError("prepared_ticket_conflict", "prepared TicketPlan conflicts with the persisted run")
+    _write_json_atomic(path, validated)
+    source = _ticket_plan_source(artifact_directory=artifact_directory,
+                                 plan=validated, run_id=run.run_id)
+    local = publish_local(read_local(source), control_root / "tracker", operation_id=operation_id)
+    receipts: dict[str, object] = {"local": local}
+    external_receipt: tuple[str, dict[str, object]] | None = None
+    if config.github_repository is not None:
+        receipts["github"] = _publish_ticket_plan(
+            config=config, control_root=control_root, plan=validated,
+            operation_id=operation_id, run_id=run.run_id, store=store,
+        )
+        github_receipt = receipts["github"].get("receipt")
+        if not isinstance(github_receipt, dict):
+            raise RunnerError("github_publish_unconfirmed", "prepared TicketPlan has no GitHub publication receipt")
+        external_receipt = (operation_id, github_receipt)
+    store.write_log(control_root, run.run_id, {
+        "event": "prepared_ticket_plan_published", "spec_key": spec_key,
+        "ticket_count": len(validated["tickets"]), "tracker": receipts,
+    })
+    return store.complete_prepared_stage(
+        run.run_id, operation_id, step_name=step_name,
+        worker_id=worker_id, source_digest=str(validated["digest"]),
+        external_operation=external_receipt,
+    )
+
+
 def _execute_codex_tickets(
     *, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord, store: Store,
     spec_plan: dict[str, object], thread_id: str | None = None,
@@ -970,6 +1021,13 @@ def _execute_codex_tickets(
     ticket_spec = dict(spec)
     ticket_spec["blocked_by"] = []
     base_sha = git_sha(config.repository_path, config.target_ref, timeout_seconds=config.git_timeout_seconds)
+    prepared_source = dict(config.prepared_ticket_plans).get(spec_key)
+    if prepared_source is not None:
+        return _adopt_prepared_ticket_plan(
+            control_root=control_root, config=config, run=run, store=store,
+            spec_plan=spec_plan, spec=spec, base_sha=base_sha,
+            source_path=prepared_source,
+        )
     step_name = "codex_ticket_planning"
     operation_id = f"tickets:{run.run_id}:{spec_key}"
     worker_id = f"codex_sdk:{run.run_id}:{step_name}:{spec_key}"

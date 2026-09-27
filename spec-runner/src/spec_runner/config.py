@@ -119,6 +119,8 @@ class RunnerConfig:
     github_policy_compatible: bool = False
     acceptance_paths: tuple[str, ...] = ()
     git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS
+    prepared_spec_plan: Path | None = None
+    prepared_ticket_plans: tuple[tuple[str, Path], ...] = ()
 
     @classmethod
     def from_file(cls, config_file: Path, control_root: Path) -> "RunnerConfig":
@@ -207,6 +209,27 @@ class RunnerConfig:
         if not isinstance(workflow, dict) or workflow.get("mode", "example") not in {"example", "production"}:
             raise RunnerError("invalid_config", "workflow.mode must be example or production")
         workflow_mode = str(workflow.get("mode", "example"))
+        prepared = workflow.get("prepared")
+        prepared_spec_plan: Path | None = None
+        prepared_ticket_plans: dict[str, Path] = {}
+        if prepared is not None:
+            if workflow_mode != "production" or backend != "codex_sdk" or delivery_plan is not None:
+                raise RunnerError("invalid_config", "workflow.prepared requires the Codex production workflow")
+            if not isinstance(prepared, dict):
+                raise RunnerError("invalid_config", "workflow.prepared must be an object")
+            plan_relative = _normalise_relative_path(prepared.get("spec_plan"), "workflow.prepared.spec_plan")
+            prepared_spec_plan = (control_root / plan_relative).resolve()
+            if not _is_within(prepared_spec_plan, control_root):
+                raise RunnerError("invalid_config", "workflow.prepared.spec_plan must stay below control_root")
+            raw_tickets = prepared.get("ticket_plans", {})
+            if not isinstance(raw_tickets, dict) or any(not isinstance(key, str) or not key for key in raw_tickets):
+                raise RunnerError("invalid_config", "workflow.prepared.ticket_plans must map SPEC keys to files")
+            for key, value in raw_tickets.items():
+                relative = _normalise_relative_path(value, f"workflow.prepared.ticket_plans.{key}")
+                path = (control_root / relative).resolve()
+                if not _is_within(path, control_root):
+                    raise RunnerError("invalid_config", f"prepared TicketPlan for {key} must stay below control_root")
+                prepared_ticket_plans[key] = path
         raw_acceptance = workflow.get("acceptance", {})
         if raw_acceptance is None:
             raw_acceptance = {}
@@ -287,6 +310,14 @@ class RunnerConfig:
             "workflow": {"mode": workflow_mode, "acceptance": {"ids": acceptance_ids, "checks": checks, "write_scope": acceptance_paths}},
             "github": {"repository": github_repository, "required_checks": github_checks, "receipt_root": github_receipt.as_posix() if github_receipt else None, "base": github_base, "merge_authorized": github_authorized, "required_approvals": github_required_approvals, "require_branch_protection": github_require_branch_protection},
         }
+        if prepared_spec_plan is not None:
+            normalized["workflow"]["prepared"] = {
+                "spec_plan": prepared_spec_plan.relative_to(control_root).as_posix(),
+                "ticket_plans": {
+                    key: path.relative_to(control_root).as_posix()
+                    for key, path in sorted(prepared_ticket_plans.items())
+                },
+            }
         if "timeout_seconds" in github:
             normalized["github"]["timeout_seconds"] = github_timeout_seconds
         # Keep pre-timeout config digests stable so persisted runs remain
@@ -335,6 +366,8 @@ class RunnerConfig:
             github_required_approvals=github_required_approvals,
             github_require_branch_protection=github_require_branch_protection,
             git_timeout_seconds=git_timeout_seconds,
+            prepared_spec_plan=prepared_spec_plan,
+            prepared_ticket_plans=tuple(sorted(prepared_ticket_plans.items())),
         )
 
 

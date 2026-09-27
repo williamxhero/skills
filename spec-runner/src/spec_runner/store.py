@@ -728,6 +728,7 @@ class Store:
         return result
 
     def create_run(self, run: RunRecord, operation_id: str) -> None:
+        initial_backend = "prepared_plan" if run.current_step == "prepared_planning" else run.backend_kind
         with self.transaction():
             self.connection.execute(
                 """INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -739,11 +740,11 @@ class Store:
             )
             self.connection.execute(
                 "INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (operation_id, run.run_id, f"{run.backend_kind}_stage", "intent", run.input_digest, run.created_at, run.updated_at),
+                (operation_id, run.run_id, f"{initial_backend}_stage", "intent", run.input_digest, run.created_at, run.updated_at),
             )
             self.connection.execute(
                 "INSERT INTO workers VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (f"{run.backend_kind}:{run.run_id}", run.run_id, run.backend_kind, None, None, "pending", run.created_at, run.updated_at),
+                (f"{initial_backend}:{run.run_id}", run.run_id, initial_backend, None, None, "pending", run.created_at, run.updated_at),
             )
             self._insert_event(
                 run_id=run.run_id,
@@ -776,6 +777,67 @@ class Store:
                 event_key=f"operation:{operation_id}:completed",
                 event_type="step_completed",
                 payload={"operation_id": operation_id, "state": "completed_test_backend"},
+            )
+        record = self.find_by_run_id(run_id)
+        assert record is not None
+        return record
+
+    def complete_prepared_stage(
+        self, run_id: str, operation_id: str, *, step_name: str,
+        worker_id: str, source_digest: str,
+        external_operation: tuple[str, dict[str, object]] | None = None,
+    ) -> RunRecord:
+        states = {"prepared_planning": "planned", "codex_ticket_planning": "tickets_ready"}
+        if step_name not in states or not source_digest:
+            raise RunnerError("prepared_stage_invalid", "prepared stage needs a supported step and source digest")
+        timestamp = now()
+        state = states[step_name]
+        with self.transaction():
+            if external_operation is not None:
+                external_id, receipt = external_operation
+                receipt_json = json.dumps(receipt, ensure_ascii=False, sort_keys=True)
+                external = self.connection.execute(
+                    "SELECT * FROM external_operations WHERE operation_id = ? AND run_id = ?",
+                    (external_id, run_id),
+                ).fetchone()
+                if external is None:
+                    raise RunnerError("external_operation_missing", "prepared stage has no external operation intent")
+                if external["state"] == "completed" and external["receipt_json"] != receipt_json:
+                    raise RunnerError("external_receipt_conflict", "completed external operation receipt changed")
+                self.connection.execute(
+                    "UPDATE external_operations SET state = ?, receipt_json = ?, updated_at = ? WHERE operation_id = ?",
+                    ("completed", receipt_json, timestamp, external_id),
+                )
+                self._insert_event(
+                    run_id=run_id, event_key=f"external:{external_id}:completed",
+                    event_type="external_operation_completed",
+                    payload={"operation_id": external_id,
+                             "receipt_digest": hashlib.sha256(receipt_json.encode("utf-8")).hexdigest()},
+                )
+            operation = self.connection.execute(
+                "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ? AND run_id = ?",
+                (state, timestamp, operation_id, run_id),
+            ).rowcount
+            worker = self.connection.execute(
+                "UPDATE workers SET state = ?, updated_at = ? WHERE worker_id = ? AND run_id = ?",
+                (state, timestamp, worker_id, run_id),
+            ).rowcount
+            step = self.connection.execute(
+                "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
+                (state, timestamp, run_id, step_name),
+            ).rowcount
+            if (operation, worker, step) != (1, 1, 1):
+                raise RunnerError("prepared_stage_missing", "prepared stage has no matching durable intent")
+            self.connection.execute(
+                "UPDATE runs SET state = ?, current_step = ?, updated_at = ? WHERE run_id = ?",
+                (state, step_name, timestamp, run_id),
+            )
+            self._insert_event(
+                run_id=run_id,
+                event_key=f"prepared:{operation_id}:{source_digest}",
+                event_type="prepared_plan_adopted",
+                payload={"operation_id": operation_id, "step_name": step_name,
+                         "source_digest": source_digest},
             )
         record = self.find_by_run_id(run_id)
         assert record is not None

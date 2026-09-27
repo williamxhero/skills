@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import subprocess
 import sys
 import tempfile
 from dataclasses import replace
@@ -13,7 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spec_runner import workflow
 from spec_runner.codex_adapter import CodexWorkerResult
-from spec_runner.config import RunnerConfig
+from spec_runner.config import RunnerConfig, read_brief
 from spec_runner.errors import RunnerError
 from spec_runner.store import RunRecord, Store, now
 from spec_runner.tracker import read_local
@@ -22,6 +23,8 @@ from spec_runner.production_gates import implementation_artifacts
 from spec_runner.models import RunContext
 from spec_runner.stage_executor import execute_stage
 from spec_runner.stage_progression import StageRoute
+from spec_runner.runner import Runner
+from spec_runner.models import RunnerRequest
 
 
 @pytest.fixture
@@ -66,6 +69,247 @@ def adapter(monkeypatch, documents, *, status="completed", archive_receipt=None)
 
     monkeypatch.setattr(workflow, "CodexAdapter", Fake)
     return calls
+
+
+def _prepared_inputs(root: Path, *, ticket_plan_digest: str | None = None) -> tuple[RunnerRequest, str]:
+    repository = root / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    (repository / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repository), "add", "seed.txt"], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Runner Test",
+                    "-c", "user.email=runner@example.invalid", "commit", "-qm", "seed"], check=True)
+    base_sha = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+    control = root / "control"
+    inputs = control / "inputs"
+    inputs.mkdir(parents=True)
+    brief = root / "brief.md"
+    brief.write_text("Implement R1\n", encoding="utf-8")
+    _, brief_digest = read_brief(brief)
+    plan = validate_spec_plan({
+        "schema_version": "spec-runner-spec-plan/v1", "outcome": "planned",
+        "questions": [], "requirement_digest": brief_digest,
+        "requirements": ["R1"], "specs": [{
+            "key": "S1", "title": "Prepared SPEC", "body": "Implement R1",
+            "blocked_by": [], "covers": ["R1"],
+            "route": {"model": "fake", "effort": "high", "reason": "prepared input"},
+        }],
+    })
+    (inputs / "spec-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+    ticket = {
+        "schema_version": "spec-runner-ticket-plan/v1", "outcome": "planned",
+        "questions": [], "spec_plan_digest": ticket_plan_digest or plan["digest"],
+        "spec_key": "S1", "base_sha": base_sha,
+        "tickets": [{"key": "S1.1", "title": "Implement", "body": "Implement R1",
+                     "blocked_by": [], "acceptance": ["R1"]}],
+    }
+    (inputs / "ticket-plan.json").write_text(json.dumps(ticket), encoding="utf-8")
+    config = {
+        "schema_version": "spec-runner-config/v1", "repository_path": str(repository),
+        "target_ref": "HEAD", "artifact_root": "artifacts",
+        "execution_backend": "codex_sdk", "allowed_stages": ["production"],
+        "model": {"name": "fake", "effort": "high"},
+        "authorization": {"artifact_roots": ["artifacts"]},
+        "workflow": {"mode": "production", "acceptance": {
+            "ids": ["R1"], "checks": [], "write_scope": ["fixture"],
+        }, "prepared": {"spec_plan": "inputs/spec-plan.json",
+                         "ticket_plans": {"S1": "inputs/ticket-plan.json"}}},
+    }
+    config_path = control / "runner.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    return RunnerRequest(brief_file=brief, config_file=config_path, control_root=control,
+                         launch_key="prepared-1"), plan["digest"]
+
+
+def test_public_start_adopts_prepared_plan_and_tickets_without_planning_sdk(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, plan_digest = _prepared_inputs(Path(directory))
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("prepared inputs must skip planning SDK"))
+        observed = []
+
+        def stop_after_tickets(*, run, store, ticket_plan, **kwargs):
+            observed.append(ticket_plan)
+            store.set_run_state(run.run_id, "needs_input")
+            return {"state": "needs_input", **store.public_status(run.run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        first = Runner().start(request)
+        run_id = first["run"]["run_id"]
+        assert first["created"] is True
+        assert first["run"]["state"] == "needs_input"
+        assert len(observed) == 1 and observed[0]["spec_plan_digest"] == plan_digest
+        snapshot = read_local(request.control_root / "tracker")
+        assert {record.key for record in snapshot.records} == {"S1", "S1.1"}
+        status = Runner().status(control_root=request.control_root, run_id=run_id)
+        assert [step["state"] for step in status["steps"] if step["step_name"] in {
+            "prepared_planning", "codex_ticket_planning",
+        }] == ["planned", "tickets_ready"]
+        assert all(worker["external_thread_id"] is None for worker in status["workers"])
+        (request.control_root / "inputs" / "spec-plan.json").unlink()
+        (request.control_root / "inputs" / "ticket-plan.json").unlink()
+        replay = Runner().start(request)
+        assert replay["created"] is False and replay["run"]["run_id"] == run_id
+        assert len(observed) == 1
+
+
+def test_public_start_rejects_prepared_ticket_for_another_plan(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, plan_digest = _prepared_inputs(Path(directory), ticket_plan_digest="wrong")
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("invalid input must not call SDK"))
+        with pytest.raises(RunnerError) as error:
+            Runner().start(request)
+        assert error.value.code == "prepared_ticket_invalid"
+        assert not (request.control_root / "tracker").exists()
+        ticket_path = request.control_root / "inputs" / "ticket-plan.json"
+        ticket = json.loads(ticket_path.read_text(encoding="utf-8"))
+        ticket["spec_plan_digest"] = plan_digest
+        ticket_path.write_text(json.dumps(ticket), encoding="utf-8")
+
+        def stop_after_tickets(*, run, store, **kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return {"state": "needs_input", **store.public_status(run.run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        resumed = Runner().start(request)
+        assert resumed["created"] is False
+        assert resumed["run"]["state"] == "needs_input"
+        assert read_local(request.control_root / "tracker").records
+
+
+def test_public_start_replays_prepared_plan_after_initial_intent(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        config = RunnerConfig.from_file(request.config_file, request.control_root)
+        _, brief_digest = read_brief(request.brief_file)
+        timestamp = now()
+        run = RunRecord(
+            "11111111-1111-4111-8111-111111111111", request.launch_key,
+            brief_digest, config.digest, str(config.repository_path), config.target_ref,
+            "artifacts", "codex_sdk", "starting", "prepared_planning",
+            "logs/prepared.jsonl", timestamp, timestamp,
+        )
+        store = Store.open(request.control_root, create=True)
+        try:
+            store.create_run(run, f"start:{run.run_id}")
+        finally:
+            store.close()
+        artifact = request.control_root / "artifacts" / run.run_id
+        artifact.mkdir(parents=True)
+        source_path = request.control_root / "inputs" / "spec-plan.json"
+        (artifact / "spec-plan.json").write_bytes(source_path.read_bytes())
+        source_path.unlink()
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("replay must skip planning SDK"))
+
+        def stop_after_tickets(*, run, store, **kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return {"state": "needs_input", **store.public_status(run.run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        resumed = Runner().start(request)
+        assert resumed["created"] is False
+        assert resumed["run"]["run_id"] == run.run_id
+        assert read_local(request.control_root / "tracker").records
+
+
+def test_public_start_replays_prepared_ticket_after_publication_failure(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("prepared inputs must skip planning SDK"))
+        publish = workflow.publish_local
+
+        def fail_publication(*args, **kwargs):
+            raise RunnerError("tracker_unavailable", "simulated publication interruption")
+
+        monkeypatch.setattr(workflow, "publish_local", fail_publication)
+        with pytest.raises(RunnerError) as error:
+            Runner().start(request)
+        assert error.value.code == "tracker_unavailable"
+        monkeypatch.setattr(workflow, "publish_local", publish)
+        (request.control_root / "inputs" / "spec-plan.json").unlink()
+        (request.control_root / "inputs" / "ticket-plan.json").unlink()
+
+        def stop_after_tickets(*, run, store, **kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return {"state": "needs_input", **store.public_status(run.run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        replay = Runner().start(request)
+        assert replay["created"] is False
+        assert replay["run"]["state"] == "needs_input"
+        assert {record.key for record in read_local(request.control_root / "tracker").records} == {"S1", "S1.1"}
+
+
+def test_prepared_plan_replay_rejects_conflicting_persisted_artifact(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        config = RunnerConfig.from_file(request.config_file, request.control_root)
+        _, brief_digest = read_brief(request.brief_file)
+        timestamp = now()
+        run = RunRecord(
+            "22222222-2222-4222-8222-222222222222", request.launch_key,
+            brief_digest, config.digest, str(config.repository_path), config.target_ref,
+            "artifacts", "codex_sdk", "starting", "prepared_planning",
+            "logs/prepared.jsonl", timestamp, timestamp,
+        )
+        store = Store.open(request.control_root, create=True)
+        try:
+            store.create_run(run, f"start:{run.run_id}")
+        finally:
+            store.close()
+        artifact = request.control_root / "artifacts" / run.run_id
+        artifact.mkdir(parents=True)
+        (artifact / "spec-plan.json").write_text(json.dumps({"digest": "other"}), encoding="utf-8")
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("conflict must not call SDK"))
+        with pytest.raises(RunnerError) as error:
+            Runner().start(request)
+        assert error.value.code == "prepared_plan_conflict"
+        assert not (request.control_root / "tracker").exists()
+
+
+def test_prepared_plan_rejects_unknown_ticket_spec_before_publication(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        config = json.loads(request.config_file.read_text(encoding="utf-8"))
+        config["workflow"]["prepared"]["ticket_plans"] = {"S2": "inputs/ticket-plan.json"}
+        request.config_file.write_text(json.dumps(config), encoding="utf-8")
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("invalid input must not call SDK"))
+        with pytest.raises(RunnerError) as error:
+            Runner().start(request)
+        assert error.value.code == "prepared_plan_invalid"
+        assert not (request.control_root / "tracker").exists()
+
+
+def test_prepared_ticket_stage_commits_external_receipt_with_stage(context):
+    _, _, store, run = context
+    operation_id = f"tickets:{run.run_id}:S1"
+    worker_id = f"prepared_plan:{run.run_id}:codex_ticket_planning:S1"
+    store.begin_stage(run.run_id, step_name="codex_ticket_planning",
+                      operation_id=operation_id, backend_kind="prepared_plan", worker_id=worker_id)
+    store.prepare_external_operation(operation_id=operation_id, run_id=run.run_id,
+                                     operation_kind="github_issue_publication",
+                                     repository="williamxhero/skills", input_digest="draft")
+    completed = store.complete_prepared_stage(
+        run.run_id, operation_id, step_name="codex_ticket_planning",
+        worker_id=worker_id, source_digest="ticket-digest",
+        external_operation=(operation_id, {"complete": True, "repository": "williamxhero/skills"}),
+    )
+    assert completed.state == "tickets_ready"
+    assert store.external_operation(operation_id)["state"] == "completed"
+    assert store.external_operation(operation_id)["receipt"]["complete"] is True
+    assert any(event["event_type"] == "prepared_plan_adopted"
+               for event in store.events_for_run(run.run_id))
 
 
 def test_archive_receipt_is_durable_and_replay_does_not_archive_again(context, monkeypatch):

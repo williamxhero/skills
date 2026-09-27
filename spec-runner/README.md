@@ -91,6 +91,25 @@ start with that directory as their SDK working directory. Before checks, review,
 or publication, the Runner compares committed, staged, untracked, ignored,
 and symlinked candidate paths against the same scope and rejects any escape.
 
+To start from an existing structured plan, place the SpecPlan and any complete
+TicketPlans below the control root and add `workflow.prepared` to a production
+config:
+
+```json
+{"workflow": {"mode": "production", "prepared": {
+  "spec_plan": "inputs/spec-plan.json",
+  "ticket_plans": {"S1": "inputs/ticket-plan-S1.json"}
+}}}
+```
+
+The SpecPlan must carry the current brief's `requirement_digest`. Each supplied
+TicketPlan must carry that validated SpecPlan's `spec_plan_digest`, its exact
+`spec_key`, and the current target `base_sha`. Runner validates and records the
+inputs, skips the corresponding planning workers, then uses the normal ticket
+publication, implementation, review, and delivery gates. SPECs without a
+supplied TicketPlan still use the `to-tickets` worker. Adopted plans remain in
+the run's durable artifacts for recovery after the source files are removed.
+
 For an authenticated SDK run, `pause` and `cancel` are applied to the active
 `TurnHandle` through the SDK's `interrupt()` operation. A paused run persists
 its formal thread/turn identity and `resume` continues that same thread; a

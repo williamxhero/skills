@@ -43,6 +43,21 @@ class WorkflowStageExecutor:
         control_root = context.control_root
         brief_digest = context.brief_digest
 
+        if route.kind == "prepared_plan":
+            production = self._production_workflow(context)
+            planned = production.plan()
+            payload = self._production_workflow(context.with_run(planned)).start_queue(
+                port.load_json(production.artifact_directory() / "spec-plan.json")
+            )
+            return StageResult.from_public(payload)
+
+        if route.kind == "prepared_ticket":
+            production = self._production_workflow(context)
+            plan_path = production.artifact_directory() / "spec-plan.json"
+            if not plan_path.is_file():
+                raise RunnerError("spec_plan_missing", "prepared TicketPlan recovery needs the persisted SpecPlan")
+            return StageResult.from_public(production.start_queue(port.load_json(plan_path)))
+
         if route.kind == "ready_for_next":
             payload = port.advance_second_stage(
                 control_root=control_root, config=config, run=run,

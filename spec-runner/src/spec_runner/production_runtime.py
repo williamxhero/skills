@@ -16,6 +16,7 @@ from typing import Callable, Mapping
 from .config import RunnerConfig
 from .errors import RunnerError
 from .models import RunContext
+from .plans import validate_spec_plan
 from .recovery import RecoveryAction
 from .recovery_runtime import RecoveryEpisode
 from .store import RunRecord, Store
@@ -96,6 +97,29 @@ class ProductionWorkflow:
         SpecPlan.
         """
         run, store = self.run, self.store
+        if getattr(self.config, "prepared_spec_plan", None) is not None:
+            path = self._artifact() / "spec-plan.json"
+            source_path = self.config.prepared_spec_plan
+            source = self.ports.load_json(source_path if source_path.is_file() else path)
+            if (source.get("outcome") != "planned"
+                    or source.get("questions") not in (None, [])
+                    or source.get("requirement_digest") != self.brief_digest):
+                raise RunnerError("prepared_plan_invalid", "prepared SpecPlan must match the current brief and have no open questions")
+            validated = validate_spec_plan(source)
+            known_specs = {str(spec["key"]) for spec in validated["specs"]}
+            unknown_tickets = set(dict(self.config.prepared_ticket_plans)) - known_specs
+            if unknown_tickets:
+                raise RunnerError("prepared_plan_invalid", "prepared TicketPlan references an unknown SPEC",
+                                  details={"spec_keys": sorted(unknown_tickets)})
+            if path.is_file() and self.ports.load_json(path) != validated:
+                raise RunnerError("prepared_plan_conflict", "prepared SpecPlan conflicts with the persisted run")
+            self.ports.write_json_atomic(path, validated)
+            return store.complete_prepared_stage(
+                run.run_id, f"start:{run.run_id}",
+                step_name="prepared_planning",
+                worker_id=f"prepared_plan:{run.run_id}",
+                source_digest=str(validated["digest"]),
+            )
         return self.ports.execute_planning(
             control_root=self.control_root,
             config=self.config,
@@ -289,13 +313,16 @@ class ProductionWorkflow:
             ticket_files = sorted(self._artifact().glob(f"ticket-plan-{spec_key}.json"))
             if not ticket_files:
                 raise RunnerError("ticket_plan_missing", f"SPEC {spec_key} has no persisted TicketPlan")
+            ticket_plan = self.ports.load_json(ticket_files[-1])
+            if ticket_plan.get("spec_key") != spec_key:
+                raise RunnerError("ticket_plan_mismatch", "persisted TicketPlan belongs to another SPEC")
             delivered = self.ports.execute_implementation(
                 control_root=self.control_root,
                 config=self.config,
                 brief_digest=self.brief_digest,
                 run=ticketed,
                 store=store,
-                ticket_plan=self.ports.load_json(ticket_files[-1]),
+                ticket_plan=ticket_plan,
                 finalize_run=False,
             )
             if delivered.get("state") in {"waiting_ci", "waiting_merge_queue", "cleanup_pending"}:
