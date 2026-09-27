@@ -734,15 +734,18 @@ def test_drive_wakes_once_after_persisted_retry_deadline(tmp_path: Path, monkeyp
 
 
 @pytest.mark.parametrize(
-    ("deadline_field", "deadline_value", "expected_reason"),
+    ("wait_action", "deadline_field", "deadline_value", "expected_reason"),
     [
-        ("retry_deadline", None, "missing_persisted_deadline"),
-        ("retry_deadline", "not-a-timestamp", "invalid_persisted_deadline"),
+        ("wait_retry", "retry_deadline", None, "missing_persisted_deadline"),
+        ("wait_retry", "retry_deadline", "not-a-timestamp", "invalid_persisted_deadline"),
+        ("service_wait", "wait_deadline", None, "missing_persisted_deadline"),
+        ("service_wait", "wait_deadline", "not-a-timestamp", "invalid_persisted_deadline"),
     ],
 )
 def test_public_drive_fails_closed_on_corrupt_persisted_wait(
     tmp_path: Path,
     monkeypatch,
+    wait_action: str,
     deadline_field: str,
     deadline_value: str | None,
     expected_reason: str,
@@ -751,12 +754,13 @@ def test_public_drive_fails_closed_on_corrupt_persisted_wait(
     store = Store.open(root, create=True)
     run = _run(tmp_path)
     store.create_run(run, "start:" + run.run_id)
-    workflow._record_recovery_failure(
-        run=run,
-        store=store,
-        operation_id="start:" + run.run_id,
-        error=_capacity_error("turn-corrupt-wait"),
-    )
+    for index in range(2 if wait_action == "service_wait" else 1):
+        workflow._record_recovery_failure(
+            run=run,
+            store=store,
+            operation_id="start:" + run.run_id,
+            error=_capacity_error(f"turn-corrupt-wait-{index}"),
+        )
     episode = store.recovery_for_run(run.run_id)["episodes"][0]
     store.upsert_recovery_episode(
         episode_id=episode["episode_id"],
@@ -764,7 +768,7 @@ def test_public_drive_fails_closed_on_corrupt_persisted_wait(
         operation_kind=episode["operation_kind"],
         stage=episode["stage"],
         generation=episode["generation"],
-        state="wait_retry",
+        state=wait_action,
         counters={key: episode[key] for key in (
             "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
             "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
@@ -772,7 +776,7 @@ def test_public_drive_fails_closed_on_corrupt_persisted_wait(
         retry_deadline=deadline_value if deadline_field == "retry_deadline" else None,
         wait_deadline=deadline_value if deadline_field == "wait_deadline" else None,
     )
-    store.fail_run(run.run_id, "start:" + run.run_id, state="wait_retry")
+    store.fail_run(run.run_id, "start:" + run.run_id, state=wait_action)
     status = store.public_status(run.run_id)
     store.close()
 
@@ -798,7 +802,7 @@ def test_public_drive_fails_closed_on_corrupt_persisted_wait(
         if event["event_type"] == "recovery_wait_invalid"
     ]
     assert invalid_events[-1]["payload"] == {
-        "action": "wait_retry", "reason": expected_reason,
+        "action": wait_action, "reason": expected_reason,
     }
 
 
