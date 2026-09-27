@@ -149,3 +149,40 @@ def test_gh_http_422_is_a_definitive_rejection():
         with pytest.raises(Exception) as error:
             GitHubDelivery._gh(["api", "repos/owner/repo/pulls", "--method", "POST"])
     assert error.value.code == "github_rejected"
+
+
+def test_merge_response_sha_must_match_authoritative_pr_readback():
+    calls: list[list[str]] = []
+
+    def runner(args: list[str]) -> str:
+        calls.append(args)
+        endpoint = args[-1]
+        if "check-runs" in endpoint:
+            return json.dumps({"check_runs": [{
+                "name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc",
+            }]})
+        if endpoint.endswith("/status"):
+            return json.dumps({"sha": "abc", "state": "success", "statuses": []})
+        if endpoint == "repos/owner/repo/pulls/12":
+            merged = sum(call[-1] == endpoint for call in calls) > 1
+            return json.dumps({
+                "number": 12,
+                "head": {"sha": "abc", "repo": {"full_name": "owner/repo"}},
+                "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                "merged": merged,
+                "merged_at": "2026-09-27T00:00:00Z" if merged else None,
+                "merge_commit_sha": "actual-merge" if merged else None,
+            })
+        if "repos/owner/repo/pulls/12/merge" in args:
+            return json.dumps({"merged": True, "sha": "wrong-merge"})
+        raise AssertionError(args)
+
+    with pytest.raises(RunnerError) as error:
+        GitHubDelivery(runner=runner).merge(
+            repository="owner/repo", number=12, expected_head="abc", expected_base="main",
+            candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
+            review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+            checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True,
+        )
+    assert error.value.code == "github_merge_readback_mismatch"
+    assert sum("repos/owner/repo/pulls/12/merge" in call for call in calls) == 1

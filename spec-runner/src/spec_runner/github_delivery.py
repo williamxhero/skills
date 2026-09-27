@@ -532,7 +532,9 @@ class GitHubDelivery:
         if not readback.get("merged_at") or not readback.get("merge_commit_sha"):
             raise RunnerError("github_merge_readback_incomplete", "merged pull request lacks merge identity")
         merged_at = readback.get("merged_at")
-        merge_sha = result.get("sha") or readback.get("merge_commit_sha")
+        merge_sha = readback["merge_commit_sha"]
+        if result.get("sha") and result["sha"] != merge_sha:
+            raise RunnerError("github_merge_readback_mismatch", "merge response SHA does not match the merged pull request")
         evidence = {"merge_response": result, "pr_readback": readback, "candidate_receipt": candidate_receipt,
                     "review": review, "checks_before": checks, "checks_at_merge": latest_checks,
                     "approvals": approvals, "protection": protection}
