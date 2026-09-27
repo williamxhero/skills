@@ -423,7 +423,7 @@ class RunRuntime:
                             brief_digest=brief_digest,
                             run=finished,
                             store=store,
-                        ).run_queue(port.load_json(plan_path)),
+                        ).start_queue(port.load_json(plan_path)),
                     }
                 ticketed = port.execute_codex_tickets(
                     control_root=control_root,

@@ -3759,30 +3759,10 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
 
 def _run_production_queue(*, control_root: Path, config: RunnerConfig, brief_digest: str,
                           run: RunRecord, store: Store, spec_plan: dict[str, object]) -> dict[str, object]:
-    try:
-        return _run_production_queue_impl(
-            control_root=control_root,
-            config=config,
-            brief_digest=brief_digest,
-            run=run,
-            store=store,
-            spec_plan=spec_plan,
-        )
-    except RunnerError as exc:
-        decision = RecoveryEpisode(run=run, store=store).record_failure(operation_id=f"start:{run.run_id}", error=exc)
-        # The initial planning stage is wrapped by start(), but production
-        # queue work begins after that boundary. Close the durable run before
-        # returning a queue error so a process exit cannot leave it running.
-        try:
-            state = decision.action.value if decision.action in {
-                RecoveryAction.WAIT_RETRY,
-                RecoveryAction.SERVICE_WAIT,
-                RecoveryAction.WAIT_FOR_CONFIG,
-            } else "failed"
-            store.fail_run(run.run_id, f"start:{run.run_id}", state=state)
-        except RunnerError as state_error:
-            raise state_error from exc
-        raise
+    return _production_runtime(
+        control_root=control_root, config=config, brief_digest=brief_digest,
+        run=run, store=store,
+    ).start_queue(spec_plan)
 
 
 def _run_production_queue_impl(*, control_root: Path, config: RunnerConfig, brief_digest: str,

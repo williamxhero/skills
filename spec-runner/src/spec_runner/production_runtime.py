@@ -16,6 +16,8 @@ from typing import Callable, Mapping
 from .config import RunnerConfig
 from .errors import RunnerError
 from .models import RunContext
+from .recovery import RecoveryAction
+from .recovery_runtime import RecoveryEpisode
 from .store import RunRecord, Store
 
 
@@ -218,6 +220,26 @@ class ProductionWorkflow:
             payload={"requested_state": requested, "generation": generation, "during": "production"},
         )
         return {"state": stopped_state, **store.public_status(run.run_id)}
+
+    def start_queue(self, spec_plan: dict[str, object]) -> dict[str, object]:
+        """Run the initial production queue and durably close a failed transition."""
+        try:
+            return self.run_queue(spec_plan)
+        except RunnerError as exc:
+            run, store = self.run, self.store
+            decision = RecoveryEpisode(run=run, store=store).record_failure(
+                operation_id=f"start:{run.run_id}", error=exc,
+            )
+            state = decision.action.value if decision.action in {
+                RecoveryAction.WAIT_RETRY,
+                RecoveryAction.SERVICE_WAIT,
+                RecoveryAction.WAIT_FOR_CONFIG,
+            } else "failed"
+            try:
+                store.fail_run(run.run_id, f"start:{run.run_id}", state=state)
+            except RunnerError as state_error:
+                raise state_error from exc
+            raise
 
     def run_queue(self, spec_plan: dict[str, object]) -> dict[str, object]:
         """Select and complete dependency-ready SPECs in plan order."""

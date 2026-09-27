@@ -57,7 +57,7 @@ class WorkflowStageExecutor:
             plan_path = production.artifact_directory() / "spec-plan.json"
             if route.kind == "planned" and not plan_path.is_file():
                 raise RunnerError("spec_plan_missing", "planned run has no persisted SpecPlan")
-            payload = production.run_queue(port.load_json(plan_path))
+            payload = production.start_queue(port.load_json(plan_path))
             return StageResult.from_public(payload)
 
         if route.kind == "waiting_github":
@@ -84,7 +84,7 @@ class WorkflowStageExecutor:
                             plan_path = port.safe_artifact_directory(control_root, config, run.run_id) / "spec-plan.json"
                             if plan_path.is_file():
                                 production = self._production_workflow(context.with_run(current))
-                                payload = production.run_queue(port.load_json(plan_path))
+                                payload = production.start_queue(port.load_json(plan_path))
                                 return StageResult.from_public(payload)
                         payload = port.advance_second_stage(
                             control_root=control_root, config=config, run=current,

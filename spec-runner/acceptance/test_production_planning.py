@@ -19,6 +19,9 @@ from spec_runner.store import RunRecord, Store, now
 from spec_runner.tracker import read_local
 from spec_runner.plans import validate_spec_plan, validate_ticket_plan
 from spec_runner.production_gates import implementation_artifacts
+from spec_runner.models import RunContext
+from spec_runner.stage_executor import execute_stage
+from spec_runner.stage_progression import StageRoute
 
 
 @pytest.fixture
@@ -508,6 +511,33 @@ def test_production_queue_failure_closes_run_before_returning_error(context, mon
     assert all(item["state"] == "failed" for item in store.steps_for_run(run.run_id))
     assert all(item["state"] == "failed" for item in store.workers_for_run(run.run_id))
     assert any(item["event_type"] == "run_failed" for item in store.events_for_run(run.run_id))
+
+
+def test_production_stage_failure_records_recovery_before_returning_error(context, monkeypatch):
+    root, config, store, run = context
+    artifact = root / "artifacts" / run.run_id
+    artifact.mkdir(parents=True)
+    (artifact / "spec-plan.json").write_text(
+        json.dumps({"digest": "plan-1", "specs": [{"key": "S1", "blocked_by": []}]}),
+        encoding="utf-8",
+    )
+    store.set_run_state(run.run_id, "planned")
+    current = store.find_by_run_id(run.run_id)
+    assert current is not None
+
+    def fail_tickets(**kwargs):
+        raise RunnerError("planning_not_ready", "ticket worker returned an incomplete plan")
+
+    monkeypatch.setattr(workflow, "_execute_codex_tickets", fail_tickets)
+    with pytest.raises(RunnerError, match="incomplete plan"):
+        execute_stage(
+            RunContext(root, config, "Requirement", "brief", current, store),
+            StageRoute(kind="planned", state="planned", production=True),
+        )
+
+    assert store.find_by_run_id(run.run_id).state == "failed"
+    assert store.operations_for_run(run.run_id)[0]["state"] == "failed"
+    assert any(item["event_type"] == "recovery_decision_recorded" for item in store.events_for_run(run.run_id))
 
 
 def test_production_completion_receipt_conflict_is_rejected_atomically(context):
