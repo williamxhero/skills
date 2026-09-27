@@ -458,6 +458,11 @@ def recovery_diagnostic(*, episode: Mapping[str, Any], observations: list[Mappin
     latest_observation = body(observations[-1], "observation") if observations else {}
     latest_decision = body(decisions[-1], "decision") if decisions else {}
     action = str(latest_decision.get("action") or episode.get("state") or "unknown")
+    # A persisted timer can fail closed after its decision was recorded. The
+    # diagnostic must describe the durable run frontier, rather than a stale
+    # wait action that would suggest the timer is still safe to wake.
+    if run_state == "blocked" and action in {"wait_retry", "service_wait"}:
+        action = "blocked"
     family = str(latest_observation.get("family") or latest_decision.get("family") or "unknown")
     reason = str(latest_observation.get("reason") or latest_decision.get("reason") or "unknown")
     route = {

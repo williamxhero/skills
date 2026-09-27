@@ -804,6 +804,9 @@ def test_public_drive_fails_closed_on_corrupt_persisted_wait(
     assert invalid_events[-1]["payload"] == {
         "action": wait_action, "reason": expected_reason,
     }
+    diagnostic = result["recovery"]["episodes"][-1]["diagnostic"]
+    assert diagnostic["current_action"] == "blocked"
+    assert diagnostic["next_recovery_condition"].startswith("an operator must resolve")
 
 
 def test_drive_wait_observes_pause_and_cancel_without_starting_another_check(tmp_path: Path, monkeypatch) -> None:

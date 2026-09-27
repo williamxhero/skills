@@ -1798,3 +1798,18 @@ the complete source plus acceptance selection passed `486 passed, 1 skipped`;
 `compileall` and `git diff --check` passed. This is deterministic persisted
 wait integrity evidence only; live SDK recovery, source-thread migration,
 Windows detached recovery and project-level L3-L5 remain `not_verified`.
+
+## RCV-01.4 blocked wait diagnostic consistency (2026-09-28)
+
+When a persisted timer is rejected, the recovery diagnostic now follows the
+durable run state and reports `current_action=blocked` with the operator
+resolution condition. It no longer presents the stale `wait_retry` or
+`service_wait` decision as a safe timer-backed action after the run has been
+failed closed.
+
+The recovery/runtime diagnostic selection passed `72 passed`; the complete
+source plus acceptance selection passed `486 passed, 1 skipped`; source,
+tests and acceptance harness `compileall`, plus `git diff --check`, passed.
+This is deterministic diagnostic consistency evidence only; live SDK recovery,
+source-thread migration, Windows detached recovery and project-level L3-L5
+remain `not_verified`.
