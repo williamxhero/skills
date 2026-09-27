@@ -1906,3 +1906,22 @@ integer contract to generation and all durable recovery counters, returning a
 stable `recovery_counter_invalid` error before SQLite mutation.
 GitHub Actions run `36352837713` passed on both Ubuntu and Windows contract
 jobs.
+
+## SF-05.3 launcher-log retention replay binding (2026-09-28)
+
+Commit `6f91280` binds a launcher-log rotation replay to the retention policy
+recorded in its durable intent. Reusing the same `rotation_key` with a
+changed `retain` value now fails with `launcher_log_retention_conflict`, and a
+malformed persisted retention value fails closed before any log operation.
+This prevents an idempotent replay from silently changing historical cleanup
+semantics while preserving the existing CLI result shape and receipt schema.
+
+Focused log/CLI tests passed `35 passed`; complete source plus acceptance
+selection passed `533 passed, 1 skipped`; `compileall` and `git diff --check`
+passed. GitHub Actions run `36356249454` passed both Ubuntu and Windows
+contract jobs, including the installed-wheel public CLI checks.
+
+This is deterministic durable-operation evidence. It does not complete the
+remaining native Windows combined acceptance, live GitHub side-effect
+reconciliation, source-thread takeover, or project-level L3-L5 gates; #266
+and those dependent issues remain open.
