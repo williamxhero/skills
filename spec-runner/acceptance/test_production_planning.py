@@ -215,6 +215,29 @@ def test_later_failure_preserves_completed_prepared_stage_evidence(monkeypatch):
         ]
 
 
+def test_failure_before_next_stage_intent_preserves_completed_worker(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("prepared inputs must skip planning SDK"))
+
+        def fail_before_implementation(**kwargs):
+            raise RunnerError("candidate_unavailable", "simulated failure before worker intent")
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", fail_before_implementation)
+        with pytest.raises(RunnerError) as error:
+            Runner().start(request)
+        assert error.value.code == "candidate_unavailable"
+        run_id = Runner().status(control_root=request.control_root, run_id=None)["runs"][0]["run_id"]
+        detail = Runner().status(control_root=request.control_root, run_id=run_id)
+        assert detail["run"]["state"] == "failed"
+        assert {step["step_name"]: step["state"] for step in detail["steps"]} == {
+            "prepared_planning": "planned", "codex_ticket_planning": "tickets_ready",
+        }
+        assert [worker["state"] for worker in detail["workers"]] == ["planned", "tickets_ready"]
+
+
 def test_public_start_rejects_prepared_ticket_for_another_plan(monkeypatch):
     runtime = Path(__file__).parent / ".runtime"
     runtime.mkdir(exist_ok=True)

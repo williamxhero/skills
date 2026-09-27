@@ -1118,11 +1118,15 @@ class Store:
             if state != "blocked_writer_busy":
                 self.connection.execute(
                     """UPDATE workers SET state = ?, updated_at = ? WHERE worker_id = (
-                           SELECT worker_id FROM workers WHERE run_id = ? ORDER BY rowid DESC LIMIT 1)""",
+                           SELECT worker_id FROM workers WHERE run_id = ? ORDER BY rowid DESC LIMIT 1)
+                       AND state IN ('pending', 'running', 'starting', 'wait_retry',
+                                     'service_wait', 'wait_for_config', 'failed', 'blocked')""",
                     (state, timestamp, run_id),
                 )
                 self.connection.execute(
-                    "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
+                    """UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?
+                       AND state IN ('pending', 'running', 'starting', 'wait_retry',
+                                     'service_wait', 'wait_for_config', 'failed', 'blocked')""",
                     (state, timestamp, run_id, run["current_step"]),
                 )
             self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
