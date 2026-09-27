@@ -259,6 +259,13 @@ class RunRuntime:
                         brief_digest=brief_digest,
                         store=store,
                     )
+                    if (recovered_status is not None and config.workflow_mode == "production"
+                            and recovered_status.get("state") == "spec_completed"):
+                        current = store.find_by_run_id(existing.run_id) or existing
+                        recovered_status = port.production_runtime(
+                            control_root=control_root, config=config, run=current,
+                            brief=brief, brief_digest=brief_digest, store=store,
+                        ).continue_after_spec(recovered_status)
                 except RunnerError as exc:
                     recovery_run = port.latest_durable_run(store=store, run=existing)
                     transition = RecoveryRuntime(run=recovery_run, store=store).transition_failure(

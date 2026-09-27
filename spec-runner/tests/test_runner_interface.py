@@ -390,6 +390,9 @@ def test_production_workflow_continues_from_durable_spec_completion(tmp_path: Pa
             return current
 
     class ProbeWorkflow(ProductionWorkflow):
+        def completed_specs(self):
+            return {"S1"}
+
         def run_queue(self, spec_plan):
             observed["run"] = self.run
             observed["plan"] = spec_plan

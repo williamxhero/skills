@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import replace
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,100 @@ def test_public_start_adopts_prepared_plan_and_tickets_without_planning_sdk(monk
         replay = Runner().start(request)
         assert replay["created"] is False and replay["run"]["run_id"] == run_id
         assert len(observed) == 1
+
+
+@pytest.mark.parametrize("recover_process_exit", [False, True])
+@pytest.mark.parametrize("invalid_evidence", [None, "missing_archive", "wrong_review_sha", "unowned_workspace"])
+@pytest.mark.parametrize("remaining_spec", [False, True])
+def test_public_runner_finishes_merged_local_frontier_without_new_workers(monkeypatch, recover_process_exit, invalid_evidence, remaining_spec):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="local-frontier-", dir=runtime) as directory:
+        request, plan_digest = _prepared_inputs(Path(directory))
+        if remaining_spec:
+            inputs = request.control_root / "inputs"
+            plan = json.loads((inputs / "spec-plan.json").read_text(encoding="utf-8"))
+            plan["specs"].append({**plan["specs"][0], "key": "S2", "blocked_by": ["S1"]})
+            plan = validate_spec_plan(plan)
+            plan_digest = plan["digest"]
+            (inputs / "spec-plan.json").write_text(json.dumps(plan), encoding="utf-8")
+            ticket = json.loads((inputs / "ticket-plan.json").read_text(encoding="utf-8"))
+            ticket["spec_plan_digest"] = plan_digest
+            (inputs / "ticket-plan.json").write_text(json.dumps(ticket), encoding="utf-8")
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("no SDK turn is required"))
+
+        def stop_after_tickets(*, run, store, **kwargs):
+            store.set_run_state(run.run_id, "needs_input")
+            return {"state": "needs_input", **store.public_status(run.run_id)}
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", stop_after_tickets)
+        run_id = Runner().start(request)["run"]["run_id"]
+        config = RunnerConfig.from_file(request.config_file, request.control_root)
+        sha = subprocess.check_output(["git", "-C", str(config.repository_path), "rev-parse", "HEAD"], text=True).strip()
+        with closing(Store.open(request.control_root, create=False)) as store:
+            for stage, thread, turn, state in [
+                ("codex_implementation", "owner-thread", "owner-turn", "verified_candidate"),
+                ("codex_review", "review-thread", "review-turn", "reviewed"),
+            ]:
+                operation = f"{stage}:{run_id}:S1"
+                worker_id = f"codex_sdk:{run_id}:{stage}:S1"
+                store.begin_stage(run_id, step_name=stage, operation_id=operation,
+                                  backend_kind="codex_sdk", worker_id=worker_id)
+                store.complete_codex_stage(run_id, operation, thread_id=thread, turn_id=turn,
+                                           state=state, step_name=stage, worker_id=worker_id)
+                if not (invalid_evidence == "missing_archive" and thread == "review-thread"):
+                    key = (f"cleanup:{run_id}:S1:implementation:{sha}" if stage == "codex_implementation"
+                           else f"cleanup:{run_id}:review:archive_readback:{thread}:{turn}")
+                    store.append_event(run_id=run_id, event_key=key, event_type="cleanup_readback",
+                                       payload={"thread_id": thread, "archived": True, "pages_read": 1})
+            store.set_run_state(run_id, "failed" if recover_process_exit else "spec_completed")
+        artifact = request.control_root / "artifacts" / run_id
+        ticket = json.loads((artifact / "ticket-plan-S1.json").read_text(encoding="utf-8"))
+        (artifact / "delivery-S1.json").write_text(json.dumps({
+            "run_id": run_id, "spec_key": "S1", "plan_digest": plan_digest,
+            "ticket_plan_digest": ticket["digest"],
+            "candidate": {"outcome": "verified", "candidate_sha": sha, "acceptance_version": ticket["digest"]},
+            "review": {"approved": True, "candidate_sha": "wrong" if invalid_evidence == "wrong_review_sha" else sha,
+                       "review_digest": "review-digest",
+                       "worker": {"status": "completed", "thread_id": "review-thread", "turn_id": "review-turn"}},
+            "merge": {"outcome": "merged", "tested_head": sha, "merge_sha": sha, "target_ref": "HEAD"},
+        }), encoding="utf-8")
+        if invalid_evidence == "unowned_workspace":
+            workspace = request.control_root / "delivery-workspaces" / f"S1-{run_id[:8]}"
+            workspace.mkdir(parents=True)
+            (workspace / "preserve.txt").write_text("unowned", encoding="utf-8")
+        if recover_process_exit:
+            def recover(**kwargs):
+                kwargs["store"].set_run_state(run_id, "spec_completed")
+                return {"state": "spec_completed", "spec_key": "S1"}
+            monkeypatch.setattr(workflow, "_recover_after_process_exit", recover)
+        next_specs = []
+        def next_tickets(**kwargs):
+            spec_key = kwargs["spec_plan"]["specs"][0]["key"]
+            assert remaining_spec and spec_key == "S2"
+            next_specs.append(spec_key)
+            kwargs["store"].set_run_state(run_id, "needs_input")
+            return kwargs["store"].find_by_run_id(run_id)
+        monkeypatch.setattr(workflow, "_execute_codex_tickets", next_tickets)
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", lambda **kwargs: pytest.fail("candidate already merged"))
+        if invalid_evidence:
+            with pytest.raises(RunnerError) as error:
+                Runner().start(request)
+            assert error.value.code == "production_recovery_evidence_invalid"
+            with closing(Store.open(request.control_root, create=False)) as store:
+                assert store.production_completed_specs(run_id) == set()
+            if invalid_evidence == "unowned_workspace":
+                assert (workspace / "preserve.txt").read_text(encoding="utf-8") == "unowned"
+            return
+        result = Runner().start(request)
+        assert result["run"]["state"] == ("needs_input" if remaining_spec else "completed")
+        assert next_specs == (["S2"] if remaining_spec else [])
+        assert len(result["workers"]) == 4
+        with closing(Store.open(request.control_root, create=False)) as store:
+            assert store.production_completed_specs(run_id) == {"S1"}
+        receipt = json.loads((artifact / "delivery-S1.json").read_text(encoding="utf-8"))
+        assert receipt["cleanup"]["outcome"] == "cleaned"
+        assert Runner().start(request)["run"]["state"] == ("needs_input" if remaining_spec else "completed")
 
 
 def test_prepared_ticket_adopts_matching_existing_local_issues_across_runs(monkeypatch):

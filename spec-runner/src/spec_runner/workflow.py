@@ -2111,10 +2111,15 @@ def _finish_codex_implementation(
     if cleanup.get("outcome") != "cleaned":
         store.mark_cleanup_pending(run.run_id)
         return {"state": "cleanup_pending", "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
+    _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
+        spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review,
+                                   "merge": merged, "cleanup": cleanup})
     if finalize_run:
         store.mark_archived(run.run_id, state="completed")
     else:
-        store.set_run_state(run.run_id, "spec_completed")
+        plan = load_json(artifact_directory / "spec-plan.json")
+        _record_production_spec(control_root=control_root, config=config, run_id=run.run_id,
+                                store=store, spec_key=spec_key, plan_digest=str(plan["digest"]))
     return {"state": "completed" if finalize_run else "spec_completed", "spec_key": spec_key,
             "candidate": candidate_receipt, "review": validated_review, "merge": merged, "cleanup": cleanup}
 
@@ -3976,6 +3981,92 @@ def _persist_delivery_evidence(*, control_root: Path, config: RunnerConfig, run:
     ).persist_delivery_evidence(spec_key=spec_key, delivery=delivery)
 
 
+def _reconcile_completed_local_delivery(*, control_root: Path, config: RunnerConfig,
+                                        run: RunRecord, store: Store, spec_key: str) -> dict[str, object]:
+    """Adopt a merged local frontier without starting another business turn."""
+    artifact = _safe_artifact_directory(control_root, config, run.run_id)
+    receipt = load_json(artifact / f"delivery-{spec_key}.json")
+    plan = load_json(artifact / "spec-plan.json")
+    ticket = load_json(artifact / f"ticket-plan-{spec_key}.json")
+    candidate = receipt.get("candidate")
+    review = receipt.get("review")
+    merged = receipt.get("merge")
+    if (
+        receipt.get("run_id") != run.run_id or receipt.get("spec_key") != spec_key
+        or receipt.get("plan_digest") != plan.get("digest")
+        or receipt.get("ticket_plan_digest") != ticket.get("digest")
+        or not isinstance(candidate, dict) or candidate.get("outcome") != "verified"
+        or not isinstance(candidate.get("candidate_sha"), str) or not candidate["candidate_sha"]
+        or candidate.get("acceptance_version") != ticket.get("digest")
+        or not isinstance(review, dict) or review.get("approved") is not True
+        or not isinstance(review.get("review_digest"), str) or not review["review_digest"]
+        or review.get("candidate_sha") != candidate.get("candidate_sha")
+        or not isinstance(merged, dict) or merged.get("outcome") != "merged"
+        or merged.get("tested_head") != candidate.get("candidate_sha")
+        or merged.get("target_ref") != config.target_ref
+        or not isinstance(merged.get("merge_sha"), str) or not merged["merge_sha"]
+    ):
+        raise RunnerError("production_recovery_evidence_invalid", "local delivery lacks matching verified candidate, review and merge evidence")
+    review_worker = review.get("worker")
+    workers = store.workers_for_run(run.run_id)
+    owner_prefix = f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}"
+    owner = next((worker for worker in workers if worker.get("worker_id") == owner_prefix), None)
+    if (not isinstance(review_worker, dict) or owner is None
+            or review_worker.get("status") != "completed"
+            or review_worker.get("error")
+            or review_worker.get("thread_id") == owner.get("external_thread_id")
+            or not any(worker.get("state") == "reviewed"
+                       and worker.get("external_thread_id") == review_worker.get("thread_id")
+                       and worker.get("external_turn_id") == review_worker.get("turn_id")
+                       for worker in workers)):
+        raise RunnerError("production_recovery_evidence_invalid", "local delivery lacks its independent durable reviewer")
+    archive_events = [
+        event for event in store.events_for_run(run.run_id)
+        if event.get("event_type") == "cleanup_readback"
+        and isinstance(event.get("payload"), dict) and event["payload"].get("archived") is True
+    ]
+    owner_key = f"cleanup:{run.run_id}:{spec_key}:implementation:{candidate['candidate_sha']}"
+    review_suffix = f":archive_readback:{review_worker.get('thread_id')}:{review_worker.get('turn_id')}"
+    if (not owner.get("external_thread_id")
+            or not any(event.get("event_key") == owner_key
+                       and event["payload"].get("thread_id") == owner["external_thread_id"]
+                       for event in archive_events)
+            or not any(str(event.get("event_key")).endswith(review_suffix)
+                       and event["payload"].get("thread_id") == review_worker.get("thread_id")
+                       for event in archive_events)):
+        raise RunnerError("production_recovery_evidence_invalid", "local delivery lacks worker archive readbacks")
+    _git_checked(config.repository_path, "merge-base", "--is-ancestor",
+                 str(candidate["candidate_sha"]), str(merged["merge_sha"]),
+                 timeout_seconds=config.git_timeout_seconds)
+    _git_checked(config.repository_path, "merge-base", "--is-ancestor",
+                 str(merged["merge_sha"]), config.target_ref,
+                 timeout_seconds=config.git_timeout_seconds)
+    root = control_root / "delivery-workspaces"
+    safe_key = "".join(char if char.isalnum() or char in "._-" else "-" for char in spec_key)
+    workspace = root / f"{safe_key}-{run.run_id[:8]}"
+    manifest = root / f"{safe_key}-{run.run_id[:8]}.manifest.json"
+    if workspace.is_symlink() or manifest.is_symlink():
+        raise RunnerError("production_recovery_evidence_invalid", "local delivery workspace identity is a symbolic link")
+    if manifest.is_file():
+        document = load_json(manifest)
+        if document.get("run_id") != run.run_id or document.get("spec_key") != spec_key:
+            raise RunnerError("production_recovery_evidence_invalid", "local delivery workspace ownership changed")
+        cleanup = cleanup_managed_workspace(repository=config.repository_path, workspace_root=root,
+                                             workspace=workspace, manifest=manifest)
+    else:
+        registered = _git_checked(config.repository_path, "worktree", "list", "--porcelain",
+                                  timeout_seconds=config.git_timeout_seconds)
+        paths = [Path(line.removeprefix("worktree ")).resolve()
+                 for line in registered.splitlines() if line.startswith("worktree ")]
+        if workspace.exists() or workspace.resolve() in paths:
+            raise RunnerError("production_recovery_evidence_invalid", "unowned local delivery workspace remains")
+        cleanup = {"outcome": "cleaned", "workspace": str(workspace),
+                   "recovered": True, "evidence": "path_absent_and_git_worktree_readback"}
+    if cleanup.get("outcome") != "cleaned":
+        raise RunnerError("production_cleanup_pending", "local delivery workspace cleanup is still pending", details=cleanup)
+    return {**receipt, "cleanup": cleanup}
+
+
 def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str | None = None,
                         store: Store | None = None, run: RunRecord | None = None,
                         brief: str = "", brief_digest: str = "") -> ProductionWorkflow:
@@ -4005,6 +4096,7 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
             recover_github_candidate=_recover_failed_github_candidate,
             resume_reviewed_delivery=_resume_reviewed_delivery,
             definitive_failed_checks=_definitive_failed_github_checks,
+            reconcile_local_delivery=_reconcile_completed_local_delivery,
         ),
     )
 

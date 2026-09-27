@@ -52,6 +52,7 @@ class ProductionPorts:
     recover_github_candidate: GitHubRecoveryRunner | None = None
     resume_reviewed_delivery: ReviewedDeliveryRunner | None = None
     definitive_failed_checks: FailedChecks | None = None
+    reconcile_local_delivery: Callable[..., dict[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -212,7 +213,14 @@ class ProductionWorkflow:
         plan_path = self._artifact() / "spec-plan.json"
         if not plan_path.is_file():
             raise RunnerError("spec_plan_missing", "completed production SPEC has no persisted SpecPlan")
-        return replace(self, context=replace(self.context, run=current)).run_queue(self.ports.load_json(plan_path))
+        plan = self.ports.load_json(plan_path)
+        spec_key = result.get("spec_key")
+        if isinstance(spec_key, str) and spec_key not in self.completed_specs():
+            if not any(isinstance(spec, dict) and spec.get("key") == spec_key for spec in plan.get("specs", [])):
+                raise RunnerError("production_spec_mismatch", "completed delivery belongs to another plan")
+            if self.config.github_repository is not None:
+                self.record_spec(spec_key=spec_key, plan_digest=str(plan.get("digest", "")))
+        return replace(self, context=replace(self.context, run=current)).run_queue(plan)
 
     def resume_reviewed_delivery(self) -> dict[str, object]:
         """Resume the delivery frontier after an independent review was approved."""
@@ -278,7 +286,25 @@ class ProductionWorkflow:
         specs = spec_plan.get("specs")
         if not isinstance(specs, list) or any(not isinstance(item, dict) for item in specs):
             raise RunnerError("invalid_spec_plan", "production queue requires keyed SPEC objects")
+        stopped = self._control_boundary()
+        if stopped is not None:
+            return stopped
         completed = self.completed_specs()
+        if run.state == "spec_completed" and self.config.github_repository is None:
+            for spec in specs:
+                spec_key = str(spec.get("key"))
+                receipt_path = self._artifact() / f"delivery-{spec_key}.json"
+                if spec_key in completed or not receipt_path.is_file():
+                    continue
+                if self.ports.reconcile_local_delivery is None:
+                    raise RunnerError("production_recovery_missing", "local delivery reconciliation is not configured")
+                receipt = self.ports.reconcile_local_delivery(
+                    control_root=self.control_root, config=self.config, run=run,
+                    store=store, spec_key=spec_key,
+                )
+                self.ports.write_json_atomic(receipt_path, receipt)
+                self.record_spec(spec_key=spec_key, plan_digest=str(spec_plan.get("digest", "")))
+                completed.add(spec_key)
         while len(completed) < len(specs):
             stopped = self._control_boundary()
             if stopped is not None:
@@ -336,6 +362,9 @@ class ProductionWorkflow:
             run = store.find_by_run_id(run.run_id)
             if run is None:
                 raise RunnerError("run_missing", "production queue run disappeared during continuation")
+        stopped = self._control_boundary()
+        if stopped is not None:
+            return stopped
         store.mark_archived(run.run_id, state="completed")
         return {"state": "completed", **store.public_status(run.run_id)}
 

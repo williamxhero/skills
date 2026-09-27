@@ -1651,6 +1651,9 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     completed_at=2,
                 )
                 ticket_plan = {"spec_key": "SPEC-95", "digest": "ticket-digest", "base_sha": base_sha}
+                artifacts = root / "control" / "artifacts" / run_id
+                artifacts.mkdir(parents=True, exist_ok=True)
+                (artifacts / "spec-plan.json").write_text(json.dumps({"digest": "plan-digest"}), encoding="utf-8")
                 candidate_receipt = {"candidate_sha": existing_candidate_sha, "passed": True}
                 review = {"approved": True, "blocking": [], "candidate_sha": existing_candidate_sha}
 
@@ -1665,6 +1668,7 @@ class CodexWorkflowControlTests(unittest.TestCase):
                     patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
                     patch.object(workflow, "merge_local", return_value={"candidate_sha": existing_candidate_sha}),
                     patch.object(workflow, "_persist_delivery_evidence"),
+                    patch.object(workflow, "_record_production_spec"),
                     patch.object(workflow, "cleanup_managed_workspace", return_value={"outcome": "cleaned"}),
                 ):
                     with self.assertRaisesRegex(RunnerError, "persisted review does not approve"):

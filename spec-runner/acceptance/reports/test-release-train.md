@@ -1412,3 +1412,46 @@ and zero status contexts with `total_count=0`. This confirms the new count
 check accepts the current real repository response; it does not prove a live
 truncated-page incident. Protected PR delivery, merge queue behavior, and
 project-level L3-L5 remain `not_verified`; #257 stays open.
+
+## SF-02.2 / SF-05.1 recovered local delivery queue (2026-09-27)
+
+The existing live run `56335d20-5e36-4be8-bc15-875eedb42743` had a durable
+approved candidate, local merge and worker archive receipts, but remained at
+`spec_completed` without a transactional queue completion. Process-exit
+recovery returned before resuming the queue. A subsequent start could select
+the already delivered SPEC again and attempt new ticket planning.
+
+Recovery now continues through `ProductionWorkflow` before returning. Local
+delivery persists its candidate-workspace cleanup and SPEC completion before
+returning to the queue. For historical unrecorded local frontiers, the
+production adapter checks matching run/plan/ticket/candidate/review identities,
+the durable independent reviewer and exact archive receipts, actual Git
+ancestry for candidate/merge/current target, and owned workspace cleanup or
+absence confirmed by the Git worktree registry. It then records completion
+and selects the next dependency-ready SPEC. Pause/cancel is checked before
+reconciliation and terminal queue completion.
+
+Sixteen public Runner cases cover start and process-exit recovery, terminal
+replay, next-SPEC dispatch, wrong review SHA, missing archive and an unowned
+workspace. They use simulated workers and a real temporary Git repository.
+The complete source plus acceptance selection passed `437 passed, 1 skipped`
+in 101.11 seconds; source/test compileall and `git diff --check` passed. Two
+older private seam tests were updated to supply the newly required completion
+boundary, without relaxing the production evidence checks.
+
+Public `start` reused the original live launch key and recorded `completed`
+with one `production_spec_completed` event. Readback retained six workers,
+capacity attempts `3`, and the prior same-thread counters; no new turn,
+merge or run was created. The completed-spec receipt binds delivery digest
+`a01ffa9227b10076943966412b4353260f877a08722154f4e72691a8045ace99`.
+Final public status and terminal replay show no writer lease. The original
+three `dy-video-download` user edits were untouched.
+
+Independent `codex review --uncommitted` session
+`01a0e248-57d2-7523-baa6-c0d9f264d8fa` was interrupted by the provider's
+usage limit, with an explicit retry time of 18:45 local. It produced no
+completed review result and is not an approval. No quota or recovery budget
+was reset. This increment does not prove local ticket closure, the complete
+SF-02.2 rejection/cleanup matrix, three-SPEC GitHub delivery, protected merge,
+source takeover, or project L3-L5. #253, #264 and their parents remain OPEN;
+independent review remains pending.
