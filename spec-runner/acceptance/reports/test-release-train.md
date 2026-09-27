@@ -1182,3 +1182,25 @@ acceptance selection passed `396 passed, 1 skipped`; `compileall` and
 `git diff --check` passed. This is deterministic policy and replay evidence.
 The live provider capacity incident, successful business continuation, and
 project-level L3-L5 gates remain `not_verified`.
+
+## Interrupted implementation control readback (2026-09-27)
+
+The production implementation now handles an SDK `interrupted` result before
+input gating or candidate delivery. A matching durable pause/cancel request
+atomically updates the run, implementation step, and worker; an interruption
+without such a request remains an error. A failed SDK result retains its
+structured fault observation instead of being replaced by an artifact error.
+Process-exit recovery applies the same control only after readback verifies
+the original thread and turn are idle and interrupted. The SDK read adapter
+also projects root-wrapped file-change kinds into JSON-safe values.
+
+Focused planning/recovery/adapter tests passed `86 passed, 1 skipped`; full
+source plus acceptance passed `404 passed, 1 skipped`. `compileall` and
+`git diff --check` passed. The existing live run
+`56335d20-5e36-4be8-bc15-875eedb42743` was reconciled through public
+`start` with its original launch key. Its run, step, and worker are now
+`paused` on turn `01a0e188-ba5c-7b02-bb85-6481c357f2bc`; worker count
+remains three, capacity attempts remain three, and no writer lease remains.
+This proves pause readback, not successful business continuation. No verified
+candidate, review, PR, merge, three-SPEC delivery, or project-level L3-L5
+acceptance is claimed; #264 and #295 remain open.

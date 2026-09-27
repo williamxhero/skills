@@ -19,6 +19,7 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
     RunnerError = workflow.RunnerError
     Store = workflow.Store
     _adopt_existing_ticket_plan = workflow._adopt_existing_ticket_plan
+    _apply_implementation_control = workflow._apply_implementation_control
     _advance_second_stage = workflow._advance_second_stage
     _archive_worker_readback = workflow._archive_worker_readback
     _execute_deterministic_example = workflow._execute_deterministic_example
@@ -705,6 +706,21 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
                 and turns[-1].get("status") == "failed"
             )
             if interrupted or failed:
+                if interrupted:
+                    controlled = _apply_implementation_control(
+                        run=run, store=store, spec_key=spec_key,
+                        thread_id=thread_id, turn_id=turn_id,
+                    )
+                    if controlled is not None:
+                        store.append_event(
+                            run_id=run.run_id,
+                            event_key=f"recovery:{run.run_id}:implementation-turn-retry:{turn_id}:{worker['updated_at']}",
+                            event_type="interrupted_sdk_turn_reconciled",
+                            payload={"step": run.current_step, "spec_key": spec_key,
+                                     "thread_id": thread_id, "turn_id": turn_id,
+                                     "thread_status": "idle", "turn_status": "interrupted"},
+                        )
+                        return {"created": False, **controlled}
                 settled = settled_failure(thread_id, turn_id)
                 if settled is not None:
                     return settled

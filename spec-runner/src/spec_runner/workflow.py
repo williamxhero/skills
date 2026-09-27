@@ -573,6 +573,29 @@ def _persist_implementation_input_gate(
     return {"state": "needs_input", "spec_key": spec_key, "questions": questions}
 
 
+def _apply_implementation_control(
+    *, run: RunRecord, store: Store, spec_key: str, thread_id: str, turn_id: str,
+) -> dict[str, object] | None:
+    control = store.control_for_run(run.run_id)
+    if not control or control["requested_state"] not in {"pause_requested", "cancel_requested"}:
+        return None
+    state = "paused" if control["requested_state"] == "pause_requested" else "cancelled"
+    store.complete_codex_stage(
+        run.run_id, f"implementation:{run.run_id}:{spec_key}",
+        thread_id=thread_id, turn_id=turn_id, state=state,
+        step_name="codex_implementation",
+        worker_id=f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}",
+    )
+    store.append_event(
+        run_id=run.run_id,
+        event_key=f"control:{run.run_id}:{control['generation']}:applied",
+        event_type="control_applied",
+        payload={"requested_state": control["requested_state"],
+                 "generation": control["generation"], "turn_id": turn_id},
+    )
+    return {"state": state, **store.public_status(run.run_id)}
+
+
 def _persist_ticket_plan(*, control_root: Path, config: RunnerConfig,
                          run: RunRecord, store: Store, document: dict[str, object],
                          spec: dict[str, object], base_sha: str, operation_id: str,
@@ -2094,6 +2117,20 @@ def _execute_codex_implementation(
     artifact_directory = _safe_artifact_directory(control_root, config, run.run_id)
     artifact_directory.mkdir(parents=True, exist_ok=True)
     (artifact_directory / f"implementation-{spec_key}.json").write_text(json.dumps(result.public(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if result.status == "failed" or result.error:
+        raise RunnerError(
+            "codex_worker_failed", "Codex implementation returned a failed terminal result",
+            details={"fault_observation": result.fault_observation,
+                     "thread_id": result.thread_id, "turn_id": result.turn_id},
+        )
+    if result.status == "interrupted":
+        controlled = _apply_implementation_control(
+            run=run, store=store, spec_key=spec_key,
+            thread_id=result.thread_id, turn_id=result.turn_id,
+        )
+        if controlled is None:
+            raise RunnerError("unexpected_sdk_interrupt", "Codex interrupted without a durable pause or cancel request")
+        return controlled
     input_gate = _persist_implementation_input_gate(
         control_root=control_root, config=config, run=run, store=store, result=result,
         brief_digest=brief_digest, operation_id=implementation_operation, step_name=implementation_step,

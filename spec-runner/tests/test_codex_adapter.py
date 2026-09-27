@@ -3,6 +3,7 @@ from __future__ import annotations
 import types
 import unittest
 import threading
+import json
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -217,6 +218,33 @@ class CodexAdapterTests(unittest.TestCase):
         self.assertFalse(inspected["evidence_limits"]["source_stop_confirmed"])
         self.assertFalse(inspected["evidence_limits"]["ownership_transferred"])
         self.assertEqual(holder["codex"].resume_kwargs, {})
+
+    def test_thread_read_projects_root_wrapped_file_change_kind_as_json(self) -> None:
+        class FileChangeThread(FakeThread):
+            def read(self, *, include_turns: bool = False) -> object:
+                status = types.SimpleNamespace(root=types.SimpleNamespace(type="idle", active_flags=[]))
+                change = types.SimpleNamespace(
+                    path="src/module.py",
+                    kind=types.SimpleNamespace(root=types.SimpleNamespace(type="add")),
+                )
+                item = types.SimpleNamespace(type="fileChange", id="file-1", status="completed", changes=[change])
+                turn = types.SimpleNamespace(id="turn-file", status="interrupted", items_view="full", items=[item])
+                source = types.SimpleNamespace(id=self.id, status=status, turns=[turn] if include_turns else [])
+                return types.SimpleNamespace(thread=source)
+
+        def factory(config: object) -> FakeCodex:
+            codex = FakeCodex(config)
+            codex.thread = FileChangeThread()
+            codex.thread.id = "thread-file"
+            return codex
+
+        sdk = types.SimpleNamespace(CodexConfig=lambda **kwargs: kwargs, Codex=object)
+        inspected = CodexAdapter(codex_factory=factory, sdk_module=sdk).read_thread(
+            thread_id="thread-file", repository_path=Path("C:/repo"),
+        )
+        self.assertEqual(inspected["turns"][0]["items"][0]["changes"][0]["kind"], "add")
+        self.assertEqual(inspected["turns"][0]["status"], "interrupted")
+        json.dumps(inspected)
 
     def test_thread_read_fails_closed_on_identity_mismatch(self) -> None:
         def factory(config: object) -> FakeCodex:

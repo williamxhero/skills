@@ -555,6 +555,118 @@ def test_production_implementation_prompt_keeps_checks_and_other_runners_outside
     assert "Runner will execute the exact trusted acceptance checks" in captured["prompt"]
 
 
+@pytest.mark.parametrize("control_request, state", [
+    ("pause_requested", "paused"),
+    ("cancel_requested", "cancelled"),
+])
+def test_interrupted_implementation_applies_control_before_delivery(context, monkeypatch, control_request, state):
+    root, config, store, run = context
+    config = replace(config, workflow_mode="production", acceptance_ids=("A1",),
+        acceptance_checks=({"command": ["python", "-m", "pytest"], "acceptance": ["A1"]},),
+        acceptance_paths=("fixture-app/run-1",))
+    workspace = root / "workspace"
+    (workspace / "fixture-app" / "run-1").mkdir(parents=True)
+    monkeypatch.setattr(workflow, "prepare_workspace", lambda **_kwargs: {
+        "workspace": str(workspace), "base_sha": "base", "branch": "spec-runner/S1",
+        "manifest": str(root / "workspace.manifest.json"),
+    })
+
+    def interrupted_worker(**kwargs):
+        kwargs["on_turn_started"]("implementation-thread", "implementation-turn")
+        store.request_control(run.run_id, control_request)
+        return CodexWorkerResult("implementation-thread", "implementation-turn", "interrupted",
+            None, None, 0, 1, 2)
+
+    monkeypatch.setattr(workflow, "_run_worker", interrupted_worker)
+    monkeypatch.setattr(workflow, "_finish_codex_implementation",
+        lambda **_kwargs: pytest.fail("interrupted work must not enter candidate delivery"))
+    result = workflow._execute_codex_implementation(
+        control_root=root, config=config, brief_digest="brief", run=run, store=store,
+        ticket_plan={"spec_key": "S1", "digest": "ticket-digest", "tickets": []},
+    )
+    worker_id = f"codex_sdk:{run.run_id}:codex_implementation:S1"
+    assert result["state"] == state
+    assert store.find_by_run_id(run.run_id).state == state
+    assert next(worker for worker in store.workers_for_run(run.run_id)
+        if worker["worker_id"] == worker_id)["state"] == state
+    assert next(step for step in store.steps_for_run(run.run_id)
+        if step["step_name"] == "codex_implementation")["state"] == state
+    assert sum(event["event_type"] == "control_applied"
+        for event in store.events_for_run(run.run_id)) == 1
+
+
+def test_process_exit_reconciles_interrupted_implementation_control(context, monkeypatch):
+    root, config, store, run = context
+    operation_id = f"implementation:{run.run_id}:S1"
+    worker_id = f"codex_sdk:{run.run_id}:codex_implementation:S1"
+    store.begin_stage(run.run_id, step_name="codex_implementation", operation_id=operation_id,
+        backend_kind="codex_sdk", worker_id=worker_id)
+    store.record_codex_turn_started(run.run_id, operation_id,
+        thread_id="implementation-thread", turn_id="interrupted-turn",
+        step_name="codex_implementation", worker_id=worker_id)
+    store.set_run_state(run.run_id, "blocked")
+    store.request_control(run.run_id, "pause_requested")
+    workspace = root / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(workflow, "_implementation_workspace_path", lambda **_kwargs: workspace)
+
+    class InterruptedThread:
+        def read_thread(self, **_kwargs):
+            return {"thread_id": "implementation-thread", "thread_status": "idle",
+                "started_turn": False, "active_flags": [], "turn_count": 1,
+                "turns": [{"turn_id": "interrupted-turn", "status": "interrupted"}]}
+
+    monkeypatch.setattr(workflow, "CodexAdapter", InterruptedThread)
+    monkeypatch.setattr(workflow, "_resume_codex_stage",
+        lambda **_kwargs: pytest.fail("pause must not create another turn"))
+    current = store.find_by_run_id(run.run_id)
+    result = workflow._recover_after_process_exit(
+        control_root=root, config=config, run=current, brief="brief", brief_digest="brief", store=store,
+    )
+    assert result["run"]["state"] == "paused"
+    assert next(worker for worker in store.workers_for_run(run.run_id)
+        if worker["worker_id"] == worker_id)["state"] == "paused"
+    assert next(step for step in store.steps_for_run(run.run_id)
+        if step["step_name"] == "codex_implementation")["state"] == "paused"
+
+
+@pytest.mark.parametrize("status, error, expected_code", [
+    ("failed", "429 Too Many Requests", "codex_worker_failed"),
+    ("interrupted", None, "unexpected_sdk_interrupt"),
+])
+def test_implementation_rejects_uncontrolled_terminal_result_before_delivery(
+    context, monkeypatch, status, error, expected_code,
+):
+    root, config, store, run = context
+    config = replace(config, workflow_mode="production", acceptance_ids=("A1",),
+        acceptance_checks=({"command": ["python", "-m", "pytest"], "acceptance": ["A1"]},),
+        acceptance_paths=("fixture-app/run-1",))
+    workspace = root / "workspace"
+    (workspace / "fixture-app" / "run-1").mkdir(parents=True)
+    monkeypatch.setattr(workflow, "prepare_workspace", lambda **_kwargs: {
+        "workspace": str(workspace), "base_sha": "base", "branch": "spec-runner/S1",
+        "manifest": str(root / "workspace.manifest.json"),
+    })
+    fault = {"source": "sdk_result", "http_status": 429}
+
+    def terminal_worker(**kwargs):
+        kwargs["on_turn_started"]("implementation-thread", "implementation-turn")
+        return CodexWorkerResult("implementation-thread", "implementation-turn", status,
+            error, None, 0, 1, 2, fault_observation=fault)
+
+    monkeypatch.setattr(workflow, "_run_worker", terminal_worker)
+    monkeypatch.setattr(workflow, "_finish_codex_implementation",
+        lambda **_kwargs: pytest.fail("failed work must not enter candidate delivery"))
+    with pytest.raises(RunnerError) as raised:
+        workflow._execute_codex_implementation(
+            control_root=root, config=config, brief_digest="brief", run=run, store=store,
+            ticket_plan={"spec_key": "S1", "digest": "ticket-digest", "tickets": []},
+        )
+    assert raised.value.code == expected_code
+    if status == "failed":
+        assert raised.value.details["fault_observation"] == fault
+
+
 def test_completed_worker_blocker_is_deferred_to_trusted_candidate_gate(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

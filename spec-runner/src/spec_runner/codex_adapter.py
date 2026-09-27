@@ -869,8 +869,16 @@ def _enum_value(value: Any) -> object:
     """Return JSON-safe enum values while keeping fake SDKs usable."""
     if isinstance(value, Enum):
         return value.value
+    root = getattr(value, "root", None)
+    if root is not None and root is not value:
+        return _enum_value(root)
     value_attr = getattr(value, "value", None)
-    return value_attr if value_attr is not None else value
+    if value_attr is not None and value_attr is not value:
+        return _enum_value(value_attr)
+    type_attr = getattr(value, "type", None)
+    if type_attr is not None and type_attr is not value:
+        return _enum_value(type_attr)
+    return value if value is None or isinstance(value, (str, int, float, bool)) else _jsonable(value)
 
 
 def _jsonable(value: Any, *, _key: str | None = None) -> object:
