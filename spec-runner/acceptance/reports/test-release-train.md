@@ -1111,3 +1111,16 @@ cases with identical report digest
 `ee2030144ba2de23203579f55925d3db6dbf56e83ee187ffbb0af9c23cf5bca0`.
 Evidence: `acceptance/reports/SRAC-20260927-bf9ee0008d4f-installed-wheel.json`.
 This remains installed-artifact and deterministic evidence only.
+
+## SF-05.3 Windows lock replay on the current candidate (2026-09-27)
+
+The native Windows combined control-database and launcher-log probe passed on
+the current candidate. It held both independent locks before terminating the
+known detached child, observed the bounded public `control_database_busy`
+failure without database advancement, recovered the same run to `completed`
+while log handles remained held, and replayed the rotation intent after log
+release. Control DB integrity remained `ok` and rotated logs were readable.
+The probe run is `c247b04e-d0b7-4dcb-8dd6-e9ccb4809403`; evidence is
+`acceptance/reports/SRAC-20260928-windows-control-db-launcher-logs-architecture.json`.
+This covers the exercised Windows combination and does not complete the
+remaining #266 or project-level L3-L5 acceptance gates.
