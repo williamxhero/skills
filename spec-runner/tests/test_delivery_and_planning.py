@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import sqlite3
@@ -288,6 +289,50 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual((repo / "README.md").read_text(encoding="utf-8"), "base\n")
             self.assertEqual(git_sha(repo, "refs/heads/main"), merged["merge_sha"])
             self.assertEqual(merged["cleanup"]["outcome"], "cleaned")
+
+    def test_advanced_target_requires_verified_integration_before_merge(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Spec Runner Test"], cwd=repo, check=True)
+            (repo / "base.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+            workspace_root = Path(temp) / "workspaces"
+            candidate = prepare_workspace(repository=repo, workspace_root=workspace_root,
+                run_id="12345678-1234-1234-1234-123456789012", spec_key="SR-01",
+                base_ref="refs/heads/main")
+            candidate_workspace = Path(candidate["workspace"])
+            (candidate_workspace / "feature").mkdir()
+            (candidate_workspace / "feature" / "result.txt").write_text("ready\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=candidate_workspace, check=True)
+            subprocess.run(["git", "commit", "-qm", "candidate"], cwd=candidate_workspace, check=True)
+            (repo / "later.txt").write_text("later\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "advance target"], cwd=repo, check=True)
+            current_target = git_sha(repo, "refs/heads/main")
+            with self.assertRaises(RunnerError):
+                merge_local(repository=repo, candidate_branch=str(candidate["branch"]),
+                    target_ref="refs/heads/main", expected_target_sha=current_target,
+                    workspace_root=workspace_root, run_id="87654321-1234-1234-1234-123456789012",
+                    integration_checks=[{"command": [sys.executable, "-c", "raise SystemExit(1)"],
+                        "acceptance": ["integration"]}],
+                    integration_acceptance=["integration"], integration_version="ticket-digest",
+                    integration_paths=("feature",))
+            self.assertEqual(git_sha(repo, "refs/heads/main"), current_target)
+            receipt = merge_local(repository=repo, candidate_branch=str(candidate["branch"]),
+                target_ref="refs/heads/main", expected_target_sha=current_target,
+                workspace_root=workspace_root, run_id="12345678-1234-1234-1234-123456789012",
+                integration_checks=[{"command": [sys.executable, "-c",
+                    "from pathlib import Path; assert Path('feature/result.txt').read_text() == 'ready\\n'; assert Path('later.txt').read_text() == 'later\\n'"] ,
+                    "acceptance": ["integration"]}],
+                integration_acceptance=["integration"], integration_version="ticket-digest",
+                integration_paths=("feature",))
+            self.assertEqual(receipt["previous_target_sha"], current_target)
+            self.assertEqual(receipt["integration_verification"]["outcome"], "verified")
+            self.assertEqual(git_sha(repo, "refs/heads/main"), receipt["merge_sha"])
 
     def test_managed_workspace_cleanup_exposes_windows_lock_as_pending(self):
         with tempfile.TemporaryDirectory() as temp:

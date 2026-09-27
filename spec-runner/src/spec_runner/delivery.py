@@ -442,7 +442,11 @@ def validate_review(*, result: dict[str, Any], candidate_sha: str, acceptance_ve
 
 def merge_local(*, repository: Path, candidate_branch: str, target_ref: str,
                 expected_target_sha: str, workspace_root: Path, run_id: str,
-                git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS) -> dict[str, object]:
+                git_timeout_seconds: float = DEFAULT_GIT_TIMEOUT_SECONDS,
+                integration_checks: list[dict[str, Any]] | None = None,
+                integration_acceptance: list[str] | None = None,
+                integration_version: str | None = None,
+                integration_paths: tuple[str, ...] | list[str] = ()) -> dict[str, object]:
     """Merge in a disposable managed worktree and never reset a user checkout."""
     if git_sha(repository, target_ref, timeout_seconds=git_timeout_seconds) != expected_target_sha:
         raise RunnerError("target_ref_changed", "target ref moved before local merge")
@@ -457,12 +461,21 @@ def merge_local(*, repository: Path, candidate_branch: str, target_ref: str,
     )
     cleanup: dict[str, object] = {"outcome": "not_attempted"}
     merged = False
+    integration_receipt: dict[str, object] | None = None
     try:
         _git(
             workspace, "merge", "--no-ff", "--no-edit", candidate_branch,
             timeout_seconds=git_timeout_seconds,
         )
         merge_sha = git_sha(workspace, timeout_seconds=git_timeout_seconds)
+        if integration_checks is not None:
+            integration_receipt = verify_candidate(
+                workspace=workspace, candidate_sha=merge_sha,
+                acceptance_version=integration_version or "",
+                checks=integration_checks, acceptance=integration_acceptance or [],
+                base_sha=expected_target_sha, allowed_paths=integration_paths,
+                git_timeout_seconds=git_timeout_seconds,
+            )
         _git(
             repository, "update-ref", target_ref, merge_sha, expected_target_sha,
             timeout_seconds=git_timeout_seconds,
@@ -482,7 +495,7 @@ def merge_local(*, repository: Path, candidate_branch: str, target_ref: str,
                     cleanup = {"outcome": "pending", "reason": "merge_workspace_dirty", "workspace": os.fspath(workspace)}
             except RunnerError as exc:
                 cleanup = {"outcome": "pending", "reason": "merge_workspace_remove_failed", "error_code": exc.code, "workspace": os.fspath(workspace)}
-    return {
+    receipt = {
         "schema_version": "spec-runner-local-merge/v1",
         "target_ref": target_ref,
         "tested_head": _git(
@@ -494,3 +507,6 @@ def merge_local(*, repository: Path, candidate_branch: str, target_ref: str,
         "outcome": "merged",
         "cleanup": cleanup,
     }
+    if integration_receipt is not None:
+        receipt["integration_verification"] = integration_receipt
+    return receipt

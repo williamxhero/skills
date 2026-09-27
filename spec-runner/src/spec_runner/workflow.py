@@ -2042,6 +2042,19 @@ def _finish_codex_implementation(
     ) != candidate_sha:
         raise RunnerError("candidate_branch_changed", "candidate branch moved after verification")
     expected_target_sha = str(workspace_info["base_sha"])
+    current_target_sha = git_sha(
+        config.repository_path, config.target_ref,
+        timeout_seconds=config.git_timeout_seconds,
+    )
+    integration_checks = None
+    if current_target_sha != expected_target_sha:
+        _git_checked(
+            config.repository_path, "merge-base", "--is-ancestor",
+            expected_target_sha, current_target_sha,
+            timeout_seconds=config.git_timeout_seconds,
+        )
+        expected_target_sha = current_target_sha
+        integration_checks = list(config.acceptance_checks)
     merged = merge_local(
         repository=config.repository_path,
         candidate_branch=str(workspace_info["branch"]),
@@ -2050,6 +2063,10 @@ def _finish_codex_implementation(
         workspace_root=control_root / "delivery-workspaces",
         run_id=run.run_id,
         git_timeout_seconds=config.git_timeout_seconds,
+        integration_checks=integration_checks,
+        integration_acceptance=list(config.acceptance_ids) if integration_checks is not None else None,
+        integration_version=str(ticket_plan["digest"]) if integration_checks is not None else None,
+        integration_paths=config.acceptance_paths if integration_checks is not None else (),
     )
     _persist_delivery_evidence(control_root=control_root, config=config, run=run, store=store,
         spec_key=spec_key, delivery={"candidate": candidate_receipt, "review": validated_review, "merge": merged})
