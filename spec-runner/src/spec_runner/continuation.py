@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,8 @@ def _safe(value: Any, *, field: str) -> Any:
         return {str(key): _safe(item, field=f"{field}.{key}") for key, item in value.items()}
     if isinstance(value, list):
         return [_safe(item, field=field) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        raise RunnerError("continuation_value_invalid", f"continuation field is not a finite JSON number: {field}")
     if isinstance(value, (str, int, float, bool)) or value is None:
         if isinstance(value, str) and len(value) > 20_000:
             raise RunnerError("continuation_field_too_large", f"continuation field is too large: {field}")

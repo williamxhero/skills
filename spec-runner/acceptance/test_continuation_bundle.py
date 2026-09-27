@@ -43,6 +43,15 @@ def test_bundle_rejects_hidden_or_encrypted_history():
     assert error.value.code == "continuation_forbidden_material"
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_bundle_rejects_non_finite_json_numbers(value):
+    document = bundle_input()
+    document["requirements"] = [{"weight": value}]
+    with pytest.raises(RunnerError) as error:
+        build_bundle(document)
+    assert error.value.code == "continuation_value_invalid"
+
+
 def test_bundle_digest_and_identity_are_verified():
     document = build_bundle(bundle_input()).public()
     document["remaining_items"] = [{"id": "changed"}]

@@ -1813,3 +1813,18 @@ tests and acceptance harness `compileall`, plus `git diff --check`, passed.
 This is deterministic diagnostic consistency evidence only; live SDK recovery,
 source-thread migration, Windows detached recovery and project-level L3-L5
 remain `not_verified`.
+
+## RCV-02.1 continuation bundle finite JSON values (2026-09-28)
+
+Continuation bundle validation now rejects non-finite floating-point values
+(`NaN`, positive infinity, and negative infinity) as
+`continuation_value_invalid`. Python's JSON encoder otherwise writes these
+values using non-standard JSON tokens, which would weaken strict handoff
+readback and digest verification.
+
+The continuation bundle selection passed `11 passed`; the complete source
+plus acceptance selection passed `489 passed, 1 skipped`; source, tests and
+acceptance harness `compileall`, plus `git diff --check`, passed. This is
+deterministic handoff schema evidence only; live source-thread takeover,
+provider migration, native Windows old-writer shutdown and project-level
+L3-L5 remain `not_verified`.
