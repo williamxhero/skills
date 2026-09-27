@@ -17,11 +17,13 @@ from pathlib import Path
 
 from .config import RunnerConfig, read_brief
 from .errors import RunnerError
+from .models import RunContext
 from .recovery import RecoveryAction
 from .recovery_runtime import RecoveryEpisode
 from .scope_lock import ScopeLock
 from .store import RunRecord, Store, now
 from .stage_progression import StageProgression
+from .workflow_port import LegacyWorkflowPort
 
 
 class RunRuntime:
@@ -31,6 +33,9 @@ class RunRuntime:
     normalized launch key.  Stage implementations, Git, SDK, and receipt
     writers remain adapters behind the compatibility workflow module.
     """
+
+    def __init__(self, port: LegacyWorkflowPort | None = None) -> None:
+        self._port = port or LegacyWorkflowPort()
 
     def start(
         self,
@@ -44,11 +49,8 @@ class RunRuntime:
         launch_token: str | None = None,
         migration: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        # Lazy import keeps the adapter direction one-way and preserves the
-        # existing monkeypatch seams used by deterministic and acceptance tests.
-        from . import workflow
-
-        launch_key = workflow._validate_launch_key(launch_key)
+        port = self._port
+        launch_key = port.validate_launch_key(launch_key)
         control_root = control_root.expanduser().resolve()
         brief, brief_digest = read_brief(brief_file)
         config = RunnerConfig.from_file(config_file, control_root)
@@ -87,7 +89,7 @@ class RunRuntime:
                     else f"{existing.run_id}:{os.getpid()}:{uuid.uuid4().hex}"
                 )
             if existing:
-                config_matches_legacy_acceptance_upgrade = workflow._acceptance_upgrade_compatible(existing, config)
+                config_matches_legacy_acceptance_upgrade = port.acceptance_upgrade_compatible(existing, config)
                 if existing.input_digest != brief_digest or (
                     existing.config_digest != config.digest
                     and not config_matches_legacy_acceptance_upgrade
@@ -97,7 +99,7 @@ class RunRuntime:
                         "launch_key already belongs to different normalized input",
                         details={"run_id": existing.run_id},
                     )
-                if takeover_key and workflow._takeover_context(
+                if takeover_key and port.takeover_context(
                     control_root=control_root,
                     config=config,
                     run=existing,
@@ -108,7 +110,7 @@ class RunRuntime:
                         "existing takeover continuation has no durable context artifact",
                         details={"run_id": existing.run_id, "takeover_key": takeover_key},
                     )
-                workflow._reconcile_continuation_bundles(
+                port.reconcile_continuation_bundles(
                     control_root=control_root,
                     config=config,
                     run=existing,
@@ -124,7 +126,7 @@ class RunRuntime:
                     ),
                     migration_requested=(migration is not None),
                     migration_archive_pending=(
-                        workflow._migration_source_archive_retry_pending(
+                        port.migration_source_archive_retry_pending(
                             store=store,
                             run_id=existing.run_id,
                         )
@@ -141,7 +143,7 @@ class RunRuntime:
                             log_path=os.fspath(control_root / existing.log_path),
                         )
                     return {"created": False, **store.public_status(existing.run_id)}
-                global_lease = workflow._acquire_global_lease(
+                global_lease = port.acquire_global_lease(
                     scope=lease_scope,
                     owner_token=owner_token,
                     stale_after_seconds=stale_after_seconds,
@@ -158,7 +160,7 @@ class RunRuntime:
                     owner_token=owner_token,
                     log_path=os.fspath(control_root / existing.log_path),
                 )
-                heartbeat_stop, heartbeat_thread = workflow._start_lease_heartbeat(
+                heartbeat_stop, heartbeat_thread = port.start_lease_heartbeat(
                     control_root=control_root,
                     scope=lease_scope,
                     owner_token=owner_token,
@@ -177,7 +179,7 @@ class RunRuntime:
                     ),
                     migration_requested=migration is not None,
                     migration_archive_pending=(
-                        workflow._migration_source_archive_retry_pending(
+                        port.migration_source_archive_retry_pending(
                             store=store,
                             run_id=existing.run_id,
                         )
@@ -186,8 +188,8 @@ class RunRuntime:
                     ),
                 )
                 try:
-                    stage_result = workflow.execute_stage(
-                        workflow.RunContext(
+                    stage_result = port.execute_stage(
+                        RunContext(
                             control_root=control_root,
                             config=config,
                             brief=brief,
@@ -199,7 +201,7 @@ class RunRuntime:
                         route,
                     )
                 except RunnerError as exc:
-                    recovery_run = workflow._latest_durable_run(store=store, run=existing)
+                    recovery_run = port.latest_durable_run(store=store, run=existing)
                     decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
                         operation_id=f"start:{recovery_run.run_id}",
                         error=exc,
@@ -222,7 +224,7 @@ class RunRuntime:
                 if stage_result is not None:
                     return {"created": False, **stage_result.public()}
                 if route.kind == "blocked_recovery" and existing.current_step == "codex_planning":
-                    retry_thread = workflow._blocked_planning_retry_thread(
+                    retry_thread = port.blocked_planning_retry_thread(
                         control_root=control_root,
                         config=config,
                         run=existing,
@@ -230,7 +232,7 @@ class RunRuntime:
                         brief_digest=brief_digest,
                     )
                     if retry_thread is not None:
-                        resumed = workflow._resume_codex_stage(
+                        resumed = port.resume_codex_stage(
                             control_root=control_root,
                             config=config,
                             run=existing,
@@ -241,14 +243,14 @@ class RunRuntime:
                         )
                         return {"created": False, **resumed}
                 if route.kind == "blocked_recovery":
-                    retry_identity = workflow._blocked_implementation_retry_identity(
+                    retry_identity = port.blocked_implementation_retry_identity(
                         control_root=control_root,
                         config=config,
                         run=existing,
                         store=store,
                     )
                     if retry_identity is not None:
-                        resumed = workflow._resume_codex_stage(
+                        resumed = port.resume_codex_stage(
                             control_root=control_root,
                             config=config,
                             run=existing,
@@ -260,7 +262,7 @@ class RunRuntime:
                         )
                         return {"created": False, **resumed}
                 try:
-                    recovered_status = workflow._recover_after_process_exit(
+                    recovered_status = port.recover_after_process_exit(
                         control_root=control_root,
                         config=config,
                         run=existing,
@@ -269,7 +271,7 @@ class RunRuntime:
                         store=store,
                     )
                 except RunnerError as exc:
-                    recovery_run = workflow._latest_durable_run(store=store, run=existing)
+                    recovery_run = port.latest_durable_run(store=store, run=existing)
                     decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
                         operation_id=f"start:{recovery_run.run_id}",
                         error=exc,
@@ -315,8 +317,8 @@ class RunRuntime:
             operation_id = f"start:{requested_run_id}"
             store.create_run(record, operation_id)
             if takeover_record is not None:
-                workflow._write_json_atomic(
-                    workflow._safe_artifact_directory(control_root, config, requested_run_id) / "takeover-context.json",
+                port.write_json_atomic(
+                    port.safe_artifact_directory(control_root, config, requested_run_id) / "takeover-context.json",
                     {
                         "schema_version": "spec-runner-takeover-context/v1",
                         "run_id": requested_run_id,
@@ -340,12 +342,12 @@ class RunRuntime:
             except RunnerError:
                 store.fail_run(requested_run_id, operation_id, state="blocked_writer_busy")
                 raise
-            global_lease = workflow._acquire_global_lease(
+            global_lease = port.acquire_global_lease(
                 scope=lease_scope,
                 owner_token=owner_token,
                 stale_after_seconds=stale_after_seconds,
             )
-            heartbeat_stop, heartbeat_thread = workflow._start_lease_heartbeat(
+            heartbeat_stop, heartbeat_thread = port.start_lease_heartbeat(
                 control_root=control_root,
                 scope=lease_scope,
                 owner_token=owner_token,
@@ -356,13 +358,13 @@ class RunRuntime:
                 requested_run_id,
                 {"event": "run_started", "backend_kind": config.execution_backend},
             )
-            workflow._test_fault_pause(control_root=control_root, run_id=requested_run_id, point="after_first_intent")
+            port.test_fault_pause(control_root=control_root, run_id=requested_run_id, point="after_first_intent")
             successor_thread_id: str | None = None
             try:
                 if migration is not None:
                     if config.execution_backend != "codex_sdk":
                         raise RunnerError("thread_migration_backend_invalid", "clean thread migration requires the Codex SDK backend")
-                    successor_thread_id = workflow._prepare_clean_migration(
+                    successor_thread_id = port.prepare_clean_migration(
                         store=store,
                         config=config,
                         run=record,
@@ -373,7 +375,7 @@ class RunRuntime:
                 if config.delivery_plan is not None:
                     return {
                         "created": True,
-                        **workflow._run_delivery_plan(
+                        **port.run_delivery_plan(
                             control_root=control_root,
                             config=config,
                             run=record,
@@ -381,7 +383,7 @@ class RunRuntime:
                         ),
                     }
                 if config.execution_backend == "deterministic_test":
-                    finished = workflow._execute_deterministic_example(
+                    finished = port.execute_deterministic_example(
                         control_root=control_root,
                         config=config,
                         brief=brief,
@@ -390,7 +392,7 @@ class RunRuntime:
                         store=store,
                     )
                 elif config.workflow_mode == "production":
-                    finished = workflow._production_runtime(
+                    finished = port.production_runtime(
                         control_root=control_root,
                         config=config,
                         brief=brief,
@@ -399,7 +401,7 @@ class RunRuntime:
                         store=store,
                     ).plan(thread_id=successor_thread_id)
                 else:
-                    finished = workflow._execute_codex_example(
+                    finished = port.execute_codex_example(
                         control_root=control_root,
                         config=config,
                         brief=brief,
@@ -409,7 +411,7 @@ class RunRuntime:
                         thread_id=successor_thread_id,
                     )
             except RunnerError as exc:
-                recovery_run = workflow._latest_durable_run(store=store, run=record)
+                recovery_run = port.latest_durable_run(store=store, run=record)
                 decision = RecoveryEpisode(run=recovery_run, store=store).record_failure(
                     operation_id=operation_id,
                     error=exc,
@@ -427,7 +429,7 @@ class RunRuntime:
                 if finished.state == "cancelled":
                     return {
                         "created": True,
-                        **workflow._finalize_cancelled_codex(
+                        **port.finalize_cancelled_codex(
                             config=config,
                             run=finished,
                             store=store,
@@ -437,29 +439,29 @@ class RunRuntime:
             if finished.state == "needs_input":
                 return {"created": True, **store.public_status(finished.run_id)}
             if finished.state == "planned":
-                plan_path = workflow._safe_artifact_directory(control_root, config, finished.run_id) / "spec-plan.json"
+                plan_path = port.safe_artifact_directory(control_root, config, finished.run_id) / "spec-plan.json"
                 if config.workflow_mode == "production":
                     return {
                         "created": True,
-                        **workflow._run_production_queue(
+                        **port.run_production_queue(
                             control_root=control_root,
                             config=config,
                             brief_digest=brief_digest,
                             run=finished,
                             store=store,
-                            spec_plan=workflow.load_json(plan_path),
+                            spec_plan=port.load_json(plan_path),
                         ),
                     }
-                ticketed = workflow._execute_codex_tickets(
+                ticketed = port.execute_codex_tickets(
                     control_root=control_root,
                     config=config,
                     brief_digest=brief_digest,
                     run=finished,
                     store=store,
-                    spec_plan=workflow.load_json(plan_path),
+                    spec_plan=port.load_json(plan_path),
                 )
                 return {"created": True, **store.public_status(ticketed.run_id)}
-            workflow._verify_and_archive(
+            port.verify_and_archive(
                 control_root=control_root,
                 config=config,
                 run=finished,
@@ -475,7 +477,7 @@ class RunRuntime:
                     "to_step": "deterministic_second" if config.execution_backend == "deterministic_test" else "codex_second",
                 },
             )
-            final_status = workflow._advance_second_stage(
+            final_status = port.advance_second_stage(
                 control_root=control_root,
                 config=config,
                 run=store.find_by_run_id(finished.run_id) or finished,
@@ -492,5 +494,5 @@ class RunRuntime:
                 store.release_lease(scope=lease_scope, owner_token=owner_token)
             except RunnerError:
                 pass
-            workflow._release_global_lease(global_lease, owner_token)
+            port.release_global_lease(global_lease, owner_token)
             store.close()
