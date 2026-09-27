@@ -362,6 +362,20 @@ class RecoverySnapshot:
     thread_id: str | None = None
     turn_id: str | None = None
 
+    def __post_init__(self) -> None:
+        for name in (
+            "generation",
+            "same_thread_attempts",
+            "capacity_attempts",
+            "route_probe_attempts",
+            "clean_probe_attempts",
+            "migration_attempts",
+            "no_progress_attempts",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
 
 @dataclass(frozen=True)
 class RecoveryDecision:

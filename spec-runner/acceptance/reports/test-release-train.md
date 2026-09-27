@@ -1854,3 +1854,18 @@ L3-L5 gates; those remain `not_verified`.
 The Store recovery receipt boundary also rejects non-finite observation and
 decision values before SQLite insertion, preserving the same strict JSON
 contract for direct persistence callers.
+
+## RCV-01.2 recovery snapshot budget input boundary (2026-09-28)
+
+The pure recovery policy input now rejects negative, boolean, or non-finite
+generation and attempt counters at RecoverySnapshot construction. Invalid
+values can no longer be coerced by budget arithmetic into an apparently unused
+retry allowance.
+
+The focused recovery policy and runtime selection passed `102 passed`; the
+complete source plus acceptance selection passed `520 passed, 1 skipped`.
+`compileall` and `git diff --check` passed.
+
+This is deterministic policy input validation only. Live provider recovery,
+automatic service-wait wakeup, source-thread migration, native Windows
+detached ownership, and project-level L3-L5 remain `not_verified`.

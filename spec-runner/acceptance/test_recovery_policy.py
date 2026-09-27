@@ -398,6 +398,29 @@ def test_recovery_policy_rejects_invalid_budget_configuration_and_records_versio
     assert decision.public()["policy_version"] == "spec-runner-recovery-policy/v2"
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "generation",
+        "same_thread_attempts",
+        "capacity_attempts",
+        "route_probe_attempts",
+        "clean_probe_attempts",
+        "migration_attempts",
+        "no_progress_attempts",
+    ],
+)
+@pytest.mark.parametrize("value", [-1, True, float("nan"), float("inf")])
+def test_recovery_snapshot_rejects_invalid_budget_counters(field, value):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        RecoverySnapshot(
+            run_id="run-1",
+            operation_kind="implementation",
+            stage="implement",
+            **{field: value},
+        )
+
+
 def test_recovery_decision_preserves_configured_policy_version():
     policy = RecoveryPolicy(version="spec-runner-recovery-policy/test-v3")
     decision = decide_recovery(
