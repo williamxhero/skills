@@ -1750,3 +1750,19 @@ are removed before persistence. The complete source plus acceptance selection
 passed `479 passed, 1 skipped`; `compileall` and `git diff --check` passed.
 This remains deterministic redaction evidence only; live provider incidents,
 source-thread migration and project-level L3-L5 remain `not_verified`.
+
+## RCV-01.4 persisted recovery deadline fail-closed (2026-09-28)
+
+Recovery wait admission and the public wait-record lookup now share one
+deadline parser. A malformed persisted `retry_deadline` or `wait_deadline`
+raises the stable `recovery_deadline_invalid` error at the coordinator seam;
+the lifecycle wait check also moves the run to durable `blocked` and records
+`recovery_wait_invalid` instead of treating the malformed value as an
+indefinite wait. The SQLite schema and public status shape are unchanged.
+
+The focused recovery runtime acceptance selection passed `21 passed`; the
+complete source plus acceptance selection, `compileall`, `git diff --check`,
+and Ubuntu/Windows contract CI are required for this increment. This is
+deterministic corruption handling evidence only; live SDK recovery, source
+thread migration, Windows detached recovery and project-level L3-L5 remain
+`not_verified`.

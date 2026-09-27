@@ -528,6 +528,45 @@ def test_wait_retry_is_durable_and_does_not_issue_a_worker_early(tmp_path: Path)
         store.close()
 
 
+def test_corrupt_persisted_recovery_deadline_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "control"
+    store = Store.open(root, create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        workflow._record_recovery_failure(
+            run=run, store=store, operation_id="start:" + run.run_id,
+            error=_capacity_error("turn-invalid-deadline"),
+        )
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        store.upsert_recovery_episode(
+            episode_id=episode["episode_id"], run_id=run.run_id,
+            operation_kind=episode["operation_kind"], stage=episode["stage"],
+            generation=episode["generation"], state="wait_retry",
+            counters={key: episode[key] for key in (
+                "same_thread_attempts", "capacity_attempts", "route_probe_attempts",
+                "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
+            )},
+            retry_deadline="not-a-timestamp",
+        )
+        store.fail_run(run.run_id, "start:" + run.run_id, state="wait_retry")
+
+        with pytest.raises(RunnerError) as raised:
+            RecoveryRuntime.wait_record(store=store, run_id=run.run_id)
+        assert raised.value.code == "recovery_deadline_invalid"
+
+        current = store.find_by_run_id(run.run_id)
+        assert current is not None
+        assert RecoveryEpisode(run=current, store=store).waits() is False
+        assert store.find_by_run_id(run.run_id).state == "blocked"
+        assert any(
+            event["event_type"] == "recovery_wait_invalid"
+            for event in store.events_for_run(run.run_id)
+        )
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize(
     ("requested_state", "expected_action", "expected_reason"),
     [
