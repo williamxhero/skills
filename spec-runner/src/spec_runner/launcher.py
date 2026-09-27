@@ -199,6 +199,17 @@ class DetachedLauncher:
             if claimed is not None:
                 return {"log_path": os.fspath(stdout_path), **claimed}
             if child.poll() is not None:
+                claimed = launch_claim(
+                    control_root=control_root,
+                    run_id=run_id,
+                    child_pid=child.pid,
+                    launch_token=launch_token,
+                    launch_key=launch_key,
+                    lease_scope=lease_scope,
+                    require_lease=True,
+                )
+                if claimed is not None:
+                    return {"log_path": os.fspath(stdout_path), **claimed}
                 raise RunnerError(
                     "launch_handshake_failed",
                     "detached Runner exited before claiming the run",

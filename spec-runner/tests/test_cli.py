@@ -772,6 +772,29 @@ class SpecRunnerCliTests(unittest.TestCase):
         else:
             self.fail("detached deterministic runner with relative inputs did not complete")
 
+    def test_detached_launch_checks_claim_again_after_child_exits(self) -> None:
+        from spec_runner.launcher import DetachedLauncher
+
+        claim = {"started": True, "pid": 54321, "run_id": "run-1", "run": {"state": "completed"}}
+        with patch("spec_runner.launcher.subprocess.Popen") as popen, patch(
+            "spec_runner.launcher.launch_claim", side_effect=[None, claim]
+        ) as read_claim:
+            popen.return_value.pid = 54321
+            popen.return_value.poll.return_value = 0
+            popen.return_value.returncode = 0
+            result = DetachedLauncher()._spawn_and_handshake(
+                brief_file=self.brief,
+                config_file=self.config,
+                control_root=self.control_root,
+                launch_key="exit-after-read",
+                run_id="run-1",
+                launch_token="token",
+                lease_scope="scope",
+                handshake_timeout_seconds=1.0,
+            )
+        self.assertEqual(result["run"]["state"], "completed")
+        self.assertEqual(read_claim.call_count, 2)
+
     def test_detached_launch_claim_accepts_durable_token_when_wrapper_pid_differs(self) -> None:
         from spec_runner.store import RunRecord, Store, now
         from spec_runner.workflow import _launch_claim
