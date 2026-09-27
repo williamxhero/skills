@@ -224,6 +224,27 @@ def rotate_launcher_logs(
     if prior is not None:
         if prior.get("run_id") != run_id or prior.get("rotation_key") != rotation_key:
             raise RunnerError("launcher_log_rotation_receipt_invalid", "rotation receipt identity does not match request")
+        recorded_retain = prior.get("retain")
+        if (
+            isinstance(recorded_retain, bool)
+            or not isinstance(recorded_retain, int)
+            or not 1 <= recorded_retain <= 100
+        ):
+            raise RunnerError(
+                "launcher_log_rotation_receipt_invalid",
+                "rotation receipt has an invalid retention policy",
+                details={"receipt": os.fspath(receipt_path)},
+            )
+        if recorded_retain != retain:
+            raise RunnerError(
+                "launcher_log_retention_conflict",
+                "rotation replay changed the persisted retention policy",
+                details={
+                    "receipt": os.fspath(receipt_path),
+                    "recorded_retain": recorded_retain,
+                    "requested_retain": retain,
+                },
+            )
         if prior.get("state") == "failed" and not rotated.stdout.exists() and not rotated.stderr.exists():
             prior = None
         elif prior.get("state") in {"rotated", "retention_pending"}:

@@ -43,6 +43,16 @@ def test_rotation_moves_the_pair_creates_fresh_active_logs_and_is_idempotent(tmp
     assert json.loads(receipt.read_text(encoding="utf-8"))["state"] == "rotated"
 
 
+def test_rotation_replay_rejects_a_changed_retention_policy(tmp_path: Path) -> None:
+    _logs(tmp_path)
+    rotate_launcher_logs(control_root=tmp_path, run_id="run-1", rotation_key="rotation-1", retain=2)
+
+    with pytest.raises(RunnerError) as raised:
+        rotate_launcher_logs(control_root=tmp_path, run_id="run-1", rotation_key="rotation-1", retain=1)
+
+    assert raised.value.code == "launcher_log_retention_conflict"
+
+
 def test_rotation_rolls_back_when_the_second_log_is_locked(tmp_path: Path) -> None:
     stdout, stderr = _logs(tmp_path)
     real_replace = __import__("os").replace
