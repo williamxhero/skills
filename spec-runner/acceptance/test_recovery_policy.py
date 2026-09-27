@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 import pytest
 
@@ -71,6 +72,23 @@ def test_structured_mapping_preserves_external_turn_identity():
     assert observation.turn_id == "turn-structured"
     assert observation.request_admission == "accepted"
     assert observation.execution_outcome == "failed"
+
+
+def test_structured_numeric_observation_fields_are_strict_json_safe():
+    observation = observation_from_error(
+        operation_kind="implementation",
+        error={
+            "message": "capacity temporarily unavailable",
+            "http_status": float("inf"),
+            "retry_after_seconds": float("nan"),
+            "sdk_retry_count": float("-inf"),
+        },
+    )
+
+    assert observation.http_status is None
+    assert observation.retry_after_seconds is None
+    assert observation.sdk_retry_count is None
+    json.dumps(observation.public(), allow_nan=False)
 
 
 @pytest.mark.parametrize(

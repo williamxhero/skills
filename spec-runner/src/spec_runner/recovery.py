@@ -86,6 +86,34 @@ def _field(value: Any, *names: str) -> Any:
     return None
 
 
+def _optional_nonnegative_int(value: Any) -> int | None:
+    """Convert provider counters without admitting bools or non-finite values."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _optional_retry_after(value: Any) -> int | float | None:
+    """Keep only finite, non-negative retry hints in durable observations."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return value if math.isfinite(value) and value >= 0 else None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed >= 0 else None
+
+
 def classify_fault(*, code: Any = None, error_type: Any = None, message: Any = None,
                    http_status: Any = None) -> tuple[FaultFamily, str]:
     """Classify a provider/adapter error without treating text as proof."""
@@ -211,20 +239,14 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
         execution_outcome = str(details.get("execution_outcome") or "unknown")
         thread_id = thread_id or details.get("thread_id")
         turn_id = turn_id or details.get("turn_id")
-    try:
-        http_status = int(status_value) if status_value is not None else None
-    except (TypeError, ValueError):
-        http_status = None
+    http_status = _optional_nonnegative_int(status_value)
     observed_model = _text(_field(details, "observed_model", "actual_model", "model"), 120)
     observed_effort = _text(_field(details, "observed_effort", "actual_effort", "effort"), 120)
     observed_service_tier = _text(_field(details, "observed_service_tier", "actual_service_tier", "service_tier"), 120)
     runtime_version = _text(_field(details, "runtime_version"), 120)
     observed_progress = _text(_field(details, "last_verified_progress"), 120)
     retry_count_value = _field(details, "sdk_retry_count", "retry_count", "sdk_retries")
-    try:
-        sdk_retry_count = int(retry_count_value) if retry_count_value is not None else None
-    except (TypeError, ValueError):
-        sdk_retry_count = None
+    sdk_retry_count = _optional_nonnegative_int(retry_count_value)
     sdk_retry_coverage = str(_field(details, "sdk_retry_coverage", "retry_coverage") or "unknown")
     if sdk_retry_coverage not in {"observed", "bounded", "unknown"}:
         sdk_retry_coverage = "unknown"
@@ -235,7 +257,10 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
         source=source, confidence="fallback_text" if not details.get("structured", False) else "structured",
         family=family.value, reason=reason, http_status=http_status, code=_text(code, 120),
         error_type=_text(error_type, 120), message=_redact(message), request_id=_text(request_id, 120),
-        cf_ray=_text(cf_ray, 120), retry_after_seconds=_field(details, "retry_after_seconds", "retryAfterSeconds"),
+        cf_ray=_text(cf_ray, 120),
+        retry_after_seconds=_optional_retry_after(
+            _field(details, "retry_after_seconds", "retryAfterSeconds")
+        ),
         requested_model=requested_model, requested_effort=requested_effort,
         observed_model=observed_model, observed_effort=observed_effort,
         requested_service_tier=requested_service_tier, observed_service_tier=observed_service_tier,
