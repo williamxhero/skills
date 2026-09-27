@@ -1285,3 +1285,27 @@ as candidate `7317869` and started a fresh independent review. At this report
 the reviewer turn `01a0e1e0-5897-7111-9c16-9d87dbf7a061` is running and
 the candidate worktree is clean. Review approval, delivery, subsequent SPECs,
 and project-level L3-L5 are still `not_verified`.
+
+## Approved repair and advanced target integration gate (2026-09-27)
+
+The fresh reviewer approved candidate `7317869` with no blocking findings.
+Its review receipt binds turn `01a0e1e0-5897-7111-9c16-9d87dbf7a061` to
+that exact SHA. Delivery then stopped at `target_ref_changed` because `master`
+had advanced since the run's original base. Commits `3291b5a` and `df5fb85`
+permit an approved reviewer to be revalidated on the same run, and require a
+trusted integration check in a disposable merge worktree before atomically
+updating the current target ref. The full source and acceptance selection
+passed `414 passed, 1 skipped`; source/test `compileall` and `git diff --check`
+passed. Both commits passed Ubuntu and Windows contract CI.
+
+Live integration remained blocked: the trusted `FIXTURE_SCOPE` command embeds
+the run's original base SHA. On the proposed merge commit it sees the
+intervening mainline changes as out of scope, so the required check fails and
+`master` is not updated. Commit `61bf8e7` makes a clean failed integration
+worktree removable for a later retry; its focused regression and Ubuntu/Windows
+contract CI `36306200295` passed. The one
+pre-fix disposable merge worktree was checked clean and removed with Git.
+Candidate branch `spec-runner/SRAC-20260927-f1a2b3c4d5e6-56335d20` remains
+unmerged and attached to this run. An acceptance contract revision or an
+equivalent durable integration gate is still needed before delivery can be
+claimed. No SPEC completion or project-level L3-L5 result is inferred.
