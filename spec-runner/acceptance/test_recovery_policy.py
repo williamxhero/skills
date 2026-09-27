@@ -73,6 +73,26 @@ def test_structured_mapping_preserves_external_turn_identity():
     assert observation.execution_outcome == "failed"
 
 
+@pytest.mark.parametrize(
+    ("message", "secret"),
+    [
+        ("Authorization: Bearer bearer-secret", "bearer-secret"),
+        ("api_key=api-secret", "api-secret"),
+        ("access_token: access-secret", "access-secret"),
+        ("provider rejected sk-proj-secret-value", "sk-proj-secret-value"),
+    ],
+)
+def test_fault_observation_redacts_common_credential_shapes(message, secret):
+    observation = observation_from_error(
+        operation_kind="implementation",
+        error={"message": message},
+    )
+
+    assert observation.message is not None
+    assert secret not in observation.message
+    assert "[redacted]" in observation.message
+
+
 def test_runtime_version_requires_runtime_observation_not_client_config():
     configured = observation_from_error(
         operation_kind="implementation",

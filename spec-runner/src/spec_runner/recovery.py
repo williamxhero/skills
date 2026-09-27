@@ -56,11 +56,21 @@ def _text(value: Any, limit: int = 500) -> str | None:
 
 
 def _redact(value: Any) -> str | None:
-    text = _text(value, 160)
+    text = _text(value, 1000)
     if not text:
         return None
-    text = re.sub(r"(?i)(bearer\s+|sk-[A-Za-z0-9_-]+|token|secret|password)(?:\s*[:=]\s*)[^\s,;]+", r"\1[redacted]", text)
-    return text
+    text = re.sub(
+        r"(?i)(?:\bauthorization\s*:\s*)?\bbearer\s+[^\s,;]+",
+        "Bearer [redacted]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)\b\s*[:=]\s*[^\s,;]+",
+        r"\1[redacted]",
+        text,
+    )
+    text = re.sub(r"(?i)\bsk-[A-Za-z0-9_-]{8,}\b", "sk-[redacted]", text)
+    return text[:160]
 
 
 def _field(value: Any, *names: str) -> Any:

@@ -1731,3 +1731,12 @@ identity-free. Explicit caller arguments still take precedence. The focused
 recovery policy, SDK observation, and runtime selection passed `65 passed`.
 This is deterministic observation-contract evidence; live provider recovery,
 source-thread migration and project-level L3-L5 remain `not_verified`.
+
+## RCV-01.1 credential redaction boundary (2026-09-28)
+
+Fault observation redaction now covers bearer authorization values, API and
+access token assignments, and bare `sk-` credential-shaped values before the
+bounded diagnostic message is persisted. Regression coverage confirms the
+secret values do not survive in the public observation message. This is
+deterministic redaction evidence; live provider incidents, source-thread
+migration and project-level L3-L5 remain `not_verified`.
