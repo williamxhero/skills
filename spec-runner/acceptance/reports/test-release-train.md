@@ -1945,3 +1945,24 @@ This is deterministic durable-operation evidence. It does not prove live
 transport-loss injection or complete three-SPEC PR/CI/merge/closure delivery;
 SF-03/#256/#257/#258 and project-level L3-L5 remain open where live evidence
 is absent.
+
+## RCV-02.1 Store continuation receipt boundary (2026-09-28)
+
+Commit `b86719d` closes the direct Store persistence bypass for continuation
+bundles. `Store.record_continuation_bundle()` now revalidates the existing
+bundle schema before SQLite mutation, including hidden/encrypted material,
+bounded fields, and finite JSON values. It also reads the atomically written
+file and requires its normalized contents to match the object being registered;
+an argument/file mismatch fails closed with
+`continuation_receipt_content_mismatch`.
+
+The continuation, Store, and clean migration selection passed `42 passed`.
+The complete source plus acceptance selection passed `536 passed, 1 skipped`;
+`compileall` and `git diff --check` passed. GitHub Actions run
+`36357775846` passed both Ubuntu and Windows contract jobs, including the
+installed-wheel public CLI checks.
+
+This is deterministic durable handoff boundary evidence only. Live native
+process crash recovery, source-thread migration, encrypted/opaque history
+exclusion under a real SDK handoff, Windows detached recovery, and project-level
+L3-L5 remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
