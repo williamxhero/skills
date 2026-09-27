@@ -131,6 +131,14 @@ def test_github_merge_queue_is_persisted_as_waiting(monkeypatch, github_context)
 
         def merge(self, **kwargs):
             calls.append("merge")
+            kwargs["operation_intent"](
+                operation_id=kwargs["operation_id"], operation_kind="github_merge",
+                repository="owner/repo", input_digest="merge-input",
+            )
+            kwargs["operation_progress"](
+                operation_id=kwargs["operation_id"], state="waiting_merge_queue",
+                receipt={"merged": False, "waiting": True, "queue": {"id": "MQ-7"}},
+            )
             return {"merged": False, "waiting": True, "queue": {"id": "MQ-7"}}
 
     monkeypatch.setattr(workflow, "GitHubDelivery", FakeGitHub)
@@ -138,11 +146,15 @@ def test_github_merge_queue_is_persisted_as_waiting(monkeypatch, github_context)
     result = workflow._execute_github_delivery(
         control_root=root, config=config, run=run, spec_key="S1", candidate_sha="abc1234",
         branch="spec-runner/S1", candidate_receipt={"candidate_sha": "abc1234"},
-        review={"approved": True},
+        review={"approved": True}, store=store,
     )
     assert result["state"] == "waiting_merge_queue"
     assert result["merge"]["merged"] is False
     assert calls == ["pr", "checks", "merge"]
+    operation = store.external_operation("github-merge:github-run:S1:abc1234")
+    assert operation is not None
+    assert operation["state"] == "waiting_merge_queue"
+    assert operation["receipt"]["queue"]["id"] == "MQ-7"
 
 
 @pytest.mark.parametrize("merge_receipt", [{"merged": True}, {"merged": False}])
