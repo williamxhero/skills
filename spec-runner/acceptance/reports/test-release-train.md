@@ -1720,3 +1720,14 @@ continue to use the configured bounded local delay. Regression coverage binds
 these rules to the existing recovery policy selection. This is deterministic
 input validation only; provider recovery, service wait wakeup, source
 migration and project-level L3-L5 remain `not_verified`.
+
+## RCV-01.1 structured turn identity preservation (2026-09-28)
+
+The unified fault observation boundary now reads `thread_id` and `turn_id`
+from a structured error mapping when the caller has not supplied them
+separately. This preserves the external operation identity needed for
+readback and budget accounting instead of treating the same accepted turn as
+identity-free. Explicit caller arguments still take precedence. The focused
+recovery policy, SDK observation, and runtime selection passed `65 passed`.
+This is deterministic observation-contract evidence; live provider recovery,
+source-thread migration and project-level L3-L5 remain `not_verified`.

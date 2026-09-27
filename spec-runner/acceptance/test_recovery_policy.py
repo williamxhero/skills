@@ -54,6 +54,25 @@ def test_observation_preserves_unknown_admission_and_redacts_secret():
     assert observation.fingerprint
 
 
+def test_structured_mapping_preserves_external_turn_identity():
+    observation = observation_from_error(
+        operation_kind="implementation",
+        error={
+            "structured": True,
+            "message": "capacity temporarily unavailable",
+            "thread_id": "thread-structured",
+            "turn_id": "turn-structured",
+            "request_admission": "accepted",
+            "execution_outcome": "failed",
+        },
+    )
+
+    assert observation.thread_id == "thread-structured"
+    assert observation.turn_id == "turn-structured"
+    assert observation.request_admission == "accepted"
+    assert observation.execution_outcome == "failed"
+
+
 def test_runtime_version_requires_runtime_observation_not_client_config():
     configured = observation_from_error(
         operation_kind="implementation",

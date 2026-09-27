@@ -185,6 +185,8 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
         cf_ray = _field(details, "cf_ray", "cfRay")
         request_admission = str(details.get("request_admission") or "unknown")
         execution_outcome = str(details.get("execution_outcome") or "unknown")
+        thread_id = thread_id or _field(details, "thread_id", "threadId")
+        turn_id = turn_id or _field(details, "turn_id", "turnId")
     else:
         details = getattr(error, "details", {}) or {}
         message = getattr(error, "message", None) or str(error)
