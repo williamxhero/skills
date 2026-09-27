@@ -386,6 +386,31 @@ class StoreLeaseTests(unittest.TestCase):
                 self.assertEqual(uncertain["state"], "uncertain")
                 with self.assertRaisesRegex(RunnerError, "handover"):
                     store.record_migration_successor(migration_key="migration-uncertain", successor_thread_id="successor")
+
+                handover = {
+                    "schema_version": "spec-runner-sdk-thread-interrupt/v1",
+                    "thread_id": "source", "accepted": True,
+                    "source_writer_state": "stopped", "dispatcher_state": "quiesced",
+                    "readback": {"source_thread_id": "source", "observed_status": "completed"},
+                    "evidence_limits": {
+                        "source_stop_confirmed": True, "dispatcher_quiesced": True,
+                        "ownership_transferred": True,
+                    },
+                }
+                store.prepare_thread_migration(
+                    migration_key="migration-creation-intent", run_id=run.run_id,
+                    stage="codex_example", source_thread_id="source",
+                    handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(), input_revision="r1",
+                )
+                store.record_migration_handover(migration_key="migration-creation-intent", handover=handover)
+                creation_intent = store.record_migration_successor_creation_intent(
+                    migration_key="migration-creation-intent", details={"provider": "codex_sdk"},
+                )
+                self.assertEqual(creation_intent["state"], "successor_creation_intent")
+                registered = store.record_migration_successor(
+                    migration_key="migration-creation-intent", successor_thread_id="successor",
+                )
+                self.assertEqual(registered["state"], "successor_registered")
             finally:
                 store.close()
 

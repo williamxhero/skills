@@ -1809,7 +1809,7 @@ class Store:
             if migration.get("successor_thread_id") != successor_thread_id:
                 raise RunnerError("thread_successor_conflict", "migration already has a different successor identity")
             return migration
-        if migration["state"] not in {"handover_confirmed", "successor_registered"}:
+        if migration["state"] not in {"handover_confirmed", "successor_creation_intent", "successor_registered"}:
             raise RunnerError("thread_handover_unconfirmed", "cannot create a successor before source handover readback")
         if not successor_thread_id.strip() or successor_thread_id == migration["source_thread_id"]:
             raise RunnerError("thread_successor_identity_invalid", "successor must have a distinct formal thread identity")
@@ -1826,6 +1826,39 @@ class Store:
             self._insert_event(run_id=str(migration["run_id"]), event_key=f"migration:{migration_key}:successor:{successor_thread_id}",
                                event_type="thread_migration_successor_registered",
                                payload={"migration_key": migration_key, "successor_thread_id": successor_thread_id})
+        return self.thread_migration(migration_key) or {}
+
+    def record_migration_successor_creation_intent(
+        self, *, migration_key: str, details: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Persist the provider creation boundary before requesting a successor.
+
+        A restart after this transaction must fail closed. The provider may have
+        accepted the request even when the caller never received or persisted
+        its identity, so retrying the creation would risk duplicate threads.
+        """
+        migration = self.thread_migration(migration_key)
+        if migration is None:
+            raise RunnerError("thread_migration_missing", "successor creation requires a durable migration intent")
+        if migration["state"] in {"successor_creation_intent", "successor_registered", "owner_transferred"}:
+            return migration
+        if migration["state"] != "handover_confirmed":
+            raise RunnerError("thread_handover_unconfirmed", "successor creation requires persisted source handover readback")
+        if migration.get("successor_thread_id"):
+            raise RunnerError("thread_successor_conflict", "migration already has a successor identity")
+        payload = json.dumps(details or {}, ensure_ascii=False, sort_keys=True)
+        timestamp = now()
+        with self.transaction():
+            self.connection.execute(
+                "UPDATE thread_migrations SET state = 'successor_creation_intent', successor_json = ?, updated_at = ? WHERE migration_key = ?",
+                (payload, timestamp, migration_key),
+            )
+            self._insert_event(
+                run_id=str(migration["run_id"]),
+                event_key=f"migration:{migration_key}:successor_creation_intent",
+                event_type="thread_migration_successor_creation_intent",
+                payload={"migration_key": migration_key, "details": details or {}},
+            )
         return self.thread_migration(migration_key) or {}
 
     def record_migration_uncertainty(self, *, migration_key: str, details: dict[str, object]) -> dict[str, object]:

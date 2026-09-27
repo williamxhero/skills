@@ -4285,12 +4285,16 @@ def _prepare_clean_migration(*, store: Store, config: RunnerConfig, run: RunReco
         migration_key=migration_key, run_id=run.run_id, stage=stage, source_thread_id=source_thread_id,
         handover_digest=handover_digest, input_revision=input_revision, owner_generation=int(migration.get("owner_generation", 0)),
     )
-    if persisted.get("state") == "uncertain":
+    if persisted.get("state") in {"uncertain", "successor_creation_intent"}:
         raise RunnerError("thread_successor_uncertain", "successor creation is uncertain; reconcile the recorded migration before retry")
     if not isinstance(persisted.get("handover"), dict):
         persisted = store.record_migration_handover(migration_key=migration_key, handover=handover)
     successor_id = str(persisted.get("successor_thread_id") or "")
     if not successor_id:
+        store.record_migration_successor_creation_intent(
+            migration_key=migration_key,
+            details={"stage": stage, "provider": "codex_sdk"},
+        )
         try:
             created = CodexAdapter().start_clean_thread(
                 repository_path=config.repository_path, model=config.model_name,

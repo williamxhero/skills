@@ -1585,3 +1585,22 @@ Focused Store, clean migration, takeover, CLI and delivery selections passed
 This is deterministic handover safety evidence only. Real native SDK migration,
 OS/Windows old-writer termination, provider crash windows, business continuation
 and project-level L3-L5 remain `not_verified`; #297, #298 and #292 remain open.
+
+## RCV-02.3 / RCV-02.4 successor creation crash window (2026-09-28)
+
+The clean migration path now durably records `successor_creation_intent` before
+calling the provider to create a successor. If the process exits after provider
+acceptance but before the successor identity is recorded, a restart fails closed
+with `thread_successor_uncertain` and does not call the provider again. The same
+process may still record the returned identity and complete the existing owner
+CAS. No SQLite schema, CLI projection, or migration receipt shape changed.
+
+The Store, clean migration acceptance, and takeover boundary selection passed
+`28 passed`; the complete source plus acceptance selection passed
+`457 passed, 1 skipped`. `compileall` and `git diff --check` passed.
+
+This is deterministic crash-window protection only. It does not prove live
+provider fault injection, native Windows old-writer termination, complete
+source-thread takeover, next-SPEC GitHub delivery, or project-level L3-L5;
+RCV-02.3/#299, RCV-02.4/#300, their parent EPICs, and the remaining release
+gates stay open.

@@ -115,6 +115,48 @@ def test_store_rejects_accepted_handover_without_stop_readback(tmp_path: Path) -
         store.close()
 
 
+def test_successor_creation_intent_replay_fails_closed_before_provider_call(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        handover = _handover()
+        key = "acceptance:successor-creation-intent"
+        store.prepare_thread_migration(
+            migration_key=key, run_id=run.run_id, stage="codex_example",
+            source_thread_id="source-thread",
+            handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(),
+            input_revision="brief-v1",
+        )
+        store.record_migration_handover(migration_key=key, handover=handover)
+        intent = store.record_migration_successor_creation_intent(
+            migration_key=key, details={"stage": "codex_example", "provider": "codex_sdk"},
+        )
+        assert intent["state"] == "successor_creation_intent"
+
+        class UnexpectedProvider:
+            calls = 0
+
+            def start_clean_thread(self, **kwargs):
+                UnexpectedProvider.calls += 1
+                return {"thread_id": "duplicate-successor"}
+
+        config = SimpleNamespace(repository_path=tmp_path, model_name="test-model")
+        with patch("spec_runner.workflow.CodexAdapter", UnexpectedProvider):
+            with pytest.raises(RunnerError, match="uncertain"):
+                workflow._prepare_clean_migration(
+                    store=store, config=config, run=run, migration=intent,
+                    stage="codex_example", input_revision="brief-v1",
+                )
+        assert UnexpectedProvider.calls == 0
+        persisted = store.thread_migration(key)
+        assert persisted is not None
+        assert persisted["state"] == "successor_creation_intent"
+        assert persisted["successor_thread_id"] is None
+    finally:
+        store.close()
+
+
 
 
 def _prepare_migration(store: Store, run: RunRecord, key: str) -> None:
