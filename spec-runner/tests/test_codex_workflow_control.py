@@ -976,6 +976,39 @@ class CodexWorkflowControlTests(unittest.TestCase):
                 finally:
                     store.close()
 
+    def test_interrupted_planning_turn_is_reconciled_before_same_thread_resume(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="spec-runner-interrupted-planning-recovery-") as temp:
+            root = Path(temp)
+            config, failed, store = self._failed_sdk_run(root)
+            store.set_run_state(failed.run_id, "blocked")
+            blocked = store.find_by_run_id(failed.run_id)
+            assert blocked is not None
+
+            class ReadOnlyAdapter:
+                def read_thread(self, *, thread_id: str, repository_path: Path) -> dict[str, object]:
+                    return CodexWorkflowControlTests._failed_turn_inspection(
+                        turns=[{"turn_id": "turn-failed", "status": "interrupted"}],
+                    )
+
+            try:
+                with (
+                    patch.object(workflow, "CodexAdapter", ReadOnlyAdapter),
+                    patch.object(workflow, "_resume_codex_stage", return_value={"state": "running"}) as resume,
+                ):
+                    recovered = workflow._recover_after_process_exit(
+                        control_root=root / "control", config=config, run=blocked,
+                        brief="brief", brief_digest="brief", store=store,
+                    )
+                self.assertEqual(recovered, {"created": False, "state": "running"})
+                resume.assert_called_once()
+                self.assertEqual(resume.call_args.kwargs["thread_id"], "thread-failed")
+                self.assertIn(
+                    "interrupted_sdk_turn_reconciled",
+                    [event["event_type"] for event in store.events_for_run(failed.run_id)],
+                )
+            finally:
+                store.close()
+
     def test_ticket_recovery_scopes_the_plan_to_the_failed_spec(self) -> None:
         with tempfile.TemporaryDirectory(prefix="spec-runner-codex-ticket-recovery-") as temp:
             root = Path(temp)

@@ -182,9 +182,17 @@ def recover_after_process_exit(*, control_root: Path, config: RunnerConfig, run:
                 and bool(turns)
                 and isinstance(turns[-1], dict)
                 and turns[-1].get("turn_id") == turn_id
-                and turn_status in ({"failed", "interrupted"}
-                                    if run.current_step == "codex_implementation"
-                                    else {"failed"})
+                and turn_status in (
+                    {"failed", "interrupted"}
+                    if run.current_step in {
+                        "codex_grill",
+                        "codex_planning",
+                        "codex_ticket_planning",
+                        "codex_implementation",
+                        "codex_second",
+                    }
+                    else {"failed"}
+                )
             )
             if not reconciled:
                 raise RunnerError("recovery_blocked", "the SDK operation has no uniquely recoverable external result; inspect the persisted thread/turn before retry")
