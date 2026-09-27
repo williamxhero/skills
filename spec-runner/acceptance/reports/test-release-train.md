@@ -1605,6 +1605,24 @@ source-thread takeover, next-SPEC GitHub delivery, or project-level L3-L5;
 RCV-02.3/#299, RCV-02.4/#300, their parent EPICs, and the remaining release
 gates stay open.
 
+## RCV-01.3 recovery control precedence (2026-09-28)
+
+Recovery failure handling now reads the durable run control before reserving a
+retry budget. A pending `pause_requested` produces `wait_for_config`, and a
+pending `cancel_requested` produces `blocked`; neither consumes capacity,
+same-thread, or other recovery budget and neither emits a retry action. This
+keeps a control request authoritative when it races with an SDK failure
+boundary, including a failure observed before the normal worker control hook.
+
+The focused recovery runtime and policy selection passed `50 passed`; the
+complete source plus acceptance selection passed `461 passed, 1 skipped`.
+`compileall` and `git diff --check` passed.
+
+This is deterministic durable-control evidence. It does not prove live
+provider fault continuation, service recovery after a real incident, native
+Windows detached ownership, or project-level L3-L5; #295 and its parent
+remain open.
+
 ## RCV-02.2 concurrent migration claim (2026-09-28)
 
 Migration handover and successor registration now use conditional SQLite state

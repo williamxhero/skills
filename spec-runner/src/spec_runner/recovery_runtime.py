@@ -105,6 +105,13 @@ class RecoveryEpisode:
                 "clean_probe_attempts", "migration_attempts", "no_progress_attempts",
             )
         }
+        control = store.control_for_run(run.run_id)
+        requested_control = (
+            str(control.get("requested_state"))
+            if isinstance(control, dict)
+            and control.get("requested_state") in {"pause_requested", "cancel_requested"}
+            else None
+        )
         prior_episodes = store.recovery_for_run(run.run_id).get("episodes", [])
         prior = next((item for item in prior_episodes if item.get("episode_id") == episode_id), {})
         decisions = prior.get("decisions", []) if isinstance(prior, dict) else []
@@ -112,7 +119,7 @@ class RecoveryEpisode:
         inspection_error = error.details.get("inspection_error") if isinstance(error.details, dict) else None
         external_result_unreconciled = error.code == "recovery_blocked" or bool(inspection_error)
         counter_names: list[str] = []
-        if not external_result_unreconciled:
+        if not external_result_unreconciled and requested_control is None:
             if observation.family == FaultFamily.CAPACITY.value:
                 counter_names.append("capacity_attempts")
             elif observation.family in {
@@ -159,6 +166,7 @@ class RecoveryEpisode:
             active_execution=worker.get("state") == "running" and observation.execution_outcome == "unknown",
             request_admission=observation.request_admission,
             execution_outcome=observation.execution_outcome,
+            user_control=requested_control,
             same_thread_attempts=counters["same_thread_attempts"],
             capacity_attempts=counters["capacity_attempts"],
             route_probe_attempts=counters["route_probe_attempts"],

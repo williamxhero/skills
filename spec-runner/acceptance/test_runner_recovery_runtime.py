@@ -528,6 +528,36 @@ def test_wait_retry_is_durable_and_does_not_issue_a_worker_early(tmp_path: Path)
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("requested_state", "expected_action", "expected_reason"),
+    [
+        ("pause_requested", "wait_for_config", "user_paused"),
+        ("cancel_requested", "blocked", "user_cancelled"),
+    ],
+)
+def test_recovery_control_precedes_budget_reservation(
+    tmp_path: Path, requested_state: str, expected_action: str, expected_reason: str,
+) -> None:
+    store = Store.open(tmp_path / requested_state, create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        store.request_control(run.run_id, requested_state)
+        decision = RecoveryEpisode(run=run, store=store).record_failure(
+            operation_id="start:" + run.run_id,
+            error=_capacity_error("turn-controlled"),
+        )
+        assert decision.action.value == expected_action
+        assert decision.reason == expected_reason
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["capacity_attempts"] == 0
+        assert episode["same_thread_attempts"] == 0
+        assert episode["decisions"][-1]["decision"]["preconditions"]
+        assert not any(event["event_type"] == "retry_scheduled" for event in store.events_for_run(run.run_id))
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("failure_count, expected_action", [(1, "wait_retry"), (2, "service_wait")])
 def test_drive_wakes_once_after_persisted_retry_deadline(tmp_path: Path, monkeypatch, failure_count: int, expected_action: str) -> None:
     root = tmp_path / "control"
