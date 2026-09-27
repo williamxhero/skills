@@ -295,7 +295,7 @@ class RecoveryPolicy:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be a finite non-negative number")
-        if not self.version or not self.version.strip():
+        if not isinstance(self.version, str) or not self.version.strip():
             raise ValueError("version must be a non-empty string")
 
 
@@ -352,7 +352,12 @@ def _retry_delay(observation: FaultObservation, default: float) -> float:
         value = float(observation.retry_after_seconds) if observation.retry_after_seconds is not None else None
     except (TypeError, ValueError):
         value = None
-    if value is None or value < 0 or value != value or value == float("inf"):
+    if (
+        value is None
+        or isinstance(observation.retry_after_seconds, bool)
+        or value < 0
+        or not math.isfinite(value)
+    ):
         return default
     return value
 

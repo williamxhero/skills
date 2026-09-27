@@ -178,6 +178,21 @@ def test_capacity_retry_after_beyond_wait_limit_requires_configuration():
     assert decision.next_check_at is None
 
 
+@pytest.mark.parametrize("retry_after", [True, False, float("nan"), float("inf"), float("-inf"), -1])
+def test_invalid_retry_after_values_use_the_local_delay(retry_after):
+    timestamp = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    observation = FaultObservation(
+        operation_kind="implementation", stage="implement",
+        family=FaultFamily.CAPACITY.value, reason="capacity_or_transient",
+        retry_after_seconds=retry_after,
+    )
+    decision = decide_recovery(
+        RecoverySnapshot(run_id="run-1", operation_kind="implementation", stage="implement"),
+        [observation], RecoveryPolicy(retry_delay_seconds=7.5), now=timestamp,
+    )
+    assert decision.next_check_at == "2026-09-25T00:00:07.500000+00:00"
+
+
 @pytest.mark.parametrize(
     ("control", "active", "admission", "outcome", "expected"),
     [
@@ -297,6 +312,10 @@ def test_recovery_policy_rejects_invalid_budget_configuration_and_records_versio
         RecoveryPolicy(service_wait_delay_seconds=float("inf"))
     with pytest.raises(ValueError, match="finite non-negative number"):
         RecoveryPolicy(max_wait_seconds=float("inf"))
+    with pytest.raises(ValueError, match="non-empty string"):
+        RecoveryPolicy(version=123)
+    with pytest.raises(ValueError, match="non-empty string"):
+        RecoveryPolicy(version="   ")
 
     decision = decide_recovery(
         RecoverySnapshot(run_id="run-1", operation_kind="implementation", stage="implement"),

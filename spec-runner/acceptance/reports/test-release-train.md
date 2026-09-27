@@ -1710,3 +1710,13 @@ plus acceptance selection passed `465 passed, 1 skipped` with the worktree
 This is deterministic provenance evidence only; real provider recovery,
 service wait wakeup, source migration and project-level L3-L5 remain
 `not_verified`, so RCV-01.2/#294 and its parent remain open.
+
+## RCV-01.2 recovery input boundary (2026-09-28)
+
+Recovery policy versions now reject non-string values with the documented
+`ValueError` contract. Structured `Retry-After` values reject booleans and
+non-finite values instead of coercing them into a delay; invalid provider hints
+continue to use the configured bounded local delay. Regression coverage binds
+these rules to the existing recovery policy selection. This is deterministic
+input validation only; provider recovery, service wait wakeup, source
+migration and project-level L3-L5 remain `not_verified`.
