@@ -233,16 +233,37 @@ def publish_local(
     target_root = target_root.resolve()
     target_root.mkdir(parents=True, exist_ok=True)
     receipt_path = target_root / ".spec-runner-tracker-receipts.json"
+    if receipt_path.is_symlink():
+        raise RunnerError("tracker_path_escape", "tracker receipt file cannot be a symbolic link")
     receipts: dict[str, Any] = {}
     if receipt_path.exists():
         try:
             receipts = json.loads(receipt_path.read_text(encoding="utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RunnerError("tracker_receipt_corrupt", "tracker receipt file is not valid JSON") from exc
+    if not isinstance(receipts, dict):
+        raise RunnerError("tracker_receipt_corrupt", "tracker receipt root must be an object")
     previous = receipts.get(operation_id)
-    if previous and previous.get("snapshot_digest") != snapshot.digest:
-        raise RunnerError("tracker_operation_conflict", "operation_id was reused with a different snapshot")
-    if previous:
+    if previous is not None and not isinstance(previous, dict):
+        raise RunnerError("tracker_receipt_corrupt", "tracker operation receipt must be an object")
+    if previous is not None:
+        if not isinstance(previous.get("snapshot_digest"), str):
+            raise RunnerError("tracker_receipt_corrupt", "tracker operation receipt has no snapshot digest")
+        if previous["snapshot_digest"] != snapshot.digest:
+            raise RunnerError("tracker_operation_conflict", "operation_id was reused with a different snapshot")
+        items = previous.get("records")
+        if (previous.get("relation_mode") != "local" or not isinstance(items, list)
+                or len(items) != len(snapshot.records)):
+            raise RunnerError("tracker_receipt_corrupt", "tracker operation receipt has invalid records")
+        for record, item in zip(snapshot.records, items):
+            filename = re.sub(r"[^A-Za-z0-9._-]+", "-", record.key).strip("-") + ".md"
+            if (not isinstance(item, dict) or item.get("key") != record.key
+                    or item.get("path") != filename or not isinstance(item.get("digest"), str)
+                    or not isinstance(item.get("adopted"), bool)):
+                raise RunnerError("tracker_receipt_corrupt", "tracker operation receipt changed identity")
+            destination = target_root / filename
+            if not destination.is_file() or _record(target_root, destination).digest != item["digest"]:
+                raise RunnerError("tracker_revision_conflict", f"published file changed since receipt: {record.key}")
         return {"created": False, "operation_id": operation_id, "receipt": previous, "relation_mode": "local"}
 
     published: list[dict[str, object]] = []

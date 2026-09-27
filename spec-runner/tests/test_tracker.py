@@ -73,6 +73,37 @@ class TrackerTests(unittest.TestCase):
             with self.assertRaises(RunnerError):
                 publish_local(snapshot, target, operation_id="op-2")
 
+    def test_same_operation_replay_rechecks_published_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "drafts"
+            target = Path(temporary) / "target"
+            root.mkdir()
+            (root / "a.md").write_text(issue("A", "A"), encoding="utf-8")
+            snapshot = read_local(root)
+            publish_local(snapshot, target, operation_id="op-1")
+            (target / "A.md").write_text(issue("A", "A") + "edited\n", encoding="utf-8")
+            with self.assertRaises(RunnerError) as error:
+                publish_local(snapshot, target, operation_id="op-1")
+            self.assertEqual(error.exception.code, "tracker_revision_conflict")
+            (target / "A.md").unlink()
+            with self.assertRaises(RunnerError) as error:
+                publish_local(snapshot, target, operation_id="op-1")
+            self.assertEqual(error.exception.code, "tracker_revision_conflict")
+
+    def test_corrupt_operation_receipt_cannot_be_used_for_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "drafts"
+            target = Path(temporary) / "target"
+            root.mkdir()
+            (root / "a.md").write_text(issue("A", "A"), encoding="utf-8")
+            snapshot = read_local(root)
+            publish_local(snapshot, target, operation_id="op-1")
+            receipt_path = target / ".spec-runner-tracker-receipts.json"
+            receipt_path.write_text(json.dumps({"op-1": {}}), encoding="utf-8")
+            with self.assertRaises(RunnerError) as error:
+                publish_local(snapshot, target, operation_id="op-1")
+            self.assertEqual(error.exception.code, "tracker_receipt_corrupt")
+
     def test_comment_difference_requires_explicit_matching_revision_adoption(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "drafts"
@@ -91,6 +122,9 @@ class TrackerTests(unittest.TestCase):
             adopted = publish_local(snapshot, target, operation_id="op-prepared",
                                     adopt_matching_revision=True)
             self.assertTrue(adopted["receipt"]["records"][0]["adopted"])
+            replay = publish_local(snapshot, target, operation_id="op-prepared",
+                                   adopt_matching_revision=True)
+            self.assertFalse(replay["created"])
             self.assertEqual(read_local(target).records[0].comments, ("prior-run",))
 
 
