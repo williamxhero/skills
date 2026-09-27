@@ -185,6 +185,13 @@ def test_store_fails_closed_on_unsafe_persisted_migration_payloads(tmp_path: Pat
 
         store.connection.execute(
             "UPDATE thread_migrations SET handover_json = ? WHERE migration_key = ?",
+            ("", key),
+        )
+        with pytest.raises(RunnerError, match="persisted migration evidence"):
+            store.thread_migration(key)
+
+        store.connection.execute(
+            "UPDATE thread_migrations SET handover_json = ? WHERE migration_key = ?",
             (json.dumps({"response_chain": {"encrypted_content": "opaque"}}), key),
         )
         with pytest.raises(RunnerError, match="persisted migration evidence"):

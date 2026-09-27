@@ -2089,7 +2089,9 @@ class Store:
         result = dict(row)
         for key in ("handover_json", "successor_json", "uncertainty_json"):
             value = result.pop(key)
-            result[key.removesuffix("_json")] = _decode_migration_payload(value) if value else None
+            # NULL means that this evidence has not been recorded. Any other
+            # value, including an empty string, must pass the strict decoder.
+            result[key.removesuffix("_json")] = _decode_migration_payload(value) if value is not None else None
         return result
 
     def thread_migrations_for_run(self, run_id: str) -> list[dict[str, object]]:
