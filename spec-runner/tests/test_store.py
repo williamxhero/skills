@@ -475,6 +475,41 @@ class StoreLeaseTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_recovery_receipts_reject_non_finite_json_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            store = Store.open(Path(temp) / "control", create=True)
+            try:
+                timestamp = now()
+                run = RunRecord(
+                    run_id="run-strict-json", launch_key="strict-json", input_digest="input",
+                    config_digest="config", repository_path=temp, target_ref="HEAD",
+                    artifact_root="artifacts", backend_kind="codex_sdk", state="starting",
+                    current_step="implement", log_path="logs/run.jsonl",
+                    created_at=timestamp, updated_at=timestamp,
+                )
+                store.create_run(run, "start:run-strict-json")
+                store.upsert_recovery_episode(
+                    episode_id="episode-strict-json", run_id=run.run_id,
+                    operation_kind="implementation", stage="implement", generation=0,
+                )
+
+                with self.assertRaisesRegex(RunnerError, "strict JSON"):
+                    store.record_recovery_observation(
+                        observation_id="observation-strict-json",
+                        episode_id="episode-strict-json",
+                        observation={"fingerprint": "fp", "retry_after": float("nan")},
+                    )
+                with self.assertRaisesRegex(RunnerError, "strict JSON"):
+                    store.record_recovery_decision(
+                        decision_id="decision-strict-json",
+                        episode_id="episode-strict-json",
+                        decision={"action": "wait_retry", "next_check_at": float("inf")},
+                    )
+                self.assertEqual(store.recovery_for_run(run.run_id)["episodes"][0]["observations"], [])
+                self.assertEqual(store.recovery_for_run(run.run_id)["episodes"][0]["decisions"], [])
+            finally:
+                store.close()
+
     def test_recovery_budget_reservation_is_idempotent_and_monotonic(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             store = Store.open(Path(temp) / "control", create=True)

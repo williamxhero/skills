@@ -23,6 +23,13 @@ def now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _encode_strict_json(value: object, *, code: str, message: str) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise RunnerError(code, message) from exc
+
+
 def _raise_if_control_database_busy(exc: sqlite3.OperationalError) -> None:
     message = str(exc)
     if "locked" in message.lower() or "busy" in message.lower():
@@ -1584,12 +1591,17 @@ class Store:
         fingerprint = str(observation.get("fingerprint") or "")
         if not fingerprint:
             raise RunnerError("recovery_observation_invalid", "observation requires a stable fingerprint")
+        observation_json = _encode_strict_json(
+            observation,
+            code="recovery_observation_invalid",
+            message="recovery observation must be strict JSON",
+        )
         with self.transaction():
             if self.connection.execute("SELECT 1 FROM recovery_episodes WHERE episode_id = ?", (episode_id,)).fetchone() is None:
                 raise RunnerError("recovery_episode_missing", "cannot record observation for an unknown episode")
             self.connection.execute(
                 "INSERT OR IGNORE INTO recovery_observations(observation_id, episode_id, fingerprint, observation_json, observed_at) VALUES (?, ?, ?, ?, ?)",
-                (observation_id, episode_id, fingerprint, json.dumps(observation, ensure_ascii=False, sort_keys=True), now()),
+                (observation_id, episode_id, fingerprint, observation_json, now()),
             )
         row = self.connection.execute("SELECT * FROM recovery_observations WHERE observation_id = ?", (observation_id,)).fetchone()
         assert row is not None
@@ -1599,12 +1611,17 @@ class Store:
 
     def record_recovery_decision(self, *, decision_id: str, episode_id: str,
                                  decision: dict[str, object]) -> dict[str, object]:
+        decision_json = _encode_strict_json(
+            decision,
+            code="recovery_decision_invalid",
+            message="recovery decision must be strict JSON",
+        )
         with self.transaction():
             if self.connection.execute("SELECT 1 FROM recovery_episodes WHERE episode_id = ?", (episode_id,)).fetchone() is None:
                 raise RunnerError("recovery_episode_missing", "cannot record decision for an unknown episode")
             self.connection.execute(
                 "INSERT OR IGNORE INTO recovery_decisions(decision_id, episode_id, decision_json, created_at) VALUES (?, ?, ?, ?)",
-                (decision_id, episode_id, json.dumps(decision, ensure_ascii=False, sort_keys=True), now()),
+                (decision_id, episode_id, decision_json, now()),
             )
         row = self.connection.execute("SELECT * FROM recovery_decisions WHERE decision_id = ?", (decision_id,)).fetchone()
         assert row is not None

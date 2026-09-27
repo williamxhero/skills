@@ -1839,7 +1839,7 @@ or negative counters. The policy continues to use its bounded local delay when
 a retry hint is missing or invalid.
 
 The focused recovery policy and SDK observation selection passed `74 passed`.
-The complete source plus acceptance selection passed `491 passed, 1 skipped`;
+The complete source plus acceptance selection passed `492 passed, 1 skipped`;
 `compileall` and `git diff --check` passed.
 GitHub Actions run `36351199015` passed on both Ubuntu and Windows contract
 jobs.
@@ -1848,3 +1848,7 @@ This is deterministic observation input and strict JSON evidence only. It does
 not verify a live provider incident, same-thread business continuation,
 source-thread migration, native Windows old-writer shutdown, or project-level
 L3-L5 gates; those remain `not_verified`.
+
+The Store recovery receipt boundary also rejects non-finite observation and
+decision values before SQLite insertion, preserving the same strict JSON
+contract for direct persistence callers.
