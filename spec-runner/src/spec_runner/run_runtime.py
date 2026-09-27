@@ -25,6 +25,7 @@ from .store import RunRecord, Store, now
 from .stage_progression import StageProgression
 from .workflow_port import LegacyWorkflowPort
 from .request_context import RequestContext, context_path, write_context
+from .lease_runtime import unregister as unregister_lease_health
 
 
 class RunRuntime:
@@ -81,6 +82,7 @@ class RunRuntime:
         heartbeat_stop: threading.Event | None = None
         heartbeat_thread: threading.Thread | None = None
         global_lease: ScopeLock | None = None
+        heartbeat_run_id: str | None = None
         try:
             existing = store.find_by_launch_key(launch_key)
             if existing is not None:
@@ -168,8 +170,10 @@ class RunRuntime:
                     control_root=control_root,
                     scope=lease_scope,
                     owner_token=owner_token,
+                    run_id=existing.run_id,
                     global_path=global_lease,
                 )
+                heartbeat_run_id = existing.run_id
                 if RecoveryEpisode(run=existing, store=store).waits():
                     return {"created": False, **store.public_status(existing.run_id)}
                 existing = store.find_by_run_id(existing.run_id) or existing
@@ -354,8 +358,10 @@ class RunRuntime:
                 control_root=control_root,
                 scope=lease_scope,
                 owner_token=owner_token,
+                run_id=requested_run_id,
                 global_path=global_lease,
             )
+            heartbeat_run_id = requested_run_id
             store.write_log(
                 control_root,
                 requested_run_id,
@@ -502,6 +508,8 @@ class RunRuntime:
                 heartbeat_stop.set()
             if heartbeat_thread is not None:
                 heartbeat_thread.join(timeout=1.0)
+            if heartbeat_run_id is not None:
+                unregister_lease_health(heartbeat_run_id)
             try:
                 store.release_lease(scope=lease_scope, owner_token=owner_token)
             except RunnerError:

@@ -1505,3 +1505,23 @@ This is one local fixture delivery, not the three-SPEC GitHub PR/CI/closure
 acceptance. The full SF-02.2 rejection and cleanup matrix,
 source takeover, and project-level L3-L5 remain `not_verified` where
 durable evidence is absent. #253, #264 and their parents remain OPEN.
+
+## SF-05.1 lease heartbeat fail-closed increment (2026-09-27)
+
+The active Runner now keeps a process-local health signal for the durable
+repository writer lease. If the heartbeat cannot update the lease, the signal
+is checked by the existing SDK control watcher. The watcher interrupts the
+active turn before it can produce further external side effects. The resulting
+`sdk_control_unavailable` receipt retains the source `writer_lease_lost` code,
+thread and turn identity, and an `execution_outcome=unknown` fault observation
+so recovery must reconcile the external result before creating another worker.
+
+The increment adds no SQLite tables and does not alter CLI projections. Focused
+lease and SDK control tests passed `18 passed, 1 skipped`; the affected public
+Runner, CLI and recovery selection passed `60 passed, 1 skipped`; the complete
+source plus acceptance selection passed `449 passed, 1 skipped`. `compileall`
+and `git diff --check` passed.
+
+This is deterministic fail-closed evidence. Live SDK provider recovery,
+Windows detached multi-process ownership, complete cancellation and project
+L3-L5 remain `not_verified`; #264, #263 and the remaining SPECs stay OPEN.

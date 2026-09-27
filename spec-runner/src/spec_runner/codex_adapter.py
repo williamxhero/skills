@@ -370,6 +370,10 @@ class CodexAdapter:
                         turn,
                         control_state=control_state,
                         on_control_applied=on_control_applied,
+                        thread_id=result_thread_id,
+                        turn_id=result_turn_id,
+                        requested_model=model,
+                        requested_effort=effort,
                     )
                 else:
                     # Keep the fake adapter contract useful for isolated unit
@@ -487,6 +491,10 @@ class CodexAdapter:
         *,
         control_state: Callable[[], str | None] | None,
         on_control_applied: Callable[[str], None] | None,
+        thread_id: str | None = None,
+        turn_id: str | None = None,
+        requested_model: str | None = None,
+        requested_effort: str | None = None,
     ) -> Any:
         """Run a published TurnHandle while honoring durable stop requests.
 
@@ -554,10 +562,26 @@ class CodexAdapter:
             stop.set()
             watcher.join(timeout=1.0)
         if control_error:
+            failed_control = control_error[0]
             details: dict[str, object] = {
-                "exception_type": type(control_error[0]).__name__,
+                "exception_type": type(failed_control).__name__,
                 "interrupted": control_interrupted,
             }
+            if isinstance(failed_control, RunnerError):
+                details["control_error_code"] = failed_control.code
+                if failed_control.details:
+                    details["control_error_details"] = dict(failed_control.details)
+            details["thread_id"] = thread_id
+            details["turn_id"] = turn_id
+            details["external_result_requires_reconciliation"] = bool(turn_id)
+            details["fault_observation"] = observation_from_error(
+                operation_kind="codex_turn",
+                error=failed_control,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                requested_model=requested_model,
+                requested_effort=requested_effort,
+            ).public()
             if interrupt_error:
                 details["interrupt_exception_type"] = type(interrupt_error[0]).__name__
             code = "sdk_control_unavailable" if control_interrupted else "sdk_control_interrupt_failed"
@@ -567,7 +591,7 @@ class CodexAdapter:
                 if control_interrupted
                 else "the Runner could not interrupt a Codex turn after losing its control plane",
                 details=details,
-            ) from control_error[0]
+            ) from failed_control
         if interrupt_error:
             raise RunnerError(
                 "sdk_interrupt_failed",

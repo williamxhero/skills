@@ -15,6 +15,9 @@ from .config import DEFAULT_GIT_TIMEOUT_SECONDS, RunnerConfig, read_brief
 from .codex_adapter import CodexAdapter, CodexWorkerResult
 from .errors import RunnerError
 from .store import RunRecord, Store, now
+from .lease_runtime import check as check_lease_health
+from .lease_runtime import register as register_lease_health
+from .lease_runtime import unregister as unregister_lease_health
 from .verification import verify_run
 from .plans import digest, load_json, validate_spec_plan, validate_ticket_plan
 from .multi_spec import run_local_delivery
@@ -87,9 +90,12 @@ def _validate_launch_key(value: str) -> str:
     return validate_launch_key(value)
 
 
-def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str, global_path: ScopeLock | None = None) -> tuple[threading.Event, threading.Thread]:
+def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str,
+                           run_id: str | None = None,
+                           global_path: ScopeLock | None = None) -> tuple[threading.Event, threading.Thread]:
     """Keep a long-running SDK call from looking stale to a recovery process."""
     stop = threading.Event()
+    health = register_lease_health(run_id) if run_id is not None else None
 
     def beat() -> None:
         while not stop.wait(1.0):
@@ -99,7 +105,12 @@ def _start_lease_heartbeat(*, control_root: Path, scope: str, owner_token: str, 
                     heartbeat_store.heartbeat_lease(scope=scope, owner_token=owner_token)
                 finally:
                     heartbeat_store.close()
-            except (OSError, RunnerError):
+            except Exception as exc:
+                # A lost heartbeat means this process no longer has durable
+                # write authority. Let the active SDK control watcher stop
+                # before this process can produce more external side effects.
+                if health is not None:
+                    health.fail(exc)
                 return
 
     thread = threading.Thread(target=beat, name="spec-runner-lease-heartbeat", daemon=True)
@@ -144,10 +155,24 @@ def _read_control_state(*, control_root: Path, run_id: str) -> str | None:
     logical access path and leaves all state transitions to the owning Runner
     connection after the SDK result is returned.
     """
-    control_store = Store.open(control_root, create=False)
+    check_lease_health(run_id)
+    try:
+        control_store = Store.open(control_root, create=False)
+    except Exception as exc:
+        raise RunnerError(
+            "sdk_control_unavailable",
+            "the Runner control database could not be read",
+            details={"exception_type": type(exc).__name__},
+        ) from exc
     try:
         control = control_store.control_for_run(run_id)
         return str(control["requested_state"]) if control else None
+    except Exception as exc:
+        raise RunnerError(
+            "sdk_control_unavailable",
+            "the Runner control database could not be read",
+            details={"exception_type": type(exc).__name__},
+        ) from exc
     finally:
         control_store.close()
 
