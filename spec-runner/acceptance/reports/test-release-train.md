@@ -2025,3 +2025,21 @@ This is deterministic persisted-evidence integrity only. Live native SDK
 business continuation, source-thread archive/readback, provider crash windows,
 Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
 remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
+
+## RCV-02.4 empty persisted migration evidence (2026-09-28)
+
+Commit `ad9f44a` closes a false-negative in historical migration readback:
+`thread_migration()` now treats SQLite `NULL` as absent evidence, while every
+non-NULL value, including an empty string, must pass strict JSON and hidden
+history validation. A corrupt empty `handover_json` therefore fails closed
+instead of being converted to `None` and consumed by recovery.
+
+The focused migration selection passed `11 passed`; the complete source plus
+acceptance selection passed `540 passed, 1 skipped`; `compileall` and
+`git diff --check` passed. GitHub Actions run `36360138946` passed both Ubuntu
+and Windows contract jobs, including the installed-wheel public CLI checks.
+
+This is deterministic persisted-evidence integrity only. Live native SDK
+business continuation, source-thread archive/readback, provider crash windows,
+Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
+remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
