@@ -321,6 +321,30 @@ class GitHubDeliveryTests(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(result["states"]["legacy-ci"]["source"], "status_context")
 
+    def test_check_run_count_mismatch_cannot_hide_a_newer_attempt(self):
+        def runner(args: list[str]) -> str:
+            if "check-runs" in args[-1]:
+                return json.dumps({"total_count": 2, "check_runs": [
+                    {"name": "ci", "status": "completed", "conclusion": "success", "head_sha": "abc"}
+                ]})
+            self.fail("status contexts must not be read after incomplete check-runs")
+
+        with self.assertRaises(RunnerError) as caught:
+            GitHubDelivery(runner=runner).checks(repository="owner/repo", candidate_sha="abc", required=["ci"])
+        self.assertEqual(caught.exception.code, "github_checks_incomplete")
+
+    def test_status_context_count_mismatch_cannot_supply_ready_receipt(self):
+        def runner(args: list[str]) -> str:
+            if "check-runs" in args[-1]:
+                return json.dumps({"total_count": 0, "check_runs": []})
+            return json.dumps({"sha": "abc", "total_count": 2, "statuses": [
+                {"context": "legacy-ci", "state": "success", "updated_at": "2026-09-23T00:00:00Z"}
+            ]})
+
+        with self.assertRaises(RunnerError) as caught:
+            GitHubDelivery(runner=runner).checks(repository="owner/repo", candidate_sha="abc", required=["legacy-ci"])
+        self.assertEqual(caught.exception.code, "github_status_incomplete")
+
     def test_already_merged_pr_is_adopted_without_second_merge_request(self):
         calls: list[list[str]] = []
 

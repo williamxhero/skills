@@ -88,6 +88,16 @@ class GitHubDelivery:
         result = [item for page in document for item in page]
         return result
 
+    @staticmethod
+    def _verify_page_count(pages: list[dict[str, Any]], items: list[dict[str, Any]],
+                           *, code: str, label: str) -> None:
+        counts = [page.get("total_count") for page in pages]
+        if not any(count is not None for count in counts):
+            return
+        if (any(not isinstance(count, int) or isinstance(count, bool) for count in counts)
+                or any(count != len(items) for count in counts)):
+            raise RunnerError(code, f"{label} pagination count does not match returned items")
+
     def _read_pull_request(self, *, repository: str, number: int, head: str,
                            base: str, candidate_sha: str, marker: str) -> dict[str, Any]:
         try:
@@ -237,6 +247,7 @@ class GitHubDelivery:
                for page in pages):
             raise RunnerError("github_checks_incomplete", "check-runs page contains incomplete run data")
         runs = [item for page in pages for item in page["check_runs"]]
+        self._verify_page_count(pages, runs, code="github_checks_incomplete", label="check-runs")
         status_raw = self.runner(["api", "--paginate", "--slurp", "--method", "GET", "-f", "per_page=100", f"repos/{repository}/commits/{candidate_sha}/status"])
         try:
             status_pages = json.loads(status_raw)
@@ -250,6 +261,7 @@ class GitHubDelivery:
                or any(not isinstance(item, dict) for item in page["statuses"]) for page in status_pages):
             raise RunnerError("github_status_incomplete", "status contexts do not match the candidate commit")
         statuses = [item for page in status_pages for item in page["statuses"]]
+        self._verify_page_count(status_pages, statuses, code="github_status_incomplete", label="status contexts")
         def run_order(item: dict[str, Any]) -> tuple[datetime | None, int]:
             timestamp = item.get("created_at") or item.get("started_at")
             run_id = item.get("id")

@@ -1394,3 +1394,21 @@ and `git diff --check` passed.
 This corrects one #264 read-only compatibility defect. It does not verify the
 remaining live SDK, multi-process writer, full cancellation or project-level
 L3-L5 requirements.
+
+## SF-03.2 GitHub CI pagination count (2026-09-27)
+
+The check-run and combined-status readers previously accepted a syntactically
+valid page even when GitHub's `total_count` exceeded the number of returned
+items. A missing newer check attempt or status context could make a required
+check appear ready. Both readers now reject a present count that differs from
+the flattened pages, including inconsistent or invalid counts across pages.
+Public `GitHubDelivery.checks` regressions cover both incomplete responses.
+
+The focused delivery selection passed `17 passed`; full source plus acceptance
+passed `421 passed, 1 skipped`. The public `github-delivery checks` command
+read GitHub's actual `750d2d4` master SHA and found both Ubuntu and Windows
+contract checks ready. GitHub returned two check-runs with `total_count=2`,
+and zero status contexts with `total_count=0`. This confirms the new count
+check accepts the current real repository response; it does not prove a live
+truncated-page incident. Protected PR delivery, merge queue behavior, and
+project-level L3-L5 remain `not_verified`; #257 stays open.
