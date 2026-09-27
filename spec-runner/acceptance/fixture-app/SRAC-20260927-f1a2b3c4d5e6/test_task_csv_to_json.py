@@ -1,12 +1,24 @@
 import os
+import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 
 MODULE_DIR = Path(__file__).resolve().parent
+
+
+@contextmanager
+def isolated_directory():
+    directory = MODULE_DIR / f"test-work-{uuid.uuid4().hex}"
+    directory.mkdir()
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 class TaskCsvToJsonProcessTests(unittest.TestCase):
@@ -23,8 +35,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
         return input_path
 
     def test_valid_csv_is_compact_deterministic_utf8_json(self):
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             input_path = self.write_input(
                 directory,
                 'id,title,status\r\n'
@@ -51,8 +62,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
             )
 
     def test_bom_and_header_only_input(self):
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             input_path = self.write_input(directory, "id,title,status\r\n", encoding="utf-8-sig")
             output_path = directory / "tasks.json"
 
@@ -62,8 +72,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
             self.assertEqual(output_path.read_bytes(), b'{"tasks":[]}\n')
 
     def test_validation_failure_has_no_stdout_and_preserves_output(self):
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             input_path = self.write_input(
                 directory,
                 "id,title,status\none,Task,todo\none,Other,done\n",
@@ -81,6 +90,23 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
             self.assertEqual(list(directory.glob("*.tmp")), [])
             self.assertEqual(list(directory.glob(".tasks.json.*")), [])
 
+    def test_bare_quote_in_unquoted_field_is_rejected(self):
+        with isolated_directory() as directory:
+            input_path = self.write_input(
+                directory,
+                'id,title,status\none,ab"cd,todo\n',
+            )
+            output_path = directory / "tasks.json"
+            original = b'{"tasks":[{"id":"known"}]}\n'
+            output_path.write_bytes(original)
+
+            result = self.run_command(input_path, output_path)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout, b"")
+            self.assertNotEqual(result.stderr, b"")
+            self.assertEqual(output_path.read_bytes(), original)
+
     def test_strict_header_and_field_validation(self):
         invalid_inputs = [
             " id,title,status\none,Task,todo\n",
@@ -90,8 +116,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
             "id,title,status\n,Task,todo\n",
             'id,title,status\none,"unterminated,todo\n',
         ]
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             output_path = directory / "tasks.json"
             for index, content in enumerate(invalid_inputs):
                 input_path = directory / f"tasks-{index}.csv"
@@ -102,8 +127,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
                 self.assertNotEqual(result.stderr, b"")
 
     def test_input_output_aliases_are_rejected(self):
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             input_path = self.write_input(directory, "id,title,status\none,Task,todo\n")
             output_path = directory / "tasks.json"
             try:
@@ -119,8 +143,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
             self.assertEqual(input_path.read_text(encoding="utf-8"), "id,title,status\none,Task,todo\n")
 
     def test_missing_output_directory_does_not_get_created(self):
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             input_path = self.write_input(directory, "id,title,status\none,Task,todo\n")
             missing_directory = directory / "missing"
             output_path = missing_directory / "tasks.json"
@@ -132,8 +155,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symbolic links are unavailable")
     def test_output_symlink_is_rejected(self):
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             input_path = self.write_input(directory, "id,title,status\none,Task,todo\n")
             target_path = directory / "target.json"
             target_path.write_bytes(b"known\n")
@@ -149,8 +171,7 @@ class TaskCsvToJsonProcessTests(unittest.TestCase):
             self.assertEqual(target_path.read_bytes(), b"known\n")
 
     def test_invalid_utf8_and_unreadable_input_fail_cleanly(self):
-        with tempfile.TemporaryDirectory(dir=MODULE_DIR) as temporary_directory:
-            directory = Path(temporary_directory)
+        with isolated_directory() as directory:
             invalid_path = directory / "invalid.csv"
             invalid_path.write_bytes(b"id,title,status\none,\xff,todo\n")
             output_path = directory / "tasks.json"

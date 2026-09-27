@@ -1,4 +1,5 @@
 import csv
+import io
 import json
 import os
 import sys
@@ -35,10 +36,69 @@ def _paths_collide(input_path, output_path):
         return False
 
 
+def _validate_quote_grammar(content):
+    in_quotes = False
+    field_start = True
+    after_closing_quote = False
+    position = 0
+
+    while position < len(content):
+        character = content[position]
+        if in_quotes:
+            if character == '"':
+                if position + 1 < len(content) and content[position + 1] == '"':
+                    position += 2
+                    continue
+                in_quotes = False
+                after_closing_quote = True
+            elif character == "\r":
+                if position + 1 >= len(content) or content[position + 1] != "\n":
+                    raise ConversionError("input CSV contains an invalid line ending")
+            position += 1
+            continue
+
+        if after_closing_quote:
+            if character == ",":
+                field_start = True
+                after_closing_quote = False
+            elif character == "\r":
+                if position + 1 >= len(content) or content[position + 1] != "\n":
+                    raise ConversionError("input CSV contains an invalid line ending")
+                field_start = True
+                after_closing_quote = False
+            elif character == "\n":
+                field_start = True
+                after_closing_quote = False
+            else:
+                raise ConversionError("input CSV contains invalid characters after a quote")
+        elif character == '"':
+            if not field_start:
+                raise ConversionError("input CSV contains a quote in an unquoted field")
+            in_quotes = True
+            field_start = False
+        elif character == ",":
+            field_start = True
+        elif character == "\r":
+            if position + 1 >= len(content) or content[position + 1] != "\n":
+                raise ConversionError("input CSV contains an invalid line ending")
+            field_start = True
+            position += 1
+        elif character == "\n":
+            field_start = True
+        else:
+            field_start = False
+        position += 1
+
+    if in_quotes:
+        raise ConversionError("input CSV contains an unterminated quoted field")
+
+
 def _parse_tasks(input_path):
     try:
         with open(input_path, "r", encoding="utf-8-sig", newline="") as input_file:
-            reader = csv.reader(input_file, strict=True)
+            content = input_file.read()
+            _validate_quote_grammar(content)
+            reader = csv.reader(io.StringIO(content), strict=True)
             try:
                 header = next(reader)
             except StopIteration as exc:
