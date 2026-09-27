@@ -1,3 +1,34 @@
+## Recovery decision budget validation (2026-09-28)
+
+The recovery decision boundary now rejects negative, boolean, fractional, and
+non-finite `remaining_budget` values before they can be exposed as a typed
+decision or persisted in SQLite. Recovery readback also distinguishes a
+missing legacy budget field from an explicitly malformed value: missing keeps
+the existing empty-budget compatibility path, while `null`, a non-object, or
+invalid counter values return the stable `recovery_decision_invalid` error.
+No SQLite schema, CLI JSON, or receipt shape was changed.
+
+Verification for commit `8e786f1`:
+
+- Focused recovery policy/runtime and Store selection: `129 passed`.
+- Complete source plus acceptance selection: `528 passed, 1 skipped`.
+- `compileall` and `git diff --check`: passed.
+- CI run `36353708707`: Ubuntu and Windows contract jobs passed, including
+  Runner tests, wheel installation, and installed public CLI verification.
+
+The explicit persisted-null recovery readback correction is commit `deed61c`:
+
+- Focused recovery policy/runtime and Store selection: `133 passed`.
+- Complete source plus acceptance selection: `532 passed, 1 skipped`.
+- `compileall` and `git diff --check`: passed.
+- CI run `36355061068`: Ubuntu and Windows contract jobs passed, including
+  Runner tests, wheel installation, and installed public CLI verification.
+
+This is deterministic durable recovery input evidence only. Live provider
+recovery, automatic service-wait wakeup after a real incident, source-thread
+migration, native Windows detached ownership, and project-level L3-L5 remain
+`not_verified`; RCV-01/02 and the parent SPECs remain open.
+
 ## Production workflow typed context (2026-09-27)
 
 `ProductionWorkflow` now receives the existing typed `RunContext` as one
