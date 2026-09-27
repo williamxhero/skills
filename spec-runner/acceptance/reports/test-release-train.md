@@ -1966,3 +1966,23 @@ This is deterministic durable handoff boundary evidence only. Live native
 process crash recovery, source-thread migration, encrypted/opaque history
 exclusion under a real SDK handoff, Windows detached recovery, and project-level
 L3-L5 remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
+
+## RCV-02.2 handover hidden-history boundary (2026-09-28)
+
+Commit `df99484` applies a recursive safe-value check to the shared handover
+contract used by both migration persistence and takeover inspection. Handover
+evidence containing `encrypted_content`, `opaque_compaction`,
+`response_chain`, credentials, secrets, or non-finite JSON values is rejected;
+it cannot release a source thread or advance a migration from `intent` to
+`handover_confirmed`.
+
+The clean migration, takeover boundary, and Store selection passed `35 passed`.
+The complete source plus acceptance selection passed `538 passed, 1 skipped`;
+`compileall` and `git diff --check` passed. GitHub Actions run
+`36358379279` passed both Ubuntu and Windows contract jobs, including the
+installed-wheel public CLI checks.
+
+This is deterministic migration and takeover safety evidence only. Real native
+SDK migration, OS/Windows old-writer termination, provider crash windows,
+business continuation, source-thread archive, and project-level L3-L5 remain
+`not_verified`; #297/#298/#299/#300 and their parent remain open.
