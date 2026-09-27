@@ -1486,7 +1486,7 @@ class Store:
                    route_probe_attempts=MAX(recovery_episodes.route_probe_attempts, excluded.route_probe_attempts),
                    clean_probe_attempts=MAX(recovery_episodes.clean_probe_attempts, excluded.clean_probe_attempts),
                    retry_deadline=excluded.retry_deadline, wait_deadline=excluded.wait_deadline,
-                   last_verified_progress=excluded.last_verified_progress, updated_at=excluded.updated_at""",
+                   last_verified_progress=COALESCE(excluded.last_verified_progress, recovery_episodes.last_verified_progress), updated_at=excluded.updated_at""",
                 (episode_id, run_id, operation_kind, stage, generation, state,
                  values["same_thread_attempts"], values["capacity_attempts"], values["route_probe_attempts"],
                  values["clean_probe_attempts"], values["migration_attempts"], values["no_progress_attempts"],

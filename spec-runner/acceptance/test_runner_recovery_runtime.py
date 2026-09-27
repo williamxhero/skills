@@ -50,6 +50,21 @@ def _capacity_error(turn_id: str = "turn-capacity") -> RunnerError:
     )
 
 
+def _unknown_error(turn_id: str, progress: str | None = None) -> RunnerError:
+    observation = {
+        "message": "an unclassified provider failure",
+        "source": "sdk_result",
+        "structured": True,
+        "request_admission": "rejected",
+        "execution_outcome": "failed",
+        "thread_id": "thread-unknown",
+        "turn_id": turn_id,
+    }
+    if progress is not None:
+        observation["last_verified_progress"] = progress
+    return RunnerError("sdk_failure", "an unclassified provider failure", details={"fault_observation": observation})
+
+
 def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path: Path) -> None:
     root = tmp_path / "control"
     store = Store.open(root, create=True)
@@ -83,6 +98,73 @@ def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path:
         assert diagnostic["current_action"] == "service_wait"
         assert diagnostic["budget"]["next_check_at"]
         assert diagnostic["next_recovery_condition"].startswith("wait until next_check_at")
+    finally:
+        store.close()
+
+
+def test_unknown_failures_track_durable_no_progress_attempts(tmp_path: Path) -> None:
+    root = tmp_path / "control"
+    store = Store.open(root, create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        decisions = [
+            RecoveryEpisode(run=run, store=store).record_failure(
+                operation_id="start:" + run.run_id,
+                error=_unknown_error(f"turn-unknown-{index}"),
+            )
+            for index in range(3)
+        ]
+        assert [item.action.value for item in decisions] == ["blocked", "blocked", "blocked"]
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["same_thread_attempts"] == 3
+        assert episode["no_progress_attempts"] == 3
+        assert decisions[-1].reason == "no_progress_budget_exhausted"
+    finally:
+        store.close()
+
+
+def test_verified_progress_is_persisted_and_does_not_count_as_no_progress(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    try:
+        decision = RecoveryEpisode(run=run, store=store).record_failure(
+            operation_id="start:" + run.run_id,
+            error=_unknown_error("turn-progress", "ticket-plan:v1"),
+        )
+        assert decision.action.value == "blocked"
+        assert decision.reason == "fault_family:unknown"
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["last_verified_progress"] == "ticket-plan:v1"
+        assert episode["no_progress_attempts"] == 0
+
+        RecoveryEpisode(run=run, store=store).record_failure(
+            operation_id="start:" + run.run_id, error=_unknown_error("turn-no-progress"),
+        )
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["last_verified_progress"] == "ticket-plan:v1"
+        assert episode["no_progress_attempts"] == 1
+    finally:
+        store.close()
+
+
+def test_duplicate_failure_observation_reserves_no_progress_once(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    run = _run(tmp_path)
+    store.create_run(run, "start:" + run.run_id)
+    error = _unknown_error("turn-duplicate")
+    try:
+        first = RecoveryEpisode(run=run, store=store).record_failure(
+            operation_id="start:" + run.run_id, error=error,
+        )
+        replay = RecoveryEpisode(run=run, store=store).record_failure(
+            operation_id="start:" + run.run_id, error=error,
+        )
+        assert replay.action == first.action
+        episode = store.recovery_for_run(run.run_id)["episodes"][0]
+        assert episode["same_thread_attempts"] == 1
+        assert episode["no_progress_attempts"] == 1
     finally:
         store.close()
 

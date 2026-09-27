@@ -79,7 +79,11 @@ class RecoveryEpisode:
             worker_id=(str(fault.get("worker_id")) if isinstance(fault, dict) and fault.get("worker_id") else (str(worker.get("worker_id")) if worker.get("worker_id") else None)),
             thread_id=(str(fault.get("thread_id")) if isinstance(fault, dict) and fault.get("thread_id") else (str(error.details.get("thread_id")) if error.details.get("thread_id") else None)),
             turn_id=(str(fault.get("turn_id")) if isinstance(fault, dict) and fault.get("turn_id") else (str(error.details.get("turn_id")) if error.details.get("turn_id") else None)),
-            last_verified_progress=None,
+            last_verified_progress=(
+                str(fault.get("last_verified_progress"))
+                if isinstance(fault, dict) and fault.get("last_verified_progress")
+                else None
+            ),
         )
         route_circuit: dict[str, object] | None = None
         if observation.family == FaultFamily.ROUTE_NOT_FOUND.value and observation.route_scope != "unknown":
@@ -107,30 +111,47 @@ class RecoveryEpisode:
         prior_action = decisions[-1].get("decision", {}).get("action") if decisions else None
         inspection_error = error.details.get("inspection_error") if isinstance(error.details, dict) else None
         external_result_unreconciled = error.code == "recovery_blocked" or bool(inspection_error)
-        counter_name: str | None = None
+        counter_names: list[str] = []
         if not external_result_unreconciled:
             if observation.family == FaultFamily.CAPACITY.value:
-                counter_name = "capacity_attempts"
+                counter_names.append("capacity_attempts")
             elif observation.family in {
                 FaultFamily.FAST_NOT_CONFIGURED.value,
                 FaultFamily.STREAM_DISCONNECTED.value,
                 FaultFamily.UNKNOWN.value,
             }:
-                counter_name = "same_thread_attempts"
+                counter_names.append("same_thread_attempts")
             elif observation.family == FaultFamily.ROUTE_NOT_FOUND.value and prior_action == RecoveryAction.USE_APPROVED_ROUTE.value:
-                counter_name = "route_probe_attempts"
+                counter_names.append("route_probe_attempts")
             elif observation.family == FaultFamily.ENCRYPTED_ITEM_MISMATCH.value:
                 if prior_action == RecoveryAction.PROBE_CLEAN_CONTEXT.value:
-                    counter_name = "clean_probe_attempts"
+                    counter_names.append("clean_probe_attempts")
                 elif prior_action == RecoveryAction.REQUEST_CLEAN_MIGRATION.value:
-                    counter_name = "migration_attempts"
+                    counter_names.append("migration_attempts")
         attempt_identity = observation.request_id or observation.turn_id
-        if counter_name and attempt_identity:
-            reserved = store.reserve_recovery_budget(
-                reservation_id=f"{episode_id}:attempt:{attempt_identity}",
-                episode_id=episode_id, counter_name=counter_name,
+        if (
+            not external_result_unreconciled
+            and observation.family == FaultFamily.UNKNOWN.value
+            and observation.execution_outcome == "failed"
+            and attempt_identity
+            and (
+                observation.last_verified_progress is None
+                or observation.last_verified_progress == (existing.get("last_verified_progress") or None)
             )
-            counters = {key: int(reserved.get(key) or 0) for key in counters}
+        ):
+            counter_names.append("no_progress_attempts")
+        if attempt_identity:
+            primary_counter = next(
+                (counter for counter in counter_names if counter != "no_progress_attempts"),
+                None,
+            )
+            for counter_name in counter_names:
+                reservation_suffix = "" if counter_name == primary_counter else f":{counter_name}"
+                reserved = store.reserve_recovery_budget(
+                    reservation_id=f"{episode_id}:attempt:{attempt_identity}{reservation_suffix}",
+                    episode_id=episode_id, counter_name=counter_name,
+                )
+                counters = {key: int(reserved.get(key) or 0) for key in counters}
         snapshot = RecoverySnapshot(
             run_id=run.run_id,
             operation_kind=operation_kind,

@@ -124,6 +124,47 @@ def test_capacity_service_probes_have_a_total_budget(attempts, expected, remaini
     assert (decision.next_check_at is None) == (expected is RecoveryAction.BLOCKED)
 
 
+def test_unknown_policy_honors_persisted_no_progress_budget():
+    decision = decide_recovery(
+        RecoverySnapshot(
+            run_id="run-1", operation_kind="codex_turn", stage="implementation",
+            no_progress_attempts=3,
+        ),
+        [FaultObservation(
+            operation_kind="codex_turn", stage="implementation",
+            family=FaultFamily.UNKNOWN.value,
+        )],
+        now=datetime(2026, 9, 27, tzinfo=timezone.utc),
+    )
+    assert decision.action is RecoveryAction.BLOCKED
+    assert decision.reason == "no_progress_budget_exhausted"
+    assert decision.remaining_budget["no_progress"] == 0
+
+
+def test_control_and_unsettled_execution_still_precede_no_progress_circuit():
+    observation = FaultObservation(
+        operation_kind="codex_turn", stage="implementation",
+        family=FaultFamily.CAPACITY.value,
+    )
+    cancelled = decide_recovery(
+        RecoverySnapshot(
+            run_id="run-1", operation_kind="codex_turn", stage="implementation",
+            user_control="cancel_requested", no_progress_attempts=3,
+        ),
+        [observation],
+    )
+    unsettled = decide_recovery(
+        RecoverySnapshot(
+            run_id="run-1", operation_kind="codex_turn", stage="implementation",
+            active_execution=True, request_admission="accepted", execution_outcome="unknown",
+            no_progress_attempts=3,
+        ),
+        [observation],
+    )
+    assert cancelled.reason == "user_cancelled"
+    assert unsettled.action is RecoveryAction.OBSERVE
+
+
 def test_capacity_retry_after_beyond_wait_limit_requires_configuration():
     decision = decide_recovery(
         RecoverySnapshot(run_id="run-1", operation_kind="codex_turn", stage="implementation",

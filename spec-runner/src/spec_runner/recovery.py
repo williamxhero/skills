@@ -207,6 +207,7 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
     observed_effort = _text(_field(details, "observed_effort", "actual_effort", "effort"), 120)
     observed_service_tier = _text(_field(details, "observed_service_tier", "actual_service_tier", "service_tier"), 120)
     runtime_version = _text(_field(details, "runtime_version"), 120)
+    observed_progress = _text(_field(details, "last_verified_progress"), 120)
     retry_count_value = _field(details, "sdk_retry_count", "retry_count", "sdk_retries")
     try:
         sdk_retry_count = int(retry_count_value) if retry_count_value is not None else None
@@ -231,7 +232,8 @@ def observation_from_error(*, operation_kind: str, error: BaseException | Mappin
         request_admission=request_admission if request_admission in {"accepted", "rejected", "unknown"} else "unknown",
         execution_outcome=execution_outcome if execution_outcome in {"completed", "failed", "unknown"} else "unknown",
         sdk_retry_count=sdk_retry_count, sdk_retry_coverage=sdk_retry_coverage,
-        last_verified_progress=last_verified_progress, route_scope=_text(_field(details, "route_scope", "routeScope"), 120) or "unknown",
+        last_verified_progress=last_verified_progress or observed_progress,
+        route_scope=_text(_field(details, "route_scope", "routeScope"), 120) or "unknown",
         evidence=evidence or ("error_text_fallback",),
     )
 
@@ -416,6 +418,9 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
     next_check = _future(current, delay) if action in {RecoveryAction.WAIT_RETRY, RecoveryAction.SERVICE_WAIT} else None
     reason = ("capacity_probe_budget_exhausted"
               if family == FaultFamily.CAPACITY.value and action == RecoveryAction.BLOCKED
+              else "no_progress_budget_exhausted"
+              if family == FaultFamily.UNKNOWN.value and action == RecoveryAction.BLOCKED
+              and snapshot.no_progress_attempts >= policy.max_no_progress
               else "capacity_wait_exceeds_limit"
               if family == FaultFamily.CAPACITY.value and action == RecoveryAction.WAIT_FOR_CONFIG
               else f"fault_family:{family}")

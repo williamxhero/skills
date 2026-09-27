@@ -1545,3 +1545,24 @@ This is local/deterministic lock evidence. Native Windows combined lock replay,
 live GitHub side-effect reconciliation, full SF-05.2/SF-05.3 production
 acceptance and project-level L3-L5 remain `not_verified`; #265 and #266 stay
 OPEN.
+
+## RCV-01.1 / RCV-01.2 recovery progress accounting (2026-09-27)
+
+The durable recovery runtime now consumes the existing `no_progress_attempts`
+budget for failed unknown observations with a stable request or turn identity.
+The reservation is idempotent across replay of the same attempt. Explicitly
+verified progress is persisted, and a later empty progress value cannot erase
+that receipt. The pure policy reports `no_progress_budget_exhausted` when the
+persisted budget is exhausted; control requests and accepted unknown execution
+still take precedence. Existing capacity service-wait and route/clean-migration
+budgets retain their prior behavior.
+
+Focused recovery policy/runtime tests passed `48 passed`. The affected Store and
+workflow-control selection passed `46 passed`. The complete source plus
+acceptance selection passed `455 passed, 1 skipped`; `compileall` and
+`git diff --check` passed.
+
+This is deterministic durable accounting evidence only. Real provider fault
+injection, successful SDK continuation, clean source-thread migration, GitHub
+three-SPEC delivery, Windows full-path recovery and project-level L3-L5 remain
+`not_verified`; #293, #294 and their parent EPICs remain OPEN.
