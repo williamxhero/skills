@@ -1345,3 +1345,24 @@ three-SPEC GitHub PR, CI, issue closure, archive, cleanup and next-base
 acceptance. The full #264 and #295 fault matrices, remaining open SPECs, and
 project-level L3-L5 gates remain `not_verified` where their separate live
 receipts are missing.
+
+## SF-03.2 duplicate CI check-run selection (2026-09-27)
+
+The GitHub delivery check reader could ignore malformed entries in a paginated
+check-run response and then accept a successful status context. It also chose
+same-name runs by completion time, allowing an older run that finished later
+to mask a newer running attempt. Both false-ready paths were reproduced by
+contract regressions before the fix.
+
+The reader now rejects incomplete check-run pages and selects the latest
+same-name attempt by creation/start time and run ID. A queued attempt without
+a start time uses its newer run ID and remains pending. Focused GitHub delivery
+tests passed `34 passed`; full source and acceptance tests passed `418 passed,
+1 skipped`; source/test compileall and `git diff --check` passed. Public
+`github-delivery checks` read back the exact `af8ce41` GitHub Actions SHA and
+confirmed both required Ubuntu and Windows contract checks ready with no
+missing, pending, failed, or wrong-SHA result.
+
+This is a production CI gate correction, not live evidence of duplicate
+check-run recovery or a protected PR/merge queue. #257 and project-level
+gates remain open where those separate receipts are missing.

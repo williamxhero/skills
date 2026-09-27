@@ -48,6 +48,57 @@ def test_check_runs_reject_completed_neutral_and_wrong_sha():
     assert result["ready"] is False
 
 
+def test_check_runs_reject_malformed_page_even_with_passing_status_context():
+    def runner(args: list[str]) -> str:
+        if args[-1].endswith("/status"):
+            return json.dumps({"sha": "abc", "statuses": [{"context": "ci", "state": "success"}]})
+        return json.dumps({"check_runs": ["unreadable check run"]})
+
+    with pytest.raises(RunnerError) as error:
+        GitHubDelivery(runner=runner).checks(repository="owner/repo", candidate_sha="abc", required=["ci"])
+
+    assert error.value.code == "github_checks_incomplete"
+
+
+def test_newer_check_run_waits_even_when_older_run_completes_later():
+    def runner(args: list[str]) -> str:
+        if args[-1].endswith("/status"):
+            return json.dumps({"sha": "abc", "statuses": []})
+        return json.dumps({"check_runs": [
+            {"id": 10, "name": "ci", "status": "completed", "conclusion": "success",
+             "head_sha": "abc", "started_at": "2026-01-01T10:00:00Z",
+             "completed_at": "2026-01-01T10:20:00Z"},
+            {"id": 11, "name": "ci", "status": "in_progress", "conclusion": None,
+             "head_sha": "abc", "started_at": "2026-01-01T10:10:00Z"},
+        ]})
+
+    result = GitHubDelivery(runner=runner).checks(
+        repository="owner/repo", candidate_sha="abc", required=["ci"]
+    )
+
+    assert result["pending"] == ["ci"]
+    assert result["ready"] is False
+
+
+def test_newer_queued_check_run_without_start_time_still_waits():
+    def runner(args: list[str]) -> str:
+        if args[-1].endswith("/status"):
+            return json.dumps({"sha": "abc", "statuses": []})
+        return json.dumps({"check_runs": [
+            {"id": 10, "name": "ci", "status": "completed", "conclusion": "success",
+             "head_sha": "abc", "started_at": "2026-01-01T10:00:00Z"},
+            {"id": 11, "name": "ci", "status": "queued", "conclusion": None,
+             "head_sha": "abc", "started_at": None},
+        ]})
+
+    result = GitHubDelivery(runner=runner).checks(
+        repository="owner/repo", candidate_sha="abc", required=["ci"]
+    )
+
+    assert result["pending"] == ["ci"]
+    assert result["ready"] is False
+
+
 @pytest.mark.parametrize("pages", ["{}", "[{}]"])
 def test_malformed_pr_pagination_is_rejected(pages):
     with pytest.raises(Exception):

@@ -232,7 +232,11 @@ class GitHubDelivery:
             pages = [pages]
         if not isinstance(pages, list) or any(not isinstance(page, dict) for page in pages):
             raise RunnerError("github_checks_incomplete", "check-runs pagination response is incomplete")
-        runs = [item for page in pages for item in (page.get("check_runs") or []) if isinstance(item, dict)]
+        if any(not isinstance(page.get("check_runs"), list)
+               or any(not isinstance(item, dict) for item in page["check_runs"])
+               for page in pages):
+            raise RunnerError("github_checks_incomplete", "check-runs page contains incomplete run data")
+        runs = [item for page in pages for item in page["check_runs"]]
         status_raw = self.runner(["api", "--paginate", "--slurp", "--method", "GET", "-f", "per_page=100", f"repos/{repository}/commits/{candidate_sha}/status"])
         try:
             status_pages = json.loads(status_raw)
@@ -246,14 +250,41 @@ class GitHubDelivery:
                or any(not isinstance(item, dict) for item in page["statuses"]) for page in status_pages):
             raise RunnerError("github_status_incomplete", "status contexts do not match the candidate commit")
         statuses = [item for page in status_pages for item in page["statuses"]]
-        by_name: dict[str, dict[str, Any]] = {}
+        def run_order(item: dict[str, Any]) -> tuple[datetime | None, int]:
+            timestamp = item.get("created_at") or item.get("started_at")
+            run_id = item.get("id")
+            if not isinstance(run_id, int) or isinstance(run_id, bool):
+                raise RunnerError("github_checks_incomplete", "duplicate check run lacks ordering identity")
+            if timestamp is None:
+                return None, run_id
+            if not isinstance(timestamp, str):
+                raise RunnerError("github_checks_incomplete", "duplicate check run has invalid timestamp")
+            try:
+                observed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise RunnerError("github_checks_incomplete", "duplicate check run has invalid timestamp") from exc
+            if observed.tzinfo is None:
+                raise RunnerError("github_checks_incomplete", "duplicate check run timestamp has no timezone")
+            return observed.astimezone(timezone.utc), run_id
+
+        grouped_runs: dict[str, list[dict[str, Any]]] = {}
         duplicates: dict[str, int] = {}
         for item in runs:
             name = str(item.get("name"))
             duplicates[name] = duplicates.get(name, 0) + 1
-            current = by_name.get(name)
-            if current is None or str(item.get("completed_at") or item.get("started_at") or "") > str(current.get("completed_at") or current.get("started_at") or ""):
-                by_name[name] = item
+            grouped_runs.setdefault(name, []).append(item)
+        by_name: dict[str, dict[str, Any]] = {}
+        for name, items in grouped_runs.items():
+            if len(items) == 1:
+                by_name[name] = items[0]
+                continue
+            ordered = [(run_order(item), item) for item in items]
+            if len({identity[1] for identity, _ in ordered}) != len(ordered):
+                raise RunnerError("github_checks_incomplete", "duplicate check runs have ambiguous ordering")
+            if all(identity[0] is not None for identity, _ in ordered):
+                by_name[name] = max(ordered, key=lambda value: value[0])[1]
+            else:
+                by_name[name] = max(ordered, key=lambda value: value[0][1])[1]
         by_context: dict[str, dict[str, Any]] = {}
         context_duplicates: dict[str, int] = {}
         for item in statuses:
