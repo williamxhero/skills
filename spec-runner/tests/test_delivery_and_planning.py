@@ -530,7 +530,79 @@ class ProductBoundaryTests(unittest.TestCase):
             self.assertEqual(frontier["categories"]["adopted"], ["SR-02"])
             self.assertEqual(frontier["categories"]["reverified"], ["SR-01", "SR-02"])
             self.assertEqual(frontier["categories"]["new_work"], ["SR-03"])
-            self.assertEqual([step["target"] for step in frontier["steps"]], ["SR-01", "SR-02", "SR-03"])
+            self.assertEqual(
+                [(step["kind"], step["target"]) for step in frontier["steps"]],
+                [
+                    ("reverify", "SR-01"),
+                    ("reverify", "SR-02"),
+                    ("resume", "SR-02"),
+                    ("resume", "SR-03"),
+                ],
+            )
+
+    def test_takeover_frontier_backfills_before_spec_work_and_resumes_partial_spec(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            report = inspect_takeover({
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repo),
+                "source_threads": [],
+                "artifacts": [],
+                "facts": {
+                    "requirements_material": [{"item": {"type": "userMessage", "content": [{"type": "text", "text": "finish both SPECs"}]}}],
+                    "specs": [
+                        {"key": "SR-01", "state": "partial"},
+                        {"key": "SR-02", "state": "not_started"},
+                    ],
+                },
+            })
+            frontier = plan_frontier(report)
+            self.assertEqual(
+                [(step["kind"], step["target"]) for step in frontier["steps"]],
+                [
+                    ("backfill", "requirement_scope"),
+                    ("backfill", "tracker_plan"),
+                    ("reverify", "SR-01"),
+                    ("resume", "SR-01"),
+                    ("resume", "SR-02"),
+                ],
+            )
+
+    def test_takeover_backfill_needs_materialized_receipts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp) / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            facts = {
+                "requirements_material": [{"text": "finish"}],
+            }
+            report = inspect_takeover({
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repo),
+                "source_threads": [],
+                "artifacts": [],
+                "facts": facts,
+            })
+            frontier = plan_frontier(report)
+            requirement_step = next(item for item in frontier_execution_steps(frontier) if item.target == "requirement_scope")
+            tracker_step = next(item for item in frontier_execution_steps(frontier) if item.target == "tracker_plan")
+            self.assertIsNone(verify_frontier_step(report, requirement_step))
+            self.assertIsNone(verify_frontier_step(report, tracker_step))
+
+            requirements = ["finish"]
+            facts["requirements"] = requirements
+            facts["requirements_backfill"] = {
+                "schema_version": "spec-runner-requirement-backfill/v1",
+                "requirements_digest": digest(requirements),
+            }
+            facts["tracker_backfill"] = {
+                "schema_version": "spec-runner-tracker-backfill/v1",
+                "snapshot_digest": "tracker-snapshot",
+                "verified": True,
+            }
+            self.assertEqual(verify_frontier_step(report, requirement_step)["verified"], True)
+            self.assertEqual(verify_frontier_step(report, tracker_step)["verified"], True)
 
     def test_frontier_execution_steps_have_stable_identity_and_skip_verified_work(self):
         frontier = {

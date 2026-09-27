@@ -306,22 +306,16 @@ class TakeoverRuntime:
             result.get("transitions") if isinstance(result.get("transitions"), list) else None,
         )
         result["execution"] = self._execution_projection(frontier, execution_steps)
-        unsupported_steps = [step for step in execution_steps if not self._supports_frontier_step(step)]
-        if unsupported_steps:
-            result["execution"] = {
-                "state": "blocked",
-                "steps": [step.public() for step in execution_steps],
-                "blocker": "frontier_step_handler_missing",
-            }
-
         if execution_steps:
-            self._verify_adoption_if_possible(
+            blocked = self._execute_frontier_step(
                 result=result,
                 report=report,
                 frontier=frontier,
                 execution_steps=execution_steps,
-                unsupported_steps=unsupported_steps,
             )
+            if blocked:
+                self._cleanup_if_required(result=result, report=report, action=action, record=record)
+                return result
             execution_steps = frontier_execution_steps(
                 frontier,
                 result.get("transitions") if isinstance(result.get("transitions"), list) else None,
@@ -352,30 +346,54 @@ class TakeoverRuntime:
     def _supports_frontier_step(step: Any) -> bool:
         return (
             (step.kind == "adopt" and step.target == "working_tree")
+            or (step.kind == "backfill" and step.target in {"requirement_scope", "tracker_plan"})
+            or step.kind == "reverify"
             or (step.kind == "resume" and step.target == "remaining_acceptance")
+            or (step.kind == "resume" and bool(step.target))
         )
 
-    def _verify_adoption_if_possible(
+    def _execute_frontier_step(
         self,
         *,
         result: dict[str, object],
         report: dict[str, object],
         frontier: dict[str, object],
         execution_steps: list[Any],
-        unsupported_steps: list[Any],
-    ) -> None:
-        adoption_step = next(
-            (step for step in execution_steps if step.kind == "adopt" and step.target == "working_tree"),
-            None,
-        )
-        adoption_evidence = verify_frontier_step(report, adoption_step) if adoption_step else None
-        if adoption_step is None or adoption_evidence is None:
-            return
+    ) -> bool:
+        active_step = execution_steps[0]
         request = self.request
+        start_event_key, start_payload = frontier_step_transition(
+            active_step,
+            state="frontier_step_started",
+            payload={"frontier_digest": frontier["digest"]},
+        )
+        started = record_takeover_transition(
+            control_root=request.control_root,
+            takeover_key=request.takeover_key,
+            state="frontier_step_started",
+            event_key=f"{request.takeover_key}:{start_event_key}",
+            payload=start_payload,
+        )
+        result["record"] = started["record"]
+        result["transitions"] = started["transitions"]
+        if active_step.kind == "resume":
+            if active_step.target != "remaining_acceptance" and not self._production_resume_configured():
+                self._block_frontier(result, frontier, active_step, "frontier_resume_requires_production_context")
+                return True
+            return False
+        evidence = verify_frontier_step(report, active_step)
+        if evidence is None:
+            blocker = (
+                "frontier_backfill_unavailable" if active_step.kind == "backfill"
+                else "frontier_reverification_unavailable" if active_step.kind == "reverify"
+                else "frontier_step_evidence_unavailable"
+            )
+            self._block_frontier(result, frontier, active_step, blocker)
+            return True
         verify_event_key, verify_payload = frontier_step_transition(
-            adoption_step,
+            active_step,
             state="frontier_step_verified",
-            payload={"evidence": adoption_evidence},
+            payload={"evidence": evidence},
         )
         verified = record_takeover_transition(
             control_root=request.control_root,
@@ -388,9 +406,35 @@ class TakeoverRuntime:
         result["transitions"] = verified["transitions"]
         remaining = frontier_execution_steps(frontier, result["transitions"])
         result["execution"] = {
-            "state": "blocked" if unsupported_steps else ("verified" if not remaining else "pending"),
+            "state": "verified" if not remaining else "pending",
             "steps": [step.public() for step in remaining],
-            **({"blocker": "frontier_step_handler_missing"} if unsupported_steps else {}),
+        }
+        return False
+
+    def _production_resume_configured(self) -> bool:
+        if not self.request.config:
+            return False
+        try:
+            from .config import RunnerConfig
+            return RunnerConfig.from_file(self.request.config, self.request.control_root).workflow_mode == "production"
+        except RunnerError:
+            return False
+
+    @staticmethod
+    def _block_frontier(result: dict[str, object], frontier: dict[str, object], step: Any, blocker: str) -> None:
+        result["execution"] = {
+            "state": "blocked",
+            "steps": [step.public()],
+            "blocker": blocker,
+            "remaining_steps": [
+                {
+                    "kind": item.get("kind"),
+                    "target": item.get("target"),
+                    "reason": item.get("reason"),
+                }
+                for item in frontier.get("steps", [])
+                if isinstance(item, dict)
+            ],
         }
 
     def _cleanup_if_required(
@@ -473,7 +517,7 @@ class TakeoverRuntime:
         )
         active_step = execution_steps[0] if execution_steps else None
         supports_runner = (
-            (active_step is not None and active_step.kind == "resume" and active_step.target == "remaining_acceptance")
+            (active_step is not None and active_step.kind == "resume")
             or (not execution_steps and isinstance(existing_runner, dict))
         )
         if action["state"] == "resume_delivery" and frontier["state"] == "planned" and supports_runner and isinstance(existing_runner, dict):
@@ -508,20 +552,6 @@ class TakeoverRuntime:
                         "owner_generation": 0,
                         "frontier_digest": frontier["digest"],
                     }
-            step_event_key, step_payload = frontier_step_transition(
-                active_step,
-                state="frontier_step_started",
-                payload={"launch_key": launch_key},
-            )
-            started = record_takeover_transition(
-                control_root=request.control_root,
-                takeover_key=request.takeover_key,
-                state="frontier_step_started",
-                event_key=f"{request.takeover_key}:{step_event_key}",
-                payload=step_payload,
-            )
-            result["record"] = started["record"]
-            result["transitions"] = started["transitions"]
             intent = record_takeover_transition(
                 control_root=request.control_root,
                 takeover_key=request.takeover_key,
@@ -561,11 +591,21 @@ class TakeoverRuntime:
         if (
             active_step is not None
             and active_step.kind == "resume"
-            and active_step.target == "remaining_acceptance"
             and isinstance(runner, dict)
         ):
             run_projection = runner.get("run")
-            if isinstance(run_projection, dict) and run_projection.get("state") == "completed":
+            verified_for_step = isinstance(run_projection, dict) and run_projection.get("state") == "completed"
+            if active_step.target != "remaining_acceptance" and isinstance(run_projection, dict):
+                run_id = run_projection.get("run_id")
+                verified_for_step = False
+                if isinstance(run_id, str):
+                    from .store import Store
+                    store = Store.open(request.control_root.expanduser().resolve(), create=False)
+                    try:
+                        verified_for_step = active_step.target in store.production_completed_specs(run_id)
+                    finally:
+                        store.close()
+            if verified_for_step:
                 verify_event_key, verify_payload = frontier_step_transition(
                     active_step,
                     state="frontier_step_verified",
@@ -585,3 +625,5 @@ class TakeoverRuntime:
                     "state": "verified" if not remaining else "partial",
                     "steps": [step.public() for step in remaining],
                 }
+            elif isinstance(run_projection, dict) and run_projection.get("state") in {"completed", "spec_completed"}:
+                self._block_frontier(result, frontier, active_step, "frontier_resume_unverified")

@@ -280,8 +280,11 @@ class SpecRunnerCliTests(unittest.TestCase):
         self.assertEqual(code, 0, result)
         self.assertEqual(result["action"]["state"], "resume_delivery")
         self.assertEqual(result["execution"]["state"], "blocked")
-        self.assertEqual(result["execution"]["blocker"], "frontier_step_handler_missing")
-        self.assertEqual([step["target"] for step in result["execution"]["steps"]], ["SPEC-1", "SPEC-2", "SPEC-3"])
+        self.assertEqual(result["execution"]["blocker"], "frontier_reverification_unavailable")
+        self.assertEqual(
+            [(step["kind"], step["target"]) for step in result["execution"]["steps"]],
+            [("reverify", "SPEC-1")],
+        )
         self.assertNotIn("runner", result)
         code, status = self.invoke("status", "--control-root", str(self.control_root))
         self.assertEqual(code, 0)

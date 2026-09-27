@@ -540,6 +540,7 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
     categories = {"adopted": [], "backfilled": [], "reverified": [], "new_work": [], "remaining": [], "cleanup": []}
 
     specs = facts.get("specs") if isinstance(facts, dict) else None
+    spec_steps: list[dict[str, object]] = []
     if specs is not None:
         if not isinstance(specs, list) or any(not isinstance(spec, dict) or not isinstance(spec.get("key"), str) for spec in specs):
             raise RunnerError("invalid_takeover_report", "historical_facts.specs must be a list of keyed objects")
@@ -549,19 +550,20 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
             if state in {"completed", "merged", "delivered"}:
                 categories["reverified"].append(key)
                 categories["remaining"].append(key)
-                steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "caller supplied completion claims require authoritative delivery readback"})
+                spec_steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "caller supplied completion claims require authoritative delivery readback"})
             elif state in {"partial", "implementing", "candidate", "merged_without_evidence"}:
                 categories["adopted"].append(key)
                 categories["reverified"].append(key)
                 categories["remaining"].append(key)
-                steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "partial or stale evidence requires current verification"})
+                spec_steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "partial or stale evidence requires current verification"})
+                spec_steps.append({"kind": "resume", "target": key, "status": "planned", "reason": "continue this SPEC from its verified partial candidate"})
             elif state in {"not_started", "missing", "planned"}:
                 categories["new_work"].append(key)
                 categories["remaining"].append(key)
-                steps.append({"kind": "resume", "target": key, "status": "planned", "reason": "SPEC has no adopted delivery candidate"})
+                spec_steps.append({"kind": "resume", "target": key, "status": "planned", "reason": "SPEC has no adopted delivery candidate"})
             else:
                 categories["remaining"].append(key)
-                steps.append({"kind": "reconcile", "target": key, "status": "needs_input", "reason": "SPEC state is unknown or conflicting"})
+                spec_steps.append({"kind": "reconcile", "target": key, "status": "needs_input", "reason": "SPEC state is unknown or conflicting"})
 
     if not facts.get("requirements"):
         source_material = facts.get("requirements_material")
@@ -581,16 +583,16 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
         categories["backfilled"].append("tracker_plan")
         steps.append({"kind": "backfill", "target": "tracker_plan", "status": "planned", "reason": "create the minimum local or GitHub tracker objects after source scope is confirmed"})
     if facts.get("working_tree") or facts.get("partial_code"):
-        categories["adopted"].append("working_tree")
+        if isinstance(facts.get("working_tree"), dict):
+            categories["adopted"].append("working_tree")
+            steps.append({"kind": "adopt", "target": "working_tree", "status": "adopted", "reason": "preserve existing source, index, and untracked files"})
         categories["reverified"].append("candidate")
-        steps.extend([
-            {"kind": "adopt", "target": "working_tree", "status": "adopted", "reason": "preserve existing source, index, and untracked files"},
-            {"kind": "reverify", "target": "candidate", "status": "planned", "reason": "existing code is evidence of files, not a passed acceptance receipt"},
-        ])
+        steps.append({"kind": "reverify", "target": "candidate", "status": "planned", "reason": "existing code is evidence of files, not a passed acceptance receipt"})
     if facts.get("merged") or facts.get("verification_receipt"):
         categories["reverified"].append("merged_candidate")
         steps.append({"kind": "reverify", "target": "merged_candidate", "status": "planned", "reason": "caller supplied delivery claims require authoritative repository and acceptance readback"})
-    elif specs is None:
+    steps.extend(spec_steps)
+    if specs is None and not (facts.get("merged") or facts.get("verification_receipt")):
         categories["new_work"].append("remaining_acceptance")
         steps.append({"kind": "resume", "target": "remaining_acceptance", "status": "planned", "reason": "continue the normal Runner delivery loop after backfill and reverify"})
     state = "needs_input" if any(step.get("status") == "needs_input" for step in steps) else "planned"
@@ -676,19 +678,108 @@ def verify_frontier_step(report: dict[str, Any], step: FrontierExecutionStep) ->
     """
     facts = report.get("historical_facts")
     snapshot = report.get("repository_snapshot")
-    if (
-        step.kind != "adopt"
-        or step.target != "working_tree"
-        or not isinstance(facts, dict)
-        or not isinstance(snapshot, dict)
-        or not isinstance(facts.get("working_tree"), dict)
-    ):
+    if not isinstance(facts, dict):
+        return None
+    if step.kind == "backfill" and step.target == "requirement_scope":
+        receipt = facts.get("requirements_backfill")
+        requirements = facts.get("requirements")
+        if (
+            isinstance(receipt, dict)
+            and receipt.get("schema_version") == "spec-runner-requirement-backfill/v1"
+            and isinstance(requirements, list)
+            and requirements
+            and all(isinstance(item, str) and item.strip() for item in requirements)
+            and receipt.get("requirements_digest") == digest(requirements)
+        ):
+            return {"requirements_digest": receipt["requirements_digest"], "materialized": True, "verified": True}
+        return None
+    if step.kind == "backfill" and step.target == "tracker_plan":
+        receipt = facts.get("tracker_backfill")
+        if (
+            isinstance(receipt, dict)
+            and receipt.get("schema_version") == "spec-runner-tracker-backfill/v1"
+            and isinstance(receipt.get("snapshot_digest"), str)
+            and receipt.get("snapshot_digest")
+            and receipt.get("verified") is True
+        ):
+            return {"tracker_snapshot_digest": receipt["snapshot_digest"], "materialized": True, "verified": True}
+        return None
+    if step.kind == "reverify" and isinstance(facts.get("specs"), list):
+        spec = next((item for item in facts["specs"] if isinstance(item, dict) and item.get("key") == step.target), None)
+        delivery = spec.get("authoritative_delivery") if isinstance(spec, dict) else None
+        if isinstance(delivery, dict):
+            candidate = delivery.get("candidate_receipt")
+            review = delivery.get("review")
+            merge = delivery.get("merge")
+            candidate_sha = delivery.get("candidate_sha")
+            merge_sha = delivery.get("merge_sha")
+            if (isinstance(candidate, dict) and candidate.get("outcome") == "verified"
+                    and candidate.get("candidate_sha") == candidate_sha
+                    and isinstance(review, dict) and review.get("approved") is True
+                    and review.get("candidate_sha") == candidate_sha
+                    and isinstance(merge, dict) and merge.get("outcome") == "merged"
+                    and merge.get("merge_sha") == merge_sha
+                    and isinstance(candidate_sha, str) and len(candidate_sha) == 40
+                    and isinstance(merge_sha, str) and len(merge_sha) == 40):
+                repository = Path(str(report.get("repository", ""))).resolve()
+                try:
+                    if (_git(repository, "rev-parse", candidate_sha) == candidate_sha
+                            and _git(repository, "rev-parse", merge_sha) == merge_sha
+                            and subprocess.run(
+                                ["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", merge_sha, "HEAD"],
+                                check=False, capture_output=True,
+                            ).returncode == 0):
+                        return {"spec_key": step.target, "candidate_sha": candidate_sha, "merge_sha": merge_sha, "verified": True}
+                except (RunnerError, OSError, subprocess.CalledProcessError):
+                    return None
+        return None
+    if step.kind == "reverify" and step.target == "merged_candidate":
+        delivery = facts.get("authoritative_delivery")
+        if isinstance(delivery, dict):
+            candidate = delivery.get("candidate_receipt")
+            review = delivery.get("review")
+            merge = delivery.get("merge")
+            candidate_sha = delivery.get("candidate_sha")
+            merge_sha = delivery.get("merge_sha")
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("outcome") == "verified"
+                and candidate.get("candidate_sha") == candidate_sha
+                and isinstance(review, dict)
+                and review.get("approved") is True
+                and review.get("candidate_sha") == candidate_sha
+                and isinstance(merge, dict)
+                and merge.get("outcome") == "merged"
+                and merge.get("merge_sha") == merge_sha
+                and isinstance(candidate_sha, str)
+                and len(candidate_sha) == 40
+                and isinstance(merge_sha, str)
+                and len(merge_sha) == 40
+            ):
+                repository = Path(str(report.get("repository", ""))).resolve()
+                try:
+                    if (
+                        _git(repository, "rev-parse", candidate_sha) == candidate_sha
+                        and _git(repository, "rev-parse", merge_sha) == merge_sha
+                        and subprocess.run(
+                            ["git", "-C", os.fspath(repository), "merge-base", "--is-ancestor", merge_sha, "HEAD"],
+                            check=False,
+                            capture_output=True,
+                        ).returncode == 0
+                    ):
+                        return {"candidate_sha": candidate_sha, "merge_sha": merge_sha, "verified": True}
+                except (RunnerError, OSError, subprocess.CalledProcessError):
+                    return None
+        return None
+    if step.kind != "adopt" or step.target != "working_tree" or not isinstance(snapshot, dict):
         return None
     expected = snapshot.get("snapshot_digest")
     repository = report.get("repository")
+    fact_snapshot = facts.get("working_tree")
+    expected_fact = fact_snapshot.get("snapshot_digest") if isinstance(fact_snapshot, dict) else expected if facts.get("partial_code") else None
     if (
         not isinstance(expected, str)
-        or facts["working_tree"].get("snapshot_digest") != expected
+        or expected_fact != expected
         or not snapshot.get("changed_paths")
         or snapshot.get("redacted_path_count")
         or not isinstance(repository, str)
