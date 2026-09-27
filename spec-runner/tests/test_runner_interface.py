@@ -11,7 +11,7 @@ from spec_runner.models import RunContext, RunnerRequest, StageResult
 from spec_runner.production_runtime import ProductionPorts, ProductionWorkflow
 from spec_runner.runner import Runner
 from spec_runner.stage_progression import StageProgression
-from spec_runner.stage_executor import execute_stage
+from spec_runner.stage_executor import WorkflowStageExecutor, execute_stage
 from spec_runner.stage_progression import StageRoute
 
 
@@ -233,6 +233,33 @@ def test_stage_executor_is_a_replaceable_typed_seam() -> None:
     assert result is not None
     assert result.public() == {"state": "completed"}
     assert observed == {"context": context, "route": route}
+
+
+def test_workflow_stage_executor_uses_an_injected_legacy_port() -> None:
+    observed: dict[str, object] = {}
+
+    class Port:
+        def advance_second_stage(self, **kwargs):
+            observed.update(kwargs)
+            return {"state": "completed"}
+
+    context = RunContext(
+        control_root=Path(".control"),
+        config=SimpleNamespace(),
+        brief="brief",
+        brief_digest="digest",
+        run=SimpleNamespace(run_id="run-1", state="ready_for_next"),
+        store=SimpleNamespace(),
+    )
+
+    result = WorkflowStageExecutor(Port()).execute(
+        context,
+        StageRoute(kind="ready_for_next", state="ready_for_next"),
+    )
+
+    assert result is not None
+    assert result.public() == {"state": "completed"}
+    assert observed["run"] is context.run
 
 
 def test_stage_progression_selects_production_recovery_routes() -> None:

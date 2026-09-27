@@ -105,5 +105,20 @@ class LegacyWorkflowPort:
     def advance_second_stage(self, **kwargs: Any) -> dict[str, object]:
         return self._workflow()._advance_second_stage(**kwargs)
 
+    def resume_waiting_github(self, **kwargs: Any) -> dict[str, object]:
+        return self._workflow()._resume_waiting_github(**kwargs)
+
+    def resume_reviewed_delivery(self, **kwargs: Any) -> dict[str, object]:
+        return self._workflow()._resume_reviewed_delivery(**kwargs)
+
+    def retry_migration_source_archive(self, **kwargs: Any) -> dict[str, object]:
+        return self._workflow()._retry_migration_source_archive(**kwargs)
+
+    def retry_production_cleanup(self, **kwargs: Any) -> dict[str, object]:
+        return self._workflow()._retry_production_cleanup(**kwargs)
+
+    def continue_initial_clean_migration(self, **kwargs: Any) -> dict[str, object]:
+        return self._workflow()._continue_initial_clean_migration(**kwargs)
+
     def release_global_lease(self, lease: Any, owner_token: str) -> None:
         self._workflow()._release_global_lease(lease, owner_token)
