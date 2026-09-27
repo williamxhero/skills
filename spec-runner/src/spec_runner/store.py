@@ -1106,12 +1106,25 @@ class Store:
     def fail_run(self, run_id: str, operation_id: str, *, state: str = "failed") -> None:
         timestamp = now()
         with self.transaction():
+            run = self.connection.execute(
+                "SELECT current_step FROM runs WHERE run_id = ?", (run_id,),
+            ).fetchone()
+            if run is None:
+                raise RunnerError("run_missing", "cannot fail an unknown run")
             self.connection.execute(
-                "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ?",
-                (state, timestamp, operation_id),
+                "UPDATE operations SET state = ?, updated_at = ? WHERE operation_id = ? AND run_id = ?",
+                (state, timestamp, operation_id, run_id),
             )
-            self.connection.execute("UPDATE workers SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
-            self.connection.execute("UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
+            if state != "blocked_writer_busy":
+                self.connection.execute(
+                    """UPDATE workers SET state = ?, updated_at = ? WHERE worker_id = (
+                           SELECT worker_id FROM workers WHERE run_id = ? ORDER BY rowid DESC LIMIT 1)""",
+                    (state, timestamp, run_id),
+                )
+                self.connection.execute(
+                    "UPDATE steps SET state = ?, updated_at = ? WHERE run_id = ? AND step_name = ?",
+                    (state, timestamp, run_id, run["current_step"]),
+                )
             self.connection.execute("UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?", (state, timestamp, run_id))
             self._insert_event(
                 run_id=run_id,

@@ -181,6 +181,40 @@ def test_prepared_ticket_adopts_matching_existing_local_issues_across_runs(monke
         assert error.value.code == "tracker_revision_conflict"
 
 
+def test_later_failure_preserves_completed_prepared_stage_evidence(monkeypatch):
+    runtime = Path(__file__).parent / ".runtime"
+    runtime.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="prepared-", dir=runtime) as directory:
+        request, _ = _prepared_inputs(Path(directory))
+        monkeypatch.setattr(workflow, "CodexAdapter", lambda: pytest.fail("prepared inputs must skip planning SDK"))
+
+        def fail_implementation(*, run, store, ticket_plan, **kwargs):
+            spec_key = str(ticket_plan["spec_key"])
+            store.begin_stage(
+                run.run_id, step_name="codex_implementation",
+                operation_id=f"implement:{run.run_id}:{spec_key}",
+                backend_kind="codex_sdk",
+                worker_id=f"codex_sdk:{run.run_id}:codex_implementation:{spec_key}",
+            )
+            raise RunnerError("sdk_rate_limited", "simulated implementation failure")
+
+        monkeypatch.setattr(workflow, "_execute_codex_implementation", fail_implementation)
+        with pytest.raises(RunnerError) as error:
+            Runner().start(request)
+        assert error.value.code == "sdk_rate_limited"
+        status = Runner().status(control_root=request.control_root, run_id=None)
+        run_id = status["runs"][0]["run_id"]
+        detail = Runner().status(control_root=request.control_root, run_id=run_id)
+        assert {step["step_name"]: step["state"] for step in detail["steps"]} == {
+            "prepared_planning": "planned",
+            "codex_ticket_planning": "tickets_ready",
+            "codex_implementation": "failed",
+        }
+        assert [worker["state"] for worker in detail["workers"]] == [
+            "planned", "tickets_ready", "failed",
+        ]
+
+
 def test_public_start_rejects_prepared_ticket_for_another_plan(monkeypatch):
     runtime = Path(__file__).parent / ".runtime"
     runtime.mkdir(exist_ok=True)
