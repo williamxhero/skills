@@ -503,6 +503,7 @@ class RecoveryRuntime:
                 next_check_at=prior.get("next_check_at"),
                 remaining_budget=dict(prior.get("remaining_budget") or {}),
                 family=str(prior.get("family") or "unknown"),
+                policy_version=str(prior.get("policy_version") or "spec-runner-recovery-policy/v2"),
             )
         elif prior_action in {RecoveryAction.WAIT_RETRY.value, RecoveryAction.SERVICE_WAIT.value}:
             decision = RecoveryDecision(
@@ -512,6 +513,7 @@ class RecoveryRuntime:
                 next_check_at=prior.get("next_check_at"),
                 remaining_budget=dict(prior.get("remaining_budget") or {}),
                 family=str(prior.get("family") or "unknown"),
+                policy_version=str(prior.get("policy_version") or "spec-runner-recovery-policy/v2"),
             )
         else:
             return None

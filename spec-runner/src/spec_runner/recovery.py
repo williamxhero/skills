@@ -332,9 +332,10 @@ class RecoveryDecision:
     next_check_at: str | None = None
     remaining_budget: Mapping[str, int] = field(default_factory=dict)
     family: str = FaultFamily.UNKNOWN.value
+    policy_version: str = RECOVERY_POLICY_VERSION
 
     def public(self) -> dict[str, object]:
-        return {"schema_version": "spec-runner-recovery-decision/v1", "policy_version": RECOVERY_POLICY_VERSION,
+        return {"schema_version": "spec-runner-recovery-decision/v1", "policy_version": self.policy_version,
                 "action": self.action.value, "reason": self.reason, "evidence": list(self.evidence),
                 "preconditions": list(self.preconditions), "next_check_at": self.next_check_at,
                 "remaining_budget": dict(self.remaining_budget), "family": self.family}
@@ -373,15 +374,15 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
         "no_progress": max(0, policy.max_no_progress - snapshot.no_progress_attempts),
     }
     if snapshot.user_control == "cancel_requested":
-        return RecoveryDecision(RecoveryAction.BLOCKED, "user_cancelled", ("durable_cancel_request",), ("do_not_create_worker",), family=FaultFamily.USER_CANCELLED.value, remaining_budget=remaining)
+        return RecoveryDecision(RecoveryAction.BLOCKED, "user_cancelled", ("durable_cancel_request",), ("do_not_create_worker",), family=FaultFamily.USER_CANCELLED.value, remaining_budget=remaining, policy_version=policy.version)
     if snapshot.user_control == "pause_requested":
-        return RecoveryDecision(RecoveryAction.WAIT_FOR_CONFIG, "user_paused", ("durable_pause_request",), ("wait_for_resume",), family="control", remaining_budget=remaining)
+        return RecoveryDecision(RecoveryAction.WAIT_FOR_CONFIG, "user_paused", ("durable_pause_request",), ("wait_for_resume",), family="control", remaining_budget=remaining, policy_version=policy.version)
     if not snapshot.owner_valid:
-        return RecoveryDecision(RecoveryAction.BLOCKED, "owner_invalid", ("owner_readback_missing",), ("restore_single_owner",), remaining_budget=remaining)
+        return RecoveryDecision(RecoveryAction.BLOCKED, "owner_invalid", ("owner_readback_missing",), ("restore_single_owner",), remaining_budget=remaining, policy_version=policy.version)
     if snapshot.active_execution or snapshot.request_admission == "accepted" and snapshot.execution_outcome == "unknown":
-        return RecoveryDecision(RecoveryAction.OBSERVE, "execution_outcome_unknown", ("active_or_unsettled_execution",), ("reconcile_before_retry",), remaining_budget=remaining)
+        return RecoveryDecision(RecoveryAction.OBSERVE, "execution_outcome_unknown", ("active_or_unsettled_execution",), ("reconcile_before_retry",), remaining_budget=remaining, policy_version=policy.version)
     if snapshot.business_progress_verified or snapshot.execution_outcome == "completed":
-        return RecoveryDecision(RecoveryAction.ADOPT_RESULT, "verified_business_result_available", ("completed_result_or_progress_receipt",), ("verify_artifacts_before_stage_advance",), remaining_budget=remaining)
+        return RecoveryDecision(RecoveryAction.ADOPT_RESULT, "verified_business_result_available", ("completed_result_or_progress_receipt",), ("verify_artifacts_before_stage_advance",), remaining_budget=remaining, policy_version=policy.version)
     observation = observations[-1] if observations else FaultObservation(operation_kind=snapshot.operation_kind, stage=snapshot.stage)
     family = observation.family
     if family == FaultFamily.USER_CANCELLED.value:
@@ -426,7 +427,7 @@ def decide_recovery(snapshot: RecoverySnapshot, observations: list[FaultObservat
               else f"fault_family:{family}")
     return RecoveryDecision(action, reason, (observation.fingerprint, observation.reason),
                             ("reconcile_external_side_effects", "preserve_stage_budget"), next_check,
-                            remaining, family)
+                            remaining, family, policy.version)
 
 
 def recovery_diagnostic(*, episode: Mapping[str, Any], observations: list[Mapping[str, Any]],

@@ -303,3 +303,15 @@ def test_recovery_policy_rejects_invalid_budget_configuration_and_records_versio
         [FaultObservation(operation_kind="implementation", stage="implement")],
     )
     assert decision.public()["policy_version"] == "spec-runner-recovery-policy/v2"
+
+
+def test_recovery_decision_preserves_configured_policy_version():
+    policy = RecoveryPolicy(version="spec-runner-recovery-policy/test-v3")
+    decision = decide_recovery(
+        RecoverySnapshot(run_id="run-1", operation_kind="implementation", stage="implement"),
+        [FaultObservation(operation_kind="implementation", stage="implement")],
+        policy,
+    )
+
+    assert decision.policy_version == "spec-runner-recovery-policy/test-v3"
+    assert decision.public()["policy_version"] == "spec-runner-recovery-policy/test-v3"

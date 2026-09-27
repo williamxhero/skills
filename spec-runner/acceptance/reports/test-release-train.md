@@ -1695,3 +1695,18 @@ This verifies the no-side-effect capability boundary and does not prove source
 writer termination, dispatcher quiescence, live SDK takeover, or project-level
 L3-L5. RCV-02.2/#298, RCV-02.3/#299, RCV-02.4/#300 and their dependent
 release gates remain open.
+
+## RCV-01.2 recovery policy version provenance (2026-09-28)
+
+`RecoveryDecision.public()` now reports the version carried by the
+`RecoveryPolicy` that produced the decision. Previously, a caller could supply
+a versioned policy while the persisted decision incorrectly emitted the module
+default. Durable replay of older decisions remains compatible by using `v2`
+only when the stored receipt has no policy version.
+
+The affected policy/runtime selection passed `106 passed`; the complete current source
+plus acceptance selection passed `465 passed, 1 skipped` with the worktree
+`src` explicitly on `PYTHONPATH`. `compileall` and `git diff --check` passed.
+This is deterministic provenance evidence only; real provider recovery,
+service wait wakeup, source migration and project-level L3-L5 remain
+`not_verified`, so RCV-01.2/#294 and its parent remain open.
