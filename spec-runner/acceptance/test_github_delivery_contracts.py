@@ -167,6 +167,11 @@ def test_pr_operation_receipt_is_durable_before_local_projection_replay(tmp_path
 
     def runner(args: list[str]) -> str:
         calls.append(args)
+        if "check-runs" in args[-1]:
+            return json.dumps({"check_runs": [{"name": "ci", "status": "completed",
+                                                "conclusion": "success", "head_sha": "abc"}]})
+        if args[-1].endswith("/status"):
+            return json.dumps({"sha": "abc", "state": "success", "statuses": []})
         if args[-1] == "repos/owner/repo/pulls/12":
             return json.dumps(pull)
         if "repos/owner/repo/pulls" in args and "POST" not in args:
@@ -260,6 +265,37 @@ def test_merge_queue_checkpoint_is_reused_after_ambiguous_enqueue(tmp_path: Path
     assert replay["waiting"] is True
     assert replay["queue"]["id"] == "MQ-12"
     assert not any("/merge" in arg for call in calls for arg in call)
+
+
+def test_completed_merge_receipt_cannot_trigger_merge_against_unmerged_pr():
+    calls: list[list[str]] = []
+
+    def runner(args: list[str]) -> str:
+        calls.append(args)
+        if args[-1] == "repos/owner/repo/pulls/12":
+            return json.dumps({
+                "number": 12,
+                "head": {"sha": "abc", "ref": "branch", "repo": {"full_name": "owner/repo"}},
+                "base": {"ref": "main", "repo": {"full_name": "owner/repo"}},
+                "merged": False, "merged_at": None, "merge_commit_sha": None,
+            })
+        raise AssertionError(args)
+
+    completed = {
+        "number": 12, "expected_head": "abc", "expected_base": "main",
+        "merged": True, "sha": "merge123", "merged_at": "2026-09-28T00:00:00Z",
+    }
+    with pytest.raises(RunnerError) as error:
+        GitHubDelivery(runner=runner).merge(
+            repository="owner/repo", number=12, expected_head="abc", expected_base="main",
+            candidate_receipt={"candidate_sha": "abc", "outcome": "verified"},
+            review={"candidate_sha": "abc", "approved": True, "review_digest": "review"},
+            checks={"candidate_sha": "abc", "required": ["ci"], "ready": True}, allow=True,
+            expected_head_ref="branch", operation_id="merge-op",
+            operation_intent=lambda **_kwargs: {"state": "completed", "receipt": completed},
+        )
+    assert error.value.code == "github_merge_receipt_conflict"
+    assert not any("/merge" in arg or "graphql" in arg for call in calls for arg in call)
 
 
 @pytest.mark.parametrize("code", [

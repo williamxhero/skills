@@ -533,6 +533,20 @@ class GitHubDelivery:
             raise RunnerError("github_pull_request_closed", "pull request is closed without a merge")
         if pr.get("mergeable_state") == "dirty":
             raise RunnerError("github_merge_blocked", "GitHub reports that the pull request cannot be merged")
+        if operation_was_completed:
+            durable_receipt = operation_state.get("receipt") if isinstance(operation_state, dict) else None
+            if not isinstance(durable_receipt, dict):
+                raise RunnerError("github_merge_receipt_conflict", "completed merge operation has no receipt")
+            if pr.get("merged") is not True:
+                raise RunnerError("github_merge_receipt_conflict", "completed merge receipt conflicts with an unmerged PR")
+            if (durable_receipt.get("number") != number
+                    or durable_receipt.get("expected_head") != expected_head
+                    or durable_receipt.get("expected_base") != expected_base
+                    or durable_receipt.get("sha") != pr.get("merge_commit_sha")):
+                raise RunnerError("github_merge_receipt_conflict", "completed merge receipt disagrees with PR identity")
+            if not pr.get("merged_at") or not pr.get("merge_commit_sha"):
+                raise RunnerError("github_merge_readback_incomplete", "merged pull request lacks merge identity")
+            return durable_receipt
         queue_required = pr.get("mergeable_state") == "blocked"
         protection: dict[str, object] | None = None
         if require_branch_protection:
@@ -564,12 +578,6 @@ class GitHubDelivery:
                     "merged": True, "adopted": True, "sha": pr.get("merge_commit_sha"),
                     "message": "pull request was already merged", "merged_at": pr.get("merged_at"),
                     "evidence_digest": digest(evidence)}
-            if operation_was_completed:
-                durable_receipt = operation_state.get("receipt") if isinstance(operation_state, dict) else None
-                if (not isinstance(durable_receipt, dict)
-                        or durable_receipt.get("sha") != pr.get("merge_commit_sha")):
-                    raise RunnerError("github_merge_receipt_conflict", "completed merge receipt disagrees with PR readback")
-                return durable_receipt
             if operation_completed is not None:
                 operation_completed(operation_id=operation_id, receipt=result)
             return result
