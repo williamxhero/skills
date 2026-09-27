@@ -290,6 +290,7 @@ class CodexAdapterTests(unittest.TestCase):
     def test_interrupt_thread_fails_closed_without_public_arbitrary_turn_handle(self) -> None:
         state = {"status": "inProgress"}
         interrupt_calls: list[tuple[str, str]] = []
+        factory_calls: list[object] = []
 
         class SourceThread(FakeThread):
             def read(self, *, include_turns: bool = False) -> object:
@@ -306,17 +307,23 @@ class CodexAdapterTests(unittest.TestCase):
 
         class InterruptCodex(FakeCodex):
             def __init__(self, config: object):
+                factory_calls.append(config)
                 super().__init__(config)
                 self.thread = SourceThread()
                 self.thread.id = "thread-active"
                 self._client = Client()
 
         sdk = types.SimpleNamespace(CodexConfig=lambda **kwargs: kwargs, Codex=object)
-        with self.assertRaisesRegex(RunnerError, "public API"):
-            CodexAdapter(codex_factory=lambda config: InterruptCodex(config), sdk_module=sdk).interrupt_thread(
+        adapter = CodexAdapter(codex_factory=lambda config: InterruptCodex(config), sdk_module=sdk)
+        with self.assertRaisesRegex(RunnerError, "public API") as raised:
+            adapter.interrupt_thread(
                 thread_id="thread-active", repository_path=Path("C:/repo")
             )
         self.assertEqual(interrupt_calls, [])
+        # One client is required for the read-only observation above; the
+        # unsupported interrupt must not open a second provider client.
+        self.assertEqual(len(factory_calls), 1)
+        self.assertFalse(raised.exception.details["provider_call_attempted"])
 
     def test_injected_fault_runs_at_formal_turn_boundary_without_replacing_sdk(self) -> None:
         events: list[tuple[str, dict[str, object]]] = []

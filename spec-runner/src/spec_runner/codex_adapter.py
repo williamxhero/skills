@@ -837,56 +837,21 @@ class CodexAdapter:
         turn_id = running[-1].get("turn_id")
         if not isinstance(turn_id, str) or not turn_id:
             raise RunnerError("sdk_interrupt_identity_missing", "active source turn has no stable turn identifier")
-        if self._sdk_module is None:
-            try:
-                import openai_codex as sdk_module
-            except ImportError as exc:
-                raise RunnerError("sdk_unavailable", f"openai-codex=={SDK_VERSION} is not installed") from exc
-        else:
-            sdk_module = self._sdk_module
-        Codex = sdk_module.Codex
-        CodexConfig = sdk_module.CodexConfig
-        factory = self._codex_factory or (lambda config: Codex(config))
-        try:
-            with factory(CodexConfig(client_version=SDK_VERSION)) as codex:
-                # The supported SDK only exposes interrupt on a TurnHandle
-                # returned by the same process that started the turn. It has
-                # no public way to obtain such a handle for an arbitrary
-                # historical turn ID, so never reach into the private client.
-                raise RunnerError(
-                    "sdk_interrupt_unsupported",
-                    "installed Codex SDK cannot interrupt an arbitrary existing turn through its public API",
-                    details={"thread_id": thread_id, "turn_id": turn_id},
-                )
-        except RunnerError:
-            raise
-        except Exception as exc:
-            raise RunnerError(
-                "sdk_interrupt_failed",
-                "Codex SDK failed while interrupting the explicitly supplied source turn",
-                details={"exception_type": type(exc).__name__, "thread_id": thread_id, "turn_id": turn_id},
-            ) from exc
-        after = self.read_thread(thread_id=thread_id, repository_path=repository_path)
-        remaining = [
-            turn for turn in after.get("turns", [])
-            if isinstance(turn, dict) and turn.get("turn_id") == turn_id and turn.get("status") in {"inProgress", "running"}
-        ]
-        if remaining:
-            raise RunnerError(
-                "sdk_interrupt_readback_failed",
-                "source turn interrupt was accepted but the turn is still active on readback",
-                details={"thread_id": thread_id, "turn_id": turn_id},
-            )
-        return {
-            "schema_version": "spec-runner-sdk-thread-interrupt/v1",
-            "thread_id": thread_id,
-            "turn_id": turn_id,
-            "accepted": True,
-            "interrupt_response": _jsonable(response),
-            "observation_before": before,
-            "observation_after": after,
-            "evidence_limits": {"dispatcher_quiesced": False, "ownership_transferred": False},
-        }
+        # The supported SDK only exposes ``interrupt`` on a TurnHandle
+        # returned by the same process that started the turn. It has no public
+        # way to obtain such a handle for an arbitrary historical turn ID.
+        # Fail before opening another SDK client: doing so cannot interrupt
+        # the source and would create an unnecessary provider-side process.
+        raise RunnerError(
+            "sdk_interrupt_unsupported",
+            "installed Codex SDK cannot interrupt an arbitrary existing turn through its public API",
+            details={
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "public_capability": "turn_handle_interrupt_only",
+                "provider_call_attempted": False,
+            },
+        )
 
 
 def _enum_value(value: Any) -> object:

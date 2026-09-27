@@ -1677,3 +1677,21 @@ Ubuntu and Windows contract jobs.
 This is deterministic and adapter-boundary evidence. Live transport-loss
 injection, a protected PR, a real merge queue, and the complete three-SPEC
 GitHub delivery remain `not_verified`; #256, #257 and #258 stay open.
+
+## RCV-02.2 historical turn interrupt capability boundary (2026-09-28)
+
+The pinned `openai-codex==0.155.1` public API exposes `TurnHandle.interrupt()`
+only on a handle returned by the process that started the turn. It does not
+expose a public operation that obtains a handle for an arbitrary historical
+`thread_id`/`turn_id`. `CodexAdapter.interrupt_thread` therefore continues to
+fail closed after its read-only observation, without reaching into the SDK's
+private client or opening a second provider client. The structured diagnostic
+now records `public_capability=turn_handle_interrupt_only` and
+`provider_call_attempted=false`.
+
+The adapter and affected takeover/CLI/recovery selection passed `107 passed,
+1 skipped`; the focused adapter selection passed `17 passed, 1 skipped`.
+This verifies the no-side-effect capability boundary and does not prove source
+writer termination, dispatcher quiescence, live SDK takeover, or project-level
+L3-L5. RCV-02.2/#298, RCV-02.3/#299, RCV-02.4/#300 and their dependent
+release gates remain open.
