@@ -6,6 +6,7 @@ import hashlib
 import uuid
 import json
 import subprocess
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -154,6 +155,108 @@ def test_successor_creation_intent_replay_fails_closed_before_provider_call(tmp_
         assert persisted["state"] == "successor_creation_intent"
         assert persisted["successor_thread_id"] is None
     finally:
+        store.close()
+
+
+def test_concurrent_recovery_claims_only_one_successor_creation_intent(tmp_path: Path) -> None:
+    root = tmp_path / "control"
+    seed = Store.open(root, create=True)
+    try:
+        run = _run(tmp_path)
+        seed.create_run(run, "start:acceptance-migration-run")
+        handover = _handover()
+        key = "acceptance:concurrent-successor-creation"
+        seed.prepare_thread_migration(
+            migration_key=key, run_id=run.run_id, stage="codex_example",
+            source_thread_id="source-thread",
+            handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(),
+            input_revision="brief-v1",
+        )
+        seed.record_migration_handover(migration_key=key, handover=handover)
+    finally:
+        seed.close()
+
+    barrier = threading.Barrier(2)
+    outcomes: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    def claim(label: str) -> None:
+        store = Store.open(root, create=False)
+        try:
+            barrier.wait()
+            claimed = store.record_migration_successor_creation_intent(
+                migration_key=key, details={"worker": label},
+            )
+            outcome = (label, str(claimed["state"]))
+        except RunnerError as exc:
+            outcome = (label, exc.code)
+        finally:
+            with lock:
+                outcomes.append(outcome)
+            store.close()
+
+    first = threading.Thread(target=claim, args=("worker-a",))
+    second = threading.Thread(target=claim, args=("worker-b",))
+    first.start()
+    second.start()
+    first.join()
+    second.join()
+
+    assert sorted(value for _, value in outcomes) == ["successor_creation_intent", "thread_successor_uncertain"]
+    check = Store.open(root, create=False)
+    try:
+        persisted = check.thread_migration(key)
+        assert persisted is not None
+        assert persisted["state"] == "successor_creation_intent"
+        assert persisted["successor_thread_id"] is None
+    finally:
+        check.close()
+
+
+def test_stale_migration_writes_cannot_undo_creation_or_replace_successor(tmp_path: Path) -> None:
+    root = tmp_path / "control"
+    store = Store.open(root, create=True)
+    peer = Store.open(root, create=False)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        handover = _handover()
+        key = "acceptance:stale-migration-writes"
+        store.prepare_thread_migration(
+            migration_key=key, run_id=run.run_id, stage="codex_example",
+            source_thread_id="source-thread",
+            handover_digest=hashlib.sha256(json.dumps(handover, sort_keys=True).encode("utf-8")).hexdigest(),
+            input_revision="brief-v1",
+        )
+        stale = store.record_migration_handover(migration_key=key, handover=handover)
+        peer.record_migration_successor_creation_intent(migration_key=key)
+
+        actual_read = store.thread_migration
+        reads = 0
+
+        def stale_once(migration_key: str) -> dict[str, object] | None:
+            nonlocal reads
+            reads += 1
+            return stale if reads == 1 else actual_read(migration_key)
+
+        with patch.object(store, "thread_migration", side_effect=stale_once):
+            observed = store.record_migration_handover(migration_key=key, handover=handover)
+        assert observed["state"] == "successor_creation_intent"
+
+        peer.record_migration_successor(migration_key=key, successor_thread_id="successor-a")
+        with patch.object(store, "thread_migration", return_value=stale):
+            with pytest.raises(RunnerError, match="successor identity"):
+                store.record_migration_successor(migration_key=key, successor_thread_id="successor-b")
+        reads = 0
+        with patch.object(store, "thread_migration", side_effect=stale_once):
+            observed = store.record_migration_uncertainty(migration_key=key, details={"reason": "late transport error"})
+        assert observed["state"] == "successor_registered"
+        persisted = actual_read(key)
+        assert persisted is not None
+        assert persisted["state"] == "successor_registered"
+        assert persisted["successor_thread_id"] == "successor-a"
+    finally:
+        peer.close()
         store.close()
 
 

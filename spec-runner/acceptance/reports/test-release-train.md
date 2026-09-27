@@ -1604,3 +1604,19 @@ provider fault injection, native Windows old-writer termination, complete
 source-thread takeover, next-SPEC GitHub delivery, or project-level L3-L5;
 RCV-02.3/#299, RCV-02.4/#300, their parent EPICs, and the remaining release
 gates stay open.
+
+## RCV-02.2 concurrent migration claim (2026-09-28)
+
+Migration handover and successor registration now use conditional SQLite state
+updates, and the successor creation intent is claimed inside an immediate
+transaction. Two independent Store connections racing on one migration allow
+only one creation claimant; the loser receives `thread_successor_uncertain`
+before any provider call. A stale handover writer cannot move creation intent
+backward, and stale successor or uncertainty writes cannot replace a recorded
+successor identity. The acceptance cases exercise the independent connections
+and deliberately stale pre-write observations.
+
+This closes a deterministic concurrency gap in the migration mechanism. It
+does not prove real SDK/OS writer shutdown, live provider fault injection,
+complete migration business continuation, or project-level L3-L5. #298 and
+#300 remain open pending those gates.
