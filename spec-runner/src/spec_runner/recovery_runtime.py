@@ -76,7 +76,7 @@ def _decision_from_persisted(*, run_id: str, payload: object) -> RecoveryDecisio
             evidence=tuple(str(item) for item in payload.get("evidence", [])),
             preconditions=tuple(str(item) for item in payload.get("preconditions", [])),
             next_check_at=payload.get("next_check_at"),
-            remaining_budget=payload.get("remaining_budget") or {},
+            remaining_budget=payload.get("remaining_budget", {}),
             family=str(payload.get("family") or "unknown"),
             policy_version=str(payload.get("policy_version") or "spec-runner-recovery-policy/v2"),
         )

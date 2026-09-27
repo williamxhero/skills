@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from spec_runner.errors import RunnerError
-from spec_runner.recovery_runtime import RecoveryEpisode, RecoveryRuntime
+from spec_runner.recovery_runtime import RecoveryEpisode, RecoveryRuntime, _decision_from_persisted
 from spec_runner.store import RunRecord, Store, now
 from spec_runner import workflow
 
@@ -63,6 +63,17 @@ def _unknown_error(turn_id: str, progress: str | None = None) -> RunnerError:
     if progress is not None:
         observation["last_verified_progress"] = progress
     return RunnerError("sdk_failure", "an unclassified provider failure", details={"fault_observation": observation})
+
+
+@pytest.mark.parametrize("budget", [None, [], -1, {"capacity_retries": True}])
+def test_corrupt_persisted_decision_budget_has_stable_error(budget):
+    with pytest.raises(RunnerError) as raised:
+        _decision_from_persisted(
+            run_id="run-corrupt",
+            payload={"action": "service_wait", "remaining_budget": budget},
+        )
+
+    assert raised.value.code == "recovery_decision_invalid"
 
 
 def test_runner_persists_capacity_budget_and_escalates_to_service_wait(tmp_path: Path) -> None:
