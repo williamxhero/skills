@@ -484,9 +484,9 @@ def merge_local(*, repository: Path, candidate_branch: str, target_ref: str,
     except RunnerError:
         raise
     finally:
-        # Preserve a conflicted/dirty workspace for diagnosis. A cleanup lock
-        # must not turn a durable merge into an unknown external outcome.
-        if merged and workspace.is_dir():
+        # Preserve a conflicted/dirty workspace for diagnosis. A clean failed
+        # verification can be retried without reusing a stale merge checkout.
+        if workspace.is_dir():
             try:
                 if not git_status(workspace, timeout_seconds=git_timeout_seconds):
                     _remove_managed_worktree(repository=repository, workspace=workspace)

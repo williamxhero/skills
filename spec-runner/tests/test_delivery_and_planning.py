@@ -322,6 +322,7 @@ class ProductBoundaryTests(unittest.TestCase):
                     integration_acceptance=["integration"], integration_version="ticket-digest",
                     integration_paths=("feature",))
             self.assertEqual(git_sha(repo, "refs/heads/main"), current_target)
+            self.assertFalse((workspace_root / "merge" / "87654321").exists())
             receipt = merge_local(repository=repo, candidate_branch=str(candidate["branch"]),
                 target_ref="refs/heads/main", expected_target_sha=current_target,
                 workspace_root=workspace_root, run_id="12345678-1234-1234-1234-123456789012",
