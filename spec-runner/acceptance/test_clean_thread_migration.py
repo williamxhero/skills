@@ -351,6 +351,37 @@ def test_stale_migration_writes_cannot_undo_creation_or_replace_successor(tmp_pa
         store.close()
 
 
+def test_migration_uncertainty_evidence_is_immutable(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        key = "acceptance:uncertainty-immutable"
+        handover = _handover()
+        store.prepare_thread_migration(
+            migration_key=key, run_id=run.run_id, stage="codex_example",
+            source_thread_id="source-thread",
+            handover_digest=hashlib.sha256(
+                json.dumps(handover, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            input_revision="brief-v1",
+        )
+        store.record_migration_handover(migration_key=key, handover=handover)
+        first = store.record_migration_uncertainty(
+            migration_key=key, details={"code": "sdk_transport", "attempt": 1},
+        )
+        assert first["state"] == "uncertain"
+        with pytest.raises(RunnerError, match="uncertainty evidence is immutable"):
+            store.record_migration_uncertainty(
+                migration_key=key, details={"code": "sdk_transport", "attempt": 2},
+            )
+        persisted = store.thread_migration(key)
+        assert persisted is not None
+        assert persisted["uncertainty"] == {"code": "sdk_transport", "attempt": 1}
+    finally:
+        store.close()
+
+
 
 
 def _prepare_migration(store: Store, run: RunRecord, key: str) -> None:

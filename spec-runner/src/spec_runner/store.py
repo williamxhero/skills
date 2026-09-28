@@ -2018,8 +2018,13 @@ class Store:
             raise RunnerError("thread_migration_missing", "uncertainty requires a durable migration intent")
         if migration["state"] in {"successor_registered", "owner_transferred"}:
             return migration
-        if migration["state"] == "uncertain" and migration.get("uncertainty") == details:
-            return migration
+        if migration["state"] == "uncertain":
+            if migration.get("uncertainty") == details:
+                return migration
+            raise RunnerError(
+                "thread_migration_uncertainty_conflict",
+                "migration uncertainty evidence is immutable once recorded",
+            )
         timestamp = now()
         payload = _encode_migration_payload(details)
         with self.transaction():
