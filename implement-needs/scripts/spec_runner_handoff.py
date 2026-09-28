@@ -94,6 +94,18 @@ def _parse_payload(stdout: str) -> dict[str, Any]:
     return payload
 
 
+def _normalize_result(payload: dict[str, Any]) -> dict[str, Any]:
+    run = payload.get("run") if isinstance(payload.get("run"), dict) else {}
+    step = payload.get("step") if isinstance(payload.get("step"), dict) else {}
+    result = dict(payload)
+    result.setdefault("run_id", payload.get("run_id") or run.get("run_id"))
+    result.setdefault("status", payload.get("status") or payload.get("state") or run.get("state"))
+    result.setdefault("phase", payload.get("phase") or payload.get("current_step") or run.get("current_step") or step.get("step_name"))
+    result.setdefault("next_action", payload.get("next_action") or payload.get("action") or step.get("step_name"))
+    result.setdefault("evidence_refs", payload.get("evidence_refs") or payload.get("verification") or [])
+    return result
+
+
 def invoke_public_runner(
     operation: str = "launch",
     *,
@@ -152,6 +164,15 @@ def invoke_public_runner(
             },
             "evidence": {"operation": operation, "stderr": stderr, "runner_payload": payload},
         }
+    if payload.get("ok") is False:
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        return completed.returncode or 1, {
+            "schema_version": HANDOFF_CONTRACT_VERSION,
+            "status": "blocked",
+            "phase": "handoff",
+            "reason": error or {"code": "runner_rejected_request"},
+            "evidence": {"operation": operation, "stderr": stderr, "runner_payload": payload},
+        }
     if operation in {"launch", "resume"}:
         returned_run = payload.get("run")
         if isinstance(returned_run, dict) and returned_run.get("launch_key") not in {None, launch_key}:
@@ -177,6 +198,7 @@ def invoke_public_runner(
             },
             "evidence": {"operation": operation, "stderr": stderr, "runner_payload": payload},
         }
+    payload = _normalize_result(payload)
     payload["handoff_contract_version"] = HANDOFF_CONTRACT_VERSION
     if stderr:
         payload["handoff_stderr"] = stderr

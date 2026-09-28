@@ -97,12 +97,26 @@ class SpecRunnerHandoffTests(unittest.TestCase):
 
     def test_runner_response_is_checked_and_utf8_is_preserved(self) -> None:
         module = load_handoff_module()
-        completed = type("Completed", (), {"returncode": 0, "stdout": '{"schema_version":"spec-runner-cli/v1","run":{"run_id":"r-1","brief":"中文需求"}}'.encode("utf-8"), "stderr": b""})()
+        completed = type("Completed", (), {"returncode": 0, "stdout": '{"schema_version":"spec-runner-cli/v1","run":{"run_id":"r-1","state":"running","current_step":"codex_grill","brief":"中文需求"},"step":{"step_name":"codex_grill"},"verification":[{"id":"e-1"}]}'.encode("utf-8"), "stderr": b""})()
         with patch.object(module, "runner_command", return_value=["spec-runner", "status"]), patch.object(module.subprocess, "run", return_value=completed):
             code, payload = module.invoke_public_runner("status", control_root=Path(".runner"), run_id="r-1")
         self.assertEqual(code, 0)
         self.assertEqual(payload["handoff_contract_version"], "implement-needs-handoff/v2")
         self.assertEqual(payload["run"]["brief"], "中文需求")
+        self.assertEqual(payload["run_id"], "r-1")
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["phase"], "codex_grill")
+        self.assertEqual(payload["next_action"], "codex_grill")
+        self.assertEqual(payload["evidence_refs"], [{"id": "e-1"}])
+
+    def test_runner_rejection_is_a_structured_blocker(self) -> None:
+        module = load_handoff_module()
+        completed = type("Completed", (), {"returncode": 2, "stdout": b'{"schema_version":"spec-runner-cli/v1","ok":false,"error":{"code":"unknown_run","message":"missing"}}', "stderr": b""})()
+        with patch.object(module, "runner_command", return_value=["spec-runner", "status"]), patch.object(module.subprocess, "run", return_value=completed):
+            code, payload = module.invoke_public_runner("status", control_root=Path(".runner"), run_id="r-1")
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["reason"]["code"], "unknown_run")
 
     def test_contract_mismatch_is_a_blocker(self) -> None:
         module = load_handoff_module()
