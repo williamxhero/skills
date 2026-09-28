@@ -2080,3 +2080,20 @@ This is deterministic durable concurrency evidence only. Live native SDK
 business continuation, source-thread archive/readback, provider crash windows,
 Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
 remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
+
+## RCV-02.3 successor receipt identity binding (2026-09-28)
+
+Commit `b58dcda` binds the successor receipt object to the formal
+`successor_thread_id` at both write and read boundaries. A mismatched provider
+receipt is rejected before SQLite mutation, and a later persisted mismatch
+fails closed before migration recovery can consume the record.
+
+The focused migration selection passed `13 passed`; the complete source plus
+acceptance selection passed `542 passed, 1 skipped`; `compileall` and
+`git diff --check` passed. GitHub Actions run `36361935712` passed both Ubuntu
+and Windows contract jobs, including the installed-wheel public CLI checks.
+
+This is deterministic durable identity evidence only. Live native SDK business
+continuation, source-thread archive/readback, provider crash windows, Windows
+detached recovery, complete SF-03 delivery, and project-level L3-L5 remain
+`not_verified`; #297/#298/#299/#300 and their parent remain open.
