@@ -2062,3 +2062,21 @@ This is deterministic persisted-evidence integrity only. Live native SDK
 business continuation, source-thread archive/readback, provider crash windows,
 Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
 remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
+
+## RCV-02.3 immutable migration uncertainty evidence (2026-09-28)
+
+Commit `fd0424e` makes the first persisted `uncertain` migration evidence
+immutable. Replaying the same details remains idempotent; a late worker with
+different uncertainty details now receives
+`thread_migration_uncertainty_conflict` and cannot overwrite the original
+failure identity or recovery evidence.
+
+The focused migration selection passed `12 passed`; the complete source plus
+acceptance selection passed `541 passed, 1 skipped`; `compileall` and
+`git diff --check` passed. GitHub Actions run `36361352615` passed both Ubuntu
+and Windows contract jobs, including the installed-wheel public CLI checks.
+
+This is deterministic durable concurrency evidence only. Live native SDK
+business continuation, source-thread archive/readback, provider crash windows,
+Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
+remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
