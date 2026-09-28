@@ -2092,6 +2092,20 @@ class Store:
             # NULL means that this evidence has not been recorded. Any other
             # value, including an empty string, must pass the strict decoder.
             result[key.removesuffix("_json")] = _decode_migration_payload(value) if value is not None else None
+        handover = result["handover"]
+        if handover is not None:
+            source_thread_id = str(result.get("source_thread_id") or "")
+            expected_digest = hashlib.sha256(
+                json.dumps(handover, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+            if (
+                not valid_handover_evidence(source_thread_id, handover)
+                or result.get("handover_digest") != expected_digest
+            ):
+                raise RunnerError(
+                    "thread_migration_payload_invalid",
+                    "persisted migration evidence contains an invalid source handover",
+                )
         return result
 
     def thread_migrations_for_run(self, run_id: str) -> list[dict[str, object]]:
