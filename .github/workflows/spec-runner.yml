@@ -5,7 +5,7 @@ on:
     paths:
       - "spec-runner/**"
       - "implement-needs/SKILL.md"
-      - "implement-needs/references/legacy-controller.md"
+      - "implement-needs/agents/openai.yaml"
       - "implement-needs/scripts/spec_runner_handoff.py"
       - "implement-needs/tests/test_spec_runner_handoff.py"
       - ".github/workflows/spec-runner.yml"
@@ -15,7 +15,7 @@ on:
     paths:
       - "spec-runner/**"
       - "implement-needs/SKILL.md"
-      - "implement-needs/references/legacy-controller.md"
+      - "implement-needs/agents/openai.yaml"
       - "implement-needs/scripts/spec_runner_handoff.py"
       - "implement-needs/tests/test_spec_runner_handoff.py"
       - ".github/workflows/spec-runner.yml"

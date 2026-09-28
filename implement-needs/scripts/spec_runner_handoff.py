@@ -61,8 +61,8 @@ def runner_command(
         command.extend(["--config", str(_required(config, "config")), "--control-root", str(control_root)])
     else:
         command.extend(["--control-root", str(control_root)])
-        if operation == "status" and run_id:
-            command.extend(["--run-id", run_id])
+        if operation == "status":
+            command.extend(["--run-id", str(_required(run_id, "run_id"))])
         elif operation in {"pause", "cancel", "answer"}:
             command.extend(["--run-id", str(_required(run_id, "run_id"))])
             if operation == "answer":
@@ -118,7 +118,16 @@ def invoke_public_runner(
         value=value,
         handshake_timeout=handshake_timeout,
     )
-    completed = subprocess.run(command, check=False, capture_output=True)
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True)
+    except OSError as exc:
+        return 1, {
+            "schema_version": HANDOFF_CONTRACT_VERSION,
+            "status": "not_verified",
+            "phase": "handoff",
+            "reason": {"code": "runner_unavailable", "message": str(exc)},
+            "evidence": {"operation": operation, "command": command},
+        }
     stdout = _decode_output(completed.stdout, "stdout")
     stderr = _decode_output(completed.stderr, "stderr")
     try:
@@ -140,6 +149,31 @@ def invoke_public_runner(
                 "code": "runner_contract_mismatch",
                 "expected": RUNNER_CLI_SCHEMA_VERSION,
                 "observed": payload.get("schema_version"),
+            },
+            "evidence": {"operation": operation, "stderr": stderr, "runner_payload": payload},
+        }
+    if operation in {"launch", "resume"}:
+        returned_run = payload.get("run")
+        if isinstance(returned_run, dict) and returned_run.get("launch_key") not in {None, launch_key}:
+            return 1, {
+                "schema_version": HANDOFF_CONTRACT_VERSION,
+                "status": "blocked",
+                "phase": "handoff",
+                "reason": {
+                    "code": "runner_launch_identity_mismatch",
+                    "expected_launch_key": launch_key,
+                    "observed_launch_key": returned_run.get("launch_key"),
+                },
+                "evidence": {"operation": operation, "runner_payload": payload},
+            }
+    if completed.returncode != 0 and payload.get("status") in {"completed", "success"}:
+        return completed.returncode, {
+            "schema_version": HANDOFF_CONTRACT_VERSION,
+            "status": "blocked",
+            "phase": "handoff",
+            "reason": {
+                "code": "runner_exit_conflicts_with_completion",
+                "exit_code": completed.returncode,
             },
             "evidence": {"operation": operation, "stderr": stderr, "runner_payload": payload},
         }
