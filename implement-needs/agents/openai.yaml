@@ -1,4 +1,4 @@
 interface:
   display_name: "Implement Needs"
-  short_description: "Delegate planning, implementation, tests, and release"
-  default_prompt: "Use $implement-needs to delegate transparent Chinese Grill, SPEC/ticket planning, and implementation routing to one high-reasoning task, auto-accept its defaults, verify every applied route, then supervise delivery and release."
+  short_description: "Run governed delivery through the public Spec Runner"
+  default_prompt: "Use $implement-needs to start or inspect one authorized requirement delivery run through the public Spec Runner; preserve its run ID, durable status, evidence, blockers, and live verification state."
