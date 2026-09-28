@@ -1953,12 +1953,18 @@ class Store:
             return migration
         if migration["state"] not in {"handover_confirmed", "successor_creation_intent", "successor_registered"}:
             raise RunnerError("thread_handover_unconfirmed", "cannot create a successor before source handover readback")
-        if not successor_thread_id.strip() or successor_thread_id == migration["source_thread_id"]:
+        if (not isinstance(successor_thread_id, str) or not successor_thread_id.strip()
+                or successor_thread_id == migration["source_thread_id"]):
             raise RunnerError("thread_successor_identity_invalid", "successor must have a distinct formal thread identity")
         prior = migration.get("successor_thread_id")
         if prior and prior != successor_thread_id:
             raise RunnerError("thread_successor_conflict", "migration already has a different successor identity")
-        successor_payload = successor or {"thread_id": successor_thread_id}
+        successor_payload = successor if successor is not None else {"thread_id": successor_thread_id}
+        if not isinstance(successor_payload, dict) or successor_payload.get("thread_id") != successor_thread_id:
+            raise RunnerError(
+                "thread_successor_identity_invalid",
+                "successor receipt must contain the registered formal thread identity",
+            )
         payload = _encode_migration_payload(successor_payload)
         timestamp = now()
         with self.transaction():
@@ -2110,6 +2116,16 @@ class Store:
                 raise RunnerError(
                     "thread_migration_payload_invalid",
                     "persisted migration evidence contains an invalid source handover",
+                )
+        if result.get("state") in {"successor_registered", "owner_transferred"}:
+            successor = result["successor"]
+            if (
+                not isinstance(successor, dict)
+                or successor.get("thread_id") != result.get("successor_thread_id")
+            ):
+                raise RunnerError(
+                    "thread_migration_payload_invalid",
+                    "persisted migration evidence contains an invalid successor identity",
                 )
         return result
 

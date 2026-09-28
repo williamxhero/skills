@@ -164,6 +164,43 @@ def test_store_rejects_unsafe_migration_receipts(tmp_path: Path) -> None:
         store.close()
 
 
+def test_store_binds_successor_receipt_to_registered_identity(tmp_path: Path) -> None:
+    store = Store.open(tmp_path / "control", create=True)
+    try:
+        run = _run(tmp_path)
+        store.create_run(run, "start:acceptance-migration-run")
+        key = "acceptance:successor-identity"
+        handover = _handover()
+        store.prepare_thread_migration(
+            migration_key=key, run_id=run.run_id, stage="codex_example",
+            source_thread_id="source-thread",
+            handover_digest=hashlib.sha256(
+                json.dumps(handover, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            input_revision="brief-v1",
+        )
+        store.record_migration_handover(migration_key=key, handover=handover)
+        with pytest.raises(RunnerError, match="formal thread identity"):
+            store.record_migration_successor(
+                migration_key=key,
+                successor_thread_id="successor-thread",
+                successor={"thread_id": "different-thread"},
+            )
+        store.record_migration_successor(
+            migration_key=key,
+            successor_thread_id="successor-thread",
+            successor={"thread_id": "successor-thread"},
+        )
+        store.connection.execute(
+            "UPDATE thread_migrations SET successor_json = ? WHERE migration_key = ?",
+            (json.dumps({"thread_id": "different-thread"}), key),
+        )
+        with pytest.raises(RunnerError, match="invalid successor identity"):
+            store.thread_migration(key)
+    finally:
+        store.close()
+
+
 def test_store_fails_closed_on_unsafe_persisted_migration_payloads(tmp_path: Path) -> None:
     store = Store.open(tmp_path / "control", create=True)
     try:
