@@ -2043,3 +2043,22 @@ This is deterministic persisted-evidence integrity only. Live native SDK
 business continuation, source-thread archive/readback, provider crash windows,
 Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
 remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
+
+## RCV-02.4 persisted handover semantic and digest validation (2026-09-28)
+
+Commit `f250d4a` closes the remaining read-side gap in migration handover
+evidence. A persisted handover must satisfy the source-stop, dispatcher
+quiescence, ownership, and source-thread identity contract, and its canonical
+digest must still match the migration intent. Safe but incomplete or tampered
+JSON therefore fails closed before successor creation or recovery can consume
+it.
+
+The focused migration selection passed `11 passed`; the complete source plus
+acceptance selection passed `540 passed, 1 skipped`; `compileall` and
+`git diff --check` passed. GitHub Actions run `36360685023` passed both Ubuntu
+and Windows contract jobs, including the installed-wheel public CLI checks.
+
+This is deterministic persisted-evidence integrity only. Live native SDK
+business continuation, source-thread archive/readback, provider crash windows,
+Windows detached recovery, complete SF-03 delivery, and project-level L3-L5
+remain `not_verified`; #297/#298/#299/#300 and their parent remain open.
