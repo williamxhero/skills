@@ -515,9 +515,12 @@ class GitHubTracker:
             key = str(item["key"])
             publication = published_by_key[key]
             number = int(publication["number"])
-            marker = f"<!-- spec-runner-key:{key} operation:{operation_id} -->"
-            if publication.get("marker") != marker:
-                raise RunnerError("github_close_evidence_invalid", "publication marker does not match the close operation")
+            marker = str(publication.get("marker") or "")
+            if not re.fullmatch(
+                rf"<!-- spec-runner-key:{re.escape(key)} operation:[^\s]+ -->",
+                marker,
+            ):
+                raise RunnerError("github_close_evidence_invalid", "publication marker does not identify the published issue key")
             body = str(item["body"])
             if item.get("parent") and relation_mode == "body_links":
                 parent = published_by_key.get(str(item["parent"]))
