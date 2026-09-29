@@ -584,3 +584,84 @@ class GitHubTracker:
                 operation_completed(operation_id=item_operation_id, receipt=expected)
             closed.append(expected)
         return {"operation_id": operation_id, "repository": repository, "issues": closed, "complete": True}
+
+    def close_adopted(self, *, repository: str, issues: list[dict[str, Any]], operation_id: str,
+                      operation_intent: Callable[..., dict[str, object]] | None = None,
+                      operation_completed: Callable[..., None] | None = None) -> dict[str, object]:
+        """Close exact pre-existing Issues without rewriting their bodies.
+
+        Discovery stores the current title and body for each Issue.  Adoption
+        must preserve that content, so the normal marker-based publisher
+        closure cannot be used for an Issue created outside Spec Runner.
+        """
+        if not re.fullmatch(r"[^/\s]+/[^/\s]+", repository):
+            raise RunnerError("invalid_github_repository", "repository must be owner/name")
+        if not issues:
+            raise RunnerError("github_close_evidence_missing", "adopted closure has no Issue identities")
+
+        prepared: list[tuple[str, int, str, str, dict[str, object], str, str]] = []
+        seen: set[str] = set()
+        for identity in issues:
+            if not isinstance(identity, dict):
+                raise RunnerError("github_close_evidence_invalid", "adopted Issue identity must be an object")
+            key = identity.get("key")
+            number = identity.get("number")
+            title = identity.get("title")
+            body = identity.get("body")
+            marker = identity.get("marker")
+            if (not isinstance(key, str) or not key.strip() or key in seen
+                    or not isinstance(number, int) or isinstance(number, bool) or number < 1
+                    or not isinstance(title, str) or not isinstance(body, str)
+                    or (marker is not None and not isinstance(marker, str))):
+                raise RunnerError("github_close_evidence_invalid", "adopted Issue identity is incomplete or duplicated")
+            seen.add(key)
+            rendered_body = f"{marker}\n{body}" if marker else body
+            current = self._issue(repository, number)
+            if (current.get("pull_request") or current.get("title") != title
+                    or current.get("body") != rendered_body):
+                raise RunnerError("github_close_conflict", "adopted Issue was edited or belongs to another object")
+            expected = {"key": key, "number": number, "marker": marker, "state": "closed"}
+            item_operation_id = f"{operation_id}:close:{key}"
+            input_digest = _digest({"repository": repository, "issue": expected,
+                                    "title": title, "body": rendered_body})
+            prepared.append((key, number, title, rendered_body, expected, item_operation_id, input_digest))
+
+        closed: list[dict[str, object]] = []
+        for key, number, title, rendered_body, expected, item_operation_id, input_digest in prepared:
+            current = self._issue(repository, number)
+            if (current.get("pull_request") or current.get("title") != title
+                    or current.get("body") != rendered_body):
+                raise RunnerError("github_close_conflict", "adopted Issue changed after close preflight")
+            operation_state = operation_intent(
+                operation_id=item_operation_id,
+                operation_kind="github_issue_close",
+                repository=repository,
+                input_digest=input_digest,
+            ) if operation_intent is not None else None
+            if operation_state and operation_state.get("state") == "completed":
+                if operation_state.get("receipt") != expected or current.get("state") != "closed":
+                    raise RunnerError("github_close_evidence_invalid", "completed adopted close does not match GitHub readback")
+                closed.append(expected)
+                continue
+            if current.get("state") != "closed":
+                try:
+                    self._runner(["api", f"repos/{repository}/issues/{number}", "--method", "PATCH", "-f", "state=closed"])
+                except RunnerError as exc:
+                    if exc.code in _DEFINITIVE_PUBLICATION_FAILURES:
+                        raise
+                    current = self._issue(repository, number)
+                    if current.get("state") != "closed":
+                        raise RunnerError("github_close_unknown", "adopted Issue close outcome is unknown") from exc
+                except Exception as exc:
+                    current = self._issue(repository, number)
+                    if current.get("state") != "closed":
+                        raise RunnerError("github_close_unknown", "adopted Issue close outcome is unknown") from exc
+                current = self._issue(repository, number)
+            if (current.get("pull_request") or current.get("title") != title
+                    or current.get("body") != rendered_body
+                    or current.get("state") != "closed"):
+                raise RunnerError("github_close_unconfirmed", "adopted Issue close was not confirmed")
+            if operation_completed is not None:
+                operation_completed(operation_id=item_operation_id, receipt=expected)
+            closed.append(expected)
+        return {"operation_id": operation_id, "repository": repository, "issues": closed, "complete": True}

@@ -963,19 +963,35 @@ def _archive_worker_readback(
 def _ticket_plan_github_draft(*, plan: dict[str, object], run_id: str) -> dict[str, object]:
     source = plan
     spec_key = str(source["spec_key"])
+    operation_id = str(source.get("github_operation_id") or f"tickets:{run_id}:{spec_key}")
     spec_title = str(source.get("spec_title") or spec_key)
     spec_body = str(source.get("spec_body") or "")
+    adopted = source.get("github_issues")
+    adopted_by_key = {
+        str(item.get("key")): item for item in (adopted if isinstance(adopted, list) else [])
+        if isinstance(item, dict) and isinstance(item.get("key"), str)
+    }
+    spec_issue = adopted_by_key.get(spec_key)
+    if isinstance(spec_issue, dict):
+        spec_title = str(spec_issue.get("title") or spec_title)
+        spec_body = str(spec_issue.get("body") or spec_body)
     specs = [{"key": spec_key, "title": spec_title,
-              "body": f"spec-runner-run:{run_id}\n\n{spec_body}"}]
+              "body": spec_body if isinstance(spec_issue, dict) else f"spec-runner-run:{run_id}\n\n{spec_body}"}]
     for ticket in source["tickets"]:  # type: ignore[index]
         ticket_key = str(ticket["key"])
         blocked = list(ticket.get("blocked_by", []))
+        adopted_ticket = adopted_by_key.get(ticket_key)
         relation = f"Parent SPEC: {spec_key}"
         if blocked:
             relation += "\nBlocked by: " + ", ".join(str(item) for item in blocked)
-        specs.append({"key": ticket_key, "title": str(ticket.get("title") or ticket_key),
+        title = (str(adopted_ticket.get("title") or ticket.get("title") or ticket_key)
+                 if isinstance(adopted_ticket, dict) else str(ticket.get("title") or ticket_key))
+        body = (str(adopted_ticket.get("body") or ticket.get("body") or "")
+                if isinstance(adopted_ticket, dict)
+                else f"spec-runner-run:{run_id}\n{relation}\n\n{ticket['body']}")
+        specs.append({"key": ticket_key, "title": title,
                       "parent": spec_key, "blocked_by": blocked,
-                      "body": f"spec-runner-run:{run_id}\n{relation}\n\n{ticket['body']}"})
+                      "body": body})
     # The first item is the umbrella SPEC; remaining items are its tickets.
     return {"umbrella": specs[0], "specs": specs[1:]}
 
@@ -988,30 +1004,31 @@ def _publish_ticket_plan(*, config: RunnerConfig, control_root: Path, plan: dict
     written only after each issue has been independently read back, then their
     own operation receipts are committed after relation readback.
     """
+    publication_operation = str(plan.get("github_operation_id") or operation_id)
     draft = _ticket_plan_github_draft(plan=plan, run_id=run_id)
     if not config.github_repository or not config.github_receipt_root:
         raise RunnerError("github_config_incomplete", "GitHub tracker publication requires repository and receipt root")
     draft_digest = hashlib.sha256(json.dumps(draft, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
-    store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
+    store.prepare_external_operation(operation_id=publication_operation, run_id=run_id,
         operation_kind="github_issue_publication", repository=config.github_repository,
         input_digest=draft_digest)
     def prepare_issue_operation(*, operation_id: str, operation_kind: str, repository: str,
                                 input_digest: str) -> dict[str, object]:
-        return store.prepare_external_operation(operation_id=operation_id, run_id=run_id,
+        return store.prepare_external_operation(operation_id=publication_operation, run_id=run_id,
             operation_kind=operation_kind, repository=repository, input_digest=input_digest)
 
     def complete_issue_operation(*, operation_id: str, receipt: dict[str, object]) -> None:
         store.complete_external_operation(operation_id=operation_id, receipt=receipt)
 
     result = GitHubTracker(timeout_seconds=config.github_timeout_seconds).publish_draft(repository=config.github_repository, draft=draft,
-        operation_id=operation_id, receipt_root=config.github_receipt_root,
+        operation_id=publication_operation, receipt_root=config.github_receipt_root,
         relation_mode="native", operation_intent=prepare_issue_operation,
         operation_completed=complete_issue_operation)
     receipt = result.get("receipt")
     if not isinstance(receipt, dict) or receipt.get("complete") is not True:
         raise RunnerError("github_publish_unconfirmed", "GitHub publication did not return a complete operation receipt")
-    return result
+    return {**result, "publication_operation_id": publication_operation}
 
 
 def _close_published_ticket_plan(*, control_root: Path, config: RunnerConfig, plan: dict[str, object],
@@ -1084,7 +1101,7 @@ def _close_published_ticket_plan(*, control_root: Path, config: RunnerConfig, pl
     spec_key = str(plan.get("spec_key") or "")
     if not spec_key or not config.github_receipt_root:
         raise RunnerError("github_close_config_incomplete", "closing published tickets requires repository, SPEC identity and receipt root")
-    publication_operation = f"tickets:{run_id}:{spec_key}"
+    publication_operation = str(plan.get("github_operation_id") or f"tickets:{run_id}:{spec_key}")
     publication = store.external_operation(publication_operation)
     if (not isinstance(publication, dict) or publication.get("state") != "completed"
             or publication.get("operation_kind") != "github_issue_publication"
@@ -1101,6 +1118,18 @@ def _close_published_ticket_plan(*, control_root: Path, config: RunnerConfig, pl
 
     def complete(*, operation_id: str, receipt: dict[str, object]) -> None:
         store.complete_external_operation(operation_id=operation_id, receipt=receipt)
+
+    if plan.get("github_adopted") is True:
+        identities = plan.get("github_issues")
+        if not isinstance(identities, list):
+            raise RunnerError("github_close_evidence_missing", "adopted GitHub plan has no exact Issue identities")
+        return GitHubTracker(timeout_seconds=config.github_timeout_seconds).close_adopted(
+            repository=config.github_repository,
+            issues=identities,
+            operation_id=f"close:{run_id}:{spec_key}",
+            operation_intent=prepare,
+            operation_completed=complete,
+        )
 
     return GitHubTracker(timeout_seconds=config.github_timeout_seconds).close_published(repository=config.github_repository,
         draft=_ticket_plan_github_draft(plan=plan, run_id=run_id),
@@ -1364,6 +1393,41 @@ def _execute_independent_review(*, control_root: Path, config: RunnerConfig, bri
         worker_id=review_worker,
     )
     return validated, review_result
+
+
+def _execute_takeover_review(*, control_root: Path, config: RunnerConfig, run: RunRecord,
+                             spec_key: str, candidate_sha: str,
+                             candidate_receipt: dict[str, object], workspace: dict[str, object],
+                             ticket_plan: dict[str, object], store: Store) -> dict[str, object]:
+    """Review an adopted candidate only when its existing workspace is exact and clean."""
+    workspace_path = Path(str(workspace.get("workspace") or "")).resolve()
+    repository = Path(str(workspace.get("repository") or "")).resolve()
+    branch = str(workspace.get("branch") or "")
+    if (
+        repository != config.repository_path.resolve()
+        or not branch
+        or not workspace_path.is_dir()
+        or not workspace_path.is_relative_to((control_root / "delivery-workspaces").resolve())
+        or git_sha(workspace_path, timeout_seconds=config.git_timeout_seconds) != candidate_sha
+        or _git_checked(workspace_path, "status", "--porcelain", timeout_seconds=config.git_timeout_seconds)
+        or git_sha(config.repository_path, branch, timeout_seconds=config.git_timeout_seconds) != candidate_sha
+        or candidate_receipt.get("acceptance_version") != ticket_plan.get("digest")
+    ):
+        raise RunnerError("takeover_review_workspace_invalid", f"SPEC {spec_key} candidate workspace is not bound to its receipt")
+    validated, _ = _execute_independent_review(
+        control_root=control_root,
+        config=config,
+        brief_digest=run.input_digest,
+        run=run,
+        store=store,
+        ticket_plan=ticket_plan,
+        workspace=workspace_path,
+        candidate_sha=candidate_sha,
+        candidate_receipt=candidate_receipt,
+        implementation_thread=f"takeover-candidate:{run.run_id}:{spec_key}",
+        artifact_directory=_safe_artifact_directory(control_root, config, run.run_id),
+    )
+    return validated
 
 
 def _repair_candidate(*, control_root: Path, config: RunnerConfig, brief_digest: str, run: RunRecord,
@@ -4259,6 +4323,7 @@ def _production_runtime(*, control_root: Path, config: RunnerConfig, run_id: str
             execute_github_delivery=_execute_github_delivery,
             recover_github_candidate=_recover_failed_github_candidate,
             resume_reviewed_delivery=_resume_reviewed_delivery,
+            execute_review=_execute_takeover_review,
             definitive_failed_checks=_definitive_failed_github_checks,
             reconcile_local_delivery=_reconcile_completed_local_delivery,
             base_revision=git_sha,

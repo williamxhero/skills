@@ -26,6 +26,7 @@ from .takeover import (
     load_inventory,
     plan_frontier,
 )
+from .takeover_discovery import discover_takeover, validate_snapshot
 from .takeover_runtime import TakeoverExecutionRequest, TakeoverRuntime
 from .tracker import publish_local, read_local
 from .store import Store, _process_alive
@@ -217,6 +218,7 @@ def _parser() -> argparse.ArgumentParser:
     apply_source = takeover_apply.add_mutually_exclusive_group(required=True)
     apply_source.add_argument("--file", type=Path)
     apply_source.add_argument("--thread-id")
+    apply_source.add_argument("--discovery", type=Path)
     takeover_apply.add_argument("--repository", type=Path)
     takeover_apply.add_argument("--scope", action="append", default=[])
     takeover_apply.add_argument("--handover-policy", choices=["require_stop_confirmation", "wait_then_takeover", "interrupt_then_takeover"], default="require_stop_confirmation")
@@ -226,6 +228,19 @@ def _parser() -> argparse.ArgumentParser:
     takeover_apply.add_argument("--config", type=Path)
     takeover_apply.add_argument("--launch-key")
     takeover_apply.add_argument("--git-timeout-seconds", type=float, default=120.0)
+    takeover_discover = takeover_sub.add_parser("discover", help="read and snapshot an existing GitHub delivery graph")
+    takeover_discover.add_argument("--repository", required=True)
+    takeover_discover.add_argument("--issue", required=True, type=int)
+    takeover_discover.add_argument("--workspace", required=True, type=Path)
+    takeover_discover.add_argument("--target-ref", required=True)
+    takeover_discover.add_argument("--control-root", required=True, type=Path)
+    takeover_discover.add_argument("--takeover-key", required=True)
+    takeover_discover.add_argument("--artifact-root", action="append", type=Path, default=[])
+    takeover_discover.add_argument("--required-check", action="append", default=[])
+    takeover_discover.add_argument("--thread-id")
+    takeover_discover.add_argument("--output", type=Path)
+    takeover_discover.add_argument("--github-timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
+    takeover_discover.add_argument("--git-timeout-seconds", type=float, default=120.0)
     diagnostic_parser = subparsers.add_parser("diagnose", help="validate fault and release evidence without LLM calls")
     diagnostic_sub = diagnostic_parser.add_subparsers(dest="diagnostic_command", required=True)
     for name in ("fault-matrix", "release-report"):
@@ -426,10 +441,46 @@ def main(argv: Sequence[str] | None = None) -> int:
                 git_timeout_seconds=arguments.git_timeout_seconds,
             )
         elif arguments.command == "takeover":
-            if arguments.takeover_command == "sdk-read":
+            if arguments.takeover_command == "discover":
+                result = discover_takeover(
+                    repository=arguments.repository,
+                    umbrella_issue=arguments.issue,
+                    workspace=arguments.workspace,
+                    target_ref=arguments.target_ref,
+                    control_root=arguments.control_root,
+                    takeover_key=arguments.takeover_key,
+                    artifact_roots=list(arguments.artifact_root),
+                    required_checks=list(arguments.required_check),
+                    source_thread_id=arguments.thread_id,
+                    github_timeout_seconds=arguments.github_timeout_seconds,
+                    git_timeout_seconds=arguments.git_timeout_seconds,
+                )
+                validate_snapshot(result["snapshot"])
+                if arguments.output:
+                    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+                    arguments.output.write_text(
+                        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8", newline="\n",
+                    )
+                    result = {**result, "output": str(arguments.output.resolve())}
+            elif arguments.takeover_command == "sdk-read":
                 result = CodexAdapter().read_thread(thread_id=arguments.thread_id, repository_path=arguments.repository.resolve())
             else:
-                if arguments.file is not None:
+                discovery = getattr(arguments, "discovery", None)
+                if discovery is not None:
+                    discovered = plan_json(discovery)
+                    inventory = discovered.get("inventory")
+                    snapshot = discovered.get("snapshot")
+                    if not isinstance(inventory, dict) or not isinstance(snapshot, dict):
+                        raise RunnerError("invalid_takeover_discovery", "discovery file has no inventory and snapshot")
+                    validate_snapshot(snapshot)
+                    inventory = json.loads(json.dumps(inventory, ensure_ascii=False))
+                    facts = inventory.get("facts")
+                    if not isinstance(facts, dict):
+                        raise RunnerError("invalid_takeover_discovery", "discovery inventory has no facts")
+                    facts["takeover_snapshot"] = snapshot
+                    facts["discovery_snapshot_digest"] = snapshot.get("digest")
+                elif arguments.file is not None:
                     inventory = load_inventory(arguments.file)
                 else:
                     if arguments.repository is None:

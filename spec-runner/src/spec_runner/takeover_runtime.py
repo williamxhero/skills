@@ -81,11 +81,31 @@ class TakeoverRuntime:
         frontier = plan_frontier(report)
         existing = self._read_existing_record()
         if existing is not None:
-            report, frontier = self._reuse_stable_observation(
-                report=report,
-                frontier=frontier,
-                existing=existing,
-            )
+            existing_report = existing.get("report")
+            existing_facts = existing_report.get("historical_facts") if isinstance(existing_report, dict) else None
+            if isinstance(existing_facts, dict) and isinstance(existing_facts.get("takeover_snapshot"), dict):
+                transitions = existing.get("transitions")
+                execution_started = isinstance(transitions, list) and any(
+                    isinstance(item, dict) and item.get("state") in {"execution_intent", "execution_started"}
+                    for item in transitions
+                )
+                if execution_started:
+                    report = existing_report
+                    stored_frontier = existing.get("frontier")
+                    if isinstance(stored_frontier, dict):
+                        frontier = stored_frontier
+                else:
+                    report, frontier = self._reuse_stable_observation(
+                        report=report,
+                        frontier=frontier,
+                        existing=existing,
+                    )
+            else:
+                report, frontier = self._reuse_stable_observation(
+                    report=report,
+                    frontier=frontier,
+                    existing=existing,
+                )
         record = write_takeover_record(
             control_root=request.control_root,
             takeover_key=request.takeover_key,
@@ -149,7 +169,10 @@ class TakeoverRuntime:
         store = Store.open(self.request.control_root.expanduser().resolve(), create=False)
         try:
             record = store.takeover_record(self.request.takeover_key)
-            return record if isinstance(record, dict) else None
+            if not isinstance(record, dict):
+                return None
+            record["transitions"] = store.takeover_transitions(self.request.takeover_key)
+            return record
         finally:
             store.close()
 
@@ -515,12 +538,16 @@ class TakeoverRuntime:
             if isinstance(existing_transition, dict) and isinstance(existing_transition.get("payload"), dict)
             else None
         )
+        facts = report.get("historical_facts")
+        managed_discovery = isinstance(facts, dict) and isinstance(facts.get("takeover_snapshot"), dict)
         active_step = execution_steps[0] if execution_steps else None
         supports_runner = (
             (active_step is not None and active_step.kind == "resume")
+            or (managed_discovery and not execution_steps)
             or (not execution_steps and isinstance(existing_runner, dict))
         )
-        if action["state"] == "resume_delivery" and frontier["state"] == "planned" and supports_runner and isinstance(existing_runner, dict):
+        if (action["state"] == "resume_delivery" and frontier["state"] == "planned"
+                and supports_runner and isinstance(existing_runner, dict)):
             result["runner"] = existing_runner
         elif action["state"] == "resume_delivery" and frontier["state"] == "planned" and supports_runner and request.brief and request.config:
             launch_key = request.launch_key or f"takeover:{request.takeover_key}"

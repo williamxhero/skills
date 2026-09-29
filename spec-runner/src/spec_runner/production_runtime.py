@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping
@@ -16,11 +17,12 @@ from typing import Callable, Mapping
 from .config import RunnerConfig
 from .errors import RunnerError
 from .models import RunContext
-from .plans import validate_spec_plan, validate_ticket_plan
+from .plans import digest, validate_spec_plan, validate_ticket_plan
 from .recovery import RecoveryAction
 from .recovery_runtime import RecoveryEpisode
 from .store import RunRecord, Store
 from .tracker import PlanSnapshot, publish_local, read_local
+from .takeover_discovery import build_adopted_plans, validate_snapshot
 
 
 JsonLoader = Callable[[Path], dict[str, object]]
@@ -34,6 +36,7 @@ TicketCloser = Callable[..., dict[str, object]]
 GitHubDeliveryRunner = Callable[..., dict[str, object]]
 GitHubRecoveryRunner = Callable[..., dict[str, object]]
 ReviewedDeliveryRunner = Callable[..., dict[str, object]]
+ReviewRunner = Callable[..., dict[str, object]]
 FailedChecks = Callable[..., bool]
 
 
@@ -52,6 +55,7 @@ class ProductionPorts:
     execute_github_delivery: GitHubDeliveryRunner | None = None
     recover_github_candidate: GitHubRecoveryRunner | None = None
     resume_reviewed_delivery: ReviewedDeliveryRunner | None = None
+    execute_review: ReviewRunner | None = None
     definitive_failed_checks: FailedChecks | None = None
     reconcile_local_delivery: Callable[..., dict[str, object]] | None = None
     base_revision: Callable[..., str] | None = None
@@ -247,6 +251,9 @@ class ProductionWorkflow:
         SpecPlan.
         """
         run, store = self.run, self.store
+        takeover_context = self._takeover_context()
+        if takeover_context is not None:
+            return self.adopt_takeover(takeover_context)
         if getattr(self.config, "prepared_spec_plan", None) is not None:
             path = self._artifact() / "spec-plan.json"
             source_path = self.config.prepared_spec_plan
@@ -279,6 +286,183 @@ class ProductionWorkflow:
             store=store,
             thread_id=thread_id,
         )
+
+    def _takeover_context(self) -> dict[str, object] | None:
+        path = self._artifact() / "takeover-context.json"
+        if not path.is_file():
+            return None
+        context = self.ports.load_json(path)
+        if context.get("schema_version") != "spec-runner-takeover-context/v1":
+            raise RunnerError("takeover_context_invalid", "takeover continuation context has an unexpected schema")
+        if context.get("run_id") != self.run.run_id:
+            raise RunnerError("takeover_context_invalid", "takeover continuation context belongs to another run")
+        record = context.get("record")
+        if not isinstance(record, dict) or not isinstance(record.get("report"), dict):
+            raise RunnerError("takeover_context_invalid", "takeover continuation context has no takeover record")
+        return record
+
+    def adopt_takeover(self, takeover_record: dict[str, object]) -> RunRecord:
+        """Materialize one immutable discovery snapshot into this Runner run."""
+        report = takeover_record.get("report")
+        if not isinstance(report, dict):
+            raise RunnerError("takeover_context_invalid", "takeover record has no report")
+        if report.get("next_state") in {"blocked", "waiting_handover"}:
+            raise RunnerError("takeover_blocked", "takeover discovery contains an unresolved blocker")
+        facts = report.get("historical_facts")
+        snapshot = facts.get("takeover_snapshot") if isinstance(facts, dict) else None
+        if not isinstance(snapshot, dict):
+            raise RunnerError("takeover_discovery_missing", "takeover record has no discovery snapshot")
+        validate_snapshot(snapshot)
+        snapshot_digest = str(snapshot["digest"])
+        artifact = self._artifact()
+        artifact.mkdir(parents=True, exist_ok=True)
+        spec_path = artifact / "spec-plan.json"
+        graph = snapshot.get("graph")
+        if not isinstance(graph, dict):
+            raise RunnerError("takeover_discovery_missing", "takeover snapshot has no issue graph")
+        local = graph.get("local")
+        base_sha = str(local.get("target_sha") or "") if isinstance(local, dict) else ""
+        if len(base_sha) < 7:
+            raise RunnerError("takeover_target_readback_missing", "takeover snapshot has no target SHA")
+        if spec_path.is_file():
+            spec_plan = validate_spec_plan(self.ports.load_json(spec_path))
+            if spec_plan.get("takeover_snapshot_digest") != snapshot_digest:
+                raise RunnerError("takeover_source_changed", "persisted SpecPlan belongs to another discovery snapshot")
+        else:
+            adopted = build_adopted_plans(
+                snapshot, model=self.config.model_name, effort=self.config.effort, base_sha=base_sha,
+            )
+            spec_plan = validate_spec_plan({
+                **adopted["spec_plan"],
+                "takeover_snapshot_digest": snapshot_digest,
+                "umbrella_issue": (graph.get("umbrella", {}).get("number")
+                                    if isinstance(graph.get("umbrella"), dict) else None),
+            })
+            self.ports.write_json_atomic(spec_path, spec_plan)
+            for key, ticket_plan in adopted["ticket_plans"].items():
+                self.ports.write_json_atomic(
+                    artifact / f"ticket-plan-{key}.json",
+                    validate_ticket_plan(
+                        {**ticket_plan, "takeover_snapshot_digest": snapshot_digest},
+                        expected_spec_key=key,
+                    ),
+                )
+
+        discovered = {
+            str(item.get("key")): item
+            for item in graph.get("specs", [])
+            if isinstance(item, dict) and isinstance(item.get("key"), str)
+        }
+        normalized_specs: list[dict[str, object]] = []
+        completed_keys: list[str] = []
+        for spec in spec_plan.get("specs", []):
+            if not isinstance(spec, dict):
+                raise RunnerError("invalid_spec_plan", "adopted SpecPlan contains a non-object SPEC")
+            key = str(spec["key"])
+            source = discovered.get(key)
+            if not isinstance(source, dict):
+                raise RunnerError("takeover_spec_identity_missing", f"discovery snapshot has no SPEC {key}")
+            source_value = {
+                "frontier": source.get("frontier"),
+                "candidate_sha": source.get("candidate_sha"),
+                "branch": source.get("branch"),
+                "workspace": source.get("workspace"),
+                "pull_request": source.get("pull_request"),
+                "checks": source.get("checks"),
+                "candidate_receipt": source.get("candidate_receipt"),
+                "review_receipt": source.get("review_receipt"),
+                "github_issue": source.get("github_issue"),
+                "delivery": source.get("delivery"),
+            }
+            spec["takeover_source"] = source_value
+            normalized_specs.append(spec)
+
+            ticket_path = artifact / f"ticket-plan-{key}.json"
+            if ticket_path.is_file() and self.config.github_repository:
+                self._adopt_github_publication(
+                    validate_ticket_plan(self.ports.load_json(ticket_path), expected_spec_key=key),
+                )
+
+            frontier = source.get("frontier")
+            complete = frontier.get("complete_evidence") if isinstance(frontier, dict) else None
+            delivery = source.get("delivery")
+            if not (isinstance(complete, dict) and complete.get("complete") is True and isinstance(delivery, dict)):
+                continue
+            delivery_path = artifact / f"delivery-{key}.json"
+            adopted_delivery = dict(delivery)
+            adopted_delivery.update({
+                "schema_version": "spec-runner-production-delivery/v1",
+                "run_id": self.run.run_id,
+                "spec_key": key,
+                "plan_digest": spec_plan.get("digest"),
+                "discovery_snapshot_digest": snapshot_digest,
+                "adopted": True,
+            })
+            if ticket_path.is_file():
+                ticket_plan = validate_ticket_plan(self.ports.load_json(ticket_path), expected_spec_key=key)
+                adopted_delivery["ticket_plan_digest"] = ticket_plan.get("digest")
+            if delivery_path.is_file():
+                existing = self.ports.load_json(delivery_path)
+                if existing.get("discovery_snapshot_digest") != snapshot_digest:
+                    raise RunnerError("takeover_source_changed", f"delivery evidence for {key} belongs to another snapshot")
+                adopted_delivery = existing
+            else:
+                self.ports.write_json_atomic(delivery_path, adopted_delivery)
+            completed_keys.append(key)
+
+        spec_plan = validate_spec_plan({**spec_plan, "specs": normalized_specs})
+        self.ports.write_json_atomic(spec_path, spec_plan)
+        for key in completed_keys:
+            delivery_path = artifact / f"delivery-{key}.json"
+            delivery = self.ports.load_json(delivery_path)
+            delivery["plan_digest"] = spec_plan.get("digest")
+            self.ports.write_json_atomic(delivery_path, delivery)
+            self.record_spec(spec_key=key, plan_digest=str(spec_plan.get("digest") or ""))
+        worker_id = f"{self.run.backend_kind}:{self.run.run_id}"
+        return self.store.complete_adopted_stage(
+            self.run.run_id,
+            f"start:{self.run.run_id}",
+            step_name="codex_planning",
+            worker_id=worker_id,
+            state="planned",
+            source_digest=digest({"snapshot": snapshot_digest, "plan": spec_plan.get("digest")}),
+        )
+
+    def _adopt_github_publication(self, ticket_plan: dict[str, object]) -> None:
+        identities = ticket_plan.get("github_issues")
+        tickets = ticket_plan.get("tickets")
+        operation_id = str(ticket_plan.get("github_operation_id") or "")
+        if (not isinstance(identities, list) or not isinstance(tickets, list)
+                or len(identities) != len(tickets) + 1 or not operation_id):
+            raise RunnerError("takeover_issue_identity_missing", "adopted TicketPlan has incomplete GitHub identities")
+        issues = []
+        for item in identities:
+            if (not isinstance(item, dict) or not isinstance(item.get("key"), str)
+                    or not isinstance(item.get("number"), int)
+                    or (item.get("marker") is not None and not isinstance(item.get("marker"), str))):
+                raise RunnerError("takeover_issue_identity_missing", "adopted Issue identity is incomplete")
+            issues.append({"key": item["key"], "number": item["number"], "marker": item["marker"], "adopted": True})
+        receipt = {
+            "operation_id": operation_id,
+            "draft_digest": digest(self.ports.load_json(self._artifact() / f"ticket-plan-{ticket_plan['spec_key']}.json")),
+            "repository": self.config.github_repository,
+            "issues": issues,
+            "relation_evidence": {"mode": "native", "native": True, "adopted": True},
+            "complete": True,
+        }
+        existing = self.store.external_operation(operation_id)
+        if existing and existing.get("state") == "completed":
+            if existing.get("receipt") != receipt:
+                raise RunnerError("takeover_publication_conflict", "adopted Issue receipt changed")
+            return
+        self.store.prepare_external_operation(
+            operation_id=operation_id,
+            run_id=self.run.run_id,
+            operation_kind="github_issue_publication",
+            repository=str(self.config.github_repository),
+            input_digest=str(receipt["draft_digest"]),
+        )
+        self.store.complete_external_operation(operation_id=operation_id, receipt=receipt)
 
     def completed_specs(self) -> set[str]:
         """Read Store completion receipts; validate the JSON projection only."""
@@ -478,10 +662,20 @@ class ProductionWorkflow:
                 raise RunnerError("production_queue_blocked", "no dependency-ready SPEC remains")
             spec = ready[0]
             spec_key = str(spec["key"])
+            takeover_delivery = self._resume_takeover_delivery(spec=spec, spec_plan=spec_plan)
+            if takeover_delivery is not None:
+                if takeover_delivery.get("state") != "spec_completed":
+                    return takeover_delivery
+                completed.add(spec_key)
+                run = store.find_by_run_id(run.run_id)
+                if run is None:
+                    raise RunnerError("run_missing", "production queue run disappeared during takeover reconciliation")
+                continue
             ticket_files = sorted(self._artifact().glob(f"ticket-plan-{spec_key}.json"))
             adopted_ticket = bool(ticket_files) and (
                 run.state == "tickets_ready"
                 or (self.config.intake_root is not None and run.state in {"planned", "spec_completed"})
+                or isinstance(spec.get("takeover_source"), dict)
             )
             if adopted_ticket:
                 ticketed = run
@@ -531,6 +725,113 @@ class ProductionWorkflow:
             return stopped
         store.mark_archived(run.run_id, state="completed")
         return {"state": "completed", **store.public_status(run.run_id)}
+
+    def _resume_takeover_delivery(
+        self, *, spec: dict[str, object], spec_plan: dict[str, object],
+    ) -> dict[str, object] | None:
+        """Reconcile a discovered candidate frontier before new implementation."""
+        source = spec.get("takeover_source")
+        if not isinstance(source, dict):
+            return None
+        frontier = source.get("frontier")
+        if not isinstance(frontier, dict) or str(frontier.get("state")) not in {
+            "candidate_ready", "checks_pending", "review_pending", "merge_pending", "closure_pending",
+        }:
+            return None
+        candidate = source.get("candidate_receipt")
+        review = source.get("review_receipt")
+        checks = source.get("checks")
+        pull_request = source.get("pull_request")
+        branch = source.get("branch")
+        candidate_sha = source.get("candidate_sha")
+        if (not isinstance(candidate, dict) or candidate.get("outcome") != "verified"
+                or not isinstance(candidate_sha, str) or candidate.get("candidate_sha") != candidate_sha):
+            raise RunnerError("takeover_candidate_evidence_missing", f"SPEC {spec.get('key')} has no verified candidate receipt")
+        if not isinstance(review, dict):
+            if self.ports.execute_review is None:
+                raise RunnerError("takeover_review_evidence_missing", f"SPEC {spec.get('key')} has no independent review receipt")
+            ticket_path = self._artifact() / f"ticket-plan-{spec['key']}.json"
+            workspace = source.get("workspace")
+            if not ticket_path.is_file() or not isinstance(workspace, dict):
+                raise RunnerError("takeover_review_evidence_missing", f"SPEC {spec.get('key')} has no reviewable candidate workspace")
+            review = self.ports.execute_review(
+                control_root=self.control_root,
+                config=self.config,
+                run=self.run,
+                spec_key=str(spec["key"]),
+                candidate_sha=candidate_sha,
+                candidate_receipt=candidate,
+                workspace=workspace,
+                ticket_plan=self.ports.load_json(ticket_path),
+                store=self.store,
+            )
+            if review.get("state") in {"paused", "cancelled"}:
+                return review
+        if review.get("approved") is not True or review.get("candidate_sha") != candidate_sha:
+            raise RunnerError("takeover_review_evidence_missing", f"SPEC {spec.get('key')} has no independent review receipt")
+        if not isinstance(branch, str) or not branch:
+            raise RunnerError("takeover_branch_identity_missing", f"SPEC {spec.get('key')} has no candidate branch")
+        if isinstance(pull_request, dict) and pull_request.get("head_sha") not in {None, candidate_sha}:
+            raise RunnerError("takeover_pull_request_mismatch", f"SPEC {spec.get('key')} PR does not match its candidate SHA")
+        if isinstance(checks, dict) and checks.get("candidate_sha") != candidate_sha:
+            raise RunnerError("takeover_checks_evidence_missing", f"SPEC {spec.get('key')} has no checks readback")
+        if self.ports.execute_github_delivery is None:
+            raise RunnerError("github_runtime_missing", "takeover delivery reconciliation is not configured")
+        result = self.ports.execute_github_delivery(
+            control_root=self.control_root,
+            config=self.config,
+            run=self.run,
+            spec_key=str(spec["key"]),
+            candidate_sha=candidate_sha,
+            branch=branch,
+            candidate_receipt=candidate,
+            review=review,
+            store=self.store,
+            push=False,
+        )
+        if result.get("state") != "github_completed":
+            return result
+        merge = result.get("merge")
+        if not isinstance(merge, dict) or merge.get("merged") is not True:
+            raise RunnerError("github_merge_unconfirmed", "takeover delivery has no confirmed merge")
+        prior_delivery = source.get("delivery")
+        cleanup = prior_delivery.get("cleanup") if isinstance(prior_delivery, dict) else None
+        if not isinstance(cleanup, dict) or cleanup.get("outcome") != "cleaned":
+            workspace = source.get("workspace")
+            if not isinstance(workspace, dict):
+                raise RunnerError("takeover_cleanup_evidence_missing", f"SPEC {spec.get('key')} has no verified cleanup receipt")
+            workspace_path = Path(str(workspace.get("workspace") or "")).resolve()
+            manifest_path = Path(str(workspace.get("manifest") or "")).resolve()
+            workspace_root = (self.control_root / "delivery-workspaces").resolve()
+            if (
+                not workspace_path.is_relative_to(workspace_root)
+                or not manifest_path.is_relative_to(workspace_root)
+                or workspace.get("repository") != os.fspath(self.config.repository_path.resolve())
+            ):
+                raise RunnerError("takeover_cleanup_scope_invalid", f"SPEC {spec.get('key')} cleanup workspace is outside the managed root")
+            cleanup = self.ports.cleanup_workspace(
+                repository=self.config.repository_path,
+                workspace_root=workspace_root,
+                workspace=workspace_path,
+                manifest=manifest_path,
+                preserve_manifest=True,
+            )
+            if cleanup.get("outcome") != "cleaned":
+                return {"state": "cleanup_pending", "spec_key": spec.get("key"), "cleanup": cleanup}
+        result["cleanup"] = cleanup
+        self.persist_delivery_evidence(spec_key=str(spec["key"]), delivery=result)
+        ticket_path = self._artifact() / f"ticket-plan-{spec['key']}.json"
+        ticket_plan = validate_ticket_plan(self.ports.load_json(ticket_path), expected_spec_key=str(spec["key"]))
+        result["issue_closure"] = self.ports.close_ticket_plan(
+            config=self.config, plan=ticket_plan, run_id=self.run.run_id, store=self.store,
+            delivery_evidence=result,
+        )
+        self.persist_delivery_evidence(spec_key=str(spec["key"]), delivery=result)
+        if not isinstance(result.get("issue_closure"), dict) or result["issue_closure"].get("complete") is not True:
+            raise RunnerError("github_close_unconfirmed", f"SPEC {spec.get('key')} Issue closure was not confirmed")
+        self.record_spec(spec_key=str(spec["key"]), plan_digest=str(spec_plan.get("digest") or ""))
+        result["state"] = "spec_completed"
+        return result
 
     def resume_waiting_github(self, *, finalize_run: bool = True) -> dict[str, object]:
         """Reconcile one persisted CI wait, then finish delivery and cleanup."""

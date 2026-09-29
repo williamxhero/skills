@@ -345,7 +345,7 @@ def _receipt_for_spec(receipts: list[dict[str, Any]], spec_key: str,
         if receipt.get("schema_version") != schema_version:
             continue
         path = Path(str(receipt.get("path") or "")).name
-        if receipt.get("spec_key") == spec_key or path.startswith(f"{prefix}{spec_key}"):
+        if receipt.get("spec_key") == spec_key or (prefix and path.startswith(f"{prefix}{spec_key}")):
             value = receipt.get("value")
             if isinstance(value, dict):
                 matches.append(value)
@@ -354,6 +354,20 @@ def _receipt_for_spec(receipts: list[dict[str, Any]], spec_key: str,
         if len(unique) > 1:
             raise RunnerError("takeover_receipt_ambiguous", "multiple different receipts identify one SPEC")
     return matches[0] if matches else None
+
+
+def _target_contains_merge(target: dict[str, Any], merge_sha: str) -> bool:
+    target_sha = target.get("target_sha")
+    repository = target.get("repository_path")
+    if not isinstance(target_sha, str) or not isinstance(repository, str) or not isinstance(merge_sha, str):
+        return False
+    try:
+        return subprocess.run(
+            ["git", "-C", repository, "merge-base", "--is-ancestor", merge_sha, target_sha],
+            check=False, capture_output=True, timeout=DEFAULT_GIT_TIMEOUT_SECONDS,
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _complete_delivery_evidence(
@@ -371,7 +385,10 @@ def _complete_delivery_evidence(
     merge = delivery.get("merge") if isinstance(delivery, dict) else None
     recorded_checks = delivery.get("checks") if isinstance(delivery, dict) else None
     candidate_sha = spec.get("candidate_sha")
-    merge_sha = merge.get("sha") if isinstance(merge, dict) else None
+    merge_sha = (
+        merge.get("sha") or merge.get("merge_sha")
+        if isinstance(merge, dict) else None
+    )
     if not isinstance(candidate_sha, str) or len(candidate_sha) != 40:
         reasons.append("candidate_sha_missing")
     if (
@@ -409,7 +426,12 @@ def _complete_delivery_evidence(
     if not isinstance(cleanup, dict) or cleanup.get("outcome") != "cleaned":
         reasons.append("cleanup_receipt_missing")
     target = spec.get("target") if isinstance(spec.get("target"), dict) else None
-    if not isinstance(target, dict) or target.get("target_sha") != target.get("origin_target_sha") or target.get("origin_relation") != "equal":
+    if (
+        not isinstance(target, dict)
+        or target.get("target_sha") != target.get("origin_target_sha")
+        or target.get("origin_relation") != "equal"
+        or not _target_contains_merge(target, merge_sha)
+    ):
         reasons.append("target_remote_readback_missing")
     return {"complete": not reasons, "reasons": reasons, "candidate_sha": candidate_sha, "merge_sha": merge_sha}
 
@@ -421,7 +443,8 @@ def _topological_specs(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     while remaining:
         ready = sorted(
             key for key in remaining
-            if set(by_key[key].get("blocked_by", [])) <= {str(item["key"]) for item in ordered}
+            if set(by_key[key].get("_adopted_blocked_by", by_key[key].get("blocked_by", [])))
+            <= {str(item["key"]) for item in ordered}
         )
         if not ready:
             raise RunnerError("takeover_spec_dependency_cycle", "discovered SPEC dependency graph contains a cycle")
@@ -439,9 +462,30 @@ def build_adopted_plans(
     graph = snapshot.get("graph")
     if not isinstance(graph, dict) or not isinstance(graph.get("umbrella"), dict) or not isinstance(graph.get("specs"), list):
         raise RunnerError("invalid_takeover_snapshot", "discovery snapshot has no complete graph")
-    raw_specs = [item for item in graph["specs"] if isinstance(item, dict) and isinstance(item.get("key"), str)]
+    raw_specs = [dict(item) for item in graph["specs"] if isinstance(item, dict) and isinstance(item.get("key"), str)]
     if not raw_specs:
         raise RunnerError("takeover_spec_graph_empty", "discovery snapshot contains no SPECs")
+    ticket_parent = {
+        str(ticket.get("key")): str(item["key"])
+        for item in raw_specs
+        for ticket in item.get("tickets", [])
+        if isinstance(ticket, dict) and isinstance(ticket.get("key"), str)
+    }
+    for item in raw_specs:
+        spec_key = str(item["key"])
+        dependencies = set(item.get("blocked_by", []))
+        local_ticket_keys = {
+            str(ticket.get("key")) for ticket in item.get("tickets", [])
+            if isinstance(ticket, dict) and isinstance(ticket.get("key"), str)
+        }
+        for ticket in item.get("tickets", []):
+            if not isinstance(ticket, dict):
+                continue
+            dependencies.update(
+                parent for dependency in ticket.get("blocked_by", [])
+                if (parent := ticket_parent.get(str(dependency))) is not None and parent != spec_key
+            )
+        item["_adopted_blocked_by"] = sorted(dependencies)
     ordered = _topological_specs(raw_specs)
     umbrella = graph["umbrella"]
     global_requirement = f"{umbrella.get('title') or 'Umbrella SPEC'}\n{umbrella.get('body') or ''}".strip()
@@ -455,7 +499,7 @@ def build_adopted_plans(
         requirements.append(requirement)
         plan_specs.append({
             "key": key, "title": str(item.get("title") or key), "body": str(item.get("body") or key),
-            "blocked_by": list(item.get("blocked_by", [])),
+            "blocked_by": list(item.get("_adopted_blocked_by", item.get("blocked_by", []))),
             "covers": [global_requirement, requirement] if index == 0 else [requirement],
             "route": {"model": model, "effort": effort, "reason": "adopted from an immutable GitHub takeover snapshot"},
         })
@@ -477,14 +521,16 @@ def build_adopted_plans(
                     for issue in [item.get("github_issue")]
                     if isinstance(issue, dict) and isinstance(issue.get("marker"), str)
                     and re.search(r"operation:([^\s]+)", str(issue.get("marker")))
-                ), None),
+                ), None) or f"takeover:{snapshot.get('takeover_key')}:{key}",
+                "github_adopted": True,
                 "github_issues": [item.get("github_issue"), *[
                     ticket.get("github_issue") for ticket in tickets
                     if isinstance(ticket, dict) and isinstance(ticket.get("github_issue"), dict)
                 ]],
                 "tickets": [{
                     "key": str(ticket["key"]), "title": str(ticket.get("title") or ticket["key"]),
-                    "body": str(ticket.get("body") or ticket["key"]), "blocked_by": list(ticket.get("blocked_by", [])),
+                    "body": str(ticket.get("body") or ticket["key"]),
+                    "blocked_by": [str(dependency) for dependency in ticket.get("blocked_by", []) if str(dependency) in local_ticket_keys],
                     "acceptance": [f"ticket:{ticket['key']}"],
                 } for ticket in tickets if isinstance(ticket, dict) and isinstance(ticket.get("key"), str)],
             }
@@ -550,6 +596,9 @@ def discover_takeover(
         candidate_receipt = _receipt_for_spec(
             receipt_scan["receipts"], key, "spec-runner-candidate-receipt/v1", "candidate-",
         )
+        workspace_receipt = _receipt_for_spec(
+            receipt_scan["receipts"], key, "spec-runner-workspace/v1", "",
+        )
         review_receipt = _receipt_for_spec(
             receipt_scan["receipts"], key, "spec-runner-review-result/v1", "review-",
         )
@@ -602,6 +651,7 @@ def discover_takeover(
             "labels": sorted(str(label.get("name")) for label in issue.get("labels", []) if isinstance(label, dict) and label.get("name")),
             "comments": issue_record["comments"], "blocked_by": sorted(_issue_key(issue_graph[target]["issue"]) for target in dependencies[number]),
             "tickets": ticket_records, "branch": branch_name, "candidate_sha": candidate_sha,
+            "workspace": workspace_receipt,
             "github_issue": _issue_identity(issue, key),
             "pull_request": ({
                 "number": pr.get("number"), "url": pr.get("html_url"), "state": pr.get("state"),

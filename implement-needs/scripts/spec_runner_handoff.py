@@ -77,6 +77,39 @@ def runner_command(
     return command
 
 
+def takeover_discovery_command(
+    *, repository: str, issue: int, workspace: Path, target_ref: str,
+    control_root: Path, takeover_key: str, output: Path,
+    artifact_roots: list[Path], required_checks: list[str],
+    source_thread_id: str | None = None,
+) -> list[str]:
+    """Build the read-only GitHub discovery command."""
+    command = [*_runner_prefix(), "takeover", "discover", "--repository", repository,
+               "--issue", str(issue), "--workspace", str(workspace),
+               "--target-ref", target_ref, "--control-root", str(control_root),
+               "--takeover-key", takeover_key, "--output", str(output)]
+    for root in artifact_roots:
+        command.extend(["--artifact-root", str(root)])
+    for check in required_checks:
+        command.extend(["--required-check", check])
+    if source_thread_id:
+        command.extend(["--thread-id", source_thread_id])
+    return command
+
+
+def takeover_apply_command(
+    *, discovery: Path, control_root: Path, takeover_key: str,
+    brief: Path, config: Path, launch_key: str | None = None,
+) -> list[str]:
+    """Build the durable discovery application command."""
+    command = [*_runner_prefix(), "takeover", "apply", "--discovery", str(discovery),
+               "--control-root", str(control_root), "--takeover-key", takeover_key,
+               "--brief", str(brief), "--config", str(config)]
+    if launch_key:
+        command.extend(["--launch-key", launch_key])
+    return command
+
+
 def _decode_output(raw: bytes, stream: str) -> str:
     try:
         return raw.decode("utf-8")
@@ -216,12 +249,59 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--question-id")
     parser.add_argument("--value")
     parser.add_argument("--handshake-timeout", type=float, default=10.0)
+    parser.add_argument("--takeover-repository")
+    parser.add_argument("--umbrella-issue", type=int)
+    parser.add_argument("--workspace", type=Path)
+    parser.add_argument("--target-ref")
+    parser.add_argument("--takeover-key")
+    parser.add_argument("--artifact-root", action="append", type=Path, default=[])
+    parser.add_argument("--required-check", action="append", default=[])
+    parser.add_argument("--source-thread-id")
+    parser.add_argument("--discovery-output", type=Path)
+    parser.add_argument("--takeover-file", type=Path)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        discovery_values = (args.takeover_repository, args.umbrella_issue, args.workspace, args.target_ref)
+        if any(value is not None for value in discovery_values) and not all(value is not None for value in discovery_values):
+            raise ValueError("GitHub takeover requires --takeover-repository, --umbrella-issue, --workspace, and --target-ref")
+        if args.takeover_repository is not None:
+            if args.takeover_file is not None or not args.takeover_key or args.brief is None or args.config is None:
+                raise ValueError("GitHub takeover requires --takeover-key, --brief, and --config")
+            output = args.discovery_output or (args.control_root / "takeover-discoveries" / f"{args.takeover_key}.json")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            discovered = subprocess.run(
+                takeover_discovery_command(
+                    repository=args.takeover_repository, issue=args.umbrella_issue,
+                    workspace=args.workspace, target_ref=args.target_ref,
+                    control_root=args.control_root, takeover_key=args.takeover_key,
+                    output=output, artifact_roots=args.artifact_root or [args.control_root],
+                    required_checks=args.required_check, source_thread_id=args.source_thread_id,
+                ), check=False,
+            )
+            if discovered.returncode:
+                return discovered.returncode
+            applied = subprocess.run(
+                takeover_apply_command(
+                    discovery=output, control_root=args.control_root,
+                    takeover_key=args.takeover_key, brief=args.brief,
+                    config=args.config, launch_key=args.launch_key,
+                ), check=False,
+            )
+            return applied.returncode
+        if args.takeover_file is not None:
+            if not args.takeover_key or args.brief is None or args.config is None:
+                raise ValueError("--takeover-file requires --takeover-key, --brief, and --config")
+            completed = subprocess.run(
+                [*_runner_prefix(), "takeover", "apply", "--file", str(args.takeover_file),
+                 "--control-root", str(args.control_root), "--takeover-key", args.takeover_key,
+                 "--brief", str(args.brief), "--config", str(args.config)],
+                check=False,
+            )
+            return completed.returncode
         code, payload = invoke_public_runner(
             args.operation,
             brief=args.brief,

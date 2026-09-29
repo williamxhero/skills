@@ -84,6 +84,28 @@ class SpecRunnerHandoffTests(unittest.TestCase):
         self.assertEqual(status, ["spec-runner", "status", "--control-root", ".runner", "--run-id", "run-1"])
         self.assertEqual(answer[-6:], ["--run-id", "run-1", "--question-id", "q-1", "--value", "中文答案"])
 
+    def test_github_takeover_commands_use_public_discovery_and_apply(self) -> None:
+        module = load_handoff_module()
+        with patch.object(module.shutil, "which", return_value=None):
+            discover = module.takeover_discovery_command(
+                repository="owner/repo", issue=42, workspace=Path("repo"),
+                target_ref="refs/heads/main", control_root=Path("control"),
+                takeover_key="takeover-42", output=Path("snapshot.json"),
+                artifact_roots=[Path("artifacts")], required_checks=["ci"],
+            )
+            apply = module.takeover_apply_command(
+                discovery=Path("snapshot.json"), control_root=Path("control"),
+                takeover_key="takeover-42", brief=Path("brief.md"),
+                config=Path("runner.json"), launch_key="launch-42",
+            )
+        self.assertEqual(discover[2:4], ["spec_runner.cli", "takeover"])
+        self.assertIn("--issue", discover)
+        self.assertIn("42", discover)
+        self.assertIn("--required-check", discover)
+        self.assertEqual(apply[2:4], ["spec_runner.cli", "takeover"])
+        self.assertIn("--discovery", apply)
+        self.assertIn("snapshot.json", apply)
+
     def test_status_requires_a_run_identity(self) -> None:
         module = load_handoff_module()
         with self.assertRaisesRegex(ValueError, "run_id is required"):
@@ -173,15 +195,17 @@ class SpecRunnerHandoffTests(unittest.TestCase):
             metadata = (installed / "agents" / "openai.yaml").read_text(encoding="utf-8")
             self.assertIn("public Spec Runner", metadata)
 
-    def test_skill_routes_new_work_and_rejects_legacy_execution(self) -> None:
+    def test_skill_routes_new_work_and_describes_legacy_as_compatibility(self) -> None:
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("scripts/spec_runner_handoff.py", text)
-        self.assertIn("single user-facing entry", text)
-        self.assertIn("historical\nevidence only", text)
-        self.assertNotIn("takeover-file", text)
+        self.assertIn("user-facing entry", text)
+        self.assertIn("Pre-SR-08 legacy runs", text)
+        self.assertIn("takeover-file", text)
         self.assertNotIn("legacy inspect", text)
         self.assertNotIn("dispatch.py", text)
-        self.assertIn("must\nbe rejected", text)
+        self.assertIn("Existing legacy run", text)
+        self.assertIn("takeover discover", text)
+        self.assertIn("Issue-backed ticket graph\nskips to-tickets", text)
 
 
 if __name__ == "__main__":

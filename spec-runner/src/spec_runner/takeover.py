@@ -334,6 +334,32 @@ def inspect_takeover(inventory: dict[str, Any], *, git_timeout_seconds: float = 
         raise RunnerError("invalid_takeover_inventory", "facts must be an object")
     if facts.get("scope_error"):
         unresolved.append({"reason": "scope_outside_authorization", "detail": str(facts["scope_error"])})
+    takeover_snapshot = facts.get("takeover_snapshot")
+    if isinstance(takeover_snapshot, dict):
+        graph = takeover_snapshot.get("graph")
+        discovered_local = graph.get("local") if isinstance(graph, dict) else None
+        if isinstance(discovered_local, dict) and (
+            discovered_local.get("target_sha") != head
+            or discovered_local.get("working_tree_digest") != snapshot["snapshot_digest"]
+        ):
+            unresolved.append({
+                "reason": "discovery_snapshot_changed",
+                "detail": {
+                    "discovered_target_sha": discovered_local.get("target_sha"),
+                    "current_target_sha": head,
+                    "discovered_working_tree_digest": discovered_local.get("working_tree_digest"),
+                    "current_working_tree_digest": snapshot["snapshot_digest"],
+                },
+            })
+    takeover_blockers = facts.get("blockers")
+    if isinstance(takeover_blockers, list):
+        for blocker in takeover_blockers:
+            if isinstance(blocker, dict):
+                unresolved.append({
+                    "reason": "discovery_blocked",
+                    "code": str(blocker.get("code") or "takeover_discovery_blocked"),
+                    "detail": blocker,
+                })
     # Historical claims are intentionally not converted into current verification.
     return {
         "schema_version": "spec-runner-takeover-report/v1",
@@ -520,6 +546,29 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
     facts = report.get("historical_facts", {})
     if not isinstance(facts, dict):
         raise RunnerError("invalid_takeover_report", "historical_facts must be an object")
+    # A GitHub discovery snapshot already contains the authoritative SPEC
+    # graph and its external frontier.  The legacy thread takeover steps
+    # cannot verify those GitHub receipts, so hand the immutable snapshot to
+    # the production Runner directly.
+    if isinstance(facts.get("takeover_snapshot"), dict):
+        return {
+            "schema_version": "spec-runner-frontier/v1",
+            "state": "planned",
+            "categories": {
+                "adopted": [
+                    str(spec.get("key")) for spec in facts.get("specs", [])
+                    if isinstance(spec, dict) and str(spec.get("state")) not in {"completed", "blocked"}
+                ],
+                "backfilled": [],
+                "reverified": [
+                    str(spec.get("key")) for spec in facts.get("specs", [])
+                    if isinstance(spec, dict) and str(spec.get("state")) == "completed"
+                ],
+                "new_work": [], "remaining": [], "cleanup": [],
+            },
+            "steps": [],
+            "digest": digest({"report": report.get("digest"), "takeover_snapshot": facts["takeover_snapshot"]}),
+        }
     steps: list[dict[str, object]] = []
     categories = {"adopted": [], "backfilled": [], "reverified": [], "new_work": [], "remaining": [], "cleanup": []}
 

@@ -9,6 +9,7 @@ import pytest
 
 from spec_runner.models import RunContext, RunnerRequest, StageResult
 from spec_runner.production_runtime import ProductionPorts, ProductionWorkflow
+from spec_runner.plans import digest
 from spec_runner.runner import Runner
 from spec_runner.stage_progression import StageProgression
 from spec_runner.stage_executor import WorkflowStageExecutor, execute_stage
@@ -69,6 +70,77 @@ def test_production_workflow_owns_initial_planning_transition() -> None:
     assert observed["brief_digest"] == "brief-digest"
     assert observed["thread_id"] == "successor-thread"
     assert observed["run"] is run
+
+
+def test_production_workflow_materializes_takeover_snapshot(tmp_path: Path) -> None:
+    target_sha = "c" * 40
+    snapshot_body = {
+        "schema_version": "spec-runner-takeover-snapshot/v1",
+        "takeover_key": "takeover-1",
+        "input": {},
+        "graph": {
+            "umbrella": {"number": 1, "key": "ROOT", "title": "Root", "body": "Root"},
+            "specs": [{
+                "key": "S1", "number": 2, "title": "First SPEC", "body": "First SPEC body",
+                "blocked_by": [], "tickets": [{
+                    "key": "T1", "number": 3, "title": "First ticket", "body": "Ticket body",
+                    "blocked_by": [], "github_issue": {"key": "T1", "number": 3, "title": "First ticket", "body": "Ticket body", "marker": None},
+                }], "frontier": {"state": "tickets_adopted"},
+                "github_issue": {"key": "S1", "number": 2, "title": "First SPEC", "body": "First SPEC body", "marker": None},
+            }],
+            "local": {"target_sha": target_sha},
+        },
+        "blockers": [],
+    }
+    snapshot = {**snapshot_body, "digest": digest(snapshot_body)}
+    run = SimpleNamespace(run_id="run-1", backend_kind="codex_sdk")
+    observed: dict[str, object] = {}
+
+    class Store:
+        def complete_adopted_stage(self, *args, **kwargs):
+            observed["completion"] = {"args": args, "kwargs": kwargs}
+            return run
+
+        def production_completed_specs(self, run_id):
+            return set()
+
+        def complete_production_spec(self, **kwargs):
+            raise AssertionError("unfinished SPEC must not be recorded as complete")
+
+        def external_operation(self, operation_id):
+            return None
+
+    def write_json(path: Path, document: dict[str, object]) -> None:
+        path.write_text(json.dumps(document), encoding="utf-8")
+
+    ports = ProductionPorts(
+        artifact_directory=lambda root, config, run_id: tmp_path,
+        load_json=lambda path: json.loads(path.read_text(encoding="utf-8")),
+        execute_planning=lambda **kwargs: run,
+        write_json_atomic=write_json,
+        execute_tickets=lambda **kwargs: run,
+        execute_implementation=lambda **kwargs: {},
+        cleanup_workspace=lambda **kwargs: {},
+        close_ticket_plan=lambda **kwargs: {},
+    )
+    workflow = ProductionWorkflow(
+        context=RunContext(
+            control_root=tmp_path,
+            config=SimpleNamespace(model_name="fake", effort="low", github_repository=None),
+            brief="brief",
+            brief_digest="brief-digest",
+            run=run,
+            store=Store(),
+        ),
+        ports=ports,
+    )
+
+    result = workflow.adopt_takeover({"report": {"historical_facts": {"takeover_snapshot": snapshot}}})
+
+    assert result is run
+    assert observed["completion"]["kwargs"]["state"] == "planned"
+    assert (tmp_path / "spec-plan.json").is_file()
+    assert (tmp_path / "ticket-plan-S1.json").is_file()
 
 
 def test_production_workflow_owns_reviewed_delivery_transition() -> None:

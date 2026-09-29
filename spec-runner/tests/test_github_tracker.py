@@ -138,6 +138,47 @@ class GitHubTrackerTests(unittest.TestCase):
                 adapter.publish_draft(repository="acme/demo", draft=draft, operation_id="op-unknown", receipt_root=Path(temp))
         self.assertEqual(sum("POST" in call for call in calls), 1)
 
+    def test_close_adopted_preserves_markerless_issue_body_and_reconciles(self) -> None:
+        calls: list[list[str]] = []
+        issue = {
+            "number": 21,
+            "repository_url": "https://api.github.com/repos/acme/demo",
+            "title": "Existing ticket",
+            "body": "Existing body",
+            "state": "open",
+        }
+        operations: dict[str, dict[str, object]] = {}
+
+        def fake(arguments: list[str]) -> str:
+            calls.append(arguments)
+            if len(arguments) == 2 and arguments[1] == "repos/acme/demo/issues/21":
+                return json.dumps(issue)
+            if arguments[0:2] == ["api", "repos/acme/demo/issues/21"] and "PATCH" in arguments:
+                issue["state"] = "closed"
+                return json.dumps(issue)
+            raise AssertionError(arguments)
+
+        def intent(**kwargs: object) -> dict[str, object]:
+            operation_id = str(kwargs["operation_id"])
+            return {"state": "completed", "receipt": operations[operation_id]} if operation_id in operations else {}
+
+        def complete(*, operation_id: str, receipt: dict[str, object]) -> None:
+            operations[operation_id] = receipt
+
+        tracker = GitHubTracker(runner=fake)
+        identity = [{"key": "GH-21", "number": 21, "title": "Existing ticket", "body": "Existing body", "marker": None}]
+        first = tracker.close_adopted(
+            repository="acme/demo", issues=identity, operation_id="takeover:close",
+            operation_intent=intent, operation_completed=complete,
+        )
+        second = tracker.close_adopted(
+            repository="acme/demo", issues=identity, operation_id="takeover:close",
+            operation_intent=intent, operation_completed=complete,
+        )
+        self.assertTrue(first["complete"])
+        self.assertEqual(first, second)
+        self.assertEqual(sum("PATCH" in call for call in calls), 1)
+
     def test_http_failures_keep_auth_permission_not_found_rate_and_server_states_distinct(self) -> None:
         cases = {
             "HTTP 401": "github_auth",

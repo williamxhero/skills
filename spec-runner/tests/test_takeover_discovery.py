@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -155,6 +156,22 @@ class TakeoverDiscoveryTests(unittest.TestCase):
             self.assertEqual(plans["ticket_plans"]["S1"]["github_operation_id"], "op-s1")
             self.assertEqual([item["number"] for item in plans["ticket_plans"]["S1"]["github_issues"]], [2, 4])
 
+    def test_markerless_existing_issues_get_a_stable_adoption_operation(self) -> None:
+        fixture = GitHubFixture()
+        fixture.issues[2]["body"] = "First SPEC body"
+        fixture.issues[3]["body"] = "Second SPEC body"
+        fixture.issues[4]["body"] = "First ticket body"
+        fixture.issues[5]["body"] = "Second ticket body"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("spec_runner.takeover_discovery._local_git_snapshot", side_effect=lambda path, ref, timeout: _local_snapshot(path)):
+                result = self._discover(fixture, root)
+            plans = build_adopted_plans(result["snapshot"], model="gpt-test", effort="low", base_sha=BASE_SHA)
+            plan = plans["ticket_plans"]["GH-2"]
+            self.assertEqual(plan["github_operation_id"], "takeover:takeover-1:GH-2")
+            self.assertTrue(plan["github_adopted"])
+            self.assertEqual(plan["github_issues"][0]["marker"], None)
+
     def test_frontier_classification_requires_all_independent_completion_evidence(self) -> None:
         fixture = GitHubFixture()
         fixture.branches = [{"name": "codex/S1", "commit": {"sha": CANDIDATE_SHA}}]
@@ -187,7 +204,7 @@ class TakeoverDiscoveryTests(unittest.TestCase):
             (artifacts / "candidate-S1.json").write_text(json.dumps(_candidate_receipt()), encoding="utf-8")
             (artifacts / f"review-S1-{CANDIDATE_SHA[:12]}.json").write_text(json.dumps(_review_receipt()), encoding="utf-8")
             (artifacts / "delivery-S1.json").write_text(json.dumps(complete_delivery), encoding="utf-8")
-            with patch("spec_runner.takeover_discovery._local_git_snapshot", side_effect=lambda path, ref, timeout: _local_snapshot(path)):
+            with patch("spec_runner.takeover_discovery._local_git_snapshot", side_effect=lambda path, ref, timeout: _local_snapshot(path)), patch("spec_runner.takeover_discovery._target_contains_merge", return_value=True):
                 result = self._discover(fixture, root)
             frontiers = {item["key"]: item for item in result["spec_frontiers"]}
             self.assertEqual(frontiers["S1"]["state"], "completed")
@@ -214,6 +231,60 @@ class TakeoverDiscoveryTests(unittest.TestCase):
             frontier = next(item for item in result["spec_frontiers"] if item["key"] == "S1")
             self.assertEqual(frontier["state"], "candidate_ready")
             self.assertEqual(frontier["candidate_sha"], CANDIDATE_SHA)
+
+    def test_completed_spec_without_tickets_is_adopted_without_a_ticket_plan(self) -> None:
+        fixture = GitHubFixture()
+        fixture.children[2] = []
+        fixture.dependencies[5] = []
+        fixture.branches = [{"name": "codex/S1", "commit": {"sha": CANDIDATE_SHA}}]
+        fixture.pull_requests = [{
+            "number": 101, "html_url": "https://example.test/pr/101",
+            "body": json.dumps({"spec_key": "S1"}), "state": "closed", "merged": True,
+            "merge_commit_sha": MERGE_SHA,
+            "head": {"ref": "codex/S1", "sha": CANDIDATE_SHA},
+            "base": {"ref": "main", "repo": {"full_name": REPOSITORY}},
+        }]
+        complete = {
+            "schema_version": "spec-runner-production-delivery/v1", "spec_key": "S1",
+            "candidate": _candidate_receipt(), "review": _review_receipt(),
+            "checks": {"candidate_sha": CANDIDATE_SHA, "ready": True},
+            "merge": {"merged": True, "sha": MERGE_SHA},
+            "issue_closure": {"complete": True, "issues": [{"number": 2, "state": "closed"}]},
+            "cleanup": {"outcome": "cleaned"},
+        }
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            (artifacts / "candidate-S1.json").write_text(json.dumps(_candidate_receipt()), encoding="utf-8")
+            (artifacts / "review-S1-aaaaaaaaaaaa.json").write_text(json.dumps(_review_receipt()), encoding="utf-8")
+            (artifacts / "delivery-S1.json").write_text(json.dumps(complete), encoding="utf-8")
+            with patch("spec_runner.takeover_discovery._local_git_snapshot", side_effect=lambda path, ref, timeout: _local_snapshot(path)), patch("spec_runner.takeover_discovery._target_contains_merge", return_value=True):
+                result = self._discover(fixture, root)
+            plans = build_adopted_plans(result["snapshot"], model="gpt-test", effort="low", base_sha=BASE_SHA)
+            self.assertNotIn("S1", plans["ticket_plans"])
+            self.assertIn("S2", plans["ticket_plans"])
+            self.assertEqual(next(item for item in result["spec_frontiers"] if item["key"] == "S1")["state"], "completed")
+
+    def test_discovery_snapshot_change_blocks_takeover_inspection(self) -> None:
+        from spec_runner.takeover import inspect_takeover
+
+        with TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            repository.mkdir()
+            subprocess.run(["git", "init", "-q", str(repository)], check=True)
+            subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "init"], check=True)
+            inventory = {
+                "schema_version": "spec-runner-takeover-input/v1",
+                "repository_path": str(repository), "source_threads": [], "artifacts": [],
+                "facts": {
+                    "requirements": ["R1"],
+                    "takeover_snapshot": {"graph": {"local": {"target_sha": "0" * 40, "working_tree_digest": "old"}},},
+                },
+            }
+            report = inspect_takeover(inventory)
+            self.assertEqual(report["next_state"], "blocked")
+            self.assertEqual(report["unresolved"][0]["reason"], "discovery_snapshot_changed")
 
     def test_candidate_branch_drift_and_duplicate_spec_identity_block_discovery(self) -> None:
         fixture = GitHubFixture()
