@@ -30,6 +30,7 @@ from .takeover import (
     refresh_takeover_evidence,
     write_takeover_record,
 )
+from .takeover_discovery import discover_takeover, validate_snapshot
 from .tracker import publish_local, read_local
 from .store import Store
 from .workflow import control, doctor, drive, launch, resume, start, status
@@ -213,6 +214,7 @@ def _parser() -> argparse.ArgumentParser:
     apply_source = takeover_apply.add_mutually_exclusive_group(required=True)
     apply_source.add_argument("--file", type=Path)
     apply_source.add_argument("--thread-id")
+    apply_source.add_argument("--discovery", type=Path)
     takeover_apply.add_argument("--repository", type=Path)
     takeover_apply.add_argument("--scope", action="append", default=[])
     takeover_apply.add_argument("--handover-policy", choices=["require_stop_confirmation", "wait_then_takeover", "interrupt_then_takeover"], default="require_stop_confirmation")
@@ -222,6 +224,19 @@ def _parser() -> argparse.ArgumentParser:
     takeover_apply.add_argument("--config", type=Path)
     takeover_apply.add_argument("--launch-key")
     takeover_apply.add_argument("--git-timeout-seconds", type=float, default=120.0)
+    takeover_discover = takeover_sub.add_parser("discover", help="read and snapshot an existing GitHub delivery graph")
+    takeover_discover.add_argument("--repository", required=True)
+    takeover_discover.add_argument("--issue", required=True, type=int)
+    takeover_discover.add_argument("--workspace", required=True, type=Path)
+    takeover_discover.add_argument("--target-ref", required=True)
+    takeover_discover.add_argument("--control-root", required=True, type=Path)
+    takeover_discover.add_argument("--takeover-key", required=True)
+    takeover_discover.add_argument("--artifact-root", action="append", type=Path, default=[])
+    takeover_discover.add_argument("--required-check", action="append", default=[])
+    takeover_discover.add_argument("--thread-id")
+    takeover_discover.add_argument("--output", type=Path)
+    takeover_discover.add_argument("--github-timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
+    takeover_discover.add_argument("--git-timeout-seconds", type=float, default=120.0)
     diagnostic_parser = subparsers.add_parser("diagnose", help="validate fault and release evidence without LLM calls")
     diagnostic_sub = diagnostic_parser.add_subparsers(dest="diagnostic_command", required=True)
     for name in ("fault-matrix", "release-report"):
@@ -408,10 +423,52 @@ def main(argv: Sequence[str] | None = None) -> int:
                 git_timeout_seconds=arguments.git_timeout_seconds,
             )
         elif arguments.command == "takeover":
-            if arguments.takeover_command == "sdk-read":
+            if arguments.takeover_command == "discover":
+                result = discover_takeover(
+                    repository=arguments.repository,
+                    umbrella_issue=arguments.issue,
+                    workspace=arguments.workspace,
+                    target_ref=arguments.target_ref,
+                    control_root=arguments.control_root,
+                    takeover_key=arguments.takeover_key,
+                    artifact_roots=list(arguments.artifact_root),
+                    required_checks=list(arguments.required_check),
+                    source_thread_id=arguments.thread_id,
+                    github_timeout_seconds=arguments.github_timeout_seconds,
+                    git_timeout_seconds=arguments.git_timeout_seconds,
+                )
+                validate_snapshot(result["snapshot"])
+                if arguments.output:
+                    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+                    arguments.output.write_text(
+                        json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8", newline="\n",
+                    )
+                    result = {
+                        "output": str(arguments.output.resolve()),
+                        "digest": result["digest"],
+                        "snapshot": result["snapshot"],
+                        "inventory": result["inventory"],
+                        "spec_frontiers": result["spec_frontiers"],
+                        "blockers": result["blockers"],
+                    }
+            elif arguments.takeover_command == "sdk-read":
                 result = CodexAdapter().read_thread(thread_id=arguments.thread_id, repository_path=arguments.repository.resolve())
             else:
-                if arguments.file is not None:
+                if getattr(arguments, "discovery", None) is not None:
+                    discovered = plan_json(arguments.discovery)
+                    inventory = discovered.get("inventory")
+                    if not isinstance(inventory, dict):
+                        raise RunnerError("invalid_takeover_discovery", "discovery file has no inventory")
+                    snapshot = discovered.get("snapshot")
+                    validate_snapshot(snapshot if isinstance(snapshot, dict) else {})
+                    inventory = json.loads(json.dumps(inventory, ensure_ascii=False))
+                    facts = inventory.get("facts")
+                    if not isinstance(facts, dict):
+                        raise RunnerError("invalid_takeover_discovery", "discovery inventory has no facts")
+                    facts["discovery_snapshot"] = snapshot
+                    facts["discovery_snapshot_digest"] = snapshot.get("digest")
+                elif arguments.file is not None:
                     inventory = load_inventory(arguments.file)
                 else:
                     if arguments.repository is None:
@@ -453,6 +510,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         fresh_material = _source_material_digest(
                             fresh_facts.get("source_observation") if isinstance(fresh_facts, dict) else None
                         )
+                        stored_discovery_digest = (
+                            stored_facts.get("discovery_snapshot_digest")
+                            if isinstance(stored_facts, dict) else None
+                        )
+                        fresh_discovery_digest = (
+                            fresh_facts.get("discovery_snapshot_digest")
+                            if isinstance(fresh_facts, dict) else None
+                        )
                         fresh_snapshot = report.get("repository_snapshot")
                         stored_thread_ids = sorted(
                             str(item.get("thread_id")) for item in stored_report.get("adopted_threads", [])
@@ -472,6 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             and stored_snapshot.get("snapshot_digest") == fresh_snapshot.get("snapshot_digest")
                             and stored_thread_ids == fresh_thread_ids
                             and stored_material == fresh_material
+                            and stored_discovery_digest == fresh_discovery_digest
                         ):
                             report = stored_report
                             frontier = stored_frontier
@@ -634,6 +700,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # generic worker run merely to make status look active.
                     existing_transition = record.get("record", {}).get("last_transition") if isinstance(record.get("record"), dict) else None
                     existing_runner = existing_transition.get("payload", {}).get("runner") if isinstance(existing_transition, dict) and isinstance(existing_transition.get("payload"), dict) else None
+                    if arguments.discovery is not None and report.get("historical_facts", {}).get("takeover_snapshot"):
+                        snapshot = report["historical_facts"]["takeover_snapshot"]
+                        snapshot_digest = snapshot.get("digest") if isinstance(snapshot, dict) else None
+                        if not isinstance(snapshot_digest, str) or not snapshot_digest:
+                            raise RunnerError("invalid_takeover_discovery", "discovery snapshot has no durable digest")
+                        discovery_path = arguments.discovery.expanduser().resolve()
+                        if not discovery_path.is_file():
+                            raise RunnerError("invalid_takeover_discovery", "discovery snapshot file is missing")
+                        discovered = plan_json(discovery_path)
+                        if discovered.get("digest") != snapshot_digest:
+                            raise RunnerError("takeover_source_changed", "discovery file differs from the applied snapshot")
+                        result["discovery"] = {"path": str(discovery_path), "digest": snapshot_digest}
                     if action["state"] == "resume_delivery" and frontier["state"] == "planned" and isinstance(existing_runner, dict) and prior_state in {"execution_started", "completed"}:
                         result["runner"] = existing_runner
                     elif action["state"] == "resume_delivery" and frontier["state"] == "planned" and arguments.brief and arguments.config:

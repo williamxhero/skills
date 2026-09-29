@@ -66,12 +66,36 @@ class SpecRunnerHandoffTests(unittest.TestCase):
         self.assertNotIn("controller.py", command)
         self.assertNotIn("dispatch.py", command)
 
+    def test_github_takeover_runs_discover_then_apply(self) -> None:
+        module = load_handoff_module()
+        with patch.object(module.shutil, "which", return_value=None):
+            discover = module.takeover_discovery_command(
+                repository="owner/repo", issue=42, workspace=Path("repo"),
+                target_ref="refs/heads/main", control_root=Path("control"),
+                takeover_key="takeover-42", output=Path("snapshot.json"),
+                artifact_roots=[Path("artifacts")], required_checks=["ci"],
+            )
+            apply = module.takeover_apply_command(
+                discovery=Path("snapshot.json"), control_root=Path("control"),
+                takeover_key="takeover-42", brief=Path("brief.md"),
+                config=Path("runner.json"), launch_key="launch-42",
+            )
+        self.assertEqual(discover[2:4], ["spec_runner.cli", "takeover"])
+        self.assertIn("--issue", discover)
+        self.assertIn("42", discover)
+        self.assertIn("--required-check", discover)
+        self.assertEqual(apply[2:4], ["spec_runner.cli", "takeover"])
+        self.assertIn("--discovery", apply)
+        self.assertIn("snapshot.json", apply)
+
     def test_skill_routes_new_work_and_describes_legacy_as_compatibility(self) -> None:
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("scripts/spec_runner_handoff.py", text)
         self.assertIn("New requests enter the Runner directly", text)
         self.assertIn("Existing legacy run", text)
         self.assertIn("read-only `legacy inspect`", text)
+        self.assertIn("takeover discover", text)
+        self.assertIn("Issue-backed ticket graph skips to-tickets", text)
         self.assertNotIn("qualification_gate.py", text)
         self.assertNotIn("scripts/dispatch.py", text)
 

@@ -12,22 +12,40 @@ verification, delivery, and cleanup.
 
 ## New request or explicit takeover
 
-Use the installed Runner through `scripts/spec_runner_handoff.py`:
+Use the installed Runner through `scripts/spec_runner_handoff.py`.
+
+For a new requirement:
 
 ```powershell
 python scripts/spec_runner_handoff.py --brief <brief> --config <runner.json> `
   --control-root <runner-control-root> --launch-key <stable-key>
+```
+
+For an existing GitHub workflow:
+
+```powershell
+python scripts/spec_runner_handoff.py `
+  --takeover-repository <owner/name> --umbrella-issue <number> `
+  --workspace <repository-workspace> --target-ref <target-ref> `
+  --control-root <runner-control-root> --takeover-key <stable-key> `
+  --brief <brief> --config <runner.json> `
+  --artifact-root <authorized-artifact-root> --required-check <check-name>
+```
+
+The GitHub form runs `takeover discover`, stores one digest-bound snapshot,
+runs `takeover apply --discovery`, and continues through the same durable
+Runner queue. Read `references/takeover.md` when the request names an umbrella
+Issue, existing SPECs, tickets, branches, PRs, checks, or partial delivery.
 
 python scripts/spec_runner_handoff.py --takeover-file <inventory.json> `
   --control-root <runner-control-root> --takeover-key <stable-key>
 ```
 
-The handoff must pass a separate control root and a stable launch/takeover key.
-The wrapper may resolve either the installed `spec-runner` executable or the
-package module, but it must invoke only the Runner public CLI. Report the
-returned run identifier and use the Runner's `status`, `pause`, `resume`,
-`answer`, `cancel`, `takeover`, and diagnostic commands for subsequent
-interaction.
+The handoff passes a separate control root and a stable launch/takeover key. It
+resolves either the installed `spec-runner` executable or the package module and
+invokes only the Runner public CLI. Report the returned run identifier and use
+the Runner's `status`, `pause`, `resume`, `answer`, `cancel`, `takeover`, and
+diagnostic commands for subsequent interaction.
 
 New requests enter the Runner directly. The entry path does not run the legacy
 qualification gate, `dispatch.py`, `advance_runtime`, `managed_recovery`,
@@ -38,10 +56,19 @@ the run moving.
 
 Before handoff, collect only the inputs needed by the Runner contract: the
 requirement brief, repository/configuration scope, authorized artifact roots,
-and a stable key. Do not silently manufacture missing requirements or expand
-the authorized repository scope. If the Runner reports an input, authorization,
-or external-capability blocker, preserve that durable status and report the
-specific blocker.
+and a stable key. For takeover, also collect the GitHub repository, umbrella
+Issue, target workspace/ref, required checks, and source thread when one exists.
+Do not silently manufacture missing requirements or expand the authorized
+repository scope. Preserve any discovery blocker involving identity, relations,
+scope, ownership, remote state, or external capability and report its code.
+
+Takeover skip rules are durable: a complete requirement and SPEC graph skips
+Grill and to-spec; a complete Issue-backed ticket graph skips to-tickets; an
+existing candidate is reverified; review and checks are reused only when bound
+to that exact candidate; an already merged PR is read back before closure; and
+a completed SPEC is adopted only after delivery, target, Issue closure, and
+cleanup evidence all validate. The queue selects the first unfinished
+dependency-ready SPEC.
 
 ## Existing legacy run
 

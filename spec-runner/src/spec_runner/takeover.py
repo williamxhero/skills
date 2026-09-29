@@ -311,6 +311,22 @@ def inspect_takeover(inventory: dict[str, Any], *, git_timeout_seconds: float = 
     facts = inventory.get("facts", {})
     if not isinstance(facts, dict):
         raise RunnerError("invalid_takeover_inventory", "facts must be an object")
+    blockers = facts.get("blockers", [])
+    if blockers:
+        if not isinstance(blockers, list) or any(not isinstance(item, dict) for item in blockers):
+            raise RunnerError("invalid_takeover_inventory", "facts.blockers must be a list of objects")
+        unresolved.extend(blockers)
+    discovery_snapshot = facts.get("discovery_snapshot")
+    if discovery_snapshot is not None:
+        if not isinstance(discovery_snapshot, dict) or discovery_snapshot.get("schema_version") != "spec-runner-takeover-snapshot/v1":
+            raise RunnerError("invalid_takeover_inventory", "discovery snapshot is invalid")
+        claimed = discovery_snapshot.get("digest")
+        snapshot_body = dict(discovery_snapshot)
+        snapshot_body.pop("digest", None)
+        if not isinstance(claimed, str) or digest(snapshot_body) != claimed:
+            raise RunnerError("takeover_snapshot_digest_mismatch", "discovery snapshot digest does not match its contents")
+        if facts.get("discovery_snapshot_digest") not in {None, claimed}:
+            raise RunnerError("takeover_snapshot_identity_conflict", "inventory snapshot digest does not match its snapshot")
     if facts.get("scope_error"):
         unresolved.append({"reason": "scope_outside_authorization", "detail": str(facts["scope_error"])})
     # Historical claims are intentionally not converted into current verification.
@@ -332,6 +348,9 @@ def inspect_takeover(inventory: dict[str, Any], *, git_timeout_seconds: float = 
         "unresolved": unresolved,
         "artifacts": classifications,
         "historical_facts": facts,
+        "discovery_snapshot_digest": facts.get("discovery_snapshot_digest") or (
+            discovery_snapshot.get("digest") if isinstance(discovery_snapshot, dict) else None
+        ),
         "handover": {
             "policy": handover_policy,
             "state": "waiting_handover" if any(item.get("reason") == "waiting_handover" for item in unresolved) else ("blocked" if unresolved else "released"),
@@ -526,15 +545,27 @@ def plan_frontier(report: dict[str, Any]) -> dict[str, object]:
         for spec in specs:
             key = str(spec["key"])
             state = str(spec.get("state", "unknown"))
-            if state in {"completed", "merged", "delivered"}:
+            frontier = spec.get("frontier")
+            if isinstance(frontier, dict):
+                state = str(frontier.get("state", state))
+            complete_evidence = frontier.get("complete_evidence") if isinstance(frontier, dict) else None
+            if state == "completed" and isinstance(complete_evidence, dict) and complete_evidence.get("complete") is True:
+                categories["adopted"].append(key)
+                steps.append({"kind": "completed", "target": key, "status": "adopted", "reason": "discovery supplied complete delivery, closure, cleanup, and target readbacks"})
+            elif state == "completed":
                 categories["reverified"].append(key)
                 categories["remaining"].append(key)
-                steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "caller supplied completion claims require authoritative delivery readback"})
-            elif state in {"partial", "implementing", "candidate", "merged_without_evidence"}:
+                steps.append({"kind": "reconcile", "target": key, "status": "planned", "reason": "historical completed state has no complete evidence bundle; reverify before adoption"})
+            elif state in {"candidate_ready", "checks_pending", "review_pending", "merge_pending", "closure_pending"}:
                 categories["adopted"].append(key)
                 categories["reverified"].append(key)
                 categories["remaining"].append(key)
-                steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "partial or stale evidence requires current verification"})
+                steps.append({"kind": "reverify", "target": key, "status": "planned", "reason": "existing delivery evidence requires current verification before continuation"})
+            elif state in {"tickets_adopted", "spec_ready", "implementation_needed", "spec_discovered", "partial", "implementing", "candidate", "merged_without_evidence", "completed", "merged", "delivered"}:
+                categories["adopted"].append(key)
+                categories["reverified"].append(key)
+                categories["remaining"].append(key)
+                steps.append({"kind": "resume", "target": key, "status": "planned", "reason": "continue from the discovered SPEC frontier"})
             elif state in {"not_started", "missing", "planned"}:
                 categories["new_work"].append(key)
                 categories["remaining"].append(key)
