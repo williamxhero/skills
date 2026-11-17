@@ -47,7 +47,7 @@ CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Ma
 依据只读研究：CC Switch 源码 `a1216b7e359466be98f3c783cc290e7040de26d4`，不是对当前运行二进制版本的保证。研究记录为执行包 `research/findings.md`；关键实现位于 `src-tauri/src/services/skill.rs` 的 install／update_skill／install_from_zip／import_from_apps／copy_dir_recursive，UI 在 UnifiedSkillsPanel／useSkills。部署前重查实际版本。
 
 1. **仓库路径**：CC Switch UI 仓库管理添加公开 GitHub owner/name/branch，发现并安装三个选定卡片到 Pi；已具仓库 metadata 的卡片使用 update／update-all。下载是 branch archive，不能声称任意 SHA 可直接安装。审查后固定发布分支内容，记录安装前后实际 hash／commit；branch 不是不可变 pin。已有同名本地卡片不能假定自动转成仓库来源，先核对冲突和支持的替换流程。
-2. **ZIP 路径**：UI ZIP picker 支持包含技能根的发布包；每个选定根只复制自己的后代，兄弟依赖必须分别交付。ZIP 安装记录为 local 来源，无仓库 metadata；既有注册目录冲突会跳过，**重复 ZIP 导入不是原地更新**。需替换时，在明确授权、独立确认可恢复备份后，通过支持的卸载→ZIP 安装路径处理，不直接覆盖管理源。未经演示不保证私有 GitHub 下载认证；本仓库目前 Public，但隔离私有验收仓库的访问仍须另证。
+2. **ZIP 路径**：UI ZIP picker 支持包含技能根的发布包；每个选定根只复制自己的后代，兄弟依赖必须分别交付。ZIP 安装记录为 local 来源，无仓库 metadata；既有注册目录冲突会跳过，**重复 ZIP 导入不是原地更新**。需替换时，在明确授权、独立确认可恢复备份后，通过支持的卸载→ZIP 安装路径处理，不直接覆盖管理源。未经演示不保证私有 GitHub 下载认证；本仓库目前 Public；当前 GitHub 验收经用户同意改用本仓库明确标记的 TEST ONLY Issues，不再要求创建私有 sandbox，这也不是 CC Switch 下载／安装认证证明。
 3. **导入现有客户端技能**：scan/import unmanaged app skills 扫描已知 app／统一目录，不是任意本地仓库路径导入 API。不得为触发扫描而擅自把文件放进客户端或替换链接。deeplink 添加仓库配置也不等于安装。Tauri IPC 命令不是一个已证明存在的独立 CLI。
 4. **备份／回滚**：保存三个目录及 metadata／投影的可恢复基线和归属证据；update 的内置备份为 best effort，须独立确认备份存在且内容完整。应用提供 restore_skill_backup；恢复指定备份或经授权重装兼容旧组合后，重查管理源、客户端实际目标／内容、hash 与依赖，再 `/reload` 并实际执行入口。源码研究不是已通过的恢复演练。
 
@@ -57,4 +57,6 @@ CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Ma
 
 先比较 CC Switch 当前内容与所选源码；存在管理侧修改就审查合并，不盲目双向覆盖。更新上游时重核原始清单／许可证、适配及全部参考闭包，并刷新受影响模型／平台证据。
 
-见 [验收矩阵](acceptance.md) 和 [测试边界](../tests/README.md)。矩阵只索引证据，不成为任务状态权威；Issue 是目标／验收权威，tickets／原生依赖是任务图。STATIC、模拟 tracker、真实 Pi／模型、真实 GitHub、独立审查、CC Switch 导入及远端同步分别报告。仍缺 sandbox 授权、真实平台或部署证据时保留 pending／blocked，不宣称全部交付，不关闭 Issue。
+见 [验收矩阵](acceptance.md) 和 [测试边界](../tests/README.md)。矩阵只索引证据，不成为任务状态权威；Issue 是目标／验收权威，tickets／原生依赖是任务图。STATIC、模拟 tracker、真实 Pi／模型、真实 GitHub、独立审查、CC Switch 导入及远端同步分别报告。当前 `10046931` 候选已有真实 GitHub 单／多 SPEC、原生图回读及无写入重复复用；用户 `同意` 的[源头调整记录](https://github.com/williamxhero/skills/issues/1#issuecomment-6952539322)将测试目标改为本仓库四个明确标记的 owned TEST ONLY Issues，历史发布快照不改。另有真实正文编辑成功、明确注入响应丢失后的源头恢复，不是实际 GitHub 拒绝／网络写失败。正式 #1–5 正文／状态／标签／图和隔离 fixture 内容未变；测试 Issues OPEN／未实施，当前开发 SPEC 仍只有 #1。
+
+整体仍 NOT DONE／B9：原生关系拒绝／未知关系写入、遗留实施票据复用、完整候选实施交付／WIP、有收益架构／关闭前收益及连续 live 新事实等验收仍缺；管理式备份／安装／更新／投影／同名冲突／发现／reload／回滚未授权、未实测。此前独立源码审查及窄证据文档复核／集成已完成，本次新 GitHub 证据文档待外层窄复核／集成。显式 staging 不是安装；没有主干合并、push、清理、远端一致或关闭证据，不宣称全部交付，不关闭 Issue。
