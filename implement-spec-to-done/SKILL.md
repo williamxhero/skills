@@ -1,78 +1,107 @@
 ---
 name: implement-spec-to-done
-description: 按 SPEC 的完成方法执行从拆票到交付关闭的全流程。用于实施单个 SPEC 或总 SPEC；子 SPEC 严格依次处理，每项交付并关闭 Issue 后，才对下一项拆票和开发。
+description: "实施单个或总 SPEC：唯一当前 SPEC 拆票前必做 grilling，隔离 TDD／集成后简化与条件经验捕获，再独立审查、新鲜验收、主干交付、远端核验和关闭；前项关闭前不拆下一 SPEC。"
 ---
 
 # Implement Spec To Done
 
-**逐个完成。** 总 SPEC 先读需求，子 SPEC 按顺序完成全部交付并关闭，再处理下一项。单个 SPEC 直接进入同一个完成闭环。
+**逐个交付。** 全程只有一个 **CURRENT SPEC／当前 SPEC**；同一 SPEC 内按 ticket 图并行，跨 SPEC 不并行。下一 SPEC 连拆票也等待当前 SPEC 完整交付并回读 `CLOSED`；批准全部拆分不解除门禁。只在用户已授权实施或明确授权外层继续时进入；SPEC 发布不是开发授权。
 
-## 顺序门禁
+每次进入先完整读取实际安装兄弟入口内的[共享工程规则](../to-spec-to-done/references/engineering-quality.md)和[自动推荐 grilling 适配](../to-spec-to-done/references/auto-grilling.md)。三入口是配套 bundle，CC Switch 必须同时安装兼容的 `to-spec-to-done`；只复制本目录不会带来兄弟资源，缺失即 blocked，不生成规则副本或猜全局路径。依共享规则从实际加载入口目录定位兄弟技能；显式提供 skill root 才使用该根。
 
-全程只有一个**当前 SPEC**。它的范围包括需求分析、拆票、编码、测试、审查和交付；所有子 Agent 都受这一范围约束。同一 SPEC 内可按 ticket 依赖并行，多个 SPEC 不能同时开始。
+技能调用是读取真实 SKILL.md／必需参考并执行，不是记忆流程或虚构 Skill API；此环境的 `disable-model-invocation` 不阻止委托，不修改上游。专项资源每次 **adapter 先于 instructions** 加载，适配贯穿其所有参考。真实角色与命令映射读 [Pi 执行适配](references/pi-execution.md)。记录实际版本／hash、路径、模式与差异；源码检查不是运行成功。
 
-下一 SPEC 的拆票也要等当前 SPEC 交付并关闭。“先把所有 SPEC 拆票，再逐个开发”不符合本技能。用户批准所有拆票，只免除逐次确认，不解除顺序门禁。
+## B1 读取总需求，选唯一当前 SPEC
 
-## 1. 阅读总需求，确定当前 SPEC
+源头回读完整正文、评论、父子关系、阻塞依赖、已有完成记录及交付提交；读取项目指令、tracker／标签规范、相关实现／测试、权威词汇／ADR 和相关经验。总 SPEC 只整理子 SPEC 身份、顺序和前置条件，不提前拆后续票；按明确约定／依赖选首个未交付子 SPEC，不按编号猜顺序。单 SPEC 直接进入，不制造总索引。
 
-- 读取用户指定 SPEC 的完整正文、评论、项目指令和 tracker 约定。
-- 如果是总 SPEC，先理解总目标、跨子 SPEC 验收和交付要求，再核对 todo list、原生父子关系及依赖，确定执行顺序。按明确约定和阻塞关系排序，不按 Issue 编号猜测。
-- 此时只整理子 SPEC 的标识、顺序和前置条件，选出第一个尚未完成的子 SPEC 作为当前 SPEC。独立集成或总验收工作保留到子 SPEC 全部完成之后。
-- 单个 SPEC 直接设为当前 SPEC，无需另建总 SPEC。
+恢复时先核对实际 tracker、分支、worktrees、commits、remote 及外部写入结果，再重试；执行记录只存阶段、指针、版本与证据，不建立第二份任务图或 scheduler。提前存在的后续 tickets 保留未启动。完成条件：当前 SPEC 唯一，所有前置 SPEC 已有完整交付和关闭证据；关系冲突、未知结果先查清，不能跳到下一项。
 
-完成条件：原始需求和顺序清楚，当前 SPEC 唯一，前置 SPEC 的交付证据及关闭状态已核实。顺序冲突或必需关系缺失时，先处理该问题。
+## B2 提取完整完成方法，能力预检
 
-## 2. 读取当前 SPEC 的完成方法
+完整读取当前 SPEC 和评论的验收、公开测试接口、完成方法／执行与交付原文。记录每条要求→实际操作→证据→关闭条件，含范围／非目标、必需技能及触发参考、branch／review baseline、合并／清理／push／tracker 要求。具体顺序按 SPEC，不用默认流程缩减契约。
 
-完整读取当前 SPEC 正文及评论，提取其“完成方法”“执行与交付”、验收、必需技能、分支、合并、清理、推送和关闭要求。把每条要求记入执行记录，保留原文来源和规定顺序。
+在受阻写入开始前预检并留下结果：
 
-本技能负责顺序和完成门禁，所调用技能负责阶段操作。向子技能或子 Agent 一并传入当前 SPEC 的交付及关闭门禁，约束其自动关闭和清理动作。子技能只做到“代码写好”“集成分支就绪”或“PR 待审”，不能缩减 SPEC 规定的交付范围。
+- **技能**：共享兄弟资源；实际 `grilling`、`to-tickets`、`implement-spec`、`tdd`（含 tests.md／mocking.md）、`code-review` 的正文与必需参考可读。设计触发时预检 codebase-design／design-an-interface／domain-modeling，冲突时预检 resolving-merge-conflicts，以及 SPEC 额外依赖。
+- **专项**：本目录 verification、simplify、compound 的 adapter／instructions／provenance／LICENSE 与所选分支资产可读、hash 对应版本。Full capture 的 Python／Bash 命令及路径按 Pi 执行适配实际探测；未触发不运行 capture，但不能把 source-only 当运行能力。
+- **平台**：tracker 身份／权限、原生关系读写、Git 工作树／分支和正常 remote 交付能力，明确操作授权；读操作不能证明写权限。不可做安全探针的外部写入依授权并在实际阶段回读，不假造成功。
+- **角色**：真实新上下文 implementer／merger／Standards／Spec／事实调查，以及条件触发专项 reviewer、Related Docs Finder、historian、grounding 能按各自工作目录／工具边界运行。按 Pi 执行适配做只读启动探针；启动故障不算委托，mandatory final review 不能退成自审。
 
-执行记录至少包含：当前 SPEC、当前阶段、适用技能及来源、ticket 图、验收证据、交付提交和 tracker 状态。恢复执行时核对这些记录与实际状态。
+完成条件：每项要求有可核验操作，必需能力／授权具备；否则 blocked，记录具体阶段、已查结果、保留成果和最小继续条件，不启动受阻写入。
 
-完成条件：当前 SPEC 的全部要求都有对应操作和可核验完成条件。
+## B3 每个当前 SPEC 拆票前必执行 grilling
 
-## 3. 执行当前 SPEC 的 `/to-tickets`
+完整读取真实 `grilling/SKILL.md` 并按已加载自动推荐适配执行一次实施级复核；即使简单、信息完整、已有 tickets 或规格级 grilling 也必跑，不对每个 ticket 重复访谈。复用已定决定和已授权公开 seam，集中核对现状、前序交付引起的设计漂移、状态／接口、迁移、失败恢复和实施风险。
 
-加载并完整执行已安装的 [to-tickets](../to-tickets/SKILL.md)，以当前 SPEC 为输入：读取上下文，拆出可独立验证的纵向 tickets，明确阻塞依赖，按适用的确认要求发布并回读。
+每轮按 design tree 的 frontier：前置成立→调查事实→推荐→按既有授权自动采用本轮全部推荐→重算依赖。无机械轮数／问题数，不重复等常规确认；不可验证事实仍未知，自动推荐不扩权。模块／接口取舍按共享规则触发设计技能。范围、验收或 seam 有实质变化，先记录并按权限修订 SPEC／取得必要授权。完成条件：实施决定收敛，关键未知有处理，已有测试接口沿用；否则继续调查或如实 blocked。
 
-- 用户已有全量拆票批准或自动决定拆分的授权时，沿用授权直接发布。
-- GitHub tickets 挂到当前 SPEC 的原生父子关系中，并使用原生阻塞关系；正文链接不能代替系统关系。按项目约定处理编码和标签，发布后核对正文与关系。
-- 当前 SPEC 已有 tickets 时，仍执行本阶段：核验需求覆盖、验收和依赖，复用合格项并补齐缺项，避免重复建票。
-- 接手时已有提前建立的后续 tickets，将其保留为未启动；轮到该 SPEC 后再核验，不能借既有票据提前实施。
+## B4 调用原 to-tickets，核验复用
 
-仅写草稿、把子 SPEC 当作实现 ticket、在编码后补票，均不满足此前置条件。
+读取并执行实际兄弟 `to-tickets/SKILL.md`，只传当前 SPEC、既有决定／seam、交付门禁和自动推荐授权。沿其原模板拆可独立验证的 tracer-bullet 纵向 slices，声明阻塞 edges；不复制模板或另设计划主持器。沿用已授权的建议拆分，不重复常规批准；没有适用授权先取得它。
 
-完成条件：当前 SPEC 的 ticket 集合已获适用授权、实际发布并回读，需求覆盖与原生关系完整，存在可执行的依赖前沿。达到条件前不开始编码。
+创建前搜索并回读既有 tickets，逐项核验需求覆盖、验收、身份和依赖，**复用**合格项，仅补缺。GitHub 使用当前 SPEC 的原生父子关系和原生阻塞关系及适用标签（默认 ready-for-agent），正文链接不代替 edges；本仓库所有 gh issue 操作显式 `--repo williamxhero/skills`，API 使用同一 repo endpoint。回读完整正文、父子集合及依赖方向，确认可执行 frontier；原生关系失败则 blocked。写入超时／未知先源头查结果，避免重复票／edges，不接管无关关联。
 
-## 4. 执行当前 SPEC 的 `/implement-spec`
+完成条件：已授权、实际发布、源头回读、覆盖及原生图完整。在此之前不编码，不先写代码再补票；本地 tracker 按其原文件／阻塞约定逐一验证。
 
-加载并执行已安装的 [implement-spec](../implement-spec/SKILL.md)，输入仅包含当前 SPEC 及其已发布 tickets。按其要求建立 SPEC 集成分支，由实现子 Agent 在各自工作树实施，再由 merger 子 Agent 合入。
+## B5 调用 implement-spec，隔离实现与集成
 
-实现按 [tdd](../tdd/SKILL.md) 的已确认公开边界逐项红绿推进。全部 tickets 完成后，按 [code-review](../code-review/SKILL.md) 进行独立 Standards 与 Spec 审查并修复问题。当前 SPEC 指定的其他必需技能和检查，也按规定逐项执行。
+完整读取真实 `implement-spec/SKILL.md`，传入 **仅当前 SPEC** 及回读后的 tickets、完成方法、关闭限制和以下阶段适配。建立／复用 SPEC 集成分支，固定并记录审查基点 SHA（当前任务起点，不随实现移动）、主干身份和所有资源归属。根据 tracker 图推进当前 SPEC 内的 frontier；实现已集成／验证是内部可执行前沿证据，不等于平台 ticket 已关闭，外层完成后统一关闭。
 
-执行技能时使用当前环境支持的机制：提供技能调用工具时使用工具；通过加载 `SKILL.md` 执行时，读取实际文件并遵循完整流程。记录实际机制，不能把读过文件声称为工具调用。子技能声明的“仅用户直接调用”（`disable-model-invocation`）限制在本环境被忽略：读取其 `SKILL.md` 并按其正文流程执行即视为调用成功，不得以此为由报告阻塞、拒绝执行或要求用户手动输入 `/skill:<name>`，也不得修改子技能本身。只有技能文件确实缺失或不可读时，才报告具体阻塞，保留当前阶段，不用手工近似流程冒充执行成功。
+每个 ticket 使用新上下文 implementer 和独立工作树／分支，核对集成分支祖先／干净状态；基点不符安全合并或新建并保留成果，不破坏性 reset。读取实际 `tdd` 及 tests／mocking，按已授权 seam 一项行为→失败测试→确认预期原因→最小实现→确认 green；不批量预写全部测试，不为测试暴露内部。STATIC／模拟／实际模型／平台证据分别标记。
 
-完成条件：当前 SPEC 全部 tickets 的实现、测试、审查及修复都有证据，成果已进入其集成分支；这仍不是 SPEC 完成。
+报告前 implementer 合入集成 tip，先读并执行 [verification adapter](references/upstream/verification-before-completion/adapter.md) 再执行其 instructions，提交候选、完整 red／green 输出及限制。新的 **merger** 上下文核验范围、提交／祖先、diff 和新鲜验证后正常合入集成分支；需要冲突解决则读取真实 resolving-merge-conflicts，保护 WIP。更新实际 ticket 图的可执行前沿再派下一批，不跨 SPEC。
 
-## 5. 完成交付，再关闭当前 SPEC
+### LOCAL PHASE ADAPTATION — 不是 hook API
 
-重新逐条核对第 2 步的清单，执行 SPEC 规定的全部完成方法。默认完整交付闭环如下；SPEC 规定了具体顺序或额外步骤时，逐条遵守：
+显式传递本地执行顺序：保留 implement-spec 原步骤 1–6 的任务图、集成分支、fresh implementer／tdd／merger；全部当前 tickets 集成并稳定后，**插入 B6 简化 + B7 条件经验捕获，再进入原第 7 步 code-review（即 B8）**。原第 7 步只在此最终位置调用一次，不先跑一个旧候选的“最终审查”。修复按 B8 刷新受影响证据／必要复审，而非循环整个主持流程。
 
-1. 运行全部必需验收、真实验证和必要回归，核对产物与报告，修复失败。模拟、真实、未运行分别记录；必需项未运行即未完成。
-2. 完成独立审查及修复，确认每个 ticket 成果已纳入 SPEC 集成分支。
-3. 按约定合入主干并验证。确认成果已纳入主干、工作树无未保存改动，保留必要证据后，清理本次临时工作树和已合并分支。按要求 push，并核验本地与远端提交一致。
-4. 将 tickets、提交、验收、审查、主干、清理、远端核验及限制写入 tracker 完成记录，并回读核对。
-5. 关闭已完成 tickets，关闭当前 SPEC Issue，回读确认它确实为完成后的 `CLOSED` 状态；更新总 SPEC 对应 todo 项，使正文和系统状态一致。
+**原第 8–9 步的 ready／ticket close／报告及工作树 cleanup 全部暂缓**，由外层 B9 验收、B10 完整交付、B11 完成记录回读与关闭门禁释放；不能委托原技能的自动关闭／清理绕过。draft PR 依原技能可在首次合入后按授权创建，但暂不用可自动关闭 Issue 的 closing keywords／平台设置；推送、PR ready 或自动合并均不能提前释放关闭。无真实 hook 注册，不改 Pi 核心、不新增 scheduler state authority。
 
-失败时留在当前 SPEC 修复或报告阻塞，保留未交付成果。Issue 关闭发生在交付证据成立之后；误关、取消关闭或 PR 自动关闭不能替代验收，发现尚未完成时恢复真实状态。没有对应 Issue 的本地 SPEC，写入可核验的完成记录后才推进。
+完成条件：全部当前 tickets 已合入集成分支、基线验证稳定，范围与证据明确；此时仍未完成 SPEC，不关 tickets、不清理必要工作树。
 
-完成条件：当前 SPEC 原文要求全部满足，成果按约定交付，完成记录回读一致，tickets 和当前 SPEC 的关闭状态已确认。
+## B6 稳定后调用 ce-simplify-code mode:pipeline
 
-## 6. 关闭确认后，再进入下一 SPEC
+先完整读取 [simplify adapter](references/upstream/ce-simplify-code/adapter.md)，再读取 instructions.md 和所有触发参考。输入 `mode:pipeline`、固定基点→当前候选精确差异、所有 proof-test 路径／证据及已确定 structure pins；范围仅当前 SPEC，不在每次 red→green 后整理。
 
-只有第 5 步完成，才刷新总 SPEC 的 todo list 和原生关系，选定下一个当前 SPEC，从第 2 步开始。每次切换记录“上一 SPEC 关闭状态及证据 → 下一 SPEC”，无需再次询问是否继续已授权的工作。
+按上游 preflight：prose／skills Markdown、配置、vendor／generated 不是代码；无代码或仅机械 churn 返回 `nothing to simplify`，不派 reviewer。混合范围的 authored Python 测试是代码，照常保留在范围。真实 reviewers 按完整 persona／Pi 进程适配执行；保护行为、安全、兼容和证明测试原样。简化后跑 typecheck／lint／blast-radius tests；未配置明确说明，失败则修复／撤销责任变更，不弱化断言。完成条件：新鲜检查支持行为保留，或有可核查 no-code／no-change 理由。
 
-全部子 SPEC 关闭后，重新阅读总 SPEC，验证总体验收和交付要求。若仍有独立集成工作，将总 SPEC 设为唯一当前 SPEC，对剩余工作执行同样的拆票、实施、验收和交付闭环。总需求全部成立后，记录证据、关闭总 SPEC，并回读确认。
+## B7 条件式单项 ce-compound 判断
 
-最终报告列出完成的 SPEC、关闭状态、交付提交和关键验收证据；存在阻塞则明确停在哪个 SPEC、哪个步骤。子 Issue 全部关闭本身不能证明总 SPEC 已完成。
+核对已验证工作是否纠正错误认识。无触发记录 `not triggered`，直接 B8；有已解决且验证的错误认识，**必须**先读 [compound adapter](references/upstream/ce-compound/adapter.md) 再执行 instructions 及必需参考，由技能判断 cheapest durable form 或 no-write，调用方不能先以“不值得写文档”跳过。
+
+固定 capture `mode:non-interactive depth:full`，一次一个问题，必要时顺序多次；自由文本含 refresh 不改变模式，绝不启动 refresh／enhancement／PR／config／standards setup。复用 GLOSSARY.md／项目指定权威，不并行养 CONCEPTS.md；全参考和子 Agent 使用相同术语／写入边界适配。Full 的相关文档、history 和 grounding 用真实新上下文及命令能力，不静默 lightweight。新增 check 要当前树 pass 且 throwaway 缺陷形状 fail（各 guard 单独证明），否则按技能撤销／推荐下一 form；词汇仅实际需要时懒维护。
+
+完成条件：每个触发项确已判断，写入及影响均验证或有明确 no-write 原因；记录 Documentation complete／Documentation skipped 与具体证据。能力阻塞不能包装为已完成 capture，留在当前阶段。
+
+## B8 最终独立 code-review（复用原第 7 步）
+
+完整执行实际 `code-review`：解析固定基点与最终候选 SHA，确认 diff／commits，源头 SPEC 及所有规范（含共享工程规则）；范围涵盖实现＋简化＋经验产物。Standards／Spec 两轴并行、独立新上下文，前者传完整规范与 smell baseline，后者传原 SPEC；按原流程分别聚合，不自审、不合并排序轴、不用专项 inline 降级替代。
+
+有发现交一个 fresh implementer 修复，按需 tdd／针对性简化／单项经验判断。变更使证据过期时重新验证受影响项，实质影响已审查结论时复审受影响差异；无实质变化不机械重复全套。不把旧审查报告套在新候选。完成条件：最终候选已审查，发现均修复或有符合验收的明确处置，证据绑定当前 tree／commit。
+
+## B9 verification-before-completion 最终验收
+
+先读 verification adapter 再执行 instructions；逐项运行当前 SPEC 的必需验收、真实验证、构建、检查和必要回归，读取完整输出／退出码并绑定候选与环境。架构 SPEC 的收益前后对照、兼容／迁移／回退也在关闭前验收。STATIC、模拟、真实 Pi／模型、平台回读、未运行分开记录；测试通过不推断全部需求满足。
+
+完成条件：每一必需验收均有新鲜对应证据；未运行／失败是 pending 或 blocked，保留当前 SPEC，不推进交付关闭。
+
+## B10 完整 Git 交付
+
+按 SPEC 约定及权限，将集成成果正常合入主干，运行合并后验证；主干有新变更／冲突使候选结论过期则回到受影响验证／审查。核对每个待清理 branch 成果确实在主干、对应工作树干净且属于本任务，保留必要日志和恢复指针后才清理本次 worktree／已合并 branch。禁止丢 WIP、强推、强删未合并分支或处理其他线程资源，不默认调用全项目 commit-n-push。
+
+按约定正常 push 主干，源头回读远端 ref，核对本地主干／tracking ref／真实远端 SHA 一致（如 git rev-parse、git ls-remote 对应 ref），不能只信 push 响应。清理／push 任一失败留住实际未交付状态，不关闭。
+
+完成条件：主干集成、合并后验证、安全清理、push 和远端一致均有证据；这是 Git 交付，不代表 CC Switch 安装。CC Switch 仍是唯一安装／分发管理器，另需授权支持的导入／更新及实际验证，不改 SSOT／DB／config／客户端 links 绕过它。
+
+## B11 完成记录回读，然后关闭
+
+把当前 SPEC 的 tickets、提交、验收／审查、主干、清理、远端、适配版本及限制写入真实 tracker 完成记录，回读确认正文和证据一致。完整交付证据成立且记录回读通过后，先关闭 tickets，再关闭当前 SPEC，回读 `CLOSED`，最后更新总 SPEC todo 使正文／系统状态一致。本地 SPEC 写可核验完成记录才可推进。
+
+误关／取消关闭／PR 自动关闭不是验收；发现未交付应按授权恢复真实状态并调查，不能借关闭结果跳过 B9–B10。外部写入结果未知先查源头，不盲重试。完成条件：全部原文要求满足、平台与证据一致；缺权限或失败保留成果，报告最小继续条件，不称 Done。
+
+## B12 关闭确认后才选下一 SPEC
+
+仅 B11 成立才刷新依赖并切换唯一当前 SPEC，记录“前项交付与 CLOSED 证据→下一项”，从 B2 继续，不重复请求常规继续许可。第一项失败／未关闭，第二项不拆票、不编码。
+
+全部子 SPEC 关闭后重新核对总体验收；有独立集成工作，将总 SPEC 作为唯一当前 SPEC，走相同闭环；否则核对总交付后写总记录、关闭总 SPEC 并回读。报告真实完成／blocked 的 SPEC、阶段、提交与证据；子票全关不能单独证明总需求完成。不自动递归架构扫描或开启下一轮重构。
