@@ -4,7 +4,7 @@
 
 This repository versions three To-Done skills. CC Switch remains the only installation and distribution manager. Read `docs/source-management.md` before editing or importing skill sources. Do not rewrite CC Switch configuration, replace client symlinks, or deploy a draft merely because a repository file exists.
 
-The two imported skills are exact historical exports. The architecture-to-done skill is an uninstalled draft until the SPEC is implemented and verified. Treat planned behavior as planned, not as a passing implementation.
+The initial two exports and third-entry draft are historical facts preserved in `docs/source-snapshot.json` and the originating SPEC snapshot; do not rewrite either. Current three-entry sources implement a reviewable candidate, not a deployed or fully accepted release. Keep compatible sibling common resources and pinned specialist assets/licenses together as documented in source management; do not create copied templates, another scheduler or vocabulary authority. The GitHub source repository is Public; root licensing still requires the user's decision.
 
 ## Agent skills
 
@@ -22,4 +22,4 @@ Read any existing relevant glossary or ADR before changing terminology or decisi
 
 ## Change and verification boundaries
 
-Read the originating SPEC and its completion method before implementation. Do not use issue publication as authorization to execute the SPEC. Keep draft, static validation, actual Pi execution, independent review, CC Switch import and remote synchronization distinct in reports. Never claim runtime tests passed from Markdown or link checks alone.
+Read the originating SPEC and its completion method before implementation. Do not use issue publication as authorization to execute the SPEC. Keep draft, static validation, actual Pi execution, independent review, CC Switch import and remote synchronization distinct in reports. Never claim runtime tests passed from Markdown or link checks alone. For acceptance or handoff, update `docs/acceptance.md` with version-bound evidence and unresolved requirements; it is an evidence index, not a second task tracker. Keep raw model logs outside the public repository and redact before publication.
