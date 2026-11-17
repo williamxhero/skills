@@ -1,0 +1,353 @@
+{
+  "format": 1,
+  "sources": {
+    "verification-before-completion": {
+      "repository": "https://github.com/obra/superpowers",
+      "commit": "22f0b463e7a5e579904dd6211a520321035526f7",
+      "source_directory": "skills/verification-before-completion",
+      "license_source": "LICENSE",
+      "license_sha256": "A37E0E9697144819E1D965176AC4AE5BC3FA02D11E7812036BBCADF6DAFE2400",
+      "modifications": [
+        "SKILL.md renamed to instructions.md; bytes unchanged"
+      ],
+      "files": [
+        {
+          "source_path": "SKILL.md",
+          "bundled_path": "instructions.md",
+          "bytes": 3646,
+          "sha256": "2BEFE7FC55BCADAA3D97DD9E8EFEB633D2561C0EBE74C5A8B17C4D9E7E4520B3"
+        }
+      ]
+    },
+    "ce-simplify-code": {
+      "repository": "https://github.com/EveryInc/compound-engineering-plugin",
+      "commit": "a3d6a8ee41a404b74391ee278423b52890b8920d",
+      "source_directory": "skills/ce-simplify-code",
+      "license_source": "LICENSE",
+      "license_sha256": "61D89DE7646EFFDABA2D0A4AB7BD0EBA60B4094B83EFE5BC73C7940E43E93FC6",
+      "modifications": [
+        "SKILL.md renamed to instructions.md; bytes unchanged"
+      ],
+      "files": [
+        {
+          "source_path": "SKILL.md",
+          "bundled_path": "instructions.md",
+          "bytes": 7808,
+          "sha256": "391B434B9DD42C10E2FF7D56828BD40B9FFF4F412237ECAB7EBCCD41AF49A7CA"
+        },
+        {
+          "source_path": "references/reviewer-dispatch.md",
+          "bundled_path": "references/reviewer-dispatch.md",
+          "bytes": 2941,
+          "sha256": "0C7A883811552BCC0FEAB29B7D4B845A408750A0448F332215D5868FBAAC19C3"
+        },
+        {
+          "source_path": "references/single-pass.md",
+          "bundled_path": "references/single-pass.md",
+          "bytes": 1502,
+          "sha256": "0FB05D3C339F3740BA0BC9485304A770DB9C57669D1BB205A76B6FB2148F5265"
+        },
+        {
+          "source_path": "references/standalone-report.md",
+          "bundled_path": "references/standalone-report.md",
+          "bytes": 3029,
+          "sha256": "E9A3B6A0EEB8BB131C2B09E0D7B6F61B1B164C9A564E64925323E6CE62EA20E0"
+        },
+        {
+          "source_path": "references/structural-pass.md",
+          "bundled_path": "references/structural-pass.md",
+          "bytes": 3568,
+          "sha256": "E1F528DBD16E26C2C2FD6807B073CA7E732D9422A4085827E0DEF9C524A2C047"
+        },
+        {
+          "source_path": "references/personas/code-quality-reviewer.md",
+          "bundled_path": "references/personas/code-quality-reviewer.md",
+          "bytes": 3130,
+          "sha256": "E5697DCAFD9BBB95CE4926252D158547CA936AA93745C8F0ED162B1B76DAA2FC"
+        },
+        {
+          "source_path": "references/personas/code-reuse-reviewer.md",
+          "bundled_path": "references/personas/code-reuse-reviewer.md",
+          "bytes": 1250,
+          "sha256": "8C7EC1B805E5AA6F1FC24C1CC261808813635E35A95F2EC73BA38C1C0E3BF171"
+        },
+        {
+          "source_path": "references/personas/comment-reviewer.md",
+          "bundled_path": "references/personas/comment-reviewer.md",
+          "bytes": 2729,
+          "sha256": "39B4F8C08BDF3EF7446E533B7A79831DD7E6C44055634B0EDE44CBEDD382CD46"
+        },
+        {
+          "source_path": "references/personas/efficiency-reviewer.md",
+          "bundled_path": "references/personas/efficiency-reviewer.md",
+          "bytes": 1156,
+          "sha256": "227C72D14C2DCBDD9FDE5A0BE4D421753828692BF8B8F313E61BFAD161A38C02"
+        },
+        {
+          "source_path": "references/personas/structure-reviewer.md",
+          "bundled_path": "references/personas/structure-reviewer.md",
+          "bytes": 3067,
+          "sha256": "06044F810F2CCB1B26222EC0966704A0DAD27854AD383E238824EF85FC646279"
+        },
+        {
+          "source_path": "references/personas/test-value-reviewer.md",
+          "bundled_path": "references/personas/test-value-reviewer.md",
+          "bytes": 3308,
+          "sha256": "086A38363A7E4118A72F2A36A6D7F20C16895989D311A1D68E53D4C5B6FF9433"
+        },
+        {
+          "source_path": "scripts/structure-evidence.py",
+          "bundled_path": "scripts/structure-evidence.py",
+          "bytes": 9346,
+          "sha256": "AECFF6B488F7464B6F0750B5302DF565DC7DDC142EDEF01C00032ED0E13D4F17"
+        }
+      ]
+    },
+    "ce-compound": {
+      "repository": "https://github.com/EveryInc/compound-engineering-plugin",
+      "commit": "a3d6a8ee41a404b74391ee278423b52890b8920d",
+      "source_directory": "skills/ce-compound",
+      "license_source": "LICENSE",
+      "license_sha256": "61D89DE7646EFFDABA2D0A4AB7BD0EBA60B4094B83EFE5BC73C7940E43E93FC6",
+      "modifications": [
+        "SKILL.md renamed to instructions.md; bytes unchanged"
+      ],
+      "files": [
+        {
+          "source_path": "SKILL.md",
+          "bundled_path": "instructions.md",
+          "bytes": 7890,
+          "sha256": "D121FF53E4C78390FC6637CA989211489B7EC8AAA122F846E16F8938C9F73017"
+        },
+        {
+          "source_path": "assets/resolution-template.md",
+          "bundled_path": "assets/resolution-template.md",
+          "bytes": 2842,
+          "sha256": "7C05DAE946AF399474B5A08BB06BFF499932288BFC44F9C928698D14266954A8"
+        },
+        {
+          "source_path": "references/assembly.md",
+          "bundled_path": "references/assembly.md",
+          "bytes": 16818,
+          "sha256": "47CD23C3235673A9B4EF2F22679C31A8F9025DFFBA17210FF3332F7126947EF5"
+        },
+        {
+          "source_path": "references/concepts-vocabulary.md",
+          "bundled_path": "references/concepts-vocabulary.md",
+          "bytes": 11688,
+          "sha256": "FB4034CB4D536061E0E15BBF35F5956E3F704D9DF8894A276C7ABF3F2B358197"
+        },
+        {
+          "source_path": "references/enhancement.md",
+          "bundled_path": "references/enhancement.md",
+          "bytes": 2738,
+          "sha256": "BB33B6AAC6BEC47C843D024D0BFC021AB64017C254A4C9E746B05DB7A1ED628A"
+        },
+        {
+          "source_path": "references/form.md",
+          "bundled_path": "references/form.md",
+          "bytes": 5093,
+          "sha256": "27AF1AB2F75922DCE9B46D9F5DB19FCBD1B722CF977422DC547AF561FD55DB57"
+        },
+        {
+          "source_path": "references/grounding-validation.md",
+          "bundled_path": "references/grounding-validation.md",
+          "bytes": 7326,
+          "sha256": "7344B3BCFBC44B8EE5BD78B978C2EDAB78EB4DCEB9EF198BA228AE96C40AC5F1"
+        },
+        {
+          "source_path": "references/lightweight.md",
+          "bundled_path": "references/lightweight.md",
+          "bytes": 7456,
+          "sha256": "57E0910F776AB0097B54E6F9049A8C6D53702CCE074D75B8BD0F38C5580D7B82"
+        },
+        {
+          "source_path": "references/modes.md",
+          "bundled_path": "references/modes.md",
+          "bytes": 3015,
+          "sha256": "5BC8F76B8AD102BE27B7C656C8FFF0C1FFFE0BA802C7CC8A7CC039D2D91C5447"
+        },
+        {
+          "source_path": "references/refresh-and-discoverability.md",
+          "bundled_path": "references/refresh-and-discoverability.md",
+          "bytes": 9815,
+          "sha256": "92509120B48F0169EFEBFA660E5A863DB3F5122DFD8B09D446EF701AEBD6EFEF"
+        },
+        {
+          "source_path": "references/report.md",
+          "bundled_path": "references/report.md",
+          "bytes": 7983,
+          "sha256": "A193C96107975C44EA8A364F7630E1C77B14C2EE8421AE2A2CF26F3FBFA5359E"
+        },
+        {
+          "source_path": "references/research.md",
+          "bundled_path": "references/research.md",
+          "bytes": 14599,
+          "sha256": "D87C23B7B0BB05F5677506CDFF0725AD312D69D682CED3AEFA933B014B2D2D27"
+        },
+        {
+          "source_path": "references/schema.yaml",
+          "bundled_path": "references/schema.yaml",
+          "bytes": 9756,
+          "sha256": "3ADBCDCEBE83593830769CA7B22103E72DF82BDA3B626F503D8FA2A6B20E8B97"
+        },
+        {
+          "source_path": "references/session-history.md",
+          "bundled_path": "references/session-history.md",
+          "bytes": 9434,
+          "sha256": "C65FBB9CA4CC0BA2A77ECA9D41BEC65E352AB6E0F1AE251F3E9B9463BAF6F662"
+        },
+        {
+          "source_path": "references/yaml-schema.md",
+          "bundled_path": "references/yaml-schema.md",
+          "bytes": 9203,
+          "sha256": "B9C7027253398BFEAEE503BDE228F0B9279A047D01369CCA01719B43210EFD9A"
+        },
+        {
+          "source_path": "references/agents/best-practices-researcher.md",
+          "bundled_path": "references/agents/best-practices-researcher.md",
+          "bytes": 7302,
+          "sha256": "B229BD061837EFCF0FC8A213D55CFFCB6C180490ED102B2E8C8A88610508873D"
+        },
+        {
+          "source_path": "references/agents/data-integrity-guardian.md",
+          "bundled_path": "references/agents/data-integrity-guardian.md",
+          "bytes": 3216,
+          "sha256": "DB9CD2EE40E30BDF8B84BB6ABAFF03F61B44A04218875637A651A66CBF0D7900"
+        },
+        {
+          "source_path": "references/agents/framework-docs-researcher.md",
+          "bundled_path": "references/agents/framework-docs-researcher.md",
+          "bytes": 5551,
+          "sha256": "ED69994CE16CA470C8A50B521DD9719BD2B3EB8C364958C42348274177BD76B7"
+        },
+        {
+          "source_path": "references/agents/pattern-recognition-specialist.md",
+          "bundled_path": "references/agents/pattern-recognition-specialist.md",
+          "bytes": 3675,
+          "sha256": "0D73822CCEA06DD3E9A25E9E21E1908377CB9C5364B678B940FEFEF7F84C9580"
+        },
+        {
+          "source_path": "references/agents/performance-oracle.md",
+          "bundled_path": "references/agents/performance-oracle.md",
+          "bytes": 4588,
+          "sha256": "79ABCAEE9A66355D996937CC6562A507B4B8D2DE52060BE3153ECB2088941491"
+        },
+        {
+          "source_path": "references/agents/security-sentinel.md",
+          "bundled_path": "references/agents/security-sentinel.md",
+          "bytes": 4159,
+          "sha256": "66E7C91AACC31BC733FCE2DDB748AA45575E35B088C37E41EE39BE1C6112A2CE"
+        },
+        {
+          "source_path": "references/agents/session-historian.md",
+          "bundled_path": "references/agents/session-historian.md",
+          "bytes": 7078,
+          "sha256": "3BAFB55F4A62EA98250A5D08A415FD16A1C9664792B77FF60DFF692007C856F1"
+        },
+        {
+          "source_path": "references/refresh/classify.md",
+          "bundled_path": "references/refresh/classify.md",
+          "bytes": 9209,
+          "sha256": "4A874949A4AF87A1D6BF260FF9D4824A2BB4E5C8B4EEE5DD86CC8676BD0BE0E5"
+        },
+        {
+          "source_path": "references/refresh/commit.md",
+          "bundled_path": "references/refresh/commit.md",
+          "bytes": 1406,
+          "sha256": "F1BD550AF4477C308FC5D997AD60E32189397B83B73B4F5AA1B80FB03CAD701B"
+        },
+        {
+          "source_path": "references/refresh/discoverability.md",
+          "bundled_path": "references/refresh/discoverability.md",
+          "bytes": 1208,
+          "sha256": "FD8F771C9BE9D207ED42B16DC76F45D8C1B976E682B5CDAAC6B5DE4F447769BE"
+        },
+        {
+          "source_path": "references/refresh/investigate.md",
+          "bundled_path": "references/refresh/investigate.md",
+          "bytes": 4878,
+          "sha256": "F474852A976FB40804F67298DEFB4A41A74506E56D1D1811DBB97C89076C292D"
+        },
+        {
+          "source_path": "references/refresh/modes.md",
+          "bundled_path": "references/refresh/modes.md",
+          "bytes": 3559,
+          "sha256": "8391BDCF614FAD70F08FD05FC9B7FB63A2E11892D035D7B54910BF3C093BF316"
+        },
+        {
+          "source_path": "references/refresh/overview.md",
+          "bundled_path": "references/refresh/overview.md",
+          "bytes": 5963,
+          "sha256": "59CE40217062F2EBA3ABE3B7990D6B0AB3D65243A3F19BE7BFD7E77BD1514EE5"
+        },
+        {
+          "source_path": "references/refresh/per-action-flows.md",
+          "bundled_path": "references/refresh/per-action-flows.md",
+          "bytes": 14878,
+          "sha256": "338E7175171AFC6AD696394666EB03D3F57B3F75A6F9358FF008932249D7FC27"
+        },
+        {
+          "source_path": "references/refresh/report.md",
+          "bundled_path": "references/refresh/report.md",
+          "bytes": 2069,
+          "sha256": "2FFCC44AE64FEADE5581E7EF569658ED71EFDA786A8D5152589D70675DEE4B3A"
+        },
+        {
+          "source_path": "references/refresh/scope.md",
+          "bundled_path": "references/refresh/scope.md",
+          "bytes": 1935,
+          "sha256": "4946F9E78AF90839530EC61CDF92AB4D808742111A7C9290B30A18E59F4441F5"
+        },
+        {
+          "source_path": "references/refresh/worth-audit.md",
+          "bundled_path": "references/refresh/worth-audit.md",
+          "bytes": 4695,
+          "sha256": "324E4786C23A71AAF370DEE6EA544292BCFBFF534AE8913DFB61B07CA2C201F6"
+        },
+        {
+          "source_path": "scripts/packs-resolve.py",
+          "bundled_path": "scripts/packs-resolve.py",
+          "bytes": 31561,
+          "sha256": "39C36946CD1A59CA564E60E4E049934831EB4BFB5CFCE9DE32AB6B4B522EF228"
+        },
+        {
+          "source_path": "scripts/validate-doc-claims.py",
+          "bundled_path": "scripts/validate-doc-claims.py",
+          "bytes": 20579,
+          "sha256": "77D9FE74EFE262365627BEA1FB0A333B870CA0304DD3194E97A3D319297E9621"
+        },
+        {
+          "source_path": "scripts/validate-frontmatter.py",
+          "bundled_path": "scripts/validate-frontmatter.py",
+          "bytes": 5078,
+          "sha256": "E55DAC1BFD22B65E4941B571D163F95A39A66C8D15F6A995EF9EA99549E8AFFD"
+        },
+        {
+          "source_path": "scripts/session-history/discover-sessions.sh",
+          "bundled_path": "scripts/session-history/discover-sessions.sh",
+          "bytes": 13063,
+          "sha256": "1A90E6921428635F017A3B0125E9834A9E2C12C77D6F3A074D27715C286F8656"
+        },
+        {
+          "source_path": "scripts/session-history/extract-errors.py",
+          "bundled_path": "scripts/session-history/extract-errors.py",
+          "bytes": 10333,
+          "sha256": "3D1A4DACE76519867B6A523D5D4FBF29C224DAE800D2F8BF589346924227A1D8"
+        },
+        {
+          "source_path": "scripts/session-history/extract-metadata.py",
+          "bundled_path": "scripts/session-history/extract-metadata.py",
+          "bytes": 24195,
+          "sha256": "F1981573EBA268AAFD23689B045E2023F902AE633FC0095B97010274EF79123A"
+        },
+        {
+          "source_path": "scripts/session-history/extract-skeleton.py",
+          "bundled_path": "scripts/session-history/extract-skeleton.py",
+          "bytes": 23992,
+          "sha256": "509C9C436589677A24755F305013A800D2E699B0F9E6AA3501FA5F8835A702B1"
+        }
+      ]
+    }
+  }
+}
