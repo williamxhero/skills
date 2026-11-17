@@ -1,4 +1,4 @@
 interface:
-  display_name: "Improve Codebase Architecture To Done (Draft)"
-  short_description: "未安装草案：有范围地发现架构摩擦，复用规格和实施主链交付改进"
-  default_prompt: "使用 $improve-codebase-architecture-to-done 前先核实草案状态、依赖与授权。候选设计由 to-spec-to-done 强制自动推荐 grilling 收敛，再委托 implement-spec-to-done 完整交付；不自动部署技能。"
+  display_name: "Improve Codebase Architecture To Done"
+  short_description: "限定架构调查，选一个有据候选，复用规格与实施入口；无收益则 no-change"
+  default_prompt: "使用 $improve-codebase-architecture-to-done，先读取共享规则并核实范围、基线、依赖与授权。仅适配原架构技能的调查和可视候选阶段，规格级 grilling 交给 to-spec-to-done；真实规格与实施权限核对后由 implement-spec-to-done 完整交付，收益和兼容恢复在关闭前验收。缺事实或能力则 blocked，不重扫、不自动部署。"
