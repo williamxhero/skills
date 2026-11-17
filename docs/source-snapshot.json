@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "capturedOn": "2026-11-17",
+  "purpose": "Historical source export only; CC Switch remains installation and distribution owner.",
+  "repository": "https://github.com/williamxhero/skills",
+  "localRepository": "D:/WILL/AGENT/skills",
+  "exportedSkills": [
+    {
+      "Name": "to-spec-to-done",
+      "ManagedRoot": "C:\\Users\\will\\.cc-switch\\skills\\to-spec-to-done",
+      "PiLink": "C:\\Users\\will\\.pi\\agent\\skills\\to-spec-to-done",
+      "LinkType": "SymbolicLink",
+      "LinkTarget": [
+        "C:\\Users\\will\\.cc-switch\\skills\\to-spec-to-done"
+      ],
+      "Files": [
+        {
+          "RelativePath": "SKILL.md",
+          "Length": 4245,
+          "Sha256": "DABF98023FE58328E8AFDE3F5A92BE5F064E958C581B43A30EBF4BB5E3F8EFCC"
+        },
+        {
+          "RelativePath": "agents/openai.yaml",
+          "Length": 366,
+          "Sha256": "245F741E82511EF44B6450CFD16359CDD7A1F1B279F2CAA400F08E0F368D5EDF"
+        }
+      ]
+    },
+    {
+      "Name": "implement-spec-to-done",
+      "ManagedRoot": "C:\\Users\\will\\.cc-switch\\skills\\implement-spec-to-done",
+      "PiLink": "C:\\Users\\will\\.pi\\agent\\skills\\implement-spec-to-done",
+      "LinkType": "SymbolicLink",
+      "LinkTarget": [
+        "C:\\Users\\will\\.cc-switch\\skills\\implement-spec-to-done"
+      ],
+      "Files": [
+        {
+          "RelativePath": "SKILL.md",
+          "Length": 7438,
+          "Sha256": "1AA0A96B7D9088FDAAE1E97185A50CBC3BB84F098154C0BEA69FAE3AF6F3BB6E"
+        },
+        {
+          "RelativePath": "agents/openai.yaml",
+          "Length": 436,
+          "Sha256": "BDB0C91852A3853942A24671C710E96F4FDDF546BA32D3F37CF087722115934C"
+        }
+      ]
+    }
+  ],
+  "additionalSource": [
+    {
+      "name": "improve-codebase-architecture-to-done",
+      "status": "draft-not-installed",
+      "ccSwitchSourceExisted": false,
+      "piLinkExisted": false
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# Runtime files and credentials do not belong in this source archive.
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+node_modules/

@@ -1,0 +1,4 @@
+interface:
+  display_name: "To Spec To Done"
+  short_description: "直接调用 to-spec，并写入拆票、实施、合并清理和推送的交付约定"
+  default_prompt: "使用 $to-spec-to-done 直接调用 $to-spec，将当前讨论整理并发布为 SPEC，要求每个新 SPEC 包含完整的执行与交付约定。本轮仅创建 SPEC，不启动开发。"
