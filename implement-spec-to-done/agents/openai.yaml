@@ -1,4 +1,4 @@
 interface:
   display_name: "Implement Spec To Done"
-  short_description: "按总 SPEC 顺序逐个拆票、实施、验收、交付并关闭 Issue，再推进下一项"
-  default_prompt: "使用 $implement-spec-to-done 完成指定 SPEC。先读总需求；每次只对当前 SPEC 执行 to-tickets、implement-spec 和原文规定的全部交付步骤，关闭并回读确认后才处理下一 SPEC，最后验收并关闭总 SPEC。"
+  short_description: "唯一当前 SPEC：grilling、隔离 TDD、简化、条件经验、独立审查与完整交付后关闭"
+  default_prompt: "使用 $implement-spec-to-done 实施指定 SPEC。先读共享兄弟资源并预检，当前 SPEC 拆票前必做 grilling；复用原 to-tickets／implement-spec，在原最终审查前插入简化和条件经验捕获。完成新鲜验收、主干集成、安全清理、push、远端及记录回读后才关闭，前项关闭前不拆下一 SPEC；缺能力如实 blocked。"
