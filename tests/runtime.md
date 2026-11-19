@@ -16,6 +16,10 @@ Resolve `$PiExecutable` to the actual native Pi CLI, `$Entry` to an absolute can
 
 Use stdlib subprocess or native child_process to stream stdout/stderr to external files, wait with a finite timeout and preserve exact argv/cwd/exit. Split JSONL on LF, not Unicode separators; PowerShell 5 redirection may require lossless UTF-16→UTF-8 conversion. Inspect authoritative `message_end`, `agent_settled.aborted`, error/retry events AND exit code. Exit 0 alone does not imply success in JSON mode. `toolUse` interim messages are normal; final error/aborted/length, missing settled, timeout or parse errors are never a pass. Even a clean transport only proves the run finished; inspect tool evidence, persisted state and requirement-specific outcome separately. A truthful blocked outcome passes only the failure contract, not the workflow's completion criteria.
 
+## Prerequisite-delivery enhancement checkpoint
+
+The separately authorized #10/#11 checkpoint is indexed in [acceptance.md](../docs/acceptance.md#p11-revision--recovery--strengthened-source-checkpoint--2026-11-19-utc). Assisted old443 delivery remains unchanged-old history, not a missing-selection semantic RED or changed GREEN. The strengthened candidate's one native original-fixture repeat preserved exact product/Git/tracker state, but its historical-role audit exceeded the mandatory <50KB per-output boundary and used non-LF-specific JSONL parsing. Its no-mandatory-failure report is not accepted. The implementer stopped without retry or new fixture; fresh changed-candidate chain/diamond conformance is unrun/blocked, #11 not Done and #12 not started. Neither STATIC checks nor old delivery/repeat substitute for that conformance. Entry/reference/metadata bytes are bound externally; no managed installation/default-loader change is claimed.
+
 ## Observed inputs and checks
 
 | Case | Bounded input | Required observations |
