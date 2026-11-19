@@ -1,4 +1,4 @@
 interface:
   display_name: "Implement Spec To Done"
-  short_description: "唯一当前 SPEC：grilling、隔离 TDD、简化、条件经验、独立审查与完整交付后关闭"
-  default_prompt: "使用 $implement-spec-to-done 实施指定 SPEC。先读共享兄弟资源并预检，当前 SPEC 拆票前必做 grilling；复用原 to-tickets／implement-spec，在原最终审查前插入简化和条件经验捕获。完成新鲜验收、主干集成、安全清理、push、远端及记录回读后才关闭，前项关闭前不拆下一 SPEC；缺能力如实 blocked。"
+  short_description: "保留最终目标，串行交付已授权前置，再完成唯一当前 SPEC 的完整交付"
+  default_prompt: "使用 $implement-spec-to-done 交付指定最终目标。先读共享兄弟资源和 B1 必需 prerequisite-delivery 合同，核验完整来源后选择唯一当前 SPEC；先交付已授权前置再返回原目标。按原 B2–B11 执行 grilling、隔离实现、简化、条件经验、独立审查及完整交付后才关闭；每次返回／恢复重新核验，缺事实、权限或能力如实 blocked。"

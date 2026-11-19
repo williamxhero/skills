@@ -1,11 +1,11 @@
 ---
 name: implement-spec-to-done
-description: "实施单个或总 SPEC：唯一当前 SPEC 拆票前必做 grilling，隔离 TDD／集成后简化与条件经验捕获，再独立审查、新鲜验收、主干交付、远端核验和关闭；前项关闭前不拆下一 SPEC。"
+description: "交付指定最终目标：先完成已授权前置，再返回单个／总 SPEC 或 ticket 的已核验 owning SPEC；唯一当前 SPEC 经 grilling、隔离实现、独立审查、新鲜验收及完整交付后关闭。"
 ---
 
 # Implement Spec To Done
 
-**逐个交付。** 全程只有一个 **CURRENT SPEC／当前 SPEC**；同一 SPEC 内按 ticket 图并行，跨 SPEC 不并行。下一 SPEC 连拆票也等待当前 SPEC 完整交付并回读 `CLOSED`；批准全部拆分不解除门禁。只在用户已授权实施或明确授权外层继续时进入；SPEC 发布不是开发授权。
+**逐个交付。** 原始提供的 Issue 是不可变的 **final delivery target**；先交付其已授权未完成前置，再返回原目标。全程只有一个 **CURRENT SPEC／当前 SPEC**；同一 SPEC 内按 ticket 图并行，跨 SPEC 不并行。下一 SPEC 连拆票也等待当前 SPEC 完整交付并回读 `CLOSED`；批准全部拆分不解除门禁。只在用户已授权实施或明确授权外层继续时进入；SPEC 发布不是开发授权。
 
 每次进入先完整读取实际安装兄弟入口内的[共享工程规则](../to-spec-to-done/references/engineering-quality.md)和[自动推荐 grilling 适配](../to-spec-to-done/references/auto-grilling.md)。三入口是配套 bundle，CC Switch 必须同时安装兼容的 `to-spec-to-done`；只复制本目录不会带来兄弟资源，缺失即 blocked，不生成规则副本或猜全局路径。依共享规则从实际加载入口目录定位兄弟技能；显式提供 skill root 才使用该根。
 
@@ -13,9 +13,9 @@ description: "实施单个或总 SPEC：唯一当前 SPEC 拆票前必做 grilli
 
 ## B1 读取总需求，选唯一当前 SPEC
 
-源头回读完整正文、评论、父子关系、阻塞依赖、已有完成记录及交付提交；读取项目指令、tracker／标签规范、相关实现／测试、权威词汇／ADR 和相关经验。总 SPEC 只整理子 SPEC 身份、顺序和前置条件，不提前拆后续票；按明确约定／依赖选首个未交付子 SPEC，不按编号猜顺序。单 SPEC 直接进入，不制造总索引。
+**选择 CURRENT 或任何新交付写入之前，必须完整读取并执行 [prerequisite delivery contract](references/prerequisite-delivery.md)**，包括单项、总项、ticket 及恢复／重复请求。该资源唯一维护完整闭包分类、安全门禁、选择、证据复用和返回规则；不能只凭入口摘要选项或拆票。
 
-恢复时先核对实际 tracker、分支、worktrees、commits、remote 及外部写入结果，再重试；执行记录只存阶段、指针、版本与证据，不建立第二份任务图或 scheduler。提前存在的后续 tickets 保留未启动。完成条件：当前 SPEC 唯一，所有前置 SPEC 已有完整交付和关闭证据；关系冲突、未知结果先查清，不能跳到下一项。
+源头回读项目指令、tracker／标签规范、相关实现／测试、权威词汇／ADR 和相关经验，并依该合同读取完整相关闭包。完成条件：原 final delivery target 保留，整个闭包的来源／授权／安全核验成立，恰好一个可交付 CURRENT（或已核验 target no-op）；未解决的冲突／未知保持 blocked，不开始新交付写入。
 
 ## B2 提取完整完成方法，能力预检
 
@@ -102,6 +102,6 @@ description: "实施单个或总 SPEC：唯一当前 SPEC 拆票前必做 grilli
 
 ## B12 关闭确认后才选下一 SPEC
 
-仅 B11 成立才刷新依赖并切换唯一当前 SPEC，记录“前项交付与 CLOSED 证据→下一项”，从 B2 继续，不重复请求常规继续许可。第一项失败／未关闭，第二项不拆票、不编码。
+仅 B11 成立才切换 CURRENT。**每次关闭后、恢复及新事实出现时，必须重新完整读取并应用 [prerequisite delivery contract](references/prerequisite-delivery.md)**：源头刷新原 target 和整个剩余相关闭包／授权，重新核验并计算，再从 B2 继续，不依缓存顺序、不重复请求常规许可。第一项失败／未关闭，第二项不拆票、不编码。
 
-全部子 SPEC 关闭后重新核对总体验收；有独立集成工作，将总 SPEC 作为唯一当前 SPEC，走相同闭环；否则核对总交付后写总记录、关闭总 SPEC 并回读。报告真实完成／blocked 的 SPEC、阶段、提交与证据；子票全关不能单独证明总需求完成。不自动递归架构扫描或开启下一轮重构。
+按该合同复用真正 delivered prerequisites、最后返回原目标，并保留总体验收／独立集成及原 ticket 验收义务。报告真实完成／blocked 的身份、阶段、提交与证据；子票全关不能单独证明总需求完成。不自动递归架构扫描或开启下一轮重构。
