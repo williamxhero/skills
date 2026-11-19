@@ -20,7 +20,7 @@ Source-handoff checks additionally copy all three selected directories, resolve 
 
 The separate `test_prerequisite_delivery_static.py` adds one supplemental selected-directory contract: B1 must require the shipped prerequisite-delivery reference before selection/new writes. Its actual old-source failure and strengthened-source pass prove only that public source/resource contract. At the #10/#12 checkpoint all four original proof files were preserved (14 legacy checks plus this one check). #13 migrates only superseded assertions as described below. **Current #10/#12 method:** the latest user-approved proportionate text completion uses final-source consistency STATIC, the [TEXT/manual source walkthrough](prerequisite-delivery.md), independent fixed-base/final-candidate review and actual formal delivery; STATIC/TEXT is not Pi/model/platform PASS. The 2026-11-19 prior mandatory native-repeat/fresh-chain method is superseded, not a current blocking requirement: the repeat remains FAILED at its output/parser boundary and fresh chain remains UNRUN. No further fixture run is required or authorized; operational B2–B11 remain mandatory for actually entered SPECs.
 
-## #13 / #14 candidate — manual source scenarios (historical)
+## #13 / #14 candidate — manual source scenarios
 
 These record the #13 candidate. For current action readiness, including the rule superseding blanket preflight stops, see #15 below.
 
