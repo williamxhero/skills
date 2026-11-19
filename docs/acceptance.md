@@ -34,6 +34,12 @@ That first index update was evidence-only. Isolated native/model observation, lo
 
 B8 review of that historical candidate found the handoff order, Lightweight grounding boundary, `domain-modeling` trigger, duplicated design trigger and candidate evidence binding needing repair. The historical STATIC result does not cover the repair. The repair commit/tree and fresh ticket checks belong in the repair implementer handoff; different merger, independent parallel Standards/Spec review (refresh affected conclusions on the repaired candidate), fresh final candidate verification/acceptance and actual main/postmerge/cleanup/remote/tracker delivery remain parent gates. No new Pi/model/fixture run or CC Switch deployment/loading evidence. Earlier failure/recovery and installation observations retain their original version boundaries.
 
+## SPEC #15 / ticket #16 — action readiness source checkpoint
+
+[#15](https://github.com/williamxhero/skills/issues/15) / [#16](https://github.com/williamxhero/skills/issues/16), fixed base `14b5188574a5417c761871552b01e3a185a0533d`. Scope: implementation entry, prerequisite and Pi execution references, shared resource failure wording and the portable delivery clause for future SPECs. The [TEXT walkthrough](../tests/README.md#15--16--action-readiness-text-scenarios) covers the published cases plus pre-CURRENT selection and retained-CURRENT recovery. Targeted STATIC checks cover implementation and prerequisite resources, the publishing entry and source handoff; exact candidate and command results are recorded in the tracker completion record, not as a self-SHA here. #10/#13 historical evidence is unchanged.
+
+This checkpoint does not establish independent role execution, final review, integration or formal delivery/closure. This source checkpoint is not product or production acceptance, a full regression, a native Pi workflow fixture, or CC Switch acceptance.
+
 ## Evidence/version/command key
 
 External evidence package name: `skills-1-20261117` (private local agent work area, deliberately not a Public-repository link). `runtime/`, `reports/`, `research/`, `consolidate-main-20261118/` and `continue-20261118/` below are relative to that external package. Evidence IDs D, F, K, Q, E, E-R, AC, AR, AP and AP-R identify bounded observations, corrective gates and audits; the index is not a second task graph. Raw JSONL may include private paths and thinking; retain externally, redact before any publication. This index publishes observations only, not raw prompts/logs.

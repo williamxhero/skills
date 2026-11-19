@@ -4,10 +4,12 @@
 
 ## 能力预检与新上下文
 
-必经能力和已知必需权限先核验；只在进入条件分支时探测其专属命令、环境或角色，不绕过完整闭包的必需门禁。记录已通过探针的环境／cwd、工具／版本、权限及角色要求；仅同条件复用。任一条件变化刷新相关探针；探针复用不是角色复用，实际角色仍须 fresh。
+必经能力和已知必需权限先核验；只在进入条件分支时探测其专属命令、环境或角色。不绕过完整闭包核验；能力缺项按[动作就绪规则](prerequisite-delivery.md#action-readiness)处理。记录已通过探针的环境／cwd、工具／版本、权限及角色要求；仅同条件复用。任一条件变化刷新相关探针；探针复用不是角色复用，实际角色仍须 fresh。
+
+启动器失败时保留原命令、结果和受阻角色。若契约要求的是独立角色而未指定启动器，且已支持的原生 Pi 独立进程能保持同权限、工具／路径边界和隔离，无须重复批准：按下列步骤验证本次所需角色，探针通过后用 fresh 进程实际执行该角色，验收绑定候选的结果。不能用一次探针代表其他角色，也不能用任何探针代表真实实施、合并或审查。若契约指定原启动器、替代需新权限或不能验证等价性，暂停该角色及其依赖动作；不修改全局启动器／配置，不把采用替代路径记作原故障已修复。
 
 1. 读取当前安装版本的 Pi CLI／skills 文档并运行实际 `pi --help`，解析可执行文件、provider/model 和角色所需工具。不要把扩展的端口参数 `-p` 当成内建 print；使用完整 `--print`。不假定存在 Agent、Task、spawn_agent 或 Skill 工具。
-2. 在目标工作目录启动新的原生 Pi 进程，使用 `--no-session`，不传 continue/resume/fork；每个角色／ticket 一次独立进程。用只读探针要求模型通过工具回报 cwd、项目指令和 tracker 身份；验收工具事件、输出与退出码，而非仅“进程启动成功”。必需角色不能工作则 blocked。探针不替代后续真实角色执行。
+2. 在目标工作目录启动新的原生 Pi 进程，使用 `--no-session`，不传 continue/resume/fork；每个角色／ticket 一次独立进程。用只读探针要求模型通过工具回报 cwd、项目指令和 tracker 身份；验收工具事件、输出与退出码，而非仅“进程启动成功”。必需角色仍不可用时暂停该角色及依赖动作，重新核对同一 CURRENT 内其余就绪动作。探针不替代后续真实角色执行。
 3. 原生进程可通过 shell 的进程启动能力并行／后台运行；调用方保存 PID、命令、cwd、任务文件、stdout／stderr／exit code，等待终止并读取结果。一个进程终止后才计其角色完成；超时／中断保留日志和工作树，调查实际状态后恢复，不推断成功或释放容量。无可用工具时不能用同一上下文伪装 fresh。
 
 示例是 CLI 参数形状，先将变量解析为真实绝对路径／可用值，不原样运行占位符。PowerShell 中可切换 cwd 后前台执行；需要并行时分别用 `Start-Process`，指定 `-WorkingDirectory`、输出重定向和 `-PassThru`，等待后读取进程退出码和日志。注意该版本 shell 的参数引用，含空格路径先验证：
@@ -28,7 +30,7 @@ try {
 - **Merger**：新的上下文，核验 ticket 范围、来源、祖先、测试证据与干净状态，再正常合入集成分支并验证；冲突时读取实际 resolving-merge-conflicts。不依赖实现者成功声明，不强推／覆盖 WIP，不提前关闭。
 - **专项 reviewer**：新进程只收该 reviewer 完整上游 persona 和精确范围、proof tests、结构 pins、规范；只读输出。按 reviewer-dispatch 的真实容量／失败规则处理，注明专项允许的 inline fallback；这项许可不传递给最终独立审查。
 - **Compound Full Related Docs Finder／history synthesis／grounding**：分别新上下文，传完整所需合约（不是相对路径的摘要）。finder 与 history／父级 drafting 按上游并行；等待全部输入后写入。finder／historian 仅本次 scratch 输出；grounding 只读回报。每个 prompt 内联 compound adapter 的全局词汇替换和写入边界；不得因上下文不足静默切 lightweight。
-- **最终 Standards／Spec**：按实际 code-review 完整流程并行新进程，分别传规范及完整 smell baseline／原 SPEC，固定基点和候选，不互相共享发现。调用方聚合两个轴而非自己扮演 reviewer；任一必需 reviewer 不可运行则 blocked，不能援用专项 inline 降级。
+- **最终 Standards／Spec**：按实际 code-review 完整流程并行新进程，分别传规范及完整 smell baseline／原 SPEC，固定基点和候选，不互相共享发现。调用方聚合两个轴而非自己扮演 reviewer；任一必需 reviewer 不可运行则 B8 不能通过；保留另一轴的有效证据，不替代缺失轴，不援用专项 inline 降级。
 
 角色可读项目指令和必要参考，但不得继承本会话历史或复用做过另一角色的上下文。记录真实模型与实际机制，不称 CLI 为一个不存在的 subagent API。
 

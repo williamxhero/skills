@@ -115,7 +115,8 @@ class SpecEntryStaticTests(unittest.TestCase):
             "owned, merged and clean only": r"仅清理.*明确归属.*已纳入主干.*工作树干净.*worktree.*分支",
             "normal push and governing remote": r"正常 push 主干.*源头核对实际远端.*本地主干.*tracking ref.*一致",
             "record readback before ordered close": r"回读完成记录.*先关闭 tickets.*后关闭 SPEC.*回读关闭状态",
-            "failure preserves work": r"失败则停止.*保留成果.*报告阻塞.*不强删或强推",
+            "failure preserves work and holds dependent actions":
+                r"失败.*保留.*成果.*就绪规则.*受阻动作.*依赖.*下一步才报告阻塞.*不强删或强推",
         })
         stages = (
             ("applicable tests pass", r"适用测试[^。；\n]{0,12}(?<![不未])通过"),

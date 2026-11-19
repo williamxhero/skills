@@ -36,7 +36,11 @@ class ImplementationEntryStaticTests(unittest.TestCase):
             with self.subTest(topic=topic):
                 self.assertRegex(entry, re.compile(pattern, re.S))
         preflight = entry.split("## B2 ", 1)[1].split("## B3 ", 1)[0]
-        self.assertRegex(preflight, r"(?s)完整闭包门禁.*能力或授权缺失.*新交付写入前 blocked")
+        self.assertRegex(
+            preflight,
+            r"(?s)完整闭包.*\]\(references/prerequisite-delivery\.md#[^)]+\).*受阻动作",
+            "B2 preflight must route known holds to the action-scoped contract",
+        )
         self.assertRegex(preflight, r"(?s)必经.*tracker.*角色.*工作目录.*按触发预检.*只在实际进入.*未触发 Full 不探测")
         self.assertRegex(preflight, r"(?s)纯说明.*源码核对.*Agent 决策.*文本场景.*可执行行为.*公开 seam.*回归.*混合差异")
         grilling = entry.split("## B3 ", 1)[1].split("## B4 ", 1)[0]
