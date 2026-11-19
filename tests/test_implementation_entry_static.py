@@ -39,6 +39,12 @@ class ImplementationEntryStaticTests(unittest.TestCase):
         self.assertRegex(preflight, r"(?s)完整闭包门禁.*能力或授权缺失.*新交付写入前 blocked")
         self.assertRegex(preflight, r"(?s)必经.*tracker.*角色.*工作目录.*按触发预检.*只在实际进入.*未触发 Full 不探测")
         self.assertRegex(preflight, r"(?s)纯说明.*源码核对.*Agent 决策.*文本场景.*可执行行为.*公开 seam.*回归.*混合差异")
+        grilling = entry.split("## B3 ", 1)[1].split("## B4 ", 1)[0]
+        self.assertRegex(
+            grilling,
+            r"\]\(\.\./to-spec-to-done/references/engineering-quality\.md#codebase-design\)时，"
+            r"直接读取并应用实际 `codebase-design`",
+        )
         implementation = entry.split("## B5 ", 1)[1].split("## B6 ", 1)[0]
         self.assertRegex(implementation, r"(?s)新上下文 implementer.*独立工作树.*提交前.*新的 \*\*merger\*\* 上下文")
         self.assertRegex(implementation, r"纯说明／链接：.*语义、引用、格式和差异.*不制造行为 RED")
@@ -66,6 +72,9 @@ class ImplementationEntryStaticTests(unittest.TestCase):
             "mandatory judgment may write nothing": r"必须调用技能判断.*no-write",
             "authority replaces every effect": r"每一处 CONCEPTS.md.*读取.*写入.*grounding.*discoverability.*report.*替换",
             "lazy no parallel vocabulary": r"真实新术语.*domain-modeling.*懒创建.*无术语就无新文件",
+            "Full-only glossary grounding, Lightweight current-source verification":
+                r"只有 Full 由独立 grounding 新上下文接收并核验本次新增／修改的权威词汇条目；"
+                r"Lightweight 不派子 Agent，由 orchestrator 对照当前源码核实本次新增／修改的权威词汇条目",
             "historian scratch-only exception": r"Historian 唯一写入差异.*session-history.md.*不写任何 tracked",
             "full actual contexts": r"Related Docs Finder.*history synthesis.*semantic grounding.*实际新上下文",
             "no public specialist command claim": r"不是公开技能命令.*建议.*外层",
@@ -81,7 +90,7 @@ class ImplementationEntryStaticTests(unittest.TestCase):
                       *upstream.glob("*/adapter.md")]
         for path in local_docs:
             for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", path.read_text(encoding="utf-8")):
-                self.assertTrue((path.parent / target).is_file(), f"{path}: {target}")
+                self.assertTrue((path.parent / target.split("#", 1)[0]).is_file(), f"{path}: {target}")
 
     def test_static_selected_bundle_preserves_pinned_specialist_resources(self):
         # Independent source inventory: verification 1, simplify 12, compound 39.

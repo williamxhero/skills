@@ -15,7 +15,7 @@ description: "将需求或讨论调查、强制 grilling 推敲后，委托 to-s
 
 ## A2 每次必执行 grilling
 
-读取实际 `grilling/SKILL.md`，按已加载的自动推荐适配执行。小而明确或信息完整的需求同样必跑；依 frontier 调查事实、推荐、在授权内自动采用全部推荐，再重算下一轮。复用已有决定和已授权的公开测试接口（seam），不重复访谈或常规确认；涉及模块职责、接口、复杂度封装、修改局部性或公开测试 seam 时，直接读取并应用实际 `codebase-design`；仅按共享规则的专属条件触发 `design-an-interface`／`domain-modeling`。完成条件：影响当前规格的设计分支均已处理，重要未知有明确处理方式；无法查明的关键事实保留 blocked。
+读取实际 `grilling/SKILL.md`，按已加载的自动推荐适配执行。小而明确或信息完整的需求同样必跑；依 frontier 调查事实、推荐、在授权内自动采用全部推荐，再重算下一轮。复用已有决定和已授权的公开测试接口（seam），不重复访谈或常规确认；满足 [`codebase-design` 共享触发条件](references/engineering-quality.md#codebase-design)时，直接读取并应用实际 `codebase-design`；仅按共享规则的专属条件触发 `design-an-interface`／`domain-modeling`。完成条件：影响当前规格的设计分支均已处理，重要未知有明确处理方式；无法查明的关键事实保留 blocked。
 
 ## A3 检查开工就绪
 
@@ -59,4 +59,4 @@ description: "将需求或讨论调查、强制 grilling 推敲后，委托 to-s
 
 > 本 SPEC 发布并回读后停止；发布不等于实施授权。另行获得实施授权后，由 `/skill:implement-spec-to-done` 主持完整交付：由它委托 `to-tickets` 拆分具有明确依赖的 tickets，并委托 `implement-spec` 隔离实施与集成；两者不是替代入口。按实际安装解析技能，按项目指令显式指定 tracker。
 >
-> 实现、适用测试、独立审查及验收通过后，将 ticket 成果汇入 SPEC 集成分支，再合入主干，运行合并后验证。仅清理本任务明确归属、成果已纳入主干且工作树干净的 worktree 和对应分支。正常 push 主干，源头核对实际远端、本地主干与 tracking ref 一致。完整交付后写入并回读完成记录，再先关闭 tickets、后关闭 SPEC，并回读关闭状态。任一必需项失败则停止后续交付，保留成果并报告阻塞；不强删或强推。
+> 实现及适用测试通过后，先将 ticket 成果汇入 SPEC 集成分支（B5）；集成后的候选经最终独立审查（B8）及验收（B9）通过后，再合入主干，运行合并后验证。仅清理本任务明确归属、成果已纳入主干且工作树干净的 worktree 和对应分支。正常 push 主干，源头核对实际远端、本地主干与 tracking ref 一致。完整交付后写入并回读完成记录，再先关闭 tickets、后关闭 SPEC，并回读关闭状态。任一必需项失败则停止后续交付，保留成果并报告阻塞；不强删或强推。

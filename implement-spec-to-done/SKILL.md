@@ -34,7 +34,7 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 完整读取真实 `grilling/SKILL.md` 并按已加载自动推荐适配执行一次实施级复核；即使简单、信息完整、已有 tickets 或规格级 grilling 也必跑，不对每个 ticket 重复访谈。复用已定决定和已授权公开 seam，集中核对现状、前序交付引起的设计漂移、状态／接口、迁移、失败恢复和实施风险。
 
-每轮按 design tree 的 frontier：前置成立→调查事实→推荐→按既有授权自动采用本轮全部推荐→重算依赖。无机械轮数／问题数，不重复等常规确认；不可验证事实仍未知，自动推荐不扩权。涉及模块职责、接口、复杂度封装、修改局部性或公开测试 seam 时，直接读取并应用实际 `codebase-design`，将适用结论留在原 SPEC 的实施／测试决定；纯措辞可注明不适用。仅按共享规则的专属条件触发 `design-an-interface`／`domain-modeling`。范围、验收或 seam 有实质变化，先记录并按权限修订 SPEC／取得必要授权。完成条件：实施决定收敛，关键未知有处理，已有测试接口沿用；否则继续调查或如实 blocked。
+每轮按 design tree 的 frontier：前置成立→调查事实→推荐→按既有授权自动采用本轮全部推荐→重算依赖。无机械轮数／问题数，不重复等常规确认；不可验证事实仍未知，自动推荐不扩权。满足 [`codebase-design` 共享触发条件](../to-spec-to-done/references/engineering-quality.md#codebase-design)时，直接读取并应用实际 `codebase-design`，将适用结论留在原 SPEC 的实施／测试决定；纯措辞可注明不适用。仅按共享规则的专属条件触发 `design-an-interface`／`domain-modeling`。范围、验收或 seam 有实质变化，先记录并按权限修订 SPEC／取得必要授权。完成条件：实施决定收敛，关键未知有处理，已有测试接口沿用；否则继续调查或如实 blocked。
 
 ## B4 调用原 to-tickets，核验复用
 

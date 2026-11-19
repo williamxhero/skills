@@ -51,6 +51,14 @@ class SpecEntryStaticTests(unittest.TestCase):
             "ready or blocked": r"首个可验收切片.{0,100}(blocked|阻塞)",
             "approved seam reuse": r"(复用|沿用).{0,40}(测试接口|seam)",
         })
+        grilling = entry.split("## A2 ", 1)[1].split("## A3 ", 1)[0]
+        self.assertRegex(
+            grilling,
+            r"\]\(references/engineering-quality\.md#codebase-design\)时，直接读取并应用实际 `codebase-design`",
+        )
+        rules = text(ENTRY / "references/engineering-quality.md")
+        design = rules.split("### codebase-design\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("需要判断模块职责、接口、复杂度封装、修改局部性或公开测试 seam 时，触发 `codebase-design`", design)
         adapter = text(ENTRY / "references/auto-grilling.md")
         self.assert_concepts(adapter, {
             "real upstream": r"读取并执行.{0,40}grilling/SKILL.md",
@@ -90,7 +98,9 @@ class SpecEntryStaticTests(unittest.TestCase):
                 r"发布并回读后停止.*另行获得实施授权后，由 `/skill:implement-spec-to-done` 主持",
             "delegation only": r"委托 `to-tickets`.*明确依赖.*委托 `implement-spec`.*不是替代入口",
             "explicit target": r"按项目指令显式指定 tracker",
-            "acceptance and postmerge checks": r"测试.*独立审查.*验收通过.*SPEC 集成分支.*合入主干.*合并后验证",
+            "integrate tickets before candidate review and acceptance, then main and postmerge checks":
+                r"适用测试通过后，先将 ticket 成果汇入 SPEC 集成分支（B5）；"
+                r"集成后的候选经最终独立审查（B8）及验收（B9）通过后，再合入主干，运行合并后验证",
             "owned, merged and clean only": r"仅清理.*明确归属.*已纳入主干.*工作树干净.*worktree.*分支",
             "normal push and governing remote": r"正常 push 主干.*源头核对实际远端.*本地主干.*tracking ref.*一致",
             "record readback before ordered close": r"回读完成记录.*先关闭 tickets.*后关闭 SPEC.*回读关闭状态",

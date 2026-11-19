@@ -20,7 +20,7 @@
 
 仍无条件读取 concepts-vocabulary.md 的资格／coherence 规则，但取消其“例行创建／主动 seed”要求：只在实际出现需要记录的真实新术语时，读取并执行实际 domain-modeling，按项目惯例懒创建／更新 GLOSSARY.md 或指定权威。无术语就无新文件；不为了 capture 补齐整片 domain nouns。既有权威的相关 neighborhood 仅按本次证据作必要 add／refine／fold／scrub，不扩大全表审计，不凭未找到代码删除条目。遵守该权威本身格式而非强套 upstream preamble。
 
-research 用权威相关词汇分类；assembly／lightweight 只按上述边界更新；grounding 新上下文接收并核验本次新增／修改的权威 entries；discoverability 仅评估现有权威，缺失不催建，gap 只报不改 instruction。最终 report 把 CONCEPTS.md 字段替换为 `Vocabulary authority: <actual path | absent>; <scanned/no qualifying terms | exact change counts>`，并报告其 discoverability。扫描无变化必须真是 byte-for-byte unchanged；记录每一写入，不掩盖副作用。
+research 用权威相关词汇分类；assembly／lightweight 只按上述边界更新；只有 Full 由独立 grounding 新上下文接收并核验本次新增／修改的权威词汇条目；Lightweight 不派子 Agent，由 orchestrator 对照当前源码核实本次新增／修改的权威词汇条目；discoverability 仅评估现有权威，缺失不催建，gap 只报不改 instruction。最终 report 把 CONCEPTS.md 字段替换为 `Vocabulary authority: <actual path | absent>; <scanned/no qualifying terms | exact change counts>`，并报告其 discoverability。扫描无变化必须真是 byte-for-byte unchanged；记录每一写入，不掩盖副作用。
 
 ## 所选深度与真实平台能力
 
