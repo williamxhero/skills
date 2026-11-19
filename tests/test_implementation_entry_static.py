@@ -26,10 +26,8 @@ class ImplementationEntryStaticTests(unittest.TestCase):
             self.assertIn(required, entry)
         contracts = {
             "singleton including later tickets": r"下一 SPEC.{0,80}拆票.{0,100}(关闭|CLOSED)",
-            "complete capability preflight": r"B2 .*验收.*技能.*tracker.*角色.*工作目录.*blocked",
             "mandatory before tickets": r"B3 .*每个当前 SPEC.*必.*grilling.*## B4 .*to-tickets",
             "real native graph reuse": r"B4 .*复用.*原生父子.*原生阻塞.*回读.*不编码",
-            "isolated tdd and merger": r"B5 .*新上下文.*独立工作树.*tdd.*merger",
             "simplify then capture then original review": r"B6.*B7.*原第 7 步.*原第 8.{0,10}9 步.*B11",
             "pinned independent review": r"B8 .*固定基点.*候选.*Standards.*Spec.*并行.*新上下文.*过期",
             "full delivery before close": r"B10 .*主干.*合并后.*清理.*push.*远端.*## B11 .*回读.*关闭 tickets.*关闭当前 SPEC.*CLOSED",
@@ -37,6 +35,18 @@ class ImplementationEntryStaticTests(unittest.TestCase):
         for topic, pattern in contracts.items():
             with self.subTest(topic=topic):
                 self.assertRegex(entry, re.compile(pattern, re.S))
+        preflight = entry.split("## B2 ", 1)[1].split("## B3 ", 1)[0]
+        self.assertRegex(preflight, r"(?s)完整闭包门禁.*能力或授权缺失.*新交付写入前 blocked")
+        self.assertRegex(preflight, r"(?s)必经.*tracker.*角色.*工作目录.*按触发预检.*只在实际进入.*未触发 Full 不探测")
+        self.assertRegex(preflight, r"(?s)纯说明.*源码核对.*Agent 决策.*文本场景.*可执行行为.*公开 seam.*回归.*混合差异")
+        implementation = entry.split("## B5 ", 1)[1].split("## B6 ", 1)[0]
+        self.assertRegex(implementation, r"(?s)新上下文 implementer.*独立工作树.*提交前.*新的 \*\*merger\*\* 上下文")
+        self.assertRegex(implementation, r"纯说明／链接：.*语义、引用、格式和差异.*不制造行为 RED")
+        self.assertRegex(implementation, r"改变 Agent 决策.*具体输入.*动作、证据和停止点.*不是运行证明")
+        self.assertRegex(implementation, r"可执行行为：.*`tdd`.*公开 seam.*真实 RED.*最小实现.*GREEN.*回归")
+        pi = (ENTRY / "references/pi-execution.md").read_text(encoding="utf-8")
+        self.assertRegex(pi, r"(?s)已通过探针.*环境／cwd.*工具／版本.*权限及角色要求.*仅同条件复用.*变化刷新.*实际角色仍须 fresh")
+        self.assertRegex(pi, r"可执行行为才.*实际 tdd.*不为纯文字做行为 RED")
         for name in ("verification-before-completion", "ce-simplify-code", "ce-compound"):
             self.assertIn(f"references/upstream/{name}/adapter.md", entry)
         metadata = (ENTRY / "agents/openai.yaml").read_text(encoding="utf-8")
@@ -48,7 +58,10 @@ class ImplementationEntryStaticTests(unittest.TestCase):
         compound = (upstream / "ce-compound/adapter.md").read_text(encoding="utf-8")
         contracts = {
             "adapter first and global": r"先完整读取本适配.*贯穿所有.*references.*subagent prompts",
-            "full default without silent downgrade": r"depth:full.*默认.*Full.*不得.*静默降级",
+            "explicit mode token, no silent downgrade": r"显式传一个深度 token.*默认 Full.*Full 受阻时不得静默降级",
+            "lightweight losses and retained checks":
+                r"depth:lightweight.*不派子 Agent；披露省略语义查重.*历史研究、独立语义 grounding.*当前源码.*精确路径冲突.*写入边界.*缺陷形状 fail.*机械 claims 和 frontmatter",
+            "full and final review retained": r"depth:full.*实际新上下文.*两种深度都不替代外层最终独立审查",
             "capture despite free text": r"自由文本.*refresh.*capture",
             "mandatory judgment may write nothing": r"必须调用技能判断.*no-write",
             "authority replaces every effect": r"每一处 CONCEPTS.md.*读取.*写入.*grounding.*discoverability.*report.*替换",
@@ -102,10 +115,11 @@ class ImplementationEntryStaticTests(unittest.TestCase):
                     self.assertEqual(source["modifications"], ["SKILL.md renamed to instructions.md; bytes unchanged"])
             self.assertEqual(manifest["sources"]["verification-before-completion"]["files"][0]["sha256"],
                              "2BEFE7FC55BCADAA3D97DD9E8EFEB633D2561C0EBE74C5A8B17C4D9E7E4520B3")
-            self.assertEqual(sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in ROOT.rglob("SKILL.md")),
-                             ["commit-n-push/SKILL.md", "implement-spec-to-done/SKILL.md",
-                              "improve-codebase-architecture-to-done/SKILL.md", "to-spec-to-done/SKILL.md",
-                              "what-now/SKILL.md"])
+        # Check the repository inventory after removing the selected copy, even with in-tree TEMP.
+        self.assertEqual(sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in ROOT.rglob("SKILL.md")),
+                         ["commit-n-push/SKILL.md", "implement-spec-to-done/SKILL.md",
+                          "improve-codebase-architecture-to-done/SKILL.md", "to-spec-to-done/SKILL.md",
+                          "what-now/SKILL.md"])
 
 
 if __name__ == "__main__":

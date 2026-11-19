@@ -21,12 +21,12 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 完整读取当前 SPEC 和评论的验收、公开测试接口、完成方法／执行与交付原文。记录每条要求→实际操作→证据→关闭条件，含范围／非目标、必需技能及触发参考、branch／review baseline、合并／清理／push／tracker 要求。具体顺序按 SPEC，不用默认流程缩减契约。
 
-在受阻写入开始前预检并留下结果：
+按实际改动与风险选择验证面并传入 B5：纯说明／链接用源码核对；改变 Agent 决策的指令加定向文本场景；可执行行为用适用公开 seam 与回归。混合差异分别覆盖，不按扩展名判断；不缩减 SPEC 明定的验收。
 
-- **技能**：共享兄弟资源；实际 `grilling`、`to-tickets`、`implement-spec`、`tdd`（含 tests.md／mocking.md）、`code-review` 的正文与必需参考可读。设计触发时预检 codebase-design／design-an-interface／domain-modeling，冲突时预检 resolving-merge-conflicts，以及 SPEC 额外依赖。
-- **专项**：本目录 verification、simplify、compound 的 adapter／instructions／provenance／LICENSE 与所选分支资产可读、hash 对应版本。Full capture 的 Python／Bash 命令及路径按 Pi 执行适配实际探测；未触发不运行 capture，但不能把 source-only 当运行能力。
-- **平台**：tracker 身份／权限、原生关系读写、Git 工作树／分支和正常 remote 交付能力，明确操作授权；读操作不能证明写权限。不可做安全探针的外部写入依授权并在实际阶段回读，不假造成功。
-- **角色**：真实新上下文 implementer／merger／Standards／Spec／事实调查，以及条件触发专项 reviewer、Related Docs Finder、historian、grounding 能按各自工作目录／工具边界运行。按 Pi 执行适配做只读启动探针；启动故障不算委托，mandatory final review 不能退成自审。
+先核验必经能力和已知必需授权，记录结果；B1 的完整闭包门禁不变，已知必需能力或授权缺失须在任何新交付写入前 blocked。
+
+- **必经**：核对共享资源、实际 `grilling`、`to-tickets`、`implement-spec`、`code-review` 及必需参考；核对 verification／simplify 的 adapter／instructions／provenance／LICENSE 与版本。核验 tracker 身份／权限、原生关系和 Git 工作树／分支／remote 交付能力；读操作不证明写权限，不以未授权写入作探针。按 Pi 执行适配验证必需角色的工具和工作目录，包括独立 implementer／merger／Standards／Spec。
+- **按触发预检**：只在实际进入条件分支时探测专属技能／命令／环境／角色（如设计、事实调查、冲突、适用 TDD 的 tests.md／mocking.md、简化 reviewers、compound 选定深度）；核对所选资产与版本并在受阻写入前验证。未触发 Full 不探测其专属能力。按 Pi 执行适配仅复用同条件下已验证的探针，不复用旧角色充当新执行。
 
 完成条件：每项要求有可核验操作，必需能力／授权具备；否则 blocked，记录具体阶段、已查结果、保留成果和最小继续条件，不启动受阻写入。
 
@@ -34,13 +34,13 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 完整读取真实 `grilling/SKILL.md` 并按已加载自动推荐适配执行一次实施级复核；即使简单、信息完整、已有 tickets 或规格级 grilling 也必跑，不对每个 ticket 重复访谈。复用已定决定和已授权公开 seam，集中核对现状、前序交付引起的设计漂移、状态／接口、迁移、失败恢复和实施风险。
 
-每轮按 design tree 的 frontier：前置成立→调查事实→推荐→按既有授权自动采用本轮全部推荐→重算依赖。无机械轮数／问题数，不重复等常规确认；不可验证事实仍未知，自动推荐不扩权。模块／接口取舍按共享规则触发设计技能。范围、验收或 seam 有实质变化，先记录并按权限修订 SPEC／取得必要授权。完成条件：实施决定收敛，关键未知有处理，已有测试接口沿用；否则继续调查或如实 blocked。
+每轮按 design tree 的 frontier：前置成立→调查事实→推荐→按既有授权自动采用本轮全部推荐→重算依赖。无机械轮数／问题数，不重复等常规确认；不可验证事实仍未知，自动推荐不扩权。涉及模块职责、接口、复杂度封装、修改局部性或公开测试 seam 时，直接读取并应用实际 `codebase-design`，将适用结论留在原 SPEC 的实施／测试决定；纯措辞可注明不适用。仅按共享规则的专属条件触发 `design-an-interface`／`domain-modeling`。范围、验收或 seam 有实质变化，先记录并按权限修订 SPEC／取得必要授权。完成条件：实施决定收敛，关键未知有处理，已有测试接口沿用；否则继续调查或如实 blocked。
 
 ## B4 调用原 to-tickets，核验复用
 
 读取并执行实际兄弟 `to-tickets/SKILL.md`，只传当前 SPEC、既有决定／seam、交付门禁和自动推荐授权。沿其原模板拆可独立验证的 tracer-bullet 纵向 slices，声明阻塞 edges；不复制模板或另设计划主持器。沿用已授权的建议拆分，不重复常规批准；没有适用授权先取得它。
 
-创建前搜索并回读既有 tickets，逐项核验需求覆盖、验收、身份和依赖，**复用**合格项，仅补缺。GitHub 使用当前 SPEC 的原生父子关系和原生阻塞关系及适用标签（默认 ready-for-agent），正文链接不代替 edges；本仓库所有 gh issue 操作显式 `--repo williamxhero/skills`，API 使用同一 repo endpoint。回读完整正文、父子集合及依赖方向，确认可执行 frontier；原生关系失败则 blocked。写入超时／未知先源头查结果，避免重复票／edges，不接管无关关联。
+创建前搜索并回读既有 tickets，逐项核验需求覆盖、验收、身份和依赖，**复用**合格项，仅补缺。GitHub 使用当前 SPEC 的原生父子关系和原生阻塞关系及适用标签（默认 ready-for-agent），正文链接不代替 edges；按项目指令显式指定 tracker（GitHub CLI 指定仓库、API 使用对应 endpoint）。回读完整正文、父子集合及依赖方向，确认可执行 frontier；原生关系失败则 blocked。写入超时／未知时按共享恢复规则回读票与 edges，不接管无关关联。
 
 完成条件：已授权、实际发布、源头回读、覆盖及原生图完整。在此之前不编码，不先写代码再补票；本地 tracker 按其原文件／阻塞约定逐一验证。
 
@@ -48,13 +48,17 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 完整读取真实 `implement-spec/SKILL.md`，传入 **仅当前 SPEC** 及回读后的 tickets、完成方法、关闭限制和以下阶段适配。建立／复用 SPEC 集成分支，固定并记录审查基点 SHA（当前任务起点，不随实现移动）、主干身份和所有资源归属。根据 tracker 图推进当前 SPEC 内的 frontier；实现已集成／验证是内部可执行前沿证据，不等于平台 ticket 已关闭，外层完成后统一关闭。
 
-每个 ticket 使用新上下文 implementer 和独立工作树／分支，核对集成分支祖先／干净状态；基点不符安全合并或新建并保留成果，不破坏性 reset。读取实际 `tdd` 及 tests／mocking，按已授权 seam 一项行为→失败测试→确认预期原因→最小实现→确认 green；不批量预写全部测试，不为测试暴露内部。STATIC／模拟／实际模型／平台证据分别标记。
+每个 ticket 使用新上下文 implementer 和独立工作树／分支，核对集成分支祖先／干净状态；基点不符安全合并或新建并保留成果，不破坏性 reset。按 B2 的验证面执行并记录：
 
-报告前 implementer 合入集成 tip，先读并执行 [verification adapter](references/upstream/verification-before-completion/adapter.md) 再执行其 instructions，提交候选、完整 red／green 输出及限制。新的 **merger** 上下文核验范围、提交／祖先、diff 和新鲜验证后正常合入集成分支；需要冲突解决则读取真实 resolving-merge-conflicts，保护 WIP。更新实际 ticket 图的可执行前沿再派下一批，不跨 SPEC。
+- 纯说明／链接：核对语义、引用、格式和差异；不制造行为 RED。
+- 改变 Agent 决策的指令：再以具体输入推演预期动作、证据和停止点，核对与必读参考一致；文本推演不是运行证明。
+- 新增／修改可执行行为：读取实际 `tdd` 及 tests／mocking，按适用的已授权公开 seam 逐项做真实 RED（确认预期失败原因）→最小实现→GREEN 和回归；不批量预写全部测试，不暴露内部。混合改动分别验证。
+
+报告前 implementer 合入集成 tip，先读并执行 [verification adapter](references/upstream/verification-before-completion/adapter.md) 再执行其 instructions，提交前运行并读完适用验证，报告候选、命令、结果、证据指针（适用时含 RED／GREEN）及限制。新的 **merger** 上下文核验范围、提交／祖先、diff 和新鲜验证后正常合入集成分支；需要冲突解决则读取真实 resolving-merge-conflicts，保护 WIP。更新实际 ticket 图的可执行前沿再派下一批，不跨 SPEC。
 
 ### LOCAL PHASE ADAPTATION — 不是 hook API
 
-显式传递本地执行顺序：保留 implement-spec 原步骤 1–6 的任务图、集成分支、fresh implementer／tdd／merger；全部当前 tickets 集成并稳定后，**插入 B6 简化 + B7 条件经验捕获，再进入原第 7 步 code-review（即 B8）**。原第 7 步只在此最终位置调用一次，不先跑一个旧候选的“最终审查”。修复按 B8 刷新受影响证据／必要复审，而非循环整个主持流程。
+显式传递本地执行顺序：保留 implement-spec 原步骤 1–6 的任务图、集成分支、fresh implementer／适用时 tdd／不同 fresh merger；全部当前 tickets 集成并稳定后，**插入 B6 简化 + B7 条件经验捕获，再进入原第 7 步 code-review（即 B8）**。原第 7 步只在此最终位置调用一次，不先跑一个旧候选的“最终审查”。修复按 B8 刷新受影响证据／必要复审，而非循环整个主持流程。
 
 **原第 8–9 步的 ready／ticket close／报告及工作树 cleanup 全部暂缓**，由外层 B9 验收、B10 完整交付、B11 完成记录回读与关闭门禁释放；不能委托原技能的自动关闭／清理绕过。draft PR 依原技能可在首次合入后按授权创建，但暂不用可自动关闭 Issue 的 closing keywords／平台设置；推送、PR ready 或自动合并均不能提前释放关闭。无真实 hook 注册，不改 Pi 核心、不新增 scheduler state authority。
 
@@ -64,13 +68,13 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 先完整读取 [simplify adapter](references/upstream/ce-simplify-code/adapter.md)，再读取 instructions.md 和所有触发参考。输入 `mode:pipeline`、固定基点→当前候选精确差异、所有 proof-test 路径／证据及已确定 structure pins；范围仅当前 SPEC，不在每次 red→green 后整理。
 
-按上游 preflight：prose／skills Markdown、配置、vendor／generated 不是代码；无代码或仅机械 churn 返回 `nothing to simplify`，不派 reviewer。混合范围的 authored Python 测试是代码，照常保留在范围。真实 reviewers 按完整 persona／Pi 进程适配执行；保护行为、安全、兼容和证明测试原样。简化后跑 typecheck／lint／blast-radius tests；未配置明确说明，失败则修复／撤销责任变更，不弱化断言。完成条件：新鲜检查支持行为保留，或有可核查 no-code／no-change 理由。
+按上游 preflight：prose／skills Markdown、配置、vendor／generated 不是代码；无代码或仅机械 churn 返回 `nothing to simplify`，不派 reviewer。混合范围的自编脚本和测试是代码，照常纳入检查。真实 reviewers 按完整 persona／Pi 进程适配执行；保护行为、安全、兼容和证明测试原样。简化后跑 typecheck／lint／blast-radius tests；未配置明确说明，失败则修复／撤销责任变更，不弱化断言。完成条件：新鲜检查支持行为保留，或有可核查 no-code／no-change 理由。
 
 ## B7 条件式单项 ce-compound 判断
 
 核对已验证工作是否纠正错误认识。无触发记录 `not triggered`，直接 B8；有已解决且验证的错误认识，**必须**先读 [compound adapter](references/upstream/ce-compound/adapter.md) 再执行 instructions 及必需参考，由技能判断 cheapest durable form 或 no-write，调用方不能先以“不值得写文档”跳过。
 
-固定 capture `mode:non-interactive depth:full`，一次一个问题，必要时顺序多次；自由文本含 refresh 不改变模式，绝不启动 refresh／enhancement／PR／config／standards setup。复用 GLOSSARY.md／项目指定权威，不并行养 CONCEPTS.md；全参考和子 Agent 使用相同术语／写入边界适配。Full 的相关文档、history 和 grounding 用真实新上下文及命令能力，不静默 lightweight。新增 check 要当前树 pass 且 throwaway 缺陷形状 fail（各 guard 单独证明），否则按技能撤销／推荐下一 form；词汇仅实际需要时懒维护。
+一次一个问题，按 adapter 显式选择非交互深度：局部且证据自足、不需历史或跨模块归并才可 `depth:lightweight`；跨模块、依赖历史、重叠或不确定性重要，或契约要求时用 `depth:full`。通过技能资格判断后，按实际进入的分支预检，遵守 adapter 的减损披露、写入与验证约定；Full 故障不得静默降级。两种模式都不替代 B8 最终独立审查。
 
 完成条件：每个触发项确已判断，写入及影响均验证或有明确 no-write 原因；记录 Documentation complete／Documentation skipped 与具体证据。能力阻塞不能包装为已完成 capture，留在当前阶段。
 
@@ -90,15 +94,15 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 按 SPEC 约定及权限，将集成成果正常合入主干，运行合并后验证；主干有新变更／冲突使候选结论过期则回到受影响验证／审查。核对每个待清理 branch 成果确实在主干、对应工作树干净且属于本任务，保留必要日志和恢复指针后才清理本次 worktree／已合并 branch。禁止丢 WIP、强推、强删未合并分支或处理其他线程资源，不默认调用全项目 commit-n-push。
 
-按约定正常 push 主干，源头回读远端 ref，核对本地主干／tracking ref／真实远端 SHA 一致（如 git rev-parse、git ls-remote 对应 ref），不能只信 push 响应。清理／push 任一失败留住实际未交付状态，不关闭。
+按约定正常 push 主干，源头回读远端 ref，核对本地主干／tracking ref／真实远端 SHA 一致（如 git rev-parse、git ls-remote 对应 ref），不能只信 push 响应。清理／push 任一失败留住实际未交付状态，不关闭；push 结果未知按共享恢复规则查实际远端。
 
 完成条件：主干集成、合并后验证、安全清理、push 和远端一致均有证据；这是 Git 交付，不代表 CC Switch 安装。CC Switch 仍是唯一安装／分发管理器，另需授权支持的导入／更新及实际验证，不改 SSOT／DB／config／客户端 links 绕过它。
 
 ## B11 完成记录回读，然后关闭
 
-把当前 SPEC 的 tickets、提交、验收／审查、主干、清理、远端、适配版本及限制写入真实 tracker 完成记录，回读确认正文和证据一致。完整交付证据成立且记录回读通过后，先关闭 tickets，再关闭当前 SPEC，回读 `CLOSED`，最后更新总 SPEC todo 使正文／系统状态一致。本地 SPEC 写可核验完成记录才可推进。
+把当前 SPEC 的 tickets、提交、验收／审查、主干、清理、远端、适配版本及限制写入真实 tracker 完成记录，在 Issue 仍 OPEN 时回读确认正文和证据一致。完整交付证据成立且记录回读通过后，先关闭 tickets 并逐项回读 completed `CLOSED`，再关闭当前 SPEC 并回读 completed `CLOSED`，最后更新总 SPEC todo 使正文／系统状态一致。本地 SPEC 写可核验完成记录才可推进。
 
-误关／取消关闭／PR 自动关闭不是验收；发现未交付应按授权恢复真实状态并调查，不能借关闭结果跳过 B9–B10。外部写入结果未知先查源头，不盲重试。完成条件：全部原文要求满足、平台与证据一致；缺权限或失败保留成果，报告最小继续条件，不称 Done。
+误关／取消关闭／PR 自动关闭不是验收；发现未交付应按授权恢复真实状态并调查，不能借关闭结果跳过 B9–B10。写入结果未知按共享恢复规则处理。完成条件：全部原文要求满足、平台与证据一致；缺权限或失败保留成果，报告最小继续条件，不称 Done。
 
 ## B12 关闭确认后才选下一 SPEC
 

@@ -26,12 +26,13 @@ class ArchitectureEntryStaticTests(unittest.TestCase):
         self.assertRegex(frontmatter, r"(?m)^name: improve-codebase-architecture-to-done$")
         self.assertNotRegex(frontmatter, r"(?i)draft|草案")
         self.assert_topics(entry, {
-            "source is not deployment": r"源码.*(STATIC|静态).*(未部署|未安装)",
+            "separate evidence for source, deployment and load": r"区分源码检查、经授权的 CC Switch 部署、实际加载和运行验收；各自留证据",
             "loaded entry anchor": r"实际加载.{0,40}(父目录|目录)",
             "compatible installed sibling required": r"兼容.{0,40}to-spec-to-done.*(缺失|不可读).*blocked",
             "explicit supplied root only": r"显式.{0,40}skill root",
             "actual reads, not fictional invocation": r"读取.{0,40}SKILL.md.*必需参考.*执行.*Skill API",
         })
+        self.assertNotRegex(entry, r"本次源码变更未(?:部署|安装)")
         metadata = text(ENTRY / "agents/openai.yaml")
         self.assertNotRegex(metadata, r"(?i)draft|草案")
         for name in (ENTRY.name, "to-spec-to-done", "implement-spec-to-done"):
@@ -58,16 +59,20 @@ class ArchitectureEntryStaticTests(unittest.TestCase):
                           "improve-codebase-architecture-to-done/SKILL.md", "to-spec-to-done/SKILL.md",
                           "what-now/SKILL.md"])
 
-    def test_static_candidate_phase_is_scoped_visual_and_not_standalone_grilling(self):
+    def test_static_candidate_phase_is_scoped_with_conditional_visuals(self):
         entry = text(ENTRY / "SKILL.md")
-        self.assert_topics(entry, {
+        self.assert_topics(entry.split("## C2 ", 1)[0], {
             "C1 bounded baseline": r"## C1 .*授权.*基线.*近期.*(commit|SHA).*摩擦.*测试",
+        })
+        candidate = entry.split("## C2 ", 1)[1].split("## C3 ", 1)[0]
+        self.assert_topics(candidate, {
             "explicit phase boundary": r"LOCAL CANDIDATE.PHASE ADAPTATION.*原.*[12].*原.*[3].*(跳过|不执行)",
             "real original plus scaffold": r"improve-codebase-architecture/SKILL.md.*HTML-REPORT.md.*scaffold",
             "fresh completed exploration": r"新上下文.*探索.*(输出|事件).*退出码",
             "deletion reasons not aesthetic proxy": r"deletion test.*(消失|散落).*locality.*leverage",
             "facts versus proposal": r"现状.*拟议.*未实施.*(接口|interface)",
-            "real diagrams not a claim": r"(Before|before).*Proposed.*(图|diagram).*(无图|没有图).*不.*可视",
+            "conditional visuals with actual verification": r"单一局部.*文字足以.*关系复杂.*用户／契约要求图.*验证实际图或 HTML",
+            "render failure does not erase facts or satisfy required visual": r"Before.*Proposed.*图例.*渲染失败保留已证实事实，不算视觉交付；必需图仍未完成，停在 C2",
             "visual route prepares first": r"visual-explainer.*prepare.*目录.*源文件.*render",
             "original interaction intact": r"原版.*(不修改|保持).*单独.*(交互|选择)",
             "no premature interface design": r"不提前.{0,30}(设计|确定).{0,20}完整.{0,20}接口",

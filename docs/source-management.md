@@ -21,8 +21,8 @@ CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Ma
 | 安装目录 | 随目录交付 | 另需兼容兄弟资源 |
 | --- | --- | --- |
 | `to-spec-to-done` | 唯一公共规则 `references/engineering-quality.md`、`auto-grilling.md` | 实际 Matt `grilling`、`to-spec`，按需设计技能 |
-| `implement-spec-to-done` | Pi 执行适配、三个固定专项资源及完整所选目录 | `../to-spec-to-done/references/` 两文件；Matt `grilling`、`to-tickets`、`implement-spec`、`tdd`（tests／mocking）、`code-review`；条件式设计／冲突技能 |
-| `improve-codebase-architecture-to-done` | 有范围候选与两入口交接指令 | 上述两个配套入口；Matt `improve-codebase-architecture`（HTML-REPORT）、`codebase-design`；触发参考 |
+| `implement-spec-to-done` | Pi 执行适配、三个固定专项资源及完整所选目录 | `../to-spec-to-done/references/` 两文件；Matt `grilling`、`to-tickets`、`implement-spec`、`code-review`；条件式 `tdd`（tests／mocking）、设计／冲突技能 |
+| `improve-codebase-architecture-to-done` | 有范围候选与两入口交接指令 | 上述两个配套入口；Matt `improve-codebase-architecture`、`codebase-design`；视觉分支触发 HTML-REPORT 等参考 |
 
 三入口必须交接为**同一已审查兼容版本组合**；不是三个互相独立的安装包。架构入口还读取实施入口的 `references/pi-execution.md`。公共规则只维护一份，不复制三份，也不放在不会随目录交付的 `_shared`。先安装／更新公共规则所在入口，再核对实施与架构入口；这只是授权部署的建议顺序，不是自动升级授权。中途版本不兼容停用受影响流程并恢复兼容组合。
 
@@ -36,9 +36,9 @@ CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Ma
 | --- | --- | --- |
 | obra/superpowers | `22f0b463e7a5e579904dd6211a520321035526f7` | verification-before-completion：1 原文件，完整验证门禁 |
 | EveryInc/compound-engineering-plugin | `a3d6a8ee41a404b74391ee278423b52890b8920d` | ce-simplify-code：12 原文件；包装器只支持当前 SPEC pipeline |
-| 同上 | 同上 | ce-compound：39 原文件；capture、non-interactive、Full，一次一个已验证错误认识 |
+| 同上 | 同上 | ce-compound：39 原文件；capture、non-interactive、显式 Lightweight 或 Full，一次一个已验证错误认识 |
 
-52 个上游文件字节不变，只将各自主文件 SKILL.md 改名为 instructions.md，避免新增公开入口；保留各目录 MIT LICENSE。适配单独标明实际 Pi 新进程工具映射、主流程阶段交接、证明测试保护、compound 权威术语替换与 historian 仅 scratch 写入差异。保留可选参考不代表激活 refresh、standalone、bootstrap 或第二条 ce-plan／ce-work。Bash／Python／Unix 命令在实际 capture 环境另做能力预检。
+52 个上游文件字节不变，只将各自主文件 SKILL.md 改名为 instructions.md，避免新增公开入口；保留各目录 MIT LICENSE。适配单独标明实际 Pi 新进程工具映射、主流程阶段交接、证明测试保护、compound 权威术语替换与 historian 仅 scratch 写入差异。保留可选参考不代表激活 refresh、standalone、bootstrap 或第二条 ce-plan／ce-work。按实际 capture 分支预检所需 Bash／Python／Unix 命令及角色。#13 源码约定不改变下列历史版本的部署证据；见 [#13 / #14 检查点](acceptance.md#spec-13--ticket-14--source-checkpoint)。
 
 仓库自有内容的根许可证尚待用户决定；不因仓库 Public 自行选择许可证。随包第三方通知必须保留。
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "Implement Spec To Done"
   short_description: "保留最终目标，串行交付已授权前置，再完成唯一当前 SPEC 的完整交付"
-  default_prompt: "使用 $implement-spec-to-done 交付指定最终目标。先读共享兄弟资源和 B1 必需 prerequisite-delivery 合同，核验完整来源后选择唯一当前 SPEC；先交付已授权前置再返回原目标。按原 B2–B11 执行 grilling、隔离实现、简化、条件经验、独立审查及完整交付后才关闭；每次返回／恢复重新核验，缺事实、权限或能力如实 blocked。"
+  default_prompt: "使用 $implement-spec-to-done 交付指定最终目标。先读共享兄弟资源和 B1 必需 prerequisite-delivery 合同，核验完整来源后选择唯一当前 SPEC；先交付已授权前置再返回原目标。按 B2–B11 执行 grilling、隔离实现和适用验证、简化、条件经验、独立审查及完整交付后才关闭；每次返回／恢复重新核验，缺事实、权限或能力如实 blocked。"

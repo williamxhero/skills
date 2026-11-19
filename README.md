@@ -15,9 +15,11 @@
 
 公开源码仓库：**[williamxhero/skills](https://github.com/williamxhero/skills)**。已审查的三入口候选及先前证据已合入并推送 main `9ef92ba34a6e447ac27c5832424dd208dd0ea42e`，当时本地／tracking／实际远端一致，七个旧任务分支／工作树经归属及祖先核验安全清理。本次五文档候选检查点基于该已交付源码，位于最终文档独立复核／交付门禁之前；既有主干交付不等于 SPEC #1 完整验收。
 
-- `to-spec-to-done/`：A1–A7 调查、每次强制自动推荐 grilling、原版 to-spec 发布／回读后停止；随目录交付唯一公共规则。
-- `implement-spec-to-done/`：B1–B12 唯一当前 SPEC、隔离 TDD／集成、稳定后简化／条件经验捕获、独立审查与完整交付门禁；包含固定专项资源及本地适配。
-- `improve-codebase-architecture-to-done/`：C1–C7 有范围证据调查、单候选或 no-change／blocked、复用前两入口；初次归档时是未安装草案，现已由用户通过 CC Switch 更新。
+- `to-spec-to-done/`：A1–A7 调查、每次强制自动推荐 grilling、按判断应用 `codebase-design`，由原版 to-spec 发布／回读后停止。新 SPEC 指定实施包装入口主持后续获准交付；随目录交付唯一公共规则。
+- `implement-spec-to-done/`：B1–B12 唯一当前 SPEC、隔离实施／集成，按变更选择证据（源码核对、文本推演、适用代码 TDD）；保留稳定后简化／条件经验捕获、独立审查与完整交付门禁。
+- `improve-codebase-architecture-to-done/`：C1–C7 有范围证据调查，按需要交付文字或验证过的图，单候选或 no-change／blocked，复用前两入口。
+
+上述 #13 源码约定的验证与交付边界见 [#13 / #14 检查点](docs/acceptance.md#spec-13--ticket-14--source-checkpoint)；下方安装观察绑定先前交付版本。
 
 前两个目录的**初次导出**是原样历史版本，第三个是未安装草案；历史快照不改。当前源码已增强，用户另行使用 CC Switch 4.0.31 更新后，三份管理 payload 分别为 4／62／2 文件且与源码逐文件相同。默认真实 loader 的 reload 前后均发现三个唯一名称、无相关诊断；实际交互 `/reload` 成功且 `/quit` exit 0，三个默认发现命令已展开并读取必需资源。这是管理式发现／加载证据，不是三条完整工作流通过。三入口必须搭配兼容的兄弟公共资源及另行管理的 Matt 依赖；复制单个目录不自动带上兄弟依赖。版本、完整资产／第三方通知、支持的 CC Switch UI 导入／更新及备份回滚事实见 [源码交接](docs/source-management.md)。根许可证尚待用户选择。
 

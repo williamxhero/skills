@@ -13,8 +13,10 @@ ENTRIES = ("to-spec-to-done", "implement-spec-to-done", "improve-codebase-archit
 
 class SourceHandoffStaticTests(unittest.TestCase):
     def test_static_maintained_sources_have_no_machine_specific_paths(self):
-        snapshot = (ROOT / "docs/specs/20261117-pi-engineering-to-done-workflows.md").read_text(encoding="utf-8")
-        delivery = snapshot.split("## 执行与交付\n", 1)[1].strip()
+        entry = (ROOT / "to-spec-to-done/SKILL.md").read_text(encoding="utf-8")
+        delivery = entry.split("## 写入 SPEC 的“执行与交付”\n", 1)[1]
+        self.assertNotRegex(delivery, r"(?i)[A-Z]:[/\\]|file:|~[/\\]|(?:^|[\s(`])[/\\](?!skill:)")
+        self.assertNotIn("williamxhero/skills", delivery)
         paths = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "docs/source-management.md"]
         for name in ENTRIES:
             paths.extend(p for p in (ROOT / name).rglob("*") if p.suffix in {".md", ".yaml"}
@@ -23,9 +25,6 @@ class SourceHandoffStaticTests(unittest.TestCase):
         for path in paths:
             with self.subTest(path=path.relative_to(ROOT).as_posix()):
                 document = path.read_text(encoding="utf-8")
-                if path == ROOT / "to-spec-to-done/SKILL.md":
-                    self.assertEqual(document.count(delivery), 1)
-                    document = document.replace(delivery, "")
                 self.assertNotRegex(document, r"(?i)[A-Z]:[/\\](?:Users|WILL|Pi)[/\\]")
 
     def test_static_three_selected_copies_close_maintained_resource_links(self):

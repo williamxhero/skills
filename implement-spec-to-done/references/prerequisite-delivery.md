@@ -29,7 +29,7 @@
 
 完整闭包通过安全核验后，从尚未交付且所需前置均已真正交付的 SPEC 中选 **一个** CURRENT：尊重显式业务顺序及依赖；只有其余条件等价且无既定顺序时，用 canonical identity 元组（规范仓库身份、稳定 ID 的字符串表示）按字典序升序 tie-break，并说明这不是业务优先级。向所需深度解析，授权未完成前置成为 CURRENT，不因它未完成就 blanket BLOCKED。跨 SPEC 串行；同一 SPEC 内仍按原 ticket 图执行。
 
-每个实际进入的未交付 CURRENT 都完整执行入口 B2–B11：完整完成方法／能力和权限预检、mandatory original grilling、original to-tickets 发布／身份覆盖／图回读或合格复用、original implement-spec 的隔离 fresh implementer 和 DIFFERENT fresh merger、稳定 B6、真实条件 B7、并行独立单轴 B8、B9 新鲜全部验收、B10 正常主干交付及安全清理／push／真实远端一致、B11 完整 OPEN 记录源头回读→tickets close/read→SPEC completed close/read。prose 可如实 no-code，不伪造代码 TDD；authored code 仍逐项公开 seam RED→最小实现→GREEN。
+每个实际进入的未交付 CURRENT 都完整执行[实施入口](../SKILL.md)的 B2–B11，不以选择／复用规则替代实施、验收或关闭门禁。
 
 后续 SPEC 的新 tickets／产品工作等待其 **所有** 必需前置完整交付并 completed CLOSED 回读；已有后续 tickets 保持未启动。CURRENT 任一 mandatory 阶段失败就保留该 CURRENT、原 target、具体阶段／诊断／进展和最小继续条件并 STOP；不换独立分支掩盖失败，不称 Done。
 
@@ -39,4 +39,4 @@
 
 每次 completed CLOSED 后、resume 时、任何新事实／新边／reopen 出现时，在下一次拆票／新写入前重新读取 **原 final target 与整个剩余相关闭包** 的完整状态、角色、关系、证据和授权，重跑上述分类／安全核验并重新计算 CURRENT；重新核验共享已交付证据，不能沿缓存拓扑计划继续。新增 incoming edge 或重开的前置使下游选择失效，先核验新事实。
 
-所有必要前置成立后才恢复原 target 的工作（ticket 使用已核验 owner，原 ticket 验收仍须成立）。总 SPEC 的子项 CLOSED 不能代替总体验收：若有独立集成工作，以总 SPEC 为唯一 CURRENT 走 B2–B11；否则核对完整总交付义务及记录后才按 B11 关闭／回读。外部写入结果未知时先完整源头 GET、all-state full-body 身份／覆盖去重及相关图回读，再判断是否需要重试；保留部分成果，避免重复写入。仅操作已授权、明确归属的资源，不另开架构扫描或引入 scheduler。
+所有必要前置成立后才恢复原 target 的工作（ticket 使用已核验 owner，原 ticket 验收仍须成立）。总 SPEC 的子项 CLOSED 不能代替总体验收：若有独立集成工作，以总 SPEC 为唯一 CURRENT 走 B2–B11；否则核对完整总交付义务及记录后才按 B11 关闭／回读。外部写入结果未知时按共享恢复规则处理：决定是否重试前须完成源头 GET、all-state full-body 身份／覆盖去重及相关图回读。仅操作已授权、明确归属的资源，不另开架构扫描或引入 scheduler。
