@@ -24,11 +24,13 @@ research 用权威相关词汇分类；assembly／lightweight 只按上述边界
 
 ## 所选深度与真实平台能力
 
+两种深度的每条上游命令均使用本 `instructions.md` 所在目录作为 `SKILL_DIR`（文件名重命名的唯一锚点映射），保持内部相对资源不变；机械 claims 和 frontmatter 检查也使用此锚点。
+
 **Lightweight**：显式 `mode:non-interactive depth:lightweight`，执行 [lightweight.md](references/lightweight.md) 的单人顺序流程和非交互报告。不派子 Agent；披露省略语义查重／交叉引用、历史研究、独立语义 grounding，可能与别的路径下的经验重叠。仍对照当前源码核实事实，按原规则处理精确路径冲突（读取已有文档，仅同问题按原结构更新，否则换名并检查）；保留上述写入边界、当前树 pass／缺陷形状 fail 证明，以及成文的机械 claims 和 frontmatter 检查。只预检所选流程实际需要的脚本／runner；不跑 Full 专属探针。
 
 **Full**：显式 `mode:non-interactive depth:full`。
 
-通过资格判断并进入 Full 研究时，先读 [pi-execution.md](../../pi-execution.md) 并实际预检所需 Bash／Unix commands、Python 3、脚本绝对路径和工作目录；source-only 打包不证明任何命令可运行。每条上游命令的 `SKILL_DIR` 都是本 instructions.md 目录（文件名重命名的唯一锚点映射），保持内部相对资源不变。docs_root 只读 config.yaml，repo-contained／非根／非 .git 校验保持；packs resolver 独立可读两种配置，网络／cache 写入遵循授权与原 unresolved fallback。
+通过资格判断并进入 Full 研究时，先读 [pi-execution.md](../../pi-execution.md) 并实际预检所需 Bash／Unix commands、Python 3、脚本绝对路径和工作目录；source-only 打包不证明任何命令可运行。docs_root 只读 config.yaml，repo-contained／非根／非 .git 校验保持；packs resolver 独立可读两种配置，网络／cache 写入遵循授权与原 unresolved fallback。
 
 Full 顺序保持：research（schema／yaml-schema、live corpus、独立 Related Docs Finder）→自动 history probe 与父级 drafting 并行→等待所有 Phase 1 输入→form／assembly／vocabulary→mechanical 和独立 semantic grounding→refresh recommendation／discoverability→report。必需参考按步骤全读，conditional historian 只在 probe relevance 达标后新进程；无相关 history 是正常输入，不是跳过 probe。Related Docs Finder／history synthesis／semantic grounding 均实际新上下文，用完整资产而非伪 API；沿用上游仅在明确失败条件允许的 fallback 并披露，不扩大为最终独立审查降级。
 

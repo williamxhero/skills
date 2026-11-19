@@ -58,7 +58,21 @@ class SpecEntryStaticTests(unittest.TestCase):
         )
         rules = text(ENTRY / "references/engineering-quality.md")
         design = rules.split("### codebase-design\n", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("需要判断模块职责、接口、复杂度封装、修改局部性或公开测试 seam 时，触发 `codebase-design`", design)
+        trigger = re.search(
+            r"(?:需要|必须)(?P<criteria>[^。；\n]+?)(?<!不)(?:触发|调用)\s*`codebase-design`",
+            design,
+        )
+        self.assertIsNotNone(trigger, "design judgments must trigger `codebase-design`")
+        self.assert_concepts(trigger["criteria"], {
+            "design judgment": r"判断|决定|权衡",
+            "any criterion can trigger design": r"或|任一|任何一项",
+            "module responsibilities": r"模块.{0,8}(职责|分工)",
+            # Do not count a public test interface as the general interface criterion.
+            "interfaces": r"(?:^|[、，,／或])\s*(?:模块)?接口",
+            "encapsulation of complexity": r"复杂度.{0,8}(封装|隐藏)|(?:封装|隐藏).{0,8}复杂度",
+            "change locality": r"(修改|变更).{0,8}局部性",
+            "public testing seam": r"公开.{0,8}(测试.{0,4}(?:seam|接口))",
+        })
         adapter = text(ENTRY / "references/auto-grilling.md")
         self.assert_concepts(adapter, {
             "real upstream": r"读取并执行.{0,40}grilling/SKILL.md",
@@ -98,14 +112,27 @@ class SpecEntryStaticTests(unittest.TestCase):
                 r"发布并回读后停止.*另行获得实施授权后，由 `/skill:implement-spec-to-done` 主持",
             "delegation only": r"委托 `to-tickets`.*明确依赖.*委托 `implement-spec`.*不是替代入口",
             "explicit target": r"按项目指令显式指定 tracker",
-            "integrate tickets before candidate review and acceptance, then main and postmerge checks":
-                r"适用测试通过后，先将 ticket 成果汇入 SPEC 集成分支（B5）；"
-                r"集成后的候选经最终独立审查（B8）及验收（B9）通过后，再合入主干，运行合并后验证",
             "owned, merged and clean only": r"仅清理.*明确归属.*已纳入主干.*工作树干净.*worktree.*分支",
             "normal push and governing remote": r"正常 push 主干.*源头核对实际远端.*本地主干.*tracking ref.*一致",
             "record readback before ordered close": r"回读完成记录.*先关闭 tickets.*后关闭 SPEC.*回读关闭状态",
             "failure preserves work": r"失败则停止.*保留成果.*报告阻塞.*不强删或强推",
         })
+        stages = (
+            ("applicable tests pass", r"适用测试[^。；\n]{0,12}(?<![不未])通过"),
+            ("ticket integration", r"ticket.{0,16}(汇入|集成到|合入)\s*SPEC 集成分支.{0,8}\bB5\b"),
+            ("integrated candidate", r"集成.{0,10}候选"),
+            ("final independent review", r"最终.{0,8}独立审查.{0,8}\bB8\b"),
+            ("review and acceptance must pass",
+             r"^[)）]?\s*(?:(?:及|与|和)|(?:通过|合格)[，,；;、 ]*)\s*"
+             r"验收.{0,8}\bB9\b.{0,10}(?<![不未])通过"),
+            ("main merge", r"(合入|合并到)主干"),
+            ("postmerge verification runs", r"(运行|执行).{0,8}合并后验证"),
+        )
+        remaining = delivery
+        for stage, pattern in stages:
+            match = re.search(pattern, remaining, re.I)
+            self.assertIsNotNone(match, f"missing or out-of-order delivery stage: {stage}")
+            remaining = remaining[match.end():]
         self.assertNotIn("<spec-template>", entry, "template belongs only to original to-spec")
 
     def test_static_discovery_metadata_and_bundled_links_match_entry(self):

@@ -72,9 +72,6 @@ class ImplementationEntryStaticTests(unittest.TestCase):
             "mandatory judgment may write nothing": r"必须调用技能判断.*no-write",
             "authority replaces every effect": r"每一处 CONCEPTS.md.*读取.*写入.*grounding.*discoverability.*report.*替换",
             "lazy no parallel vocabulary": r"真实新术语.*domain-modeling.*懒创建.*无术语就无新文件",
-            "Full-only glossary grounding, Lightweight current-source verification":
-                r"只有 Full 由独立 grounding 新上下文接收并核验本次新增／修改的权威词汇条目；"
-                r"Lightweight 不派子 Agent，由 orchestrator 对照当前源码核实本次新增／修改的权威词汇条目",
             "historian scratch-only exception": r"Historian 唯一写入差异.*session-history.md.*不写任何 tracked",
             "full actual contexts": r"Related Docs Finder.*history synthesis.*semantic grounding.*实际新上下文",
             "no public specialist command claim": r"不是公开技能命令.*建议.*外层",
@@ -82,6 +79,29 @@ class ImplementationEntryStaticTests(unittest.TestCase):
         for topic, pattern in contracts.items():
             with self.subTest(topic=topic):
                 self.assertRegex(compound, re.compile(pattern, re.S))
+        vocabulary = compound.split("## 权威词汇替换", 1)[1].split("\n## ", 1)[0]
+        full = re.search(r"(?:只有|仅)\s*Full\b([^。；;\n]+)", vocabulary)
+        lightweight = re.search(r"\bLightweight\b([^。；;\n]+)", vocabulary)
+        self.assertIsNotNone(full, "missing Full-only vocabulary obligations")
+        self.assertIsNotNone(lightweight, "missing Lightweight vocabulary obligations")
+        for mode, clause, checks in (
+            ("Full", full[1], {
+                "independent grounding": r"独立.{0,12}grounding",
+                "fresh context": r"新上下文",
+                "receives entries": r"接收|传入",
+                "verifies entries": r"核[验实对]|验证",
+            }),
+            ("Lightweight", lightweight[1], {
+                "no subagents": r"(?:不|禁止).{0,8}(派|调用).{0,4}子\s*Agent",
+                "orchestrator verifies against current source":
+                    r"orchestrator.{0,20}当前源码.{0,12}(核[验实对]|验证)",
+            }),
+        ):
+            for topic, pattern in checks.items():
+                with self.subTest(mode=mode, topic=topic):
+                    self.assertRegex(clause, pattern)
+            with self.subTest(mode=mode, topic="new and modified authority entries"):
+                self.assertRegex(clause, r"新增\s*[/／、和及与]\s*修改.{0,8}权威词汇条目")
         simplify = (upstream / "ce-simplify-code/adapter.md").read_text(encoding="utf-8")
         self.assertRegex(simplify, r"no-code.*prose")
         self.assertRegex(simplify, r"证明测试保持原样")
