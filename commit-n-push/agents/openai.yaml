@@ -1,0 +1,4 @@
+interface:
+  display_name: "commit_n_push"
+  short_description: "Commit, consolidate branches, and push project Git repositories"
+  default_prompt: "Use $commit-n-push to commit all current changes in this project and its nested Git repositories, then push repositories that have remotes. When explicitly requested, merge eligible branches into each repository's default branch and delete only branches proven fully merged."

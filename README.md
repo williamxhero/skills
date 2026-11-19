@@ -9,6 +9,7 @@
 - 本仓库保存源码版本和 GitHub Issues；不能把一次 Git pull 当成已经安装或部署技能。
 - 后续经过审查的版本仍通过 CC Switch 导入／更新，再核验各客户端的实际状态。
 - 依赖技能由 CC Switch 另行管理；本仓库不打包整个技能库，也不自动安装 Superpowers 或 Compound 的全局引导。
+- `what-now/` 与 `commit-n-push/` 是个人维护的两份技能源码，随本仓库版本化；它们不是三个 To-Done 入口，`commit-n-push` 另有一份仍由 CC Switch 管理。
 
 ## 当前源码与安装状态（未完整验收）
 

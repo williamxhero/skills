@@ -54,8 +54,9 @@ class ArchitectureEntryStaticTests(unittest.TestCase):
             shutil.rmtree(root / "to-spec-to-done")
             self.assertFalse((copied.parent / "../to-spec-to-done/references/engineering-quality.md").exists())
         self.assertEqual(sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in ROOT.rglob("SKILL.md")),
-                         ["implement-spec-to-done/SKILL.md", "improve-codebase-architecture-to-done/SKILL.md",
-                          "to-spec-to-done/SKILL.md"])
+                         ["commit-n-push/SKILL.md", "implement-spec-to-done/SKILL.md",
+                          "improve-codebase-architecture-to-done/SKILL.md", "to-spec-to-done/SKILL.md",
+                          "what-now/SKILL.md"])
 
     def test_static_candidate_phase_is_scoped_visual_and_not_standalone_grilling(self):
         entry = text(ENTRY / "SKILL.md")

@@ -103,8 +103,9 @@ class ImplementationEntryStaticTests(unittest.TestCase):
             self.assertEqual(manifest["sources"]["verification-before-completion"]["files"][0]["sha256"],
                              "2BEFE7FC55BCADAA3D97DD9E8EFEB633D2561C0EBE74C5A8B17C4D9E7E4520B3")
             self.assertEqual(sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in ROOT.rglob("SKILL.md")),
-                             ["implement-spec-to-done/SKILL.md", "improve-codebase-architecture-to-done/SKILL.md",
-                              "to-spec-to-done/SKILL.md"])
+                             ["commit-n-push/SKILL.md", "implement-spec-to-done/SKILL.md",
+                              "improve-codebase-architecture-to-done/SKILL.md", "to-spec-to-done/SKILL.md",
+                              "what-now/SKILL.md"])
 
 
 if __name__ == "__main__":
