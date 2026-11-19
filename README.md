@@ -1,6 +1,6 @@
 # Skills
 
-个人 To-Done 工作流的源码归档与开发仓库。**CC Switch 继续负责本机技能的管理和分发；本仓库不是第二套安装器。**
+个人技能与 To-Done 工作流的源码维护仓库。**CC Switch 继续负责本机技能的管理和分发；本仓库不是第二套安装器。**
 
 ## 管理边界
 
@@ -9,7 +9,8 @@
 - 本仓库保存源码版本和 GitHub Issues；不能把一次 Git pull 当成已经安装或部署技能。
 - 后续经过审查的版本仍通过 CC Switch 导入／更新，再核验各客户端的实际状态。
 - 依赖技能由 CC Switch 另行管理；本仓库不打包整个技能库，也不自动安装 Superpowers 或 Compound 的全局引导。
-- `what-now/` 与 `commit-n-push/` 是个人维护的两份技能源码，随本仓库版本化；它们不是三个 To-Done 入口，`commit-n-push` 另有一份仍由 CC Switch 管理。
+- `what-now/` 与 `commit-n-push/` 是独立维护的技能源码；`commit-n-push` 另有一份由 CC Switch 管理。
+- [`capture-life-geek-topics/`](capture-life-geek-topics/SKILL.md) 是循证话题采集技能的维护源。采集 CLI 仍在内容项目；[来源版本与维护边界](docs/source-management.md#capture-life-geek-topics)。
 
 ## 当前源码与安装状态（未完整验收）
 

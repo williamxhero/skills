@@ -2,7 +2,7 @@
 
 ## Scope and source management
 
-This repository versions three To-Done skills plus two personally maintained skills, `what-now` and `commit-n-push`, which are not To-Done entries. CC Switch remains the only installation and distribution manager. Read `docs/source-management.md` before editing or importing skill sources. Do not rewrite CC Switch configuration, replace client symlinks, or deploy a draft merely because a repository file exists.
+This repository versions three To-Done skills plus separately maintained skills: `what-now`, `commit-n-push`, and `capture-life-geek-topics`. This repository is the maintenance source for `capture-life-geek-topics` instructions and references; its runtime CLI remains in the content project. CC Switch remains the only installation and distribution manager. Read `docs/source-management.md` before editing or importing skill sources. Do not rewrite CC Switch configuration, replace client symlinks, or deploy a draft merely because a repository file exists.
 
 The initial two exports and third-entry draft are historical facts preserved in `docs/source-snapshot.json` and the originating SPEC snapshot; do not rewrite either. Current three-entry sources implement a reviewed candidate; user-managed CC Switch updates and bounded Pi discovery/load observations are indexed in `docs/acceptance.md`, not proof of full acceptance. Source changes are not installation authorization. Keep compatible sibling common resources and pinned specialist assets/licenses together as documented in source management; do not create copied templates, another scheduler or vocabulary authority. The GitHub source repository is Public; root licensing still requires the user's decision.
 

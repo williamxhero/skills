@@ -16,7 +16,7 @@ CC Switch 管理源（默认 ~/.cc-switch/skills/<name>）
 
 ## 三目录与依赖闭包
 
-CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Markdown 链接来收集兄弟资源。发现 SKILL.md 后停止向该根内递归发现技能。仓库恰有三个公开 SKILL.md：
+CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Markdown 链接来收集兄弟资源。发现 SKILL.md 后停止向该根内递归发现技能。以下只列三个配套的 To-Done 入口：
 
 | 安装目录 | 随目录交付 | 另需兼容兄弟资源 |
 | --- | --- | --- |
@@ -27,6 +27,12 @@ CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Ma
 三入口必须交接为**同一已审查兼容版本组合**；不是三个互相独立的安装包。架构入口还读取实施入口的 `references/pi-execution.md`。公共规则只维护一份，不复制三份，也不放在不会随目录交付的 `_shared`。先安装／更新公共规则所在入口，再核对实施与架构入口；这只是授权部署的建议顺序，不是自动升级授权。中途版本不兼容停用受影响流程并恢复兼容组合。
 
 以实际加载 SKILL.md 的父目录为锚点解析兄弟相对路径；只有调用方显式给出 skill root 才使用它。记录路径、提交或 hash，检查同名来源、所有必需正文及分支参考；缺失／不可读／来源不明就 blocked。单目录复制不能证明依赖齐备，符号链接也不能补回从未复制的资源。Matt 依赖另由 CC Switch 管理，仓库不复制其模板或整个技能库。
+
+## capture-life-geek-topics
+
+[`capture-life-geek-topics/`](../capture-life-geek-topics/SKILL.md) 是该技能正文和四份参考的维护源，原名 `protocol-capture`。初始内容从 `content-director-agents` 本地候选 `140abdedad13d862865470d7848034190ccc4046` 的 `skills/codex/protocol-capture/` 导入，对应原清单版本 `topic-opportunity-v3`；来源是 [#124](https://github.com/williamxhero/content-director-agents/issues/124) 的集成候选，不是旧 Pi 安装版。
+
+今后在本仓库修改技能正文和参考。内容项目原有目录如仍用于其清单或验证，只作为版本绑定的副本，不单独维护规则。`scripts/protocol_capture.py`、业务文档和数据仍归内容项目；技能与 CLI 接口有联动时，在各自仓库同步变更并核对兼容版本。本次未改内容项目的副本或清单，未更新 CC Switch 或 Pi 安装，也不解除 #124 的安装验收门禁。
 
 ## 固定专项资源与适配
 
