@@ -77,7 +77,7 @@ class SpecEntryStaticTests(unittest.TestCase):
         self.assert_concepts(adapter, {
             "real upstream": r"读取并执行.{0,40}grilling/SKILL.md",
             "frontier prerequisites": r"frontier.{0,60}前置.{0,40}成立",
-            "all recommendations": r"自动采用.{0,20}全部推荐",
+            "compatible recommendations and exclusive choice": r"自动采用.{0,20}相容推荐.{0,20}互斥时只选有据首选",
             "recompute": r"重算 frontier",
             "facts not guesses": r"无法验证.{0,60}(未知|blocked)",
             "proportional even when simple": r"(小|简单|明确).{0,100}不设置.{0,40}(问题|轮数)",
@@ -85,6 +85,21 @@ class SpecEntryStaticTests(unittest.TestCase):
             "standalone preserved": r"单独调用原版.{0,40}交互",
             "authority remains separate": r"权限模式.{0,30}不构成.{0,20}授权",
             "fresh fact investigation": r"新上下文子 Agent",
+        })
+
+    def test_static_default_policy_and_publisher_seam_adaptation(self):
+        shared = text(ENTRY / "references/engineering-quality.md")
+        self.assert_concepts(shared, {
+            "shared invocation and resume": r"三个 To-Done.*直接、委托及恢复均默认",
+            "evidence without preset": r"没有明示默认.*先查事实、比较并形成推荐",
+            "user precedence": r"用户明确选择和限制优先，暂停立即生效",
+            "permission is separate": r"选择方案不授权执行.*人工专属审批",
+        })
+        entry = text(ENTRY / "SKILL.md")
+        seam = entry.split("## A5 ", 1)[1].split("## A6 ", 1)[0]
+        self.assert_concepts(seam, {
+            "local seam choice": r"原第 2 步 seam 适配.*未定则按共享默认选择.*替换原版的用户确认等待",
+            "publishing and standalone": r"原第 3 步.*没有发布授权不写 tracker.*单独调用原 `to-spec` 不变",
         })
 
     def test_static_publication_contract_requires_readback_not_blind_retry(self):

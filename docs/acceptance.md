@@ -40,6 +40,12 @@ B8 review of that historical candidate found the handoff order, Lightweight grou
 
 This checkpoint does not establish independent role execution, final review, integration or formal delivery/closure. This source checkpoint is not product or production acceptance, a full regression, a native Pi workflow fixture, or CC Switch acceptance.
 
+## SPEC #17 / ticket #18 — To-Done default-decision source checkpoint
+
+[#17](https://github.com/williamxhero/skills/issues/17) / [#18](https://github.com/williamxhero/skills/issues/18), base `6a929374f09b85c21de1521cfc5b04da1112f65f`. This checkpoint applies to the source commit introducing it. [Scoped STATIC and TEXT walkthrough](../tests/README.md#17--18--default-decision-text-scenarios) covers the three wrapper seams and records the installed-call audit. No upstream skills, historical snapshots, or past runtime claims changed.
+
+**Runtime pending:** the parent must bind the isolated fresh Pi run to the exact candidate, authorized fixture and tracker type, no-opt-in two-ticket input, decision, actual next action and readback. Source checks and TEXT do not show that Pi crossed the confirmation point. Local/test tracker writes are not GitHub evidence. Independent review, full delivery and any managed CC Switch update/load remain separate; this checkpoint is not closure or installation authorization.
+
 ## Evidence/version/command key
 
 External evidence package name: `skills-1-20261117` (private local agent work area, deliberately not a Public-repository link). `runtime/`, `reports/`, `research/`, `consolidate-main-20261118/` and `continue-20261118/` below are relative to that external package. Evidence IDs D, F, K, Q, E, E-R, AC, AR, AP and AP-R identify bounded observations, corrective gates and audits; the index is not a second task graph. Raw JSONL may include private paths and thinking; retain externally, redact before any publication. This index publishes observations only, not raw prompts/logs.

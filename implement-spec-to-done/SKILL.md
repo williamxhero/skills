@@ -5,7 +5,7 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 # Implement Spec To Done
 
-**逐个交付。** 原始提供的 Issue 是不可变的 **final delivery target**；先交付其已授权未完成前置，再返回原目标。全程只有一个 **CURRENT SPEC／当前 SPEC**；同一 SPEC 内按 ticket 图并行，跨 SPEC 不并行。下一 SPEC 连拆票也等待当前 SPEC 完整交付并回读 `CLOSED`；批准全部拆分不解除门禁。只在用户已授权实施或明确授权外层继续时进入；SPEC 发布不是开发授权。
+**逐个交付。** 原始提供的 Issue 是不可变的 **final delivery target**；先交付其已授权未完成前置，再返回原目标。全程只有一个 **CURRENT SPEC／当前 SPEC**；同一 SPEC 内按 ticket 图并行，跨 SPEC 不并行。下一 SPEC 连拆票也等待当前 SPEC 完整交付并回读 `CLOSED`；采纳拆分建议不解除门禁。只在用户已授权实施或明确授权外层继续时进入；SPEC 发布不是开发授权。
 
 每次进入先完整读取实际安装兄弟入口内的[共享工程规则](../to-spec-to-done/references/engineering-quality.md)和[自动推荐 grilling 适配](../to-spec-to-done/references/auto-grilling.md)。三入口是配套 bundle，CC Switch 必须同时安装兼容的 `to-spec-to-done`；只复制本目录不会带来兄弟资源，缺失即 blocked，不生成规则副本或猜全局路径。依共享规则从实际加载入口目录定位兄弟技能；显式提供 skill root 才使用该根。
 
@@ -34,11 +34,13 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 完整读取真实 `grilling/SKILL.md` 并按已加载自动推荐适配执行一次实施级复核；即使简单、信息完整、已有 tickets 或规格级 grilling 也必跑，不对每个 ticket 重复访谈。复用已定决定和已授权公开 seam，集中核对现状、前序交付引起的设计漂移、状态／接口、迁移、失败恢复和实施风险。
 
-每轮按 design tree 的 frontier：前置成立→调查事实→推荐→按既有授权自动采用本轮全部推荐→重算依赖。无机械轮数／问题数，不重复等常规确认；不可验证事实仍未知，自动推荐不扩权。满足 [`codebase-design` 共享触发条件](../to-spec-to-done/references/engineering-quality.md#codebase-design)时，直接读取并应用实际 `codebase-design`，将适用结论留在原 SPEC 的实施／测试决定；纯措辞可注明不适用。仅按共享规则的专属条件触发 `design-an-interface`／`domain-modeling`。范围、验收或 seam 有实质变化，先记录并按权限修订 SPEC／取得必要授权。完成条件：实施决定收敛，关键未知有处理，已有测试接口沿用；未达成按 B2 处理，不拆依赖该决定的票。
+每轮按 design tree 的 frontier：前置成立→调查事实→推荐→按共享 To-Done 默认决策采纳相容推荐→重算依赖。无机械轮数／问题数，不重复等常规确认；不可验证事实仍未知，自动推荐不扩权。满足 [`codebase-design` 共享触发条件](../to-spec-to-done/references/engineering-quality.md#codebase-design)时，直接读取并应用实际 `codebase-design`，将适用结论留在原 SPEC 的实施／测试决定；纯措辞可注明不适用。仅按共享规则的专属条件触发 `design-an-interface`／`domain-modeling`。范围、验收或 seam 有实质变化，先记录并按权限修订 SPEC／取得必要授权。完成条件：实施决定收敛，关键未知有处理，已有测试接口沿用；未达成按 B2 处理，不拆依赖该决定的票。
 
 ## B4 调用原 to-tickets，核验复用
 
-读取并执行实际兄弟 `to-tickets/SKILL.md`，只传当前 SPEC、既有决定／seam、交付门禁和自动推荐授权。沿其原模板拆可独立验证的 tracer-bullet 纵向 slices，声明阻塞 edges；不复制模板或另设计划主持器。沿用已授权的建议拆分，不重复常规批准；没有适用授权先取得它。
+读取并执行实际兄弟 `to-tickets/SKILL.md`，只传当前 SPEC、既有决定／seam、共享 To-Done 默认决策和交付门禁；实际建票授权另行核对。保留原第 1–3 步，沿其原模板拆可独立验证的 tracer-bullet 纵向 slices，声明阻塞 edges；不复制模板或另设计划主持器。
+
+**本链原第 4 步适配**：保留编号清单（标题、阻塞者、端到端交付），由 Agent 核验粒度、真实阻塞方向及是否应合并／再拆，必要时迭代，记录并采纳有据方案，不向用户发问或等待拆法批准。继续原第 5 步：已有合格票则复用，有建票授权时才用原模板按依赖顺序补缺；缺权限按 B2 就绪规则处理，不能以采纳拆法补权。单独调用原 `to-tickets` 不变。
 
 创建前搜索并回读既有 tickets，逐项核验需求覆盖、验收、身份和依赖，**复用**合格项，仅补缺。GitHub 使用当前 SPEC 的原生父子关系和原生阻塞关系及适用标签（默认 ready-for-agent），正文链接不代替 edges；按项目指令显式指定 tracker（GitHub CLI 指定仓库、API 使用对应 endpoint）。回读完整正文、父子集合及依赖方向，确认可执行 frontier；原生关系失败按 B2 处理，缺边不算图完整。写入超时／未知时按共享恢复规则回读票与 edges，不接管无关关联。
 
@@ -52,9 +54,9 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 - 纯说明／链接：核对语义、引用、格式和差异；不制造行为 RED。
 - 改变 Agent 决策的指令：再以具体输入推演预期动作、证据和停止点，核对与必读参考一致；文本推演不是运行证明。
-- 新增／修改可执行行为：读取实际 `tdd` 及 tests／mocking，按适用的已授权公开 seam 逐项做真实 RED（确认预期失败原因）→最小实现→GREEN 和回归；不批量预写全部测试，不暴露内部。混合改动分别验证。
+- 新增／修改可执行行为：读取实际 `tdd` 及 tests／mocking，先列明公开 seam 及覆盖／遗漏；原 tdd 的 seam 问答在本链复用已有决定，未定的范围内常规选择按共享默认采纳，无需再等确认；实质范围或验收变化回 B3 核权。按适用公开 seam 逐项做真实 RED（确认预期失败原因）→最小实现→GREEN 和回归；不批量预写全部测试，不暴露内部。混合改动分别验证。
 
-报告前 implementer 合入集成 tip，先读并执行 [verification adapter](references/upstream/verification-before-completion/adapter.md) 再执行其 instructions，提交前运行并读完适用验证，报告候选、命令、结果、证据指针（适用时含 RED／GREEN）及限制。新的 **merger** 上下文核验范围、提交／祖先、diff 和新鲜验证后正常合入集成分支；需要冲突解决则读取真实 resolving-merge-conflicts，保护 WIP。更新实际 ticket 图的可执行前沿再派下一批，不跨 SPEC。
+报告前 implementer 合入集成 tip，先读并执行 [verification adapter](references/upstream/verification-before-completion/adapter.md) 再执行其 instructions，提交前运行并读完适用验证，报告候选、命令、结果、证据指针（适用时含 RED／GREEN）及限制。新的 **merger** 上下文核验范围、提交／祖先、diff 和新鲜验证后正常合入集成分支；需要冲突解决则读取真实 resolving-merge-conflicts，保护 WIP；只解决当前合并的已授权差异，不照原技能的全量暂存或“总要解决”跨越硬约束，普通取舍采用有据首选。更新实际 ticket 图的可执行前沿再派下一批，不跨 SPEC。
 
 ### LOCAL PHASE ADAPTATION — 不是 hook API
 
@@ -80,7 +82,7 @@ description: "交付指定最终目标：先完成已授权前置，再返回单
 
 ## B8 最终独立 code-review（复用原第 7 步）
 
-完整执行实际 `code-review`：解析固定基点与最终候选 SHA，确认 diff／commits，源头 SPEC 及所有规范（含共享工程规则）；范围涵盖实现＋简化＋经验产物。Standards／Spec 两轴并行、独立新上下文，前者传完整规范与 smell baseline，后者传原 SPEC；按原流程分别聚合，不自审、不合并排序轴、不用专项 inline 降级替代。
+完整执行实际 `code-review`：解析固定基点与最终候选 SHA，确认 diff／commits，源头 SPEC 及所有规范（含共享工程规则）；主持方从当前交付记录解析并传入基点和 SPEC，不触发例行问答；无法核实则按 B2 处理，不跳过 Spec 轴；范围涵盖实现＋简化＋经验产物。Standards／Spec 两轴并行、独立新上下文，前者传完整规范与 smell baseline，后者传原 SPEC；按原流程分别聚合，不自审、不合并排序轴、不用专项 inline 降级替代。
 
 审查角色失败按 Pi 执行适配及 B2 处理，不以另一轴结果代替；有发现交一个 fresh implementer 修复，按需 tdd／针对性简化／单项经验判断。变更使证据过期时重新验证受影响项，实质影响已审查结论时复审受影响差异；无实质变化不机械重复全套。不把旧审查报告套在新候选。完成条件：最终候选已审查，发现均修复或有符合验收的明确处置，证据绑定当前 tree／commit。
 

@@ -82,7 +82,7 @@ class ArchitectureEntryStaticTests(unittest.TestCase):
         entry = text(ENTRY / "SKILL.md")
         selection = entry.split("## C3 ", 1)[-1].split("## C4 ", 1)[0]
         self.assert_topics(selection, {
-            "one evidence backed candidate": r"自动.*(首选|推荐).*一个.*不可分.*(不|不是).*全部",
+            "one evidence backed candidate": r"共享 To-Done 默认决策.*用户明确限制.*首选.*一个.*不可分.*不.*全部",
             "normal evidence backed no change": r"no-change.*(范围|基线).*(排除|收益).*正常.*(停止|结束)",
             "no writes on no change": r"no-change.*不.*(发布|SPEC).*(拆票|tickets).*实施",
             "blocked facts authority and capability": r"blocked.*事实.*(权限|授权).*能力",
@@ -96,6 +96,7 @@ class ArchitectureEntryStaticTests(unittest.TestCase):
         spec = entry.split("## C4 ", 1)[-1].split("## C5 ", 1)[0]
         self.assert_topics(spec, {
             "wrapper owns sole spec grilling": r"to-spec-to-done.*唯一.*规格级 grilling.*(一次|一处)",
+            "default handoff distinct from publishing authority": r"共享 To-Done 默认决策，发布授权另传",
             "only original publisher": r"仅由.*to-spec.*原模板.*(生成|发布)",
             "benefits are agreed acceptance": r"收益.*基线.*(阈值|判定).*兼容.*迁移.*(恢复|回退).*验收",
             "published readback required": r"回读.*正文.*(关系|标签).*交付",
@@ -109,6 +110,7 @@ class ArchitectureEntryStaticTests(unittest.TestCase):
         delivery = entry.split("## C6 ", 1)[-1].split("## C7 ", 1)[0]
         self.assert_topics(delivery, {
             "only wrapper for current spec": r"implement-spec-to-done.*仅.*当前 SPEC",
+            "default survives delegation and resume": r"同一 To-Done 默认决策.*实施授权及限制另传.*恢复.*回读.*不重复建票",
             "B3 is reality recheck": r"B3.*(现实|环境).*复核.*不.*(访谈|设计)",
             "accept all architecture requirements before closing": r"B9.*收益.*兼容.*迁移.*(恢复|回退).*关闭前.*验收",
             "failures remain here": r"失败.*当前 SPEC.*不.*换候选",

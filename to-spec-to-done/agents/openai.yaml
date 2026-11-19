@@ -1,4 +1,4 @@
 interface:
   display_name: "To Spec To Done"
   short_description: "调查并强制 grilling 推敲，委托 to-spec 发布完整交付约定后停止"
-  default_prompt: "使用 $to-spec-to-done 调查当前需求，按授权以自动推荐模式执行 grilling，再委托 $to-spec 按原模板发布并回读 SPEC。每个新 SPEC 包含完整执行与交付约定；本轮仅发布规格，不启动开发。"
+  default_prompt: "使用 $to-spec-to-done 调查当前需求，执行 grilling 并默认采纳范围内常规推荐（不扩大行动授权），再委托 $to-spec 按原模板发布并回读 SPEC。每个新 SPEC 包含完整执行与交付约定；本轮仅发布规格，不启动开发。"

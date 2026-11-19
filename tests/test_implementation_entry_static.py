@@ -63,6 +63,14 @@ class ImplementationEntryStaticTests(unittest.TestCase):
         self.assertIn("grilling", metadata)
         self.assertIn("简化", metadata)
 
+    def test_static_ticket_review_flows_to_authorized_publication(self):
+        entry = (ENTRY / "SKILL.md").read_text(encoding="utf-8")
+        tickets = entry.split("## B4 ", 1)[1].split("## B5 ", 1)[0]
+        self.assertRegex(tickets, r"原第 1–3 步.*原模板.*tracer-bullet")
+        self.assertRegex(tickets, r"原第 4 步.*粒度.*阻塞方向.*合并／再拆.*采纳.*不向用户发问")
+        self.assertRegex(tickets, r"原第 5 步.*复用.*有建票授权时才.*缺权限按 B2.*单独调用原 `to-tickets` 不变")
+        self.assertRegex(tickets, r"(?s)创建前搜索并回读.*原生父子关系.*原生阻塞关系.*回读完整正文.*不编码")
+
     def test_static_adapters_override_all_references_without_extra_public_commands(self):
         upstream = ENTRY / "references/upstream"
         compound = (upstream / "ce-compound/adapter.md").read_text(encoding="utf-8")
