@@ -46,6 +46,26 @@ This checkpoint does not establish independent role execution, final review, int
 
 **Bounded B3/B4 runtime observed:** explicit `--skill` staging used three package byte SHA256 maps matching candidate `94f5e35c19d08147da0c23efcb57edb7a0006b45` (tree `cdb7f71619f1dd1ba55ea2b1bbdd4d504471e76e`; 63/4/2 files). The isolated fixture was local Git `00e4614a416add85f5872bfb1bb29a3c4a1653c6` with no remotes and local tracked SPECs authorized for B3/B4 only. Fresh Pi 1.5.2 (`cpa/gpt-6.2-sol`, session `01a1f3a4-ae7d-7133-9f84-e7a17e0aee66`) received one noninteractive `--print` input, `/skill:implement-spec-to-done .scratch/fixture/SPEC.md`, with no additional recommendation authorization. Initial stderr model-pattern warnings did not affect the selected model. Pi read the staged wrapper, shared resources and original instructions, adopted the two-ticket split without asking for or receiving confirmation, then performed two successful local ticket writes and GET/read tool calls for both exact files. Both tickets persisted locally as OPEN with no blockers. Only the two expected untracked files were added; tracked product files, the SPEC and Git refs were unchanged. Full raw logs remain outside the repository. This crosses the confirmation point in the local fixture only: no real GitHub ticketing or B5+ execution is established. Independent review, full delivery and managed CC Switch update/load remain separate; this checkpoint is not a closure or installation claim.
 
+**B3/B4 replay audit (same run, not a rerun):** B3 recommended retaining the existing CLI as the public test seam and comparing output byte for byte, including the trailing LF. B4 announced two independent argument slices (morning and evening), each preserving the no-argument default, with no shared preparation ticket. The exact replay showed one user turn, then two local writes followed by two local reads. The readbacks of `.scratch/fixture/issues/01-morning-greeting.md` and `.scratch/fixture/issues/02-evening-greeting.md` matched the enclosing feature in `.scratch/fixture/SPEC.md`: each covered its argument case, trailing LF, and the unchanged default. Each read back with textual `Blocked by None`, so the local dependency graph had no edges. No native GitHub graph was created or verified.
+
+**Recorded STATIC verification:** On `27fd060`, with `TEMP` and `TMP` set to the worktree, the coordinator ran these fresh checks:
+
+| Command | Result |
+| --- | --- |
+| `python -B -m unittest discover -s tests -p 'test_*entry_static.py' -v` | 13 passed |
+| `python -B -m unittest discover -s tests -p 'test_source_handoff_static.py' -v` | 3 passed |
+| `python -B -m unittest discover -s tests -p 'test_prerequisite_delivery_static.py' -v` | 1 passed |
+| `git diff --check 6a929374f09b85c21de1521cfc5b04da1112f65f..HEAD` | Exit 0 (`HEAD` was `27fd060`) |
+
+**Coordinator TEXT walkthrough on `27fd060` (not Pi execution):** The coordinator walked all six linked scenario rows against the exact sources:
+
+1. After locally reviewing the split, B4 reaches original `to-tickets` step 5 without waiting for approval. Export depends on import; ticket writes proceed only with existing authority.
+2. Resolving the authoritative timezone informs the next grilling round and subsequent seam choice; the authorized SPEC is published and read back, then A7 stops.
+3. C3 selects one eligible candidate in the scenario. C4 and C6 carry the same decision default but require separate authority for SPEC publication and implementation. On resume, #15 calls for readback and reuse of still-valid decisions and tickets rather than repeating the write.
+4. Rank incompatible interfaces and choose one; honor an explicit valid user selection instead when given.
+5. Scan-only authority does not permit publication. A human-only deploy gate holds deployment and its dependents while authorized independent work continues; an explicit user pause takes effect immediately.
+6. Original standalone grilling, seam selection, and ticket breakdown steps remain interactive because the upstream instructions were not changed.
+
 ## Evidence/version/command key
 
 External evidence package name: `skills-1-20261117` (private local agent work area, deliberately not a Public-repository link). `runtime/`, `reports/`, `research/`, `consolidate-main-20261118/` and `continue-20261118/` below are relative to that external package. Evidence IDs D, F, K, Q, E, E-R, AC, AR, AP and AP-R identify bounded observations, corrective gates and audits; the index is not a second task graph. Raw JSONL may include private paths and thinking; retain externally, redact before any publication. This index publishes observations only, not raw prompts/logs.
