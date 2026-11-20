@@ -11,6 +11,10 @@ UTF-8 的 `pack.json` 含 `pack_id`、`audience` 和非空 `modules`。每项有
 
 同一份目录用于 `capture --per-source 2 --pack <pack.json>` 与 `finalize <capture.json> <reviews.json> --pack <pack.json>`；采集输出记录了目录指纹时，结账必须匹配。单条候选不自动关闭任何缺口；确认补齐后才更新项目目录。冻结的旧采集件可以直接用新版 finalize 离线复评，不改历史、不 `remember`。
 
+## 回读本地判断
+
+按[本地适用判断](opportunity-review.md#本地适用判断)填写同级评审。`tool_candidates` 是兼容的工具清单，不等于优先推荐；读 `local_report` 看条件和原文边界，`priority_urls` 只列 `local_priority: true` 的记录，不取工具清单前几条代替。同档沿用工具分数及旧顺序。包内须有已核 `action_audience`，本地 `audience` 也要逐字匹配目录；有显式本地评审时，任一人群不符只取消本地推荐，不否定原循证行动。无本地评审的旧工具输入仍拒绝显式不匹配。没有本地评审显示未评，不重算旧分。本地两类缺口不是目录覆盖更新；仅目录中已明确开放的信源缺口及匹配 `source_terms` 能影响以后获授权的定向采集，不自动加词或抓取。
+
 ## 评一条行动，不评整篇文章
 
 仅在循证已通过的审核意见中补 `tool_review`：
