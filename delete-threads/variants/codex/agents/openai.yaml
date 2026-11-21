@@ -1,0 +1,4 @@
+interface:
+  display_name: "永久删除 Codex Threads"
+  short_description: "按标题匹配并永久清理 Codex thread 与 transcript"
+  default_prompt: "Use $delete-threads to preview and permanently delete Codex threads matching the user's explicit title rule, preserve a local restore point, and verify the SQLite index and transcript files are gone."
