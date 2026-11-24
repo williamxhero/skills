@@ -158,9 +158,9 @@ class ImplementationEntryStaticTests(unittest.TestCase):
                              "2BEFE7FC55BCADAA3D97DD9E8EFEB633D2561C0EBE74C5A8B17C4D9E7E4520B3")
         # Check the repository inventory after removing the selected copy, even with in-tree TEMP.
         self.assertEqual(sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in ROOT.rglob("SKILL.md")),
-                         ["capture-life-geek-topics/SKILL.md", "commit-n-push/SKILL.md",
+                         ["commit-n-push/SKILL.md", "delete-threads/SKILL.md",
                           "implement-spec-to-done/SKILL.md", "improve-codebase-architecture-to-done/SKILL.md",
-                          "to-spec-to-done/SKILL.md", "what-now/SKILL.md"])
+                          "merge-upstream-parents/SKILL.md", "to-spec-to-done/SKILL.md", "what-now/SKILL.md"])
 
 
 if __name__ == "__main__":

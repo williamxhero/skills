@@ -9,8 +9,8 @@
 - 本仓库保存源码版本和 GitHub Issues；不能把一次 Git pull 当成已经安装或部署技能。
 - 后续经过审查的版本仍通过 CC Switch 导入／更新，再核验各客户端的实际状态。
 - 依赖技能由 CC Switch 另行管理；本仓库不打包整个技能库，也不自动安装 Superpowers 或 Compound 的全局引导。
-- `what-now/` 与 `commit-n-push/` 是独立维护的技能源码；`commit-n-push` 另有一份由 CC Switch 管理。
-- [`capture-life-geek-topics/`](capture-life-geek-topics/SKILL.md) 是循证话题采集技能的维护源。采集 CLI 仍在内容项目；[来源版本与维护边界](docs/source-management.md#capture-life-geek-topics)。
+- `what-now/`、`commit-n-push/`、`delete-threads/` 与 [`merge-upstream-parents/`](merge-upstream-parents/SKILL.md) 是独立维护的技能源码；`commit-n-push` 另有一份由 CC Switch 管理。`merge-upstream-parents` 合并单个 fork 或一组 fork 的上游 parent，默认只更新本地分支，不推送、不部署；[CPA 可选流程](merge-upstream-parents/references/cpa-profile.md)按需选用。
+- `capture-life-geek-topics/` 已从本仓库移除，其来源与安装状态见[来源记录](docs/source-management.md)。
 
 ## 当前源码与安装状态（未完整验收）
 

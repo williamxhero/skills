@@ -28,11 +28,17 @@ CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Ma
 
 以实际加载 SKILL.md 的父目录为锚点解析兄弟相对路径；只有调用方显式给出 skill root 才使用它。记录路径、提交或 hash，检查同名来源、所有必需正文及分支参考；缺失／不可读／来源不明就 blocked。单目录复制不能证明依赖齐备，符号链接也不能补回从未复制的资源。Matt 依赖另由 CC Switch 管理，仓库不复制其模板或整个技能库。
 
-## capture-life-geek-topics
+## capture-life-geek-topics（已移除）
 
-[`capture-life-geek-topics/`](../capture-life-geek-topics/SKILL.md) 是该技能正文和四份参考的维护源，原名 `protocol-capture`。初始内容从 `content-director-agents` 本地候选 `140abdedad13d862865470d7848034190ccc4046` 的 `skills/codex/protocol-capture/` 导入，对应原清单版本 `topic-opportunity-v3`；来源是 [#124](https://github.com/williamxhero/content-director-agents/issues/124) 的集成候选，不是旧 Pi 安装版。
+本仓库曾保存该技能正文和四份参考，原名 `protocol-capture`。初始内容从 `content-director-agents` 本地候选 `140abdedad13d862865470d7848034190ccc4046` 的 `skills/codex/protocol-capture/` 导入，对应原清单版本 `topic-opportunity-v3`；来源是 [#124](https://github.com/williamxhero/content-director-agents/issues/124) 的集成候选，不是旧 Pi 安装版。
 
-今后在本仓库修改技能正文和参考。内容项目原有目录如仍用于其清单或验证，只作为版本绑定的副本，不单独维护规则。`scripts/protocol_capture.py`、业务文档和数据仍归内容项目；技能与 CLI 接口有联动时，在各自仓库同步变更并核对兼容版本。本次未改内容项目的副本或清单，未更新 CC Switch 或 Pi 安装，也不解除 #124 的安装验收门禁。
+该目录已从本仓库移除，这里不再提供它的维护源。来源版本、哈希与当时的安装状态仍以 `docs/source-snapshot.json` 和[验收记录](acceptance.md#capture-life-geek-topics--source-import-and-rename-only)为准；`scripts/protocol_capture.py`、业务文档和数据始终归内容项目。移除不改内容项目副本或清单，也不更新 CC Switch 或 Pi 安装。
+
+## merge-upstream-parents
+
+[`merge-upstream-parents/`](../merge-upstream-parents/SKILL.md) 是通用上游合并技能的维护源：合并单个 GitHub fork 的 parent，或合并一个目录下若干 fork 的 parent。它按 GitHub 直接 parent 核实身份、固定提交 SHA、在独立 worktree 审查后快进本地分支；普通合并默认不推送、不额外改版本、不部署。
+
+`references/cpa-profile.md`、`merge-playbook.md`、`repositories.md` 与 `scripts/inventory.ps1` 是可选 CPA 流程，只在明确选择 CPA 或要求 CPA 版本／部署时读取。CC Switch 导入该目录即安装；它不依赖其他技能目录，也不引入调度器或第二套安装器。本次未通过 CC Switch 导入或更新，安装状态以 CC Switch 的实际投影为准。
 
 ## 固定专项资源与适配
 
