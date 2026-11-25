@@ -44,3 +44,13 @@ It performs a destructive local cleanup of Codex thread records; it is not an ar
 - Do not claim permanent deletion from an archive API alone. Permanent deletion requires both the SQLite/index cleanup and transcript-file removal.
 
 See `references/deletion-procedure.md` for the storage model, failure handling, and evidence retained by the helper.
+
+## After-use review: keep only reusable lessons
+
+After the requested cleanup and its postcondition checks are reported, spend a few lines on this run: what the user corrected, which step was misread or skipped, which gate failed to catch something (for example a title rule that turned out ambiguous), where work was redone, which inputs should have been asked for first.
+
+- **Qualify before writing.** The lesson must recur on a similar task and fit one actionable "when you see X, do Y" constraint. Skip one-off environment failures, facts specific to this run, unverified guesses, and anything an existing rule already covers.
+- **Write it into this skill.** Prefer merging it into an existing step, gate, or trigger over adding another bullet; if the same lesson shows up again, restructure instead of appending more sentences. Delete requirements this run disproved; leave no contradictory bullet behind.
+- **Edit only the copy actually loaded this run** — its `SKILL.md` or the references shipped in this directory. When another tool manages that copy (for example a CC Switch managed copy), edit its maintenance source and state that the change is not installed; never overwrite the managed copy. Touch pinned upstream or specialist assets only through their adapter; do not import another skill's rules, create a second source of truth, or write secrets and private paths.
+- **Do not change this run's outcome.** The review grants no extra authorization: no commit, push, install, deploy, or rewritten evidence.
+- **Otherwise pass.** No file edit, no changelog entry, no version bump. At most one closing line — "sedimented: …" or "nothing to sediment" — and do not replay the review.

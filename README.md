@@ -12,6 +12,16 @@
 - `what-now/`、`commit-n-push/`、`delete-threads/` 与 [`merge-upstream-parents/`](merge-upstream-parents/SKILL.md) 是独立维护的技能源码；`commit-n-push` 另有一份由 CC Switch 管理。`merge-upstream-parents` 合并单个 fork 或一组 fork 的上游 parent，默认只更新本地分支，不推送、不部署；[CPA 可选流程](merge-upstream-parents/references/cpa-profile.md)按需选用。
 - `capture-life-geek-topics/` 已从本仓库移除，其来源与安装状态见[来源记录](docs/source-management.md)。
 
+## 技能自沉淀
+
+七个技能各自末尾都有一段「用完回看，值得就改自己」：在一次实质使用结束（含中途被用户纠正或放弃）后，用几句复盘本轮，只有能写成「看到什么就做什么」、换成相近任务还会再犯的教训才落笔；落笔时优先并进已有步骤／门禁／触发描述，其次才加一条，同一教训再来一次就改结构而不是继续堆句子。偶发环境故障、本轮专有数据、没验证的猜测和已有规则已覆盖的内容不写。
+
+- 复盘只改本次实际加载的那份技能（`SKILL.md` 或随目录交付的 references）；它由 CC Switch 管理时改维护源并标明这次改动未安装，不覆盖管理副本，也不把源码改动当成已安装。
+- 复盘不追加授权：不自行提交、推送、安装、部署，也不改写已交付的证据；不涨版本号、不造变更记录。
+- 没有可复用教训就 pass，收尾最多一句「已沉淀：…」或「无沉淀」。这是每个技能自己的收尾规则，不是新的工作流阶段、自动改写进程或第二套调度。
+- 三个 To-Done 入口把这段放在各自停止点之后（A7／B12／C7），不插进流程阶段，也不计入发布或关闭门禁。
+
+
 ## 当前源码与安装状态（未完整验收）
 
 公开源码仓库：**[williamxhero/skills](https://github.com/williamxhero/skills)**。已审查的三入口候选及先前证据已合入并推送 main `9ef92ba34a6e447ac27c5832424dd208dd0ea42e`，当时本地／tracking／实际远端一致，七个旧任务分支／工作树经归属及祖先核验安全清理。本次五文档候选检查点基于该已交付源码，位于最终文档独立复核／交付门禁之前；既有主干交付不等于 SPEC #1 完整验收。

@@ -15,3 +15,7 @@ A required SPEC whose delivery must precede dependent work.
 
 **delivered prerequisite**:
 A prerequisite with applicable acceptance, full delivery, complete records and verified completed CLOSED evidence.
+
+**沉淀 (sediment)**:
+One minimal, reusable edit to the skill that actually ran, made during its after-use review, because the lesson would recur and can be written as "when you see X, do Y". Not a changelog entry, version bump, installation, or new workflow stage.
+
