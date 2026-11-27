@@ -57,7 +57,8 @@ class ArchitectureEntryStaticTests(unittest.TestCase):
         self.assertEqual(sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in ROOT.rglob("SKILL.md")),
                          ["commit-n-push/SKILL.md", "delete-threads/SKILL.md",
                           "implement-spec-to-done/SKILL.md", "improve-codebase-architecture-to-done/SKILL.md",
-                          "merge-upstream-parents/SKILL.md", "to-spec-to-done/SKILL.md", "what-now/SKILL.md"])
+                          "merge-upstream-parents/SKILL.md", "one-line-summary/SKILL.md",
+                          "to-spec-to-done/SKILL.md", "what-now/SKILL.md"])
 
     def test_static_candidate_phase_is_scoped_with_conditional_visuals(self):
         entry = text(ENTRY / "SKILL.md")

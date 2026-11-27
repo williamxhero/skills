@@ -151,6 +151,20 @@ class SpecEntryStaticTests(unittest.TestCase):
             remaining = remaining[match.end():]
         self.assertNotIn("<spec-template>", entry, "template belongs only to original to-spec")
 
+    def test_static_report_step_renames_session_to_issue_identity(self):
+        entry = text(ENTRY / "SKILL.md")
+        report = entry.split("## A7 报告并停止\n", 1)[1].split("## 用完回看", 1)[0]
+        self.assert_concepts(report, {
+            "exact name shape": r"`#<Issue 编号> <Issue 标题>`",
+            "single SPEC, top SPEC when split": r"单 SPEC 用它本身；.*总 SPEC",
+            "real number and read-back title": r"真实编号.*标题原文",
+            "harness capability, not file editing": r"`set_session_name`.*不要手改会话文件",
+            "missing capability is reported, not claimed":
+                r"没有改名接口或调用失败时.*`/name #<编号> <标题>`.*未改名",
+            "blocked run keeps the old name": r"阻塞.*保持原名，不改名",
+        })
+        self.assertNotRegex(report, r"[A-Za-z]:[/\\](?:Users|WILL)[/\\]")
+
     def test_static_discovery_metadata_and_bundled_links_match_entry(self):
         metadata = text(ENTRY / "agents/openai.yaml")
         self.assert_concepts(metadata, {

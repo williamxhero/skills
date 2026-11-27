@@ -9,12 +9,12 @@
 - 本仓库保存源码版本和 GitHub Issues；不能把一次 Git pull 当成已经安装或部署技能。
 - 后续经过审查的版本仍通过 CC Switch 导入／更新，再核验各客户端的实际状态。
 - 依赖技能由 CC Switch 另行管理；本仓库不打包整个技能库，也不自动安装 Superpowers 或 Compound 的全局引导。
-- `what-now/`、`commit-n-push/`、`delete-threads/` 与 [`merge-upstream-parents/`](merge-upstream-parents/SKILL.md) 是独立维护的技能源码；`commit-n-push` 另有一份由 CC Switch 管理。`merge-upstream-parents` 合并单个 fork 或一组 fork 的上游 parent，默认只更新本地分支，不推送、不部署；[CPA 可选流程](merge-upstream-parents/references/cpa-profile.md)按需选用。
+- `what-now/`、`commit-n-push/`、`delete-threads/`、[`merge-upstream-parents/`](merge-upstream-parents/SKILL.md) 与 [`one-line-summary/`](one-line-summary/SKILL.md) 是独立维护的技能源码；`commit-n-push` 另有一份由 CC Switch 管理。`merge-upstream-parents` 合并单个 fork 或一组 fork 的上游 parent，默认只更新本地分支，不推送、不部署；[CPA 可选流程](merge-upstream-parents/references/cpa-profile.md)按需选用。`one-line-summary` 把本次会话交付了什么、创建或关闭了哪个 issue 压成一句话加一行 issue 记录，只读、不回写。
 - `capture-life-geek-topics/` 已从本仓库移除，其来源与安装状态见[来源记录](docs/source-management.md)。
 
 ## 技能自沉淀
 
-七个技能各自末尾都有一段「用完回看，值得就改自己」：在一次实质使用结束（含中途被用户纠正或放弃）后，用几句复盘本轮，只有能写成「看到什么就做什么」、换成相近任务还会再犯的教训才落笔；落笔时优先并进已有步骤／门禁／触发描述，其次才加一条，同一教训再来一次就改结构而不是继续堆句子。偶发环境故障、本轮专有数据、没验证的猜测和已有规则已覆盖的内容不写。
+八个技能各自末尾都有一段「用完回看，值得就改自己」：在一次实质使用结束（含中途被用户纠正或放弃）后，用几句复盘本轮，只有能写成「看到什么就做什么」、换成相近任务还会再犯的教训才落笔；落笔时优先并进已有步骤／门禁／触发描述，其次才加一条，同一教训再来一次就改结构而不是继续堆句子。偶发环境故障、本轮专有数据、没验证的猜测和已有规则已覆盖的内容不写。
 
 - 复盘只改本次实际加载的那份技能（`SKILL.md` 或随目录交付的 references）；它由 CC Switch 管理时改维护源并标明这次改动未安装，不覆盖管理副本，也不把源码改动当成已安装。
 - 复盘不追加授权：不自行提交、推送、安装、部署，也不改写已交付的证据；不涨版本号、不造变更记录。
@@ -26,7 +26,7 @@
 
 公开源码仓库：**[williamxhero/skills](https://github.com/williamxhero/skills)**。已审查的三入口候选及先前证据已合入并推送 main `9ef92ba34a6e447ac27c5832424dd208dd0ea42e`，当时本地／tracking／实际远端一致，七个旧任务分支／工作树经归属及祖先核验安全清理。本次五文档候选检查点基于该已交付源码，位于最终文档独立复核／交付门禁之前；既有主干交付不等于 SPEC #1 完整验收。
 
-- `to-spec-to-done/`：A1–A7 调查、每次强制自动推荐 grilling、按判断应用 `codebase-design`，由原版 to-spec 发布／回读后停止。新 SPEC 指定实施包装入口主持后续获准交付；随目录交付唯一公共规则。
+- `to-spec-to-done/`：A1–A7 调查、每次强制自动推荐 grilling、按判断应用 `codebase-design`，由原版 to-spec 发布／回读后停止，并把会话名改成 `#<Issue 编号> <标题>`。新 SPEC 指定实施包装入口主持后续获准交付；随目录交付唯一公共规则。
 - `implement-spec-to-done/`：B1–B12 唯一当前 SPEC、隔离实施／集成，按变更选择证据（源码核对、文本推演、适用代码 TDD）；保留稳定后简化／条件经验捕获、独立审查与完整交付门禁。
 - `improve-codebase-architecture-to-done/`：C1–C7 有范围证据调查，按需要交付文字或验证过的图，单候选或 no-change／blocked，复用前两入口。
 

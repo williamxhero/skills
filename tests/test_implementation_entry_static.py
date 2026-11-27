@@ -160,7 +160,8 @@ class ImplementationEntryStaticTests(unittest.TestCase):
         self.assertEqual(sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in ROOT.rglob("SKILL.md")),
                          ["commit-n-push/SKILL.md", "delete-threads/SKILL.md",
                           "implement-spec-to-done/SKILL.md", "improve-codebase-architecture-to-done/SKILL.md",
-                          "merge-upstream-parents/SKILL.md", "to-spec-to-done/SKILL.md", "what-now/SKILL.md"])
+                          "merge-upstream-parents/SKILL.md", "one-line-summary/SKILL.md",
+                          "to-spec-to-done/SKILL.md", "what-now/SKILL.md"])
 
 
 if __name__ == "__main__":

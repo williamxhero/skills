@@ -40,6 +40,12 @@ CC Switch 安装／更新**只递归复制所选技能目录**，不会解析 Ma
 
 `references/cpa-profile.md`、`merge-playbook.md`、`repositories.md` 与 `scripts/inventory.ps1` 是可选 CPA 流程，只在明确选择 CPA 或要求 CPA 版本／部署时读取。CC Switch 导入该目录即安装；它不依赖其他技能目录，也不引入调度器或第二套安装器。本次未通过 CC Switch 导入或更新，安装状态以 CC Switch 的实际投影为准。
 
+## one-line-summary
+
+[`one-line-summary/`](../one-line-summary/SKILL.md) 是会话收尾摘要技能的维护源：只根据本次会话可核实的证据，用一句话说清交付了什么，再用 `#{号码} {标题}` 列出本次创建或关闭的 issue，没有就明确写「未创建也未关闭任何 issue」。它只读，不创建／关闭 issue，不提交、推送或部署。
+
+该目录无随附参考、无兄弟依赖；CC Switch 导入即安装。本次只更新维护源，未通过 CC Switch 导入或更新，安装状态以 CC Switch 的实际投影为准。
+
 ## 固定专项资源与适配
 
 `implement-spec-to-done/references/upstream/provenance.json` 是逐文件原始来源、commit、SHA256、许可证哈希及改名声明的清单。每个专项先读本地 `adapter.md` 再执行 `instructions.md` 及触发参考。
